@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.3.0] - 2025-05-10
+
+### Changed
+- **PLAN.md** — третья волна доработок:
+  - **Free тариф:** убрано ограничение в 30 дней — теперь **безлимитная история** на всех тарифах
+  - **AI-first архитектура:** добавлен большой раздел про AI как первоклассный гражданин системы (Memory Layer / Tools Layer / Orchestrator)
+  - **RAG-память:** pgvector + sqlite-vec, схема `memory_chunks` с HNSW индексом, hybrid search (semantic + FTS + RRF)
+  - **Tools Layer:** типизированные инструменты для AI (Zod → JSON Schema), audit log + откат
+  - **Linear UX:** keyboard shortcuts стали опциональными (мышь + drag-n-drop по умолчанию, прогрессивное раскрытие подсказок)
+  - **Простая структура для AI:** антипаттерны (глубокая вложенность, барреллы) + правила (плоская структура, явные импорты, comment-headers, README в папках)
+  - **Файлы конвенций:** CLAUDE.md, AGENTS.md, .cursor/rules/ — для онбординга AI-агентов
+  - **Стек обновлён:** добавлены pgvector, sqlite-vec, Vercel AI SDK, OpenAI embeddings, Tesseract OCR, Whisper, grammY/GramJS
+
+### Added
+- **Inbox — drop-папка для AI** (Этап 7.5): `~/OpenFinance/Inbox/` или S3-bucket, AI ежедневно проверяет, парсит чеки/договоры/Excel/заметки/голосовые → создаёт транзакции/блоки/напоминания. Auto-mode + Approve-mode + per-type rules. Email-to-Inbox через `inbox.{user}@openfinance.ru`.
+- **AI-секретарь** (Этап 8): интеграция с Email IMAP, Telegram (Bot+MTProto), WhatsApp Business, VK, MAX, Google Contacts, iCloud CardDAV. Granular permissions, opt-in, audit log, кнопка «Стереть всю память».
+- **`.gitignore`** — полный список исключений (.env, *.pem, базы, inbox/, data/, секретные ключи, gitignored notes)
+- **`docs/SECURITY.md`** — обязательное чтение для AI и людей: правила работы с секретами, чек-листы, защита от утечек, 152-ФЗ
+- **Память:** правила безопасности добавлены в MemPalace для контроля при коммитах
+
+### Roadmap
+- Расширен с 13 до **14 этапов**: добавлены Этап 7.5 (Inbox) и Этап 8 (AI-секретарь). Остальные перенумерованы.
+
 ## [0.2.0] - 2025-05-10
 
 ### Changed

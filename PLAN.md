@@ -7,11 +7,13 @@
 Облачная SaaS-платформа с **модульным конструктором** — пользователь собирает свою финансовую панель как конструктор из блоков (виджеты, модули, надстройки). AI работает поверх всех данных как единый мозг: видит связи, паттерны и аномалии.
 
 ### Ключевые принципы
-- **AI-first** — не аналитика с AI-довеском, а AI-управляющий с аналитикой как инструментом
+- **AI-first над всеми данными** — AI работает поверх ВСЕХ данных пользователя как единый разум, не локально по одному модулю
 - **Модульный конструктор** — каждый собирает под себя (селлер, фрилансер, ИП, малый бизнес)
 - **Доступность** — сложная финансовая аналитика простым языком, понятный UX
 - **Прогнозы > отчёты** — фокус на будущее, а не только фиксация прошлого
 - **Единое окно** — все деньги в одном месте (МП + банки + касса + налоги)
+- **Простая структура для AI агентов** — код и данные организованы так, чтобы любой AI-агент (наш встроенный или внешний типа Claude Code) разбирался за минуты
+- **Graceful degradation** — без AI приложение работает как обычная финансовая программа; с AI — становится умным секретарём
 
 ---
 
@@ -177,6 +179,235 @@ ML-модель на истории операций:
 - Настраиваемые триггеры (маржа < X%, расход > Y, кассовый разрыв через Z дней)
 - Дайджест: утренний (что было вчера) + недельный (итоги)
 
+### 6. Inbox — drop-папка для AI (КЛЮЧЕВАЯ ФИЧА)
+
+**Идея:** у пользователя есть **«входящая папка»** (физическая или виртуальная), куда он бросает что угодно — сканы чеков, скриншоты, PDF договоров, текстовые заметки, Excel-таблицы, фото. AI-агент **раз в день** (или по триггеру) проверяет папку, парсит содержимое и **сам создаёт модули, блоки, транзакции, напоминания**.
+
+#### Где живёт Inbox
+- **SaaS:** S3-bucket пользователя (`inbox/{userId}/`) + UI кнопка «Загрузить файлы»
+- **Local-First:** локальная папка `~/OpenFinance/Inbox/` (можно настроить путь)
+- **Mobile:** share extension — поделиться чем угодно из любого приложения в Open Finance Inbox
+- **Email-to-Inbox:** уникальный адрес `inbox.{user}@openfinance.ru` — переслать письмо туда
+
+#### Что AI делает с содержимым
+| Тип файла | Действие |
+|-----------|---------|
+| Чек / Receipt (фото) | OCR → транзакция в `expenses` с категорией |
+| PDF договор | Извлечение сторон/сумм/дат → запись в `documents` + дедлайны |
+| Excel-таблица | Импорт в Excel-блок или создание нового модуля |
+| Текстовая заметка | Парсинг намерения → планировщик / напоминание / блок |
+| Скриншот переписки | Извлечение задач/обещаний → планировщик |
+| Голосовая запись | Whisper → текст → парсинг → действия |
+| Email forwarded | Парсинг отправителя/темы → транзакция или документ |
+
+#### Режимы работы
+- **Auto-mode (по умолчанию)** — AI сам всё разносит, пользователь видит дайджест «Я добавил 5 транзакций, 1 поставку, 2 напоминания. Открыть? / Откатить?»
+- **Approve-mode** — AI готовит черновики, показывает «Я нашёл это, добавить?» — пользователь утверждает
+- **Per-type-rules** — например, чеки авто, договоры — approve
+
+#### Ежедневная проверка
+- Cron job в `workers/inbox-watcher.ts` — раз в день в настроенное время
+- При попадании нового файла — мгновенный fs.watch (Local) или S3 event (SaaS)
+- Уведомление в Telegram/Email: «Я обработал 3 файла из Inbox, посмотри»
+
+### 7. AI-секретарь — интеграция с коммуникациями
+
+**Идея:** AI получает доступ (с явного разрешения пользователя) к **почте, контактам, мессенджерам**, чтобы понимать **контекст**, находить **связи** (например, «в чате с Игорем обсуждали поставку — вот её детали»), создавать **напоминания** автоматически.
+
+#### Источники
+| Канал | Что берём | Технология |
+|-------|----------|-----------|
+| **Email** | Письма с заказами, счетами, договорами | IMAP / Gmail API / Outlook Graph |
+| **Telegram** | Личные чаты, рабочие группы, каналы | Bot API + MTProto (через user-аккаунт) |
+| **WhatsApp** | Бизнес-переписка | WhatsApp Business API (Meta Cloud API) |
+| **VK** | Сообщения, переписка | VK API (мессенджер) |
+| **MAX (российская)** | Чаты | API когда появится публичный |
+| **Контакты** | Имена, компании, ИНН | iCloud / Google Contacts / CardDAV |
+| **Календарь** | Встречи как контекст | Google Calendar / iCloud / CalDAV |
+
+#### Принципы приватности (важно!)
+- **Opt-in** — каждый канал подключается явно, можно отключить в один клик
+- **Granular access** — можно выбрать «только чаты с тегом #работа», или конкретные группы
+- **Local processing где возможно** — на Local-First версии Whisper / парсинг идут локально, наружу уходят только финансовые выводы
+- **No storage of raw messages** — храним только embeddings + извлечённые сущности (заказ, сумма, дата), не весь текст переписки
+- **Полное удаление** — кнопка «Стереть всё что AI знает обо мне» в settings
+- **Audit log** — пользователь видит ВСЁ что AI сделал на основе коммуникаций
+
+#### Что AI с этим делает
+- **Связывает чаты с заказами** — «в чате с @ivan обсуждали заказ на 47 000₽, оплата через неделю» → создаёт ожидание прихода
+- **Распознаёт контрагентов** — «Игорь Иванов из @logistics_group = поставщик ИП Иванов И.И.»
+- **Создаёт напоминания** — «через неделю проверить оплату от Игоря»
+- **Находит документы** — «договор с этой компанией был в email от 2024-03-15, прикрепить?»
+- **Пишет отчёты** — «по заказу #042: переписка → согласование → оплата → отгрузка → доставка»
+
+#### Roadmap по интеграциям
+- **Phase 1:** Email (IMAP), Telegram (Bot API)
+- **Phase 2:** Telegram MTProto (личный аккаунт), Google Contacts
+- **Phase 3:** WhatsApp Business, VK
+- **Phase 4:** MAX (когда API), iCloud Contacts/Calendar
+- **Future:** «как Open Claw» — оркестратор всех каналов с возможностью отвечать (write access)
+
+---
+
+## AI-first архитектура (КРИТИЧНО)
+
+**Принцип:** AI — это **первоклассный гражданин**, а не дополнение. Архитектура спроектирована так, что:
+1. AI имеет единое представление обо всех данных пользователя (через RAG)
+2. AI может действовать (создавать, редактировать, удалять) с подтверждением пользователя
+3. Структура кода и БД проста и предсказуема, чтобы внешние AI-агенты (Claude Code, Cursor) могли в неё легко погружаться
+
+### Слои AI
+
+```
+┌─────────────────────────────────────────────────┐
+│  AI Orchestrator (агент-оркестратор)            │
+│  ────────────────────────────────────────────   │
+│  • Выбирает модель (Claude / OpenAI / Ollama)   │
+│  • Управляет инструментами (tools)              │
+│  • Логирует действия (audit log)                │
+└────────┬────────────────────────────────────────┘
+         │
+    ┌────┴───────────────────┐
+    ▼                        ▼
+┌────────────────┐   ┌────────────────┐
+│  Memory Layer  │   │  Tools Layer   │
+│  (RAG-система) │   │  (действия)    │
+│                │   │                │
+│ • pgvector     │   │ • create_block │
+│ • semantic     │   │ • create_txn   │
+│   search       │   │ • create_remi… │
+│ • context      │   │ • run_formula  │
+│   window mgmt  │   │ • parse_file   │
+└────────┬───────┘   └───────┬────────┘
+         │                   │
+         └─────────┬─────────┘
+                   ▼
+           ┌──────────────┐
+           │  User Data   │ ← все модули проекта
+           │  (Drizzle DB)│
+           └──────────────┘
+```
+
+### Memory Layer (RAG)
+
+**Технология:** PostgreSQL + **pgvector** (extension) + Drizzle ORM
+
+#### Схема (упрощённо)
+```typescript
+import { pgTable, uuid, text, vector, timestamp } from "drizzle-orm/pg-core";
+
+export const memoryChunks = pgTable("memory_chunks", {
+  id: uuid().defaultRandom().primaryKey(),
+  tenantId: uuid("tenant_id").notNull(),
+  source: text("source").notNull(),     // 'inbox', 'transaction', 'chat', 'document'
+  sourceId: uuid("source_id"),          // ref к оригиналу
+  content: text("content").notNull(),   // нормализованный текст
+  embedding: vector("embedding", { dimensions: 1536 }), // OpenAI ada / Claude / local
+  metadata: jsonb("metadata"),          // tags, dates, amounts
+  createdAt: timestamp("created_at").defaultNow(),
+}).enableRLS();
+
+// HNSW индекс для быстрого ANN-поиска
+// CREATE INDEX ON memory_chunks USING hnsw (embedding vector_cosine_ops);
+```
+
+#### Гибридный поиск (Hybrid Search)
+- **Семантический** — `embedding <=> query_embedding` (cosine distance)
+- **Полнотекстовый** — `tsvector @@ to_tsquery(...)` (русская морфология)
+- **Слияние через RRF** — Reciprocal Rank Fusion (best of both worlds)
+- **Фильтры** — по `tenantId` (RLS), по `source`, по датам, по тегам
+
+#### Что хранится как embeddings
+- Тексты транзакций (категория, описание, контрагент)
+- Заметки и блоки пользователя
+- Извлечённые из коммуникаций факты («Игорь обещал оплатить 15 числа»)
+- Документы (УПД, договоры) — chunked
+- История диалогов с AI
+- Готовые инсайты («в марте маржа упала на 8%»)
+
+### Tools Layer
+
+**Принцип:** AI не пишет SQL и не дёргает Drizzle напрямую. Он использует **типизированные инструменты** — функции с JSON-схемами.
+
+```typescript
+// src/lib/ai/tools/index.ts
+export const aiTools = [
+  {
+    name: 'create_transaction',
+    description: 'Создать запись о транзакции (доход/расход)',
+    parameters: zodToJsonSchema(z.object({
+      amount: z.number(),
+      category: z.string(),
+      description: z.string(),
+      date: z.string().datetime(),
+      type: z.enum(['income', 'expense']),
+    })),
+    handler: async (args, ctx) => createTransaction(args, ctx.tenantId),
+  },
+  {
+    name: 'create_reminder',
+    description: 'Создать напоминание с дедлайном',
+    parameters: { /* ... */ },
+    handler: async (args, ctx) => createReminder(args, ctx.tenantId),
+  },
+  // ... остальные tools
+];
+```
+
+**Все мутации идут через tools.** Это даёт:
+- Audit log (кто/что/когда — log table)
+- Откат (каждое действие имеет inverse)
+- Безопасность (RLS + tenant_id в context)
+- Проверка прав (free-tier не может звать `create_marketplace_sync`)
+
+### Управление контекстным окном
+
+Проблема: транзакций тысячи, всё не влезает в контекст LLM.
+
+**Решение:** многоуровневая память (как в [A Practical Guide to Memory for LLM Agents](https://towardsdatascience.com/a-practical-guide-to-memory-for-autonomous-llm-agents/)):
+
+| Уровень | Что | Когда подгружается |
+|---------|-----|------------------|
+| **Working memory** | Текущий запрос + последние 10 сообщений диалога | Каждый запрос |
+| **Episodic** | Релевантные транзакции/блоки через RAG (top-K=10) | Семантический поиск по запросу |
+| **Semantic** | Профиль пользователя (тариф, налоговый режим, активные модули) | Каждый запрос |
+| **Procedural** | Tools schemas, system prompt | Каждый запрос (статично) |
+
+**Compression:** при заполнении контекста на 80% — суммаризация старых сообщений в episodic memory.
+
+### Провайдеры AI (приоритет)
+
+```
+1. Claude API (предпочтительно — лучше для русского, длинный контекст)
+2. OpenAI API (резерв)
+3. Ollama (local) — для Local-First версии или privacy mode
+4. JSON Export/Import — fallback если нет API доступа
+```
+
+**Без AI:** приложение работает как обычная финансовая программа — все модули, виджеты, парсеры, расчёты доступны. Пропадает только: автокатегоризация, чат-советник, прогнозы, обработка Inbox.
+
+### Файлы конвенций для AI-агентов
+В корне проекта:
+- **`CLAUDE.md`** — для Claude Code (правила проекта, архитектура, наши соглашения)
+- **`AGENTS.md`** — общий формат для любых AI-агентов (Cursor, Cline, Aider)
+- **`.cursor/rules/`** — Cursor-специфичные правила
+- **`docs/MODULES.md`** — как добавить новый модуль (для AI и людей)
+- **`docs/AI_TOOLS.md`** — реестр всех tools и их семантика
+
+### Простая структура для AI
+
+**Антипаттерны которых избегаем:**
+- Глубокая вложенность (`src/features/x/y/z/components/...`)
+- Барреллы с экспортом 100+ символов (теряется в IDE)
+- Магические декораторы / runtime-метапрограммирование
+- Скрытые связи через events / DI-контейнер
+
+**Что используем:**
+- Плоская структура `src/modules/{name}/`
+- Явные импорты (никаких `import * as X`)
+- Comment-headers в каждом файле: `// PURPOSE: ...` (3-5 слов)
+- README.md в каждой крупной папке (1-2 параграфа: что тут, как добавить)
+
 ---
 
 ## Архитектура
@@ -184,15 +415,21 @@ ML-модель на истории операций:
 ### Стек
 - **Frontend:** Next.js 15 + TypeScript + Tailwind + shadcn/ui
 - **Backend:** Next.js API Routes + tRPC
-- **DB SaaS:** PostgreSQL 16 (Docker) — облачный режим
-- **DB Local:** SQLite WAL — desktop/local режим (один файл = простой бэкап)
+- **DB SaaS:** PostgreSQL 16 (Docker) + **pgvector** extension (для RAG-памяти)
+- **DB Local:** SQLite WAL + **sqlite-vec** (для RAG в local-first)
 - **ORM:** **Drizzle ORM** (см. обоснование ниже)
 - **Cache/Queue:** Redis 7 + BullMQ (только SaaS)
-- **AI:** Claude API / OpenAI API / Ollama (переключаемый провайдер)
+- **AI Orchestrator:** Vercel AI SDK + кастомный tools layer (см. секцию AI-first)
+- **AI провайдеры:** Claude API / OpenAI API / Ollama (переключаемый)
+- **Embeddings:** OpenAI text-embedding-3-small (1536 dim) или local Ollama nomic-embed
+- **OCR (Inbox):** Tesseract (local) / Google Vision (cloud) — для чеков/документов
+- **Speech-to-text:** Whisper (local через whisper.cpp / cloud OpenAI)
 - **Графики:** Recharts
 - **Drag-n-drop:** dnd-kit
 - **Связи:** ReactFlow (mindmap между модулями)
 - **Desktop shell:** Tauri 2.0 (Phase 2 для local-first версии)
+- **Email/IMAP:** node-imap + mailparser
+- **Telegram:** grammY (Bot API) + GramJS (MTProto, Phase 2)
 
 ### Выбор ORM: Drizzle ORM (вместо Prisma)
 
@@ -375,7 +612,7 @@ const rows = await db.select().from(transactions); // RLS фильтрует а�
 ### Тарифы SaaS (облако)
 | Тариф | Для кого | Цена | Включено |
 |-------|---------|------|---------|
-| Free | Старт | 0 ₽ | Дашборд, 1 источник, базовые виджеты + Excel-блоки, 30 дней истории |
+| Free | Старт | 0 ₽ | Дашборд, 1 источник, базовые виджеты + Excel-блоки, **безлимитная история** |
 | Pro | ИП/селлер | 990 ₽/мес | Все модули, 3 источника, AI-советник, прогнозы, налоги |
 | Business | Команда | 2 990 ₽/мес | + 10 источников, 5 пользователей, API, приоритет |
 | Enterprise | Агентства | 7 990 ₽/мес | Безлимит, SLA, выделенная поддержка |
@@ -507,11 +744,14 @@ interface PaymentProvider {
 - **`@mentions`** — связать с другим модулем/блоком: `@OZON.выручка`
 - **Templates** — шаблоны блоков и страниц одним кликом
 
-#### Из Linear
-- **Command palette (`Cmd+K`)** — всё через клавиатуру: добавить транзакцию, открыть модуль, перейти в настройки
-- **Keyboard-first** — каждое действие имеет shortcut
-- **Скорость** — мгновенный отклик, оптимистичные UI updates
+#### Из Linear (как опция, не как основа)
+**Принцип:** изначально всё через **мышь и drag-n-drop** — это интуитивно для большинства пользователей. Keyboard shortcuts — **продвинутая опция** для power-users, открывается через подсказки и onboarding.
+
+- **Командная палитра (`Cmd+K`)** — опциональный быстрый доступ к действиям и поиску. Видна как кнопка в шапке, открывается и кликом мыши.
+- **Скорость** — мгновенный отклик, оптимистичные UI updates (важно для всех, не только клавиатурщиков)
 - **Чистая типографика** — Inter / SF Pro, контраст 60-70%
+- **Подсказки shortcuts** — при hover над кнопкой видно `⌘K`, в settings отдельная страница «Горячие клавиши»
+- **Прогрессивное раскрытие** — pop-up «Знаете, что это можно сделать через `⌘N`?» после 5-го клика по «Добавить транзакцию»
 
 #### Из Obsidian
 - **Local-first** — нет интернета — всё работает
@@ -626,7 +866,15 @@ interface PaymentProvider {
 - [ ] Предпросмотр + подтверждение
 - [ ] Авто-категоризация (правила-based в MVP)
 
-### Этап 4 — AI Советник (2 недели)
+### Этап 4 — AI Foundation: RAG + Tools + Советник (3 недели)
+- [ ] **pgvector** extension в Postgres (HNSW индекс на 1536-dim)
+- [ ] **sqlite-vec** для Local-First версии
+- [ ] Schema `memory_chunks` (Drizzle с vector type)
+- [ ] Embedder service (OpenAI text-embedding-3-small или Ollama nomic-embed)
+- [ ] **Hybrid search** (semantic + full-text + RRF слияние)
+- [ ] **Tools Layer** — типизированные инструменты (Zod → JSON Schema)
+- [ ] AI Orchestrator (Vercel AI SDK + наши tools)
+- [ ] Audit log всех AI-действий с возможностью отката
 - [ ] Chat UI (sidebar справа, контекст из активного модуля)
 - [ ] Claude / OpenAI / Ollama (переключаемый провайдер)
 - [ ] JSON Export/Import режим (для пользователей без API-ключа)
@@ -634,6 +882,7 @@ interface PaymentProvider {
 - [ ] Аномалии и рекомендации
 - [ ] Финансовый коучинг (простым языком)
 - [ ] AI-помощь в формулах для Excel-блоков
+- [ ] Управление контекстным окном (compression при 80% заполнении)
 
 ### Этап 5 — Налоги (все режимы) + КУДИР (2 недели)
 - [ ] УСН 6%, УСН 15%, НДС 5% (миграция алгоритмов из `/Users/firay/NALOG`)
@@ -659,21 +908,45 @@ interface PaymentProvider {
 - [ ] Календарный вид `/calendar` + iCal экспорт
 - [ ] Многоуровневые напоминания (30/14/7/3/1 день)
 
-### Этап 8 — Связи + Mindmap (1 неделя)
+### Этап 7.5 — Inbox: drop-папка для AI (1.5 недели)
+- [ ] Папка `~/OpenFinance/Inbox/` (Local) или S3-bucket (SaaS)
+- [ ] UI кнопка «Загрузить файлы» + share extension (mobile)
+- [ ] Email-to-Inbox (`inbox.{user}@openfinance.ru`)
+- [ ] Worker `inbox-watcher.ts` (cron daily + fs.watch / S3 events)
+- [ ] OCR pipeline (Tesseract local / Google Vision cloud)
+- [ ] Whisper для голосовых
+- [ ] Парсеры: чек, договор, Excel, текстовая заметка, скриншот
+- [ ] Auto-mode (создать) + Approve-mode (черновик) + Per-type rules
+- [ ] Дайджест: «Я обработал N файлов» в Telegram/Email/UI
+
+### Этап 8 — AI-секретарь: интеграции с коммуникациями (3 недели)
+- [ ] Email IMAP (Gmail/Outlook/Yandex/Mail.ru) — opt-in подключение
+- [ ] Парсинг писем: счета, заказы, договоры → Inbox flow
+- [ ] Telegram Bot API (для уведомлений и обработки forwarded сообщений)
+- [ ] Telegram MTProto (личный аккаунт через GramJS) — Phase 2
+- [ ] WhatsApp Business API — Phase 3
+- [ ] VK API — Phase 3
+- [ ] Google Contacts / iCloud CardDAV — связывание контактов с контрагентами
+- [ ] Granular permissions UI («дать доступ только к чату X»)
+- [ ] Privacy: нет хранения raw сообщений, только embeddings + сущности
+- [ ] Кнопка «Стереть всю мою память» в settings
+- [ ] Audit log того, что AI узнал и сделал
+
+### Этап 9 — Связи + Mindmap (1 неделя)
 - [ ] ReactFlow граф связей между модулями
 - [ ] Формулы между модулями (`@module.field`)
 - [ ] Auto-recalculation при изменении данных
 - [ ] Визуализация: режимы граф / дерево / таблица
 - [ ] `@mentions` в редакторе блоков
 
-### Этап 9 — Smart-уведомления (1 неделя)
+### Этап 10 — Smart-уведомления (1 неделя)
 - [ ] Telegram Bot + Email (Nodemailer)
 - [ ] PWA push (Service Worker)
 - [ ] Настраиваемые триггеры (маржа, cash flow, налоги, дедлайны)
 - [ ] Дайджесты (утро + неделя)
 - [ ] AI-приоритизация уведомлений
 
-### Этап 10 — Биллинг (Т-Касса + CloudPayments) + Onboarding + Landing (2 недели)
+### Этап 11 — Биллинг (Т-Касса + CloudPayments) + Onboarding + Landing (2 недели)
 - [ ] Абстракция `PaymentProvider`
 - [ ] Реализация `TKassaProvider` (основной)
 - [ ] Реализация `CloudPaymentsProvider` (резервный)
@@ -682,7 +955,7 @@ interface PaymentProvider {
 - [ ] Onboarding wizard с автоподбором модулей
 - [ ] Landing page (value proposition, демо)
 
-### Этап 11 — Local-First (Tauri 2.0) + Лицензирование (3 недели)
+### Этап 12 — Local-First (Tauri 2.0) + Лицензирование (3 недели)
 - [ ] Tauri 2.0 обёртка (.dmg, .exe, .AppImage)
 - [ ] Переключатель Postgres ↔ SQLite через Drizzle драйвер
 - [ ] System tray + auto-launch
@@ -691,13 +964,13 @@ interface PaymentProvider {
 - [ ] Offline-валидация (cached JWT, 7 дней grace period)
 - [ ] Auto-update mechanism
 
-### Этап 12 — Production Deploy (1 неделя)
+### Этап 13 — Production Deploy (1 неделя)
 - [ ] Docker production compose
 - [ ] CI/CD (GitHub Actions)
 - [ ] SSL + CDN (Cloudflare)
 - [ ] Backup automation (WAL → S3) + monitoring (Sentry, Grafana)
 
-### Этап 13 — Mobile (PWA → React Native) — по необходимости
+### Этап 14 — Mobile (PWA → React Native) — по необходимости
 - [ ] PWA: install prompt, push, offline cache
 - [ ] React Native (если будет нужно нативное приложение)
 
@@ -736,7 +1009,8 @@ open-finance/
 │   │   ├── planner/             # GTD планировщик
 │   │   ├── documents/           # УПД, акты, договоры
 │   │   ├── deadlines/           # Cross-cutting слой дедлайнов
-│   │   ├── ai-advisor/          # AI Советник
+│   │   ├── inbox/               # Drop-папка для AI (файлы, заметки, сканы)
+│   │   ├── communications/      # AI-секретарь: email, telegram, whatsapp, vk
 │   │   └── blocks/              # Excel-like универсальные блоки
 │   ├── components/
 │   │   ├── ui/                  # shadcn/ui
@@ -754,8 +1028,27 @@ open-finance/
 │   │   │   └── rls.ts           # RLS helpers
 │   │   ├── redis.ts
 │   │   ├── queue.ts             # BullMQ
-│   │   ├── ai/                  # AI провайдеры (Claude/OpenAI/Ollama)
-│   │   ├── parsers/             # Парсеры отчётов
+│   │   ├── ai/                  # AI ядро
+│   │   │   ├── orchestrator.ts  # Главный AI-агент
+│   │   │   ├── providers/       # Claude, OpenAI, Ollama
+│   │   │   ├── tools/           # Типизированные инструменты для AI
+│   │   │   ├── memory/          # RAG: pgvector / sqlite-vec
+│   │   │   ├── embedder.ts      # Генерация embeddings
+│   │   │   ├── search.ts        # Hybrid search (semantic + FTS + RRF)
+│   │   │   └── audit.ts         # Логирование AI-действий
+│   │   ├── inbox/               # Drop-папка обработка
+│   │   │   ├── watcher.ts       # fs.watch / S3 events
+│   │   │   ├── ocr.ts           # Tesseract / Vision
+│   │   │   ├── whisper.ts       # Speech-to-text
+│   │   │   └── parsers/         # Receipt, contract, note parsers
+│   │   ├── communications/      # AI-секретарь
+│   │   │   ├── email-imap.ts
+│   │   │   ├── telegram-bot.ts
+│   │   │   ├── telegram-mtproto.ts
+│   │   │   ├── whatsapp.ts
+│   │   │   ├── vk.ts
+│   │   │   └── contacts.ts      # Google/iCloud CardDAV
+│   │   ├── parsers/             # Парсеры отчётов МП
 │   │   ├── integrations/        # OZON, WB, ЮKassa APIs
 │   │   ├── billing/
 │   │   │   ├── provider.ts      # Интерфейс PaymentProvider
@@ -768,16 +1061,25 @@ open-finance/
 ├── workers/
 │   ├── sync-marketplace.ts
 │   ├── ai-analysis.ts
+│   ├── inbox-watcher.ts         # Ежедневная проверка drop-папки
+│   ├── communications-sync.ts   # Sync email/telegram → embeddings
 │   ├── deadlines-cron.ts        # Проверка дедлайнов и уведомления
 │   └── notifications.ts
 ├── src-tauri/                   # Tauri 2.0 desktop (Phase 2)
 │   ├── tauri.conf.json
 │   └── src/main.rs
+├── CLAUDE.md                    # Правила проекта для Claude Code
+├── AGENTS.md                    # Универсальные правила для AI-агентов
+├── .cursor/rules/               # Cursor-специфичные правила
 ├── docs/
 │   ├── BILLING.md               # Инструкция по биллингу для AI
 │   ├── LICENSING.md             # Инструкция по лицензированию для AI
+│   ├── SECURITY.md              # Правила безопасности (утечки, секреты)
 │   ├── MODULES.md               # Как добавлять модули
-│   └── DESIGN.md                # Дизайн-система
+│   ├── AI_TOOLS.md              # Реестр AI-инструментов
+│   ├── DESIGN.md                # Дизайн-система
+│   └── ARCHITECTURE.md          # Карта архитектуры для onboarding
+├── inbox/                       # Drop-папка (gitignored, локально для local-first)
 └── data/                        # Local mode (gitignored)
     ├── data.db                  # SQLite
     └── uploads/
@@ -826,11 +1128,15 @@ open-finance/
 - **Гармония типографики** — Inter + JetBrains Mono, 6 размеров max
 
 ### Оригинальные идеи Open Finance
+- **AI-first архитектура** — AI работает поверх ВСЕХ данных через RAG (pgvector), а не локально по модулю
 - **Модульный конструктор** — ни один конкурент не даёт собирать свой дашборд из блоков
 - **Excel-like блоки в базовой версии** — мини-spreadsheet с формулами и шаблонами
+- **Inbox — drop-папка для AI** — кидаешь что угодно, AI само разносит (как личный ассистент)
+- **AI-секретарь** — связь с email/TG/WA/VK/MAX для понимания контекста и связей
 - **Налоги РФ нативно** — все режимы (УСН/НДС/ПСН/НПД/АУСН/ОСНО) с возможностью сравнения
 - **Кросс-платформенная аналитика** — все МП + банки + касса в одном месте
-- **AI поверх всех данных** — советник видит полную картину, а не только один источник
 - **Local-first + Cloud** — пользователь выбирает режим под свой уровень paranoia
 - **Дедлайны на любом блоке** — поставки, налоги, цели, подписки — всё в едином календаре
 - **Двойная резервируемость биллинга** — Т-Касса + CloudPayments переключаются runtime
+- **AI-friendly структура кода** — простая, плоская, с CLAUDE.md/AGENTS.md для onboarding любого AI-агента
+- **Безлимитная история на Free** — никаких ограничений по времени даже на бесплатном тарифе

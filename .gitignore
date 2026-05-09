@@ -1,0 +1,177 @@
+# ============================================================
+# Open Finance — .gitignore
+# ============================================================
+# КРИТИЧНО: см. docs/SECURITY.md перед коммитом.
+# Никогда не коммить секреты, ключи, пароли, токены, базы данных.
+# ============================================================
+
+# === Секреты и переменные окружения (НИКОГДА в гит!) ===
+.env
+.env.*
+!.env.example
+!.env.template
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+credentials/
+service-account-*.json
+firebase-adminsdk-*.json
+google-credentials.json
+tinkoff-*.json
+cloudpayments-*.json
+
+# === API ключи и токены (часто оставляются в файлах случайно) ===
+*api-key*
+*apikey*
+*access-token*
+*refresh-token*
+*.tokens
+!*.tokens.example
+
+# === Базы данных и пользовательские данные ===
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+data/
+inbox/
+uploads/
+backups/
+storage/
+local-data/
+
+# === Drizzle (schema generation, локально) ===
+drizzle/meta/_journal.json.backup
+
+# === Node ===
+node_modules/
+.pnpm-store/
+.yarn/
+package-lock.json.bak
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-debug.log*
+
+# === Next.js ===
+.next/
+out/
+build/
+.vercel
+.turbo/
+
+# === TypeScript ===
+*.tsbuildinfo
+next-env.d.ts
+
+# === Tauri (desktop builds) ===
+src-tauri/target/
+src-tauri/Cargo.lock
+src-tauri/WixTools/
+src-tauri/.cargo/
+
+# === Тесты, покрытие ===
+coverage/
+.nyc_output/
+*.lcov
+
+# === Логи ===
+*.log
+logs/
+.next/trace
+
+# === IDE и редакторы ===
+.idea/
+.vscode/*
+!.vscode/settings.json.example
+!.vscode/extensions.json
+.cursor/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+.fleet/
+
+# === Системные файлы macOS / Windows / Linux ===
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Desktop.ini
+
+# === AI / Memory дампы ===
+.mempalace/
+ai-cache/
+embeddings-cache/
+.claude/cache/
+
+# === Одноразовые инструкции и заметки (НЕ в гит) ===
+NOTES.md
+NOTES.local.md
+TODO.local.md
+SCRATCH.md
+*.scratch
+DRAFT-*.md
+TEMP-*.md
+*-temp.md
+*.local.md
+
+# === Бэкапы и временные файлы ===
+*.bak
+*.backup
+*.orig
+*.rej
+*.tmp
+*.temp
+~$*
+
+# === Docker volumes (если запускается локально с bind mounts) ===
+postgres-data/
+redis-data/
+minio-data/
+
+# === Сгенерированные отчёты (могут содержать данные пользователей) ===
+generated-reports/
+exports/
+test-data/
+fixtures/real/
+
+# === License Server: приватные ключи и подписи ===
+license-private-key.pem
+jwt-private.pem
+jwt-private.*
+*.private.pem
+
+# === Email шаблоны с реальными адресами ===
+email-templates/*.real.*
+
+# === Sentry (если конфиг создаётся) ===
+.sentryclirc
+
+# === Webpack / esbuild артефакты ===
+.cache/
+dist/
+
+# === Python (если используется sidecar для парсинга) ===
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+
+# === Прочее ===
+.history/
+.ionide/
+.fingerprint/
