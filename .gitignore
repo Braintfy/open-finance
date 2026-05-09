@@ -38,12 +38,13 @@ cloudpayments-*.json
 *.db-shm
 *.sqlite
 *.sqlite3
-data/
-inbox/
-uploads/
-backups/
-storage/
-local-data/
+# Привязываем к корню — не блокируем src/modules/inbox/, src/modules/uploads/ и т.д.
+/data/
+/inbox/
+/uploads/
+/backups/
+/storage/
+/local-data/
 
 # === Drizzle (schema generation, локально) ===
 drizzle/meta/_journal.json.backup
@@ -137,15 +138,15 @@ TEMP-*.md
 ~$*
 
 # === Docker volumes (если запускается локально с bind mounts) ===
-postgres-data/
-redis-data/
-minio-data/
+/postgres-data/
+/redis-data/
+/minio-data/
 
 # === Сгенерированные отчёты (могут содержать данные пользователей) ===
-generated-reports/
-exports/
-test-data/
-fixtures/real/
+/generated-reports/
+/exports/
+/test-data/
+/fixtures/real/
 
 # === License Server: приватные ключи и подписи ===
 license-private-key.pem

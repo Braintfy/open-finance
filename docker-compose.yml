@@ -1,0 +1,46 @@
+# PURPOSE: Dev среда — Postgres с pgvector + Redis
+# Запуск: docker compose up -d
+# Остановка: docker compose down
+# Логи: docker compose logs -f
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: openfinance-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: openfinance
+      POSTGRES_USER: openfinance
+      POSTGRES_PASSWORD: openfinance
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --locale=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./drizzle/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openfinance -d openfinance"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: openfinance-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres-data:
+    driver: local
+  redis-data:
+    driver: local

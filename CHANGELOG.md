@@ -1,5 +1,71 @@
 # Changelog
 
+## [0.4.0] - 2025-05-10
+
+### Added
+- **Фундамент проекта создан** — полностью с нуля под актуальный план:
+  - `package.json` — Next.js 15 + React 19 RC, Drizzle ORM 0.36, Tailwind 3.4, shadcn/ui примитивы, Zustand, TanStack Query, cmdk
+  - `tsconfig.json` с path aliases (`@/lib`, `@/modules`, `@/components`, `@/db`)
+  - `next.config.mjs` с security headers + Tauri-friendly export режим
+  - `tailwind.config.ts` + `globals.css` с CSS-переменными для тем (светлая по умолчанию)
+  - `drizzle.config.ts` для миграций
+  - `docker-compose.yml` — Postgres 16 с **pgvector** + Redis 7
+  - `drizzle/init/01-extensions.sql` — extensions: vector, pgcrypto, pg_trgm
+  - `.eslintrc.json` + `.prettierrc` + `.env.example`
+- **Drizzle schemas (базовые):**
+  - `tenants` — мультитенантность с тарифами и налоговыми режимами
+  - `users` + `memberships` — пользователи и роли (owner/admin/manager/accountant/viewer)
+  - `transactions` + `categories` — финансовые операции (в копейках для точности)
+  - `blocks` — универсальные блоки модульного конструктора (Excel-like, charts, text)
+  - `deadlines` — cross-cutting слой дедлайнов с recurrence + reminders
+  - `memoryChunks` — RAG-память с pgvector (1536-dim embeddings)
+  - `aiUsage` — счётчик токенов с лимитами по тарифу
+  - `aiAuditLog` — аудит всех AI-действий с inverse_action для отката
+  - `aiAgents` — кастомные AI-агенты пользователя (Phase 2)
+- **AI Foundation (skeleton):**
+  - `src/lib/ai/types.ts` — типы Tool, ToolContext, ChatMessage
+  - `src/lib/ai/orchestrator.ts` — главная точка работы с AI + tool registry
+  - `src/lib/ai/tools/index.ts` — реестр инструментов
+  - `src/lib/ai/memory/search.ts` — hybrid search (semantic + FTS + RRF)
+- **Module Registry:**
+  - `src/lib/modules/types.ts` — Module/Widget/Plan типы
+  - `src/lib/modules/registry.ts` — регистрация и поиск модулей
+  - README для cashflow, inbox, communications модулей
+- **App Router:**
+  - `src/app/layout.tsx` с Inter + JetBrains Mono шрифтами и ThemeProvider
+  - `src/app/page.tsx` — минимальный лендинг с CTA «Попробовать Pro 14 дней»
+  - `src/app/api/health/route.ts` — health check endpoint
+  - `src/components/theme-provider.tsx` (next-themes wrapper)
+  - `src/middleware.ts` — заглушка под auth + tenant context
+- **Документация для AI-агентов:**
+  - `CLAUDE.md` — полностью переписан под актуальный стек (Drizzle вместо Prisma, AI-first архитектура)
+  - `AGENTS.md` — универсальные правила для любого AI-агента
+  - `MEMORY.md` — компактный контекст (5 разделов)
+  - `README.md` — публичный README с быстрым стартом
+  - `docs/MODULES.md` — как добавлять модули
+  - `docs/AI_TOOLS.md` — реестр инструментов и стандарты
+  - `docs/ARCHITECTURE.md` — карта архитектуры с диаграммами и потоками
+
+### Changed
+- **PLAN.md** — финальная итерация:
+  - **Free тариф:** безлимитная история (убрано «30 дней»)
+  - **Цены:** Pro 990 → 690 ₽/мес, Business 2 990 → 2 490 ₽, Enterprise 7 990 → 6 990 ₽ (доступнее)
+  - **Trial Pro:** 14 дней без оплаты, без карты — кнопка «Попробовать»
+  - **AI-агенты + счётчик токенов** — новый раздел про специализированные агенты с настраиваемыми скилами + лимиты по тарифам
+  - **Tauri vs Electron сравнение** — обоснование выбора Tauri 2.0
+  - **VPN-надстройка** — для зарубежных AI API через Vless/WireGuard в админке
+  - **AI Orchestrator** — своя обёртка вместо Vercel AI SDK
+  - **Светлая тема по умолчанию** + тёмная опция через CSS-переменные
+  - **Mobile native** — React Native + Expo как приоритет (не PWA)
+  - **Linear UX** — keyboard shortcuts стали опциональными, мышь+drag-n-drop по умолчанию
+  - **Yandex GPT / GigaChat** — добавлены как РФ-fallback без VPN
+  - **BYOK** — пользователь может вставить свой API-ключ
+- **`.gitignore`:** привязка папок к корню (`/inbox/` вместо `inbox/`) — чтобы не блокировать `src/modules/inbox/`
+
+### Memory
+- Добавлено правило про обязательное использование Context7 при работе с библиотеками
+- Добавлено правило безопасности (gitleaks, защита от утечек)
+
 ## [0.3.0] - 2025-05-10
 
 ### Changed
