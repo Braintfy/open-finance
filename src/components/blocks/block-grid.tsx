@@ -55,33 +55,65 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
   const [settingsId, setSettingsId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingBlocks = useRef<BlockInstance[] | null>(null);
+  const blocksRef = useRef<BlockInstance[]>(blocks);
+  blocksRef.current = blocks;
 
-  const scheduleSave = useCallback(
-    (next: BlockInstance[]) => {
-      if (saveTimer.current) clearTimeout(saveTimer.current);
-      saveTimer.current = setTimeout(async () => {
-        setSaving(true);
-        try {
-          await fetch(`/api/blocks/layout/${pageKey}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ blocks: next }),
-          });
-        } catch (e) {
-          console.error('save layout failed', e);
-        } finally {
-          setSaving(false);
-        }
-      }, 800);
+  const doSave = useCallback(
+    async (data: BlockInstance[]) => {
+      setSaving(true);
+      try {
+        await fetch(`/api/blocks/layout/${pageKey}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ blocks: data }),
+        });
+        pendingBlocks.current = null;
+      } catch (e) {
+        console.error('save layout failed', e);
+      } finally {
+        setSaving(false);
+      }
     },
     [pageKey]
   );
 
-  useEffect(() => {
-    return () => {
+  const scheduleSave = useCallback(
+    (next: BlockInstance[]) => {
+      pendingBlocks.current = next;
       if (saveTimer.current) clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(() => {
+        doSave(next);
+      }, 800);
+    },
+    [doSave]
+  );
+
+  const flushSave = useCallback(() => {
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+    const data = pendingBlocks.current;
+    if (data) {
+      pendingBlocks.current = null;
+      fetch(`/api/blocks/layout/${pageKey}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ blocks: data }),
+        keepalive: true,
+      }).catch(() => {});
+    }
+  }, [pageKey]);
+
+  useEffect(() => {
+    const handleBeforeUnload = () => flushSave();
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      flushSave();
     };
-  }, []);
+  }, [flushSave]);
 
   const layouts = useMemo(() => {
     const lg = blocks.map((b) => ({
@@ -244,7 +276,10 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
           <Button
             variant={editMode ? 'default' : 'outline'}
             size="sm"
-            onClick={() => setEditMode((v) => !v)}
+            onClick={() => {
+              if (editMode) flushSave();
+              setEditMode((v) => !v);
+            }}
           >
             {editMode ? (
               <>

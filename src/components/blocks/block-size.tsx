@@ -32,24 +32,32 @@ export type BlockSize = {
   density: BlockDensity;
 };
 
-/** Пороги для определения density (в пикселях, ширина × высота) */
+/** Пороги для определения density (в пикселях, используем площадь + минимум по обоим осям) */
 const DENSITY_THRESHOLDS = {
-  // xs: до ~100x60 px (минимальный grid 1x1)
+  // xs: оба размера очень малы (1x1 ~100×40)
   xsMaxW: 150,
   xsMaxH: 80,
-  // sm: до ~240x120 px (2x2 ~)
-  smMaxW: 240,
-  smMaxH: 140,
-  // md: до ~480x280 (4x4 ~)
-  mdMaxW: 480,
-  mdMaxH: 280,
+  xsMaxArea: 12_000, // 150×80
+  // sm: один из размеров мал И площадь мала (≤240×140 = 33_600)
+  smMaxW: 180,
+  smMaxH: 90,
+  smMaxArea: 33_600,
+  // md: средний размер (≤480×280 = 134_400)
+  mdMaxArea: 134_400,
 };
 
 function computeDensity(width: number, height: number): BlockDensity {
   if (width <= 0 || height <= 0) return 'md';
-  if (width <= DENSITY_THRESHOLDS.xsMaxW || height <= DENSITY_THRESHOLDS.xsMaxH) return 'xs';
-  if (width <= DENSITY_THRESHOLDS.smMaxW || height <= DENSITY_THRESHOLDS.smMaxH) return 'sm';
-  if (width <= DENSITY_THRESHOLDS.mdMaxW || height <= DENSITY_THRESHOLDS.mdMaxH) return 'md';
+  const area = width * height;
+  // xs: оба размера маленькие (действительно крошечный блок)
+  if (width <= DENSITY_THRESHOLDS.xsMaxW && height <= DENSITY_THRESHOLDS.xsMaxH) return 'xs';
+  // xs по площади (даже если один размер чуть больше — площадь всё ещё крошечная)
+  if (area <= DENSITY_THRESHOLDS.xsMaxArea) return 'xs';
+  // sm: площадь мала ИЛИ оба размера ≤ sm порога
+  if (width <= DENSITY_THRESHOLDS.smMaxW && height <= DENSITY_THRESHOLDS.smMaxH) return 'sm';
+  if (area <= DENSITY_THRESHOLDS.smMaxArea) return 'sm';
+  // md: площадь средняя
+  if (area <= DENSITY_THRESHOLDS.mdMaxArea) return 'md';
   return 'lg';
 }
 

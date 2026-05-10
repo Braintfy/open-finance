@@ -73,12 +73,12 @@ function StatCard({
   // SM — иконка + число, подпись маленькая
   if (density === 'sm') {
     return (
-      <Card className="flex h-full flex-col justify-center p-2">
+      <Card className="flex h-full flex-col justify-center p-3">
         <div className="flex items-center gap-1.5">{icon}
-          <span className="truncate text-[10px] font-medium text-muted-foreground">{label}</span>
+          <span className="truncate text-xs font-medium text-muted-foreground">{label}</span>
         </div>
         <div
-          className="mt-0.5 truncate text-base font-semibold tabular-nums tracking-tight"
+          className="mt-0.5 truncate text-lg font-semibold tabular-nums tracking-tight"
           style={accent ? { color: accent } : undefined}
           title={`${sign}${formatRubles(Math.abs(value))}`}
         >
@@ -89,18 +89,18 @@ function StatCard({
     );
   }
 
-  // MD/LG — полный вариант
+  // MD/LG — полный вариант с увеличенными шрифтами для заполнения пространства
   return (
     <Card className="flex h-full flex-col">
-      <CardHeader className="pb-1.5">
-        <CardTitle className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+      <CardHeader className="pb-2">
+        <CardTitle className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
           {icon}
           <span className="line-clamp-1">{label}</span>
         </CardTitle>
       </CardHeader>
       <CardContent className="flex flex-1 items-center">
         <div
-          className={`${big && density === 'lg' ? 'text-2xl' : 'text-xl'} truncate font-semibold tabular-nums tracking-tight`}
+          className={`${density === 'lg' ? 'text-3xl' : big ? 'text-2xl' : 'text-2xl'} truncate font-semibold tabular-nums tracking-tight`}
           style={accent ? { color: accent } : undefined}
         >
           {sign}
@@ -228,29 +228,29 @@ function RenderTopCategories({ instance }: BlockRenderProps) {
   return (
     <Card className="flex h-full flex-col overflow-hidden">
       <CardHeader className={isCompact ? 'p-2 pb-1' : 'pb-2'}>
-        <CardTitle className={isCompact ? 'truncate text-xs' : 'text-sm'}>{title}</CardTitle>
+        <CardTitle className={isCompact ? 'truncate text-xs' : 'text-base font-semibold'}>{title}</CardTitle>
       </CardHeader>
       <CardContent
         className={
           isCompact
             ? 'flex-1 space-y-1 overflow-y-auto p-2 pt-0'
-            : 'flex-1 space-y-2 overflow-y-auto'
+            : 'flex-1 space-y-3 overflow-y-auto'
         }
       >
         {loading ? (
-          <p className="text-[11px] text-muted-foreground">Загрузка…</p>
+          <p className="text-sm text-muted-foreground">Загрузка…</p>
         ) : sliced.length === 0 ? (
-          <p className="text-[11px] text-muted-foreground">Нет данных</p>
+          <p className="text-sm text-muted-foreground">Нет данных</p>
         ) : (
           sliced.map((r: { categoryName: string; total: number }) => (
-            <div key={r.categoryName} className="space-y-0.5">
-              <div className="flex items-center justify-between gap-2 text-[11px]">
+            <div key={r.categoryName} className="space-y-1">
+              <div className={`flex items-center justify-between gap-2 ${isCompact ? 'text-[11px]' : 'text-sm'}`}>
                 <span className="truncate font-medium">{r.categoryName}</span>
                 <span className="shrink-0 tabular-nums text-muted-foreground">
                   {isCompact ? formatCompactRubles(r.total) : formatRubles(r.total)}
                 </span>
               </div>
-              <div className="h-1 overflow-hidden rounded-full bg-muted">
+              <div className="h-1.5 overflow-hidden rounded-full bg-muted">
                 <div
                   className="h-full rounded-full transition-all"
                   style={{

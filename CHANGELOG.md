@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.8.5] - 2026-05-10
+
+### Fixed — Layout persistence bug (critical)
+- **Блоки сбрасывались к дефолтным после перезагрузки страницы** — root cause: debounced save (800ms) очищался на unmount, pending данные терялись
+- **Решение**:
+  - `flushSave()` вызывается на `beforeunload` (закрытие/перезагрузка страницы)
+  - `flushSave()` вызывается на unmount компонента (cleanup useEffect)
+  - `flushSave()` вызывается при выходе из edit mode (клик «Готово»)
+  - Используется `fetch(..., { keepalive: true })` — запрос завершается даже после unload страницы
+  - `pendingBlocks` ref хранит последнее состояние для гарантированного flush
+
+### Changed — Density threshold algorithm (font size fix)
+- **Алгоритм density изменён с OR на площадь (area-based)** в `src/components/blocks/block-size.tsx`:
+  - Раньше: `width ≤ 240 || height ≤ 140` → `sm` — блок 400×90px (KPI 4x2) попадал в `sm` из-за малой высоты
+  - Теперь: площадь `width × height` определяет density — широкий но низкий блок получает правильный `md`
+  - xs: `width ≤ 150 && height ≤ 80` ИЛИ area ≤ 12,000
+  - sm: `width ≤ 180 && height ≤ 90` ИЛИ area ≤ 33,600
+  - md: area ≤ 134,400
+  - lg: всё больше
+- **Результат**: KPI-блоки 4×2 (≈400×90px, area=36,000) теперь `md` вместо `sm`
+
+### Changed — Font sizes increased (Notion-style: fill available space)
+- **StatCard (KPI income/expense/balance)**:
+  - md: `text-xl` → **`text-2xl`** (значение)
+  - lg: `text-2xl` → **`text-3xl`** (значение)
+  - sm: `text-base` → **`text-lg`** (значение), label `text-[10px]` → `text-xs`
+  - Header label: `text-xs` → **`text-sm`** для md/lg
+- **StatCustom (KPI с фильтрами)**:
+  - md: `text-xl` → **`text-2xl`** (значение)
+  - lg: **`text-3xl`** (значение)
+  - sm: `text-base` → **`text-lg`**
+  - Count: `text-[11px]` → **`text-xs`**
+- **TopCategories (Топ доходов/расходов)**:
+  - Title: `text-sm` → **`text-base font-semibold`** для md/lg
+  - Category items: `text-[11px]` → **`text-sm`** для md/lg
+  - Progress bar: `h-1` → **`h-1.5`**
+  - Spacing: `space-y-2` → **`space-y-3`** для md/lg
+
+### Verified
+- ✅ `pnpm build` — 30 страниц, `/cashflow` 2.46 kB / 183 kB, без регрессий
+- ✅ Density для блока 400×90px: было `sm` (мелкий текст), теперь `md` (нормальный)
+- ✅ Layout сохраняется при перезагрузке страницы (keepalive flush)
+
+---
+
 ## [0.8.4] - 2026-05-10
 
 ### Added — Block-Grid: Universal Adaptive (Lego-конструктор)

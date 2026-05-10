@@ -131,16 +131,16 @@ function RenderStatCustom({ instance }: BlockRenderProps) {
 
   if (density === 'sm') {
     return (
-      <Card className="flex h-full flex-col justify-center p-2">
+      <Card className="flex h-full flex-col justify-center p-3">
         <div className="flex items-center gap-1.5">
           <Icon
-            className="h-3 w-3 shrink-0"
+            className="h-3.5 w-3.5 shrink-0"
             style={accentColor ? { color: accentColor } : undefined}
           />
-          <span className="truncate text-[10px] font-medium text-muted-foreground">{title}</span>
+          <span className="truncate text-xs font-medium text-muted-foreground">{title}</span>
         </div>
         <div
-          className="mt-0.5 truncate text-base font-semibold tabular-nums"
+          className="mt-0.5 truncate text-lg font-semibold tabular-nums"
           style={accentColor ? { color: accentColor } : undefined}
         >
           {loading ? '—' : `${sign}${compactDisplay}`}
@@ -151,10 +151,10 @@ function RenderStatCustom({ instance }: BlockRenderProps) {
 
   return (
     <Card className="flex h-full flex-col">
-      <CardHeader className="pb-1.5">
-        <CardTitle className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+      <CardHeader className="pb-2">
+        <CardTitle className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
           <Icon
-            className="h-3.5 w-3.5"
+            className="h-4 w-4"
             style={accentColor ? { color: accentColor } : undefined}
           />
           <span className="line-clamp-1">{title}</span>
@@ -162,13 +162,13 @@ function RenderStatCustom({ instance }: BlockRenderProps) {
       </CardHeader>
       <CardContent className="flex flex-1 flex-col justify-center">
         <div
-          className="truncate text-xl font-semibold tabular-nums tracking-tight"
+          className={`truncate ${density === 'lg' ? 'text-3xl' : 'text-2xl'} font-semibold tabular-nums tracking-tight`}
           style={accentColor ? { color: accentColor } : undefined}
         >
           {loading ? '—' : `${sign}${display}`}
         </div>
         {!loading && cfg.metric !== 'count' && count > 0 && (
-          <div className="mt-0.5 text-[11px] text-muted-foreground">
+          <div className="mt-1 text-xs text-muted-foreground">
             {count} {pluralRu(count, ['операция', 'операции', 'операций'])}
           </div>
         )}
