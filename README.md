@@ -4,7 +4,7 @@
 > Notion-style блоки + Linear UX + Claude Code минимализм + RAG-память + AI-секретарь.
 
 [![Status](https://img.shields.io/badge/status-foundation-blue.svg)]()
-[![Version](https://img.shields.io/badge/version-0.4.0-blue.svg)]()
+[![Version](https://img.shields.io/badge/version-0.5.0-blue.svg)]()
 
 ## Что это
 
@@ -33,23 +33,43 @@
 ## Быстрый старт
 
 ```bash
-# 1. Установка зависимостей
+# 1. Подготовить env (первый раз)
+cp .env.example .env.local
+
+# 2. Установка зависимостей
 pnpm install
 
-# 2. Запуск БД (Postgres с pgvector + Redis)
+# 3. Запуск БД+кэш+S3 (Postgres с pgvector на 5433, Redis 6380, MinIO 9100, Adminer 8081)
 pnpm docker:up
-
-# 3. Создать .env.local на основе .env.example
-cp .env.example .env.local
 
 # 4. Применить схему БД
 pnpm db:push
 
-# 5. Запустить dev-сервер
+# 5. Применить HNSW и FTS индексы (вручную, drizzle-kit их не умеет)
+docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev < drizzle/init/02-vector-indexes.sql
+
+# 6. (Опционально) Локальный AI — Ollama. См. docs/LOCAL_AI.md
+brew install ollama && brew services start ollama && ollama pull qwen2.5:7b
+
+# 7. Dev-сервер (webpack + typedRoutes)
 pnpm dev
+# или быстрый Turbopack (без typedRoutes):
+pnpm dev:turbo
 ```
 
 Открыть [http://localhost:3000](http://localhost:3000).
+Adminer (web UI для Postgres): [http://localhost:8081](http://localhost:8081) (server: `postgres`, login/db: `openfinance_user` / `openfinance_dev`).
+
+### Порты
+
+| Сервис | Порт | Почему не дефолтный |
+|---------|------|-------------------|
+| Postgres | 5433 | чтобы не конфликтовать с другими локальными PG (например `braint` на 5432) |
+| Redis | 6380 | тоже во избежание конфликтов |
+| MinIO API | 9100 | |
+| MinIO Console | 9101 | |
+| Adminer | 8081 | без конфликта с 8080 |
+| Ollama (хост) | 11434 | дефолт |
 
 ## Структура
 
@@ -80,6 +100,9 @@ open-finance/
 - [`docs/MODULES.md`](./docs/MODULES.md) — как добавить модуль
 - [`docs/AI_TOOLS.md`](./docs/AI_TOOLS.md) — реестр AI-инструментов
 - [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — карта архитектуры
+- [`docs/LOCAL_AI.md`](./docs/LOCAL_AI.md) — локальный AI через Ollama в dev
+- [`docs/ONBOARDING.md`](./docs/ONBOARDING.md) — спецификация onboarding-визарда
+- [`FEED.md`](./FEED.md) — заготовки постов для Telegram-канала
 - [`CHANGELOG.md`](./CHANGELOG.md) — история изменений
 
 ## Тарифы

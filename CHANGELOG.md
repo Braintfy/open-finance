@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.5.0] - 2026-05-10
+
+### Fixed
+- **CVE-2025-66478 в Next.js** — обновлён `next` 15.0.3 → 15.5.4 (последний патченный 15.x)
+- **Turbopack + typedRoutes несовместимость** — `next.config.mjs` теперь делает `experimental.typedRoutes: true` только для webpack-режима; при `NEXT_TURBO=1` флаг не подставляется
+- **Дефолтный `pnpm dev`** переключён на webpack для типизированных роутов; добавлен `pnpm dev:turbo` для Turbopack-сборки
+- **drizzle-kit не подхватывает .env.local** — `drizzle.config.ts` теперь сам подгружает `.env.local`/`.env` через `dotenv`
+
+### Changed
+- **React 19 RC → React 18.3.1** — зафиксирована стабильная версия (по требованию: «зафиксируй стабильность»). React 19 вернётся когда выйдет stable
+- **drizzle-orm `^0.36.4` → `^0.45.2`**, **drizzle-kit `^0.28.1` → `^0.31.10`**, **eslint-config-next `15.0.3` → `15.5.4`**
+- **docker-compose.yml** переписан по образцу `/Users/firay/braint`:
+  - Postgres на `5433` (чтобы не конфликтовать с другими локальными Postgres)
+  - Redis на `6380`, MinIO на `9100/9101`, Adminer на `8081`
+  - Все порты bind к `127.0.0.1` для безопасности
+  - Healthcheck на каждый сервис, отдельный network `openfinance_network`
+- **`.env.example`** дополнен: `POSTGRES_*` блок, MinIO/Adminer порты, `AI_DEFAULT_PROVIDER`, `OLLAMA_*`, `AI_MOCK_ENABLED`, `AI_PROXY_*` (VPN), `S3_REGION`/`S3_FORCE_PATH_STYLE`, feature flags (`FEATURE_OPEN_REGISTRATION`, `FEATURE_ONBOARDING_WIZARD`, `FEATURE_BILLING_MOCK`, `FEATURE_DEFAULT_PLAN`), `AUTH_DRIVER`
+- **`src/lib/env.ts`** — расширена zod-схема под новые env, типизированные feature flags
+- **Schema `tenants`** — добавлены поля `onboardingCompleted: boolean`, `setupAnswers: jsonb`, новый тип `SetupAnswers`. В `TenantSettings` — `aiProvider` уточнён под текущие провайдеры, добавлен `openRegistration` флаг
+- **`drizzle/init/01-extensions.sql`** — добавлены `unaccent` + функция `normalize_search_text` (по образцу braint)
+
+### Added
+- **`drizzle/init/02-vector-indexes.sql`** — отдельный скрипт для индексов которые drizzle-kit не умеет: HNSW на `memory_chunks.embedding` (cosine, m=16, ef_construction=64), GIN FTS русский, trigram на `transactions.counterparty`. Применяется вручную после `db:push`
+- **`docs/LOCAL_AI.md`** — гайд по локальной AI-модели через Ollama для dev (3 способа установки, выбор модели по железу, план UI в админке)
+- **`docs/ONBOARDING.md`** — спецификация onboarding-визарда: 6 шагов, 6 шаблонов под тип пользователя, архитектура
+- **`src/lib/onboarding/templates.ts`** — реестр шаблонов модулей и AI-агентов под тип пользователя (selller/freelancer/small_business/self_employed/personal/other)
+- **`src/lib/auth/index.ts`** — точка входа auth с переключателем `AUTH_DRIVER=v5|v4` (запас на случай beta-проблем NextAuth.js 5)
+- **`src/lib/billing/mock.ts`** — заглушка биллинга которая всегда возвращает success (для dev и e2e тестов; активна при `FEATURE_BILLING_MOCK=true`)
+- **`src/lib/ai/providers/mock.ts`** — детерминированный AI-провайдер для разработки без API ключей (срабатывает на ключевые слова: налог/чек/баланс/дедлайн)
+- **`FEED.md`** — заготовка постов для Telegram-канала Open Finance (10 готовых + 8 идей в бэклоге, стиль `@braintmind`)
+- **`pnpm ollama:check`** — скрипт быстрой проверки доступности локальной Ollama
+- **`dotenv`** в devDependencies — для загрузки env в drizzle-kit
+
+### Notes
+- Команды для проверки после фиксов:
+  ```bash
+  pnpm install --force         # переустановит с новыми версиями
+  pnpm docker:up               # поднимет Postgres+Redis+MinIO+Adminer
+  pnpm db:push                 # применит схемы
+  docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev < drizzle/init/02-vector-indexes.sql
+  pnpm dev                     # webpack + typedRoutes
+  ```
+
+---
+
 ## [0.4.0] - 2025-05-10
 
 ### Added
