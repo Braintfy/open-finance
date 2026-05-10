@@ -173,7 +173,8 @@ export const SheetBlock: BlockDef = {
   category: 'tables',
   icon: Table2,
   defaultSize: { w: 8, h: 6 },
-  minSize: { w: 4, h: 3 },
+  minSize: { w: 2, h: 2 },
+  minContentSize: { w: 200, h: 120 },
   pages: ['*'],
   configSchema: SheetConfig,
   defaultConfig: () => ({

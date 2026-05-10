@@ -10,6 +10,7 @@ import { getBlockDef, sanitizeBlocks } from '@/lib/blocks/registry';
 import { BlockChrome } from './block-chrome';
 import { AddBlockDialog, type AddBlockResult } from './add-block-dialog';
 import { BlockSettingsDialog } from './block-settings-dialog';
+import { BlockSizeProvider } from './block-size';
 
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
@@ -89,8 +90,9 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
       y: b.y,
       w: b.w,
       h: b.h,
-      minW: getBlockDef(b.type)?.minSize.w ?? 2,
-      minH: getBlockDef(b.type)?.minSize.h ?? 2,
+      // По умолчанию разрешаем 1x1 — блоки могут override через minSize
+      minW: getBlockDef(b.type)?.minSize.w ?? 1,
+      minH: getBlockDef(b.type)?.minSize.h ?? 1,
     }));
     return { lg, md: lg };
   }, [blocks]);
@@ -183,12 +185,12 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
       layouts={layouts}
       breakpoints={BREAKPOINTS}
       cols={COLS}
-      rowHeight={60}
+      rowHeight={40}
       isDraggable={editMode}
       isResizable={editMode}
       onLayoutChange={onLayoutChange}
       draggableHandle=".block-drag-handle"
-      margin={[16, 16]}
+      margin={[10, 10]}
       containerPadding={[0, 0]}
     >
       {blocks.map((b) => {
@@ -203,11 +205,13 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
               onRemove={() => onRemoveBlock(b.id)}
               onOpenSettings={() => setSettingsId(b.id)}
             >
-              <Render
-                instance={b}
-                tenantId={tenantId}
-                onConfigChange={(cfg) => onConfigChange(b.id, cfg)}
-              />
+              <BlockSizeProvider minContent={def.minContentSize}>
+                <Render
+                  instance={b}
+                  tenantId={tenantId}
+                  onConfigChange={(cfg) => onConfigChange(b.id, cfg)}
+                />
+              </BlockSizeProvider>
             </BlockChrome>
           </div>
         );

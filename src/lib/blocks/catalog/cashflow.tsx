@@ -22,10 +22,18 @@ import { formatRubles, formatDate } from '@/lib/utils';
 import { useCashflowData, type CashflowTx } from './cashflow-data';
 import { TransactionDialog } from './transaction-dialog';
 import { resolveIcon } from '../icon-resolver';
+import { useBlockDensity } from '@/components/blocks/block-size';
 
 // ============================================================================
 // stat.income / stat.expense / stat.balance — KPI карточки
 // ============================================================================
+
+function formatCompactRubles(v: number): string {
+  const abs = Math.abs(v);
+  if (abs >= 1_000_000_00) return `${(abs / 1_000_000_00).toFixed(1)}М₽`;
+  if (abs >= 1_000_00) return `${(abs / 1_000_00).toFixed(0)}к₽`;
+  return formatRubles(abs);
+}
 
 function StatCard({
   label,
@@ -40,6 +48,48 @@ function StatCard({
   big?: boolean;
   accent?: string;
 }) {
+  const density = useBlockDensity();
+  const sign = value < 0 ? '−' : '';
+
+  // XS — только значение крупно, без header
+  if (density === 'xs') {
+    return (
+      <Card className="flex h-full flex-col justify-center p-0">
+        <div className="flex items-center justify-center gap-1 px-1">
+          {icon}
+          <span
+            className="truncate text-sm font-semibold tabular-nums tracking-tight"
+            style={accent ? { color: accent } : undefined}
+            title={`${sign}${formatRubles(Math.abs(value))}`}
+          >
+            {sign}
+            {formatCompactRubles(value)}
+          </span>
+        </div>
+      </Card>
+    );
+  }
+
+  // SM — иконка + число, подпись маленькая
+  if (density === 'sm') {
+    return (
+      <Card className="flex h-full flex-col justify-center p-2">
+        <div className="flex items-center gap-1.5">{icon}
+          <span className="truncate text-[10px] font-medium text-muted-foreground">{label}</span>
+        </div>
+        <div
+          className="mt-0.5 truncate text-base font-semibold tabular-nums tracking-tight"
+          style={accent ? { color: accent } : undefined}
+          title={`${sign}${formatRubles(Math.abs(value))}`}
+        >
+          {sign}
+          {formatCompactRubles(value)}
+        </div>
+      </Card>
+    );
+  }
+
+  // MD/LG — полный вариант
   return (
     <Card className="flex h-full flex-col">
       <CardHeader className="pb-1.5">
@@ -50,10 +100,10 @@ function StatCard({
       </CardHeader>
       <CardContent className="flex flex-1 items-center">
         <div
-          className={`${big ? 'text-2xl' : 'text-xl'} font-semibold tabular-nums tracking-tight`}
+          className={`${big && density === 'lg' ? 'text-2xl' : 'text-xl'} truncate font-semibold tabular-nums tracking-tight`}
           style={accent ? { color: accent } : undefined}
         >
-          {value < 0 ? '−' : ''}
+          {sign}
           {formatRubles(Math.abs(value))}
         </div>
       </CardContent>
@@ -111,7 +161,8 @@ export const StatIncomeBlock: BlockDef = {
   category: 'stats',
   icon: ArrowDown,
   defaultSize: { w: 4, h: 2 },
-  minSize: { w: 3, h: 2 },
+  minSize: { w: 1, h: 1 },
+  minContentSize: { w: 80, h: 40 },
   pages: ['cashflow', 'dashboard'],
   Render: RenderIncome,
 };
@@ -123,7 +174,8 @@ export const StatExpenseBlock: BlockDef = {
   category: 'stats',
   icon: ArrowUp,
   defaultSize: { w: 4, h: 2 },
-  minSize: { w: 3, h: 2 },
+  minSize: { w: 1, h: 1 },
+  minContentSize: { w: 80, h: 40 },
   pages: ['cashflow', 'dashboard'],
   Render: RenderExpense,
 };
@@ -135,7 +187,8 @@ export const StatBalanceBlock: BlockDef = {
   category: 'stats',
   icon: Wallet,
   defaultSize: { w: 4, h: 2 },
-  minSize: { w: 3, h: 2 },
+  minSize: { w: 1, h: 1 },
+  minContentSize: { w: 80, h: 40 },
   pages: ['cashflow', 'dashboard'],
   Render: RenderBalance,
 };
@@ -153,9 +206,14 @@ const TopCatsConfig = z.object({
 function RenderTopCategories({ instance }: BlockRenderProps) {
   const cfg = TopCatsConfig.parse(instance.config ?? {});
   const { topIncome, topExpense, loading } = useCashflowData();
+  const density = useBlockDensity();
   const rows = cfg.type === 'income' ? topIncome : topExpense;
-  const sliced = rows.slice(0, cfg.limit);
-  const max = sliced.length > 0 ? Math.max(...sliced.map((r) => r.total)) : 1;
+
+  // Ограничение по плотности: чем меньше места — тем меньше строк
+  const densityLimit =
+    density === 'xs' ? 1 : density === 'sm' ? 3 : density === 'md' ? cfg.limit : cfg.limit;
+  const sliced = rows.slice(0, Math.min(cfg.limit, densityLimit));
+  const max = sliced.length > 0 ? Math.max(...sliced.map((r: { total: number }) => r.total)) : 1;
 
   const accent =
     instance.appearance?.accentColor ??
@@ -165,28 +223,36 @@ function RenderTopCategories({ instance }: BlockRenderProps) {
     cfg.title ??
     (cfg.type === 'income' ? 'Топ доходов' : 'Топ расходов');
 
+  const isCompact = density === 'xs' || density === 'sm';
+
   return (
-    <Card className="h-full overflow-hidden">
-      <CardHeader>
-        <CardTitle className="text-base">{title}</CardTitle>
+    <Card className="flex h-full flex-col overflow-hidden">
+      <CardHeader className={isCompact ? 'p-2 pb-1' : 'pb-2'}>
+        <CardTitle className={isCompact ? 'truncate text-xs' : 'text-sm'}>{title}</CardTitle>
       </CardHeader>
-      <CardContent className="space-y-3 overflow-y-auto">
+      <CardContent
+        className={
+          isCompact
+            ? 'flex-1 space-y-1 overflow-y-auto p-2 pt-0'
+            : 'flex-1 space-y-2 overflow-y-auto'
+        }
+      >
         {loading ? (
-          <p className="text-sm text-muted-foreground">Загрузка…</p>
+          <p className="text-[11px] text-muted-foreground">Загрузка…</p>
         ) : sliced.length === 0 ? (
-          <p className="text-sm text-muted-foreground">Нет данных</p>
+          <p className="text-[11px] text-muted-foreground">Нет данных</p>
         ) : (
-          sliced.map((r) => (
-            <div key={r.categoryName} className="space-y-1">
-              <div className="flex items-center justify-between text-sm">
-                <span className="font-medium">{r.categoryName}</span>
-                <span className="tabular-nums text-muted-foreground">
-                  {formatRubles(r.total)}
+          sliced.map((r: { categoryName: string; total: number }) => (
+            <div key={r.categoryName} className="space-y-0.5">
+              <div className="flex items-center justify-between gap-2 text-[11px]">
+                <span className="truncate font-medium">{r.categoryName}</span>
+                <span className="shrink-0 tabular-nums text-muted-foreground">
+                  {isCompact ? formatCompactRubles(r.total) : formatRubles(r.total)}
                 </span>
               </div>
-              <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+              <div className="h-1 overflow-hidden rounded-full bg-muted">
                 <div
-                  className="h-full rounded-full"
+                  className="h-full rounded-full transition-all"
                   style={{
                     width: `${Math.round((r.total / max) * 100)}%`,
                     backgroundColor: accent,
@@ -258,7 +324,8 @@ export const TopCategoriesBlock: BlockDef = {
   category: 'charts',
   icon: BarChart3,
   defaultSize: { w: 6, h: 4 },
-  minSize: { w: 4, h: 3 },
+  minSize: { w: 2, h: 2 },
+  minContentSize: { w: 180, h: 120 },
   pages: ['cashflow', 'dashboard'],
   configSchema: TopCatsConfig,
   defaultConfig: () => ({ type: 'expense', limit: 5 }),
@@ -490,7 +557,8 @@ export const TransactionsListBlock: BlockDef = {
   category: 'tables',
   icon: ListOrdered,
   defaultSize: { w: 12, h: 6 },
-  minSize: { w: 6, h: 3 },
+  minSize: { w: 3, h: 3 },
+  minContentSize: { w: 280, h: 180 },
   pages: ['cashflow'],
   configSchema: TxListConfig,
   defaultConfig: () => ({ limit: 50 }),

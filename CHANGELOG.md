@@ -1,5 +1,73 @@
 # Changelog
 
+## [0.8.4] - 2026-05-10
+
+### Added — Block-Grid: Universal Adaptive (Lego-конструктор)
+
+**Фундаментальное изменение архитектуры.** Все блоки теперь поддерживают размер от **1x1** с автоматической адаптацией контента и защитой от нечитаемости.
+
+- **`useBlockSize` / `useBlockDensity` / `BlockSizeProvider`** (`src/components/blocks/block-size.tsx`):
+  - Реактивный `ResizeObserver` — измеряет фактический размер блока в пикселях
+  - 4 уровня плотности: `xs` (≤150×80), `sm` (≤240×140), `md` (≤480×280), `lg` (больше)
+  - Хелпер `byDensity()` для выбора варианта рендера
+- **`minContentSize: { w, h }` (px)** в `BlockDef` — порог читаемости:
+  - Если фактический размер меньше → BlockGrid рисует **`TooSmallOverlay`** («Мало места, нужно ≥ XxYpx»)
+  - Контент приглушается `opacity-30` чтобы пользователь сразу видел: «надо растянуть»
+- **`BlockTabs`** (`src/components/blocks/block-tabs.tsx`) — мини-табы:
+  - Variant `underline` (Linear-style тонкое подчёркивание) или `pills`
+  - При `density === 'xs'` коллапсирует «лишние» табы в `<select>` (показывает только 2 первых как кнопки)
+  - Универсальный — любой блок может иметь multi-view (Сводка / Список / График...)
+
+### Changed — Adaptive рендер всех блоков
+- **`StatCard`** (cashflow KPI) — `xs`: только число `compactRubles` (`643к₽`); `sm`: иконка+число+маленький label; `md+`: полный header
+- **`stat.custom`** — три варианта рендера, `formatCompact()` для xs/sm
+- **`navigate.card`** — `xs`: только иконка в центре; `sm`: иконка + title; `md+`: полная карточка с description
+- **`top-categories`** — `xs`: 1 строка; `sm`: 3 строки; `md+`: все категории. Везде `formatCompactRubles` в xs/sm
+- Все блоки имеют `truncate` + `title=...` (tooltip с полным значением) при xs/sm
+
+### Changed — BlockGrid base parameters
+- `rowHeight: 60 → 40` (более тонкая сетка)
+- `margin: [16, 16] → [10, 10]` (плотнее)
+- `react-grid-layout` minW/minH из `def.minSize ?? 1` (вместо `2` дефолта)
+
+### Changed — minSize всех существующих блоков
+| Блок | Было | Стало | minContentSize |
+|---|---|---|---|
+| `stat.income/expense/balance` | 3×2 | **1×1** | 80×40 |
+| `stat.custom` | 3×2 | **1×1** | 80×40 |
+| `navigate.card` | 2×2 | **1×1** | 60×40 |
+| `top-categories` | 4×3 | **2×2** | 180×120 |
+| `sheet` | 4×3 | **2×2** | 200×120 |
+| `cashflow.transactions` | 6×3 | **3×3** | 280×180 |
+
+### Added — `/settings` UI для видимости разделов
+- **`src/app/(app)/settings/page.tsx`** + **`settings-client.tsx`**:
+  - Список основных и админ-разделов с переключателями «виден / скрыт» (Linear-style status pills)
+  - Защищённые разделы (`dashboard`, `settings`) нельзя скрыть
+  - Сохранение через `PUT /api/blocks/layout/nav` (page-key `nav` для `hiddenSections`)
+- **Layout sidebar** (`src/app/(app)/layout.tsx`) теперь читает `hiddenSections` из `block_layouts` (pageKey=`nav`) и фильтрует nav-items
+- NavItem расширен полем `protected` (всегда виден независимо от настроек)
+
+### Added — Memory правило
+Зафиксировано фундаментальное правило **«Block-Grid: Lego-конструктор»** — обязательные требования для всех новых блоков и страниц:
+- Каждая новая страница ДОЛЖНА строиться через BlockGrid (никаких статических layout'ов)
+- Каждый новый блок ДОЛЖЕН использовать `useBlockDensity()` и указать `minContentSize`
+- minSize стремится к 1x1 везде где возможно
+- Конвенция `page-key`: `dashboard`, `cashflow`, `nav` (специальный), `inbox`/`deadlines`/... — будущие
+
+### Updated — PLAN.md
+Добавлен статус реализации Block-Grid (✅ что готово, 🔜 что отложено) в раздел «Configurable Block-Grid Architecture».
+
+### Verified
+- ✅ `pnpm build` — 31 страница, `/settings` 3.44 kB / 156 kB, без регрессий
+- ✅ Layout fallback: если `loadLayout` не удался (нет tenant), sidebar показывает все пункты
+
+### Не вошло (отложено)
+- **AI-flow «Импорт через AI»** — требует Этапа 4 (полная реализация orchestrator). Текущий импорт CSV/XLSX с Тинькофф парсером работает корректно.
+- **BlockTabs в конкретных блоках** — компонент создан, но пока не интегрирован в существующие блоки. Будет использоваться в Inbox / AI Chat / Reports.
+
+---
+
 ## [0.8.3] - 2026-05-10
 
 ### Added — /dashboard на Block-Grid

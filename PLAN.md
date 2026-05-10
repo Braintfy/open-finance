@@ -574,6 +574,19 @@ export const aiUsage = pgTable('ai_usage', {
 
 ### Configurable Block-Grid Architecture (главная UI-фишка)
 
+> **Статус реализации на 10.05.2026 / v0.8.4** ✅ Базовая часть готова.
+> - ✅ DB: `block_layouts` (Drizzle migration `0000_abnormal_queen_noir.sql`)
+> - ✅ Types: `BlockDef`, `BlockInstance`, `BlockAppearance`, `minContentSize`
+> - ✅ Registry: 8 типов блоков (stat.income/expense/balance/custom, top-categories, transactions, sheet, navigate.card)
+> - ✅ Pages с дефолтным layout: `cashflow`, `dashboard`
+> - ✅ API: `GET/PUT/DELETE /api/blocks/layout/[pageKey]` + reset to defaults
+> - ✅ UI: drag/resize/edit mode, add wizard, settings dialog (3 таба), reset, empty state
+> - ✅ Adaptive density (xs/sm/md/lg) + TooSmallOverlay для защиты от нечитаемости (`useBlockDensity`, ResizeObserver)
+> - ✅ Минимум блока 1x1 для KPI, BlockTabs для multi-view
+> - ✅ Page-key `nav` для `hiddenSections` (видимость sidebar) + `/settings` UI
+> - 🔜 AI-импорт через LLM (отложено — требует Этапа 4 orchestrator)
+> - 🔜 Telegram/чат-блок (Phase 2)
+
 **Концепция:** Open Finance — это **Lego-конструктор** для финансов. Каждая страница — настраиваемая сетка блоков (как Notion / Grafana / Android desktop). Пользователь:
 - Видит **только нужное** ему по умолчанию (минимальный набор)
 - Может **добавлять блоки** из каталога: статистика, графики, Excel-таблицы, заметки, AI-виджеты

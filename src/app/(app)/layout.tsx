@@ -15,11 +15,14 @@ import {
 } from 'lucide-react';
 import { auth } from '@/lib/auth';
 import { LogoutButton } from '@/components/logout-button';
+import { loadLayout } from '@/lib/blocks/queries';
 
 type NavItem = {
+  key: string;
   href: string;
   label: string;
   icon: React.ComponentType<{ className?: string }>;
+  protected?: boolean;
 };
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
@@ -28,20 +31,38 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   const isAdmin = session.globalRole === 'admin' || session.globalRole === 'super_admin';
 
-  const mainNav: NavItem[] = [
-    { href: '/dashboard', label: 'Дашборд', icon: LayoutDashboard },
-    { href: '/inbox', label: 'Inbox', icon: Inbox },
-    { href: '/cashflow', label: 'Денежный поток', icon: Wallet },
-    { href: '/deadlines', label: 'Дедлайны', icon: Calendar },
-    { href: '/settings', label: 'Настройки', icon: Settings },
+  // Hidden sections — read from block_layouts pageKey='nav'
+  let hidden = new Set<string>();
+  if (session.tenantId && session.userId) {
+    try {
+      const navLayout = await loadLayout({
+        tenantId: session.tenantId,
+        userId: session.userId,
+        pageKey: 'nav',
+      });
+      hidden = new Set(navLayout.hiddenSections ?? []);
+    } catch {
+      // ignore
+    }
+  }
+
+  const mainNavAll: NavItem[] = [
+    { key: 'dashboard', href: '/dashboard', label: 'Дашборд', icon: LayoutDashboard, protected: true },
+    { key: 'inbox', href: '/inbox', label: 'Inbox', icon: Inbox },
+    { key: 'cashflow', href: '/cashflow', label: 'Денежный поток', icon: Wallet },
+    { key: 'deadlines', href: '/deadlines', label: 'Дедлайны', icon: Calendar },
+    { key: 'settings', href: '/settings', label: 'Настройки', icon: Settings, protected: true },
   ];
-  const adminNav: NavItem[] = [
-    { href: '/admin', label: 'Панель', icon: Shield },
-    { href: '/admin/ai/local-models', label: 'AI модели', icon: Cpu },
-    { href: '/admin/ai/system-prompt', label: 'AI prompt', icon: Sparkles },
-    { href: '/admin/users', label: 'Пользователи', icon: Users },
-    { href: '/admin/settings', label: 'Настройки платформы', icon: Wrench },
+  const adminNavAll: NavItem[] = [
+    { key: 'admin', href: '/admin', label: 'Панель', icon: Shield },
+    { key: 'admin-ai-models', href: '/admin/ai/local-models', label: 'AI модели', icon: Cpu },
+    { key: 'admin-ai-prompt', href: '/admin/ai/system-prompt', label: 'AI prompt', icon: Sparkles },
+    { key: 'admin-users', href: '/admin/users', label: 'Пользователи', icon: Users },
+    { key: 'admin-settings', href: '/admin/settings', label: 'Настройки платформы', icon: Wrench },
   ];
+
+  const mainNav = mainNavAll.filter((i) => i.protected || !hidden.has(i.key));
+  const adminNav = adminNavAll.filter((i) => !hidden.has(i.key));
 
   return (
     <div className="flex min-h-screen bg-muted/30">
@@ -51,16 +72,16 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           <div className="text-[10px] text-muted-foreground">v0.8.2</div>
         </div>
         <nav className="space-y-0.5">
-          {mainNav.map((item) => (
-            <NavLink key={item.href} {...item} />
+          {mainNav.map(({ key: _k, protected: _p, ...rest }) => (
+            <NavLink key={rest.href} {...rest} />
           ))}
           {isAdmin && (
             <>
               <div className="px-2 pb-1 pt-4 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                 Админ
               </div>
-              {adminNav.map((item) => (
-                <NavLink key={item.href} {...item} />
+              {adminNav.map(({ key: _k, protected: _p, ...rest }) => (
+                <NavLink key={rest.href} {...rest} />
               ))}
             </>
           )}

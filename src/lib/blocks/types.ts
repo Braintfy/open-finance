@@ -37,7 +37,14 @@ export type BlockDef = {
   category: BlockCategory;
   icon: LucideIcon;
   defaultSize: { w: number; h: number };
+  /** Минимум в ячейках grid (1x1 разрешено по умолчанию) */
   minSize: { w: number; h: number };
+  /**
+   * Минимальный размер в пикселях, при котором контент ещё читаем.
+   * Если реальный размер меньше — BlockGrid покажет warning overlay.
+   * По умолчанию: 120x80 (работает для большинства блоков с числом + подписью).
+   */
+  minContentSize?: { w: number; h: number };
   /** Где этот блок имеет смысл (cashflow, dashboard, *) */
   pages: string[]; // '*' = везде
   configSchema?: z.ZodSchema;

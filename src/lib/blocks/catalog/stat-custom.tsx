@@ -11,6 +11,14 @@ import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { formatRubles } from '@/lib/utils';
 import { resolveIcon } from '../icon-resolver';
+import { useBlockDensity } from '@/components/blocks/block-size';
+
+function formatCompact(v: number): string {
+  const abs = Math.abs(v);
+  if (abs >= 1_000_000_00) return `${(abs / 1_000_000_00).toFixed(1)}М₽`;
+  if (abs >= 1_000_00) return `${(abs / 1_000_00).toFixed(0)}к₽`;
+  return formatRubles(abs);
+}
 
 const StatCustomConfig = z.object({
   metric: z.enum(['income', 'expense', 'balance', 'count']).default('income'),
@@ -96,6 +104,51 @@ function RenderStatCustom({ instance }: BlockRenderProps) {
       ? '−'
       : '';
 
+  const density = useBlockDensity();
+
+  const compactDisplay =
+    cfg.metric === 'count' ? `${value ?? 0}` : formatCompact(value ?? 0);
+
+  if (density === 'xs') {
+    return (
+      <Card className="flex h-full items-center justify-center p-1">
+        <div className="flex items-center gap-1">
+          <Icon
+            className="h-3 w-3 shrink-0"
+            style={accentColor ? { color: accentColor } : undefined}
+          />
+          <span
+            className="truncate text-sm font-semibold tabular-nums"
+            style={accentColor ? { color: accentColor } : undefined}
+            title={`${title}: ${sign}${display}`}
+          >
+            {loading ? '—' : `${sign}${compactDisplay}`}
+          </span>
+        </div>
+      </Card>
+    );
+  }
+
+  if (density === 'sm') {
+    return (
+      <Card className="flex h-full flex-col justify-center p-2">
+        <div className="flex items-center gap-1.5">
+          <Icon
+            className="h-3 w-3 shrink-0"
+            style={accentColor ? { color: accentColor } : undefined}
+          />
+          <span className="truncate text-[10px] font-medium text-muted-foreground">{title}</span>
+        </div>
+        <div
+          className="mt-0.5 truncate text-base font-semibold tabular-nums"
+          style={accentColor ? { color: accentColor } : undefined}
+        >
+          {loading ? '—' : `${sign}${compactDisplay}`}
+        </div>
+      </Card>
+    );
+  }
+
   return (
     <Card className="flex h-full flex-col">
       <CardHeader className="pb-1.5">
@@ -109,7 +162,7 @@ function RenderStatCustom({ instance }: BlockRenderProps) {
       </CardHeader>
       <CardContent className="flex flex-1 flex-col justify-center">
         <div
-          className="text-xl font-semibold tabular-nums tracking-tight"
+          className="truncate text-xl font-semibold tabular-nums tracking-tight"
           style={accentColor ? { color: accentColor } : undefined}
         >
           {loading ? '—' : `${sign}${display}`}
@@ -253,7 +306,8 @@ export const StatCustomBlock: BlockDef = {
   category: 'stats',
   icon: Sparkles,
   defaultSize: { w: 4, h: 2 },
-  minSize: { w: 3, h: 2 },
+  minSize: { w: 1, h: 1 },
+  minContentSize: { w: 80, h: 40 },
   pages: ['cashflow', 'dashboard'],
   configSchema: StatCustomConfig,
   defaultConfig: () => ({ metric: 'income', period: 'all_time' }),
