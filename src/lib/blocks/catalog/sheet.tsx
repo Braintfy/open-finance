@@ -77,7 +77,7 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
   return (
     <Card className="flex h-full flex-col overflow-hidden">
       <CardHeader className="pb-2">
-        <CardTitle className="text-base">{cfg.title}</CardTitle>
+        <CardTitle className="text-base">{instance.appearance?.title ?? cfg.title}</CardTitle>
       </CardHeader>
       <CardContent className="flex-1 overflow-auto p-0">
         <table className="w-full border-collapse text-sm">
@@ -122,6 +122,50 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
   );
 }
 
+function SheetSettings({
+  config,
+  onChange,
+}: {
+  config: Record<string, unknown>;
+  onChange: (c: Record<string, unknown>) => void;
+}) {
+  const cfg = SheetConfig.parse(config ?? {});
+  return (
+    <div className="space-y-4">
+      <div className="space-y-2">
+        <label className="text-sm font-medium">
+          Строк: <span className="tabular-nums">{cfg.rows}</span>
+        </label>
+        <input
+          type="range"
+          min={1}
+          max={100}
+          value={cfg.rows}
+          onChange={(e) => onChange({ ...cfg, rows: Number(e.target.value) })}
+          className="w-full accent-primary"
+        />
+      </div>
+      <div className="space-y-2">
+        <label className="text-sm font-medium">
+          Колонок: <span className="tabular-nums">{cfg.cols}</span>
+        </label>
+        <input
+          type="range"
+          min={1}
+          max={26}
+          value={cfg.cols}
+          onChange={(e) => onChange({ ...cfg, cols: Number(e.target.value) })}
+          className="w-full accent-primary"
+        />
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Существующие данные сохраняются. При уменьшении — обрезаются, при увеличении —
+        дополняются пустыми ячейками.
+      </p>
+    </div>
+  );
+}
+
 export const SheetBlock: BlockDef = {
   type: 'sheet',
   displayName: 'Таблица (Excel-like)',
@@ -138,5 +182,6 @@ export const SheetBlock: BlockDef = {
     cols: 5,
     cells: emptyCells(10, 5),
   }),
+  SettingsForm: SheetSettings,
   Render: RenderSheet,
 };

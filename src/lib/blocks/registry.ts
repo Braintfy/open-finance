@@ -8,11 +8,13 @@ import {
   TransactionsListBlock,
 } from './catalog/cashflow';
 import { SheetBlock } from './catalog/sheet';
+import { StatCustomBlock } from './catalog/stat-custom';
 
 const ALL_BLOCKS: BlockDef[] = [
   StatIncomeBlock,
   StatExpenseBlock,
   StatBalanceBlock,
+  StatCustomBlock,
   TopCategoriesBlock,
   TransactionsListBlock,
   SheetBlock,

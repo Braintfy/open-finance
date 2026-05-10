@@ -1,5 +1,61 @@
 # Changelog
 
+## [0.8.1] - 2026-05-10
+
+### Added — Полная настраиваемость блоков
+- **`BlockSettingsDialog`** — `src/components/blocks/block-settings-dialog.tsx`. Настройка существующего блока в edit mode через иконку ⚙ в правом верхнем углу. 3 таба:
+  - **Параметры** (если у блока есть `SettingsForm`) — block-specific опции
+  - **Внешний вид** — заголовок (override displayName), цвет рамки, акцентный цвет (палитра 8 пресетов: blue/green/red/amber/violet/pink/slate), иконка (20 lucide-икон на выбор)
+  - **Размер** — слайдеры W (1-12) и H (1-20) с минимальными ограничениями из `BlockDef.minSize`
+- **AddBlockDialog → wizard** — `src/components/blocks/add-block-dialog.tsx`:
+  - Шаг 1: выбор типа блока (поиск + категории)
+  - Шаг 2: настройка параметров + внешний вид + размер до создания
+  - Шаг 3: «Создать блок» — добавляется с пользовательскими настройками
+  - Кнопка «Назад» возвращает к выбору типа
+- **`BlockInstance.appearance`** — универсальные косметические настройки:
+  - `title?: string` — override заголовка
+  - `borderColor?: string` — CSS color рамки блока (применяется через box-shadow inset)
+  - `accentColor?: string` — акцентный цвет (иконки, прогресс-бары, KPI значения)
+  - `icon?: string` — имя lucide-иконки (используется если блок поддерживает override)
+- **`BlockDef.SettingsForm`** — опциональный React-компонент с пользовательскими настройками блока. Получает `{config, onChange}`.
+- **Иконка ⚙ + drag-handle + ✕** в `BlockChrome` — все три появляются в edit mode. Drag-handle стал прозрачным «уголком», иконки ⚙/✕ в правом верхнем углу.
+- **Цвет рамки** через `box-shadow: inset 0 0 0 2px <color>` — не ломает компоновку, не меняет padding.
+- **CSS variables** `--block-accent` / `--block-border` пробрасываются в дочерние блоки (для будущего использования).
+
+### Added — Новый блок `stat.custom` (KPI с фильтрами)
+- **`src/lib/blocks/catalog/stat-custom.tsx`** — блок «KPI с фильтрами»:
+  - **metric**: income / expense / balance / count
+  - **period**: month / quarter / year / **all_time** (дефолт)
+  - **counterparty contains** (case-insensitive ilike) — например `ТБанк` найдёт «АО Т-БАНК», «ТБанк», «T-Bank». Datalist с автодополнением из реальных контрагентов tenant'а.
+  - **source equals** — точный фильтр по источнику (`tinkoff_csv`, `manual`, ...). Кнопки-чипы со списком всех имеющихся источников.
+  - Применяет appearance: иконка (20 пресетов), цвет акцента, кастомный заголовок
+  - Авто-заголовок из фильтров если `appearance.title` не задан: `"Поступления за всё время · ТБанк"`
+- **API `GET /api/cashflow/aggregate`** — `src/app/api/cashflow/aggregate/route.ts`. Принимает `metric`, `period`, `counterparty` (ilike), `source` (eq). Возвращает `{value, count}`.
+- **API `GET /api/cashflow/meta`** — `src/app/api/cashflow/meta/route.ts`. Возвращает distinct sources и top 50 контрагентов с counts — для пикеров фильтров.
+
+### Added — SettingsForm для всех блоков
+- **`stat.income/expense/balance`** — поддерживают override иконки и accentColor (применяется к иконке + значению), title через appearance
+- **`cashflow.top-categories`** — кнопки переключения income/expense + слайдер количества строк (1-20). Прогресс-бары используют `appearance.accentColor` если задан.
+- **`cashflow.transactions`** — слайдер `limit` (5-200, шаг 5). Title через appearance.
+- **`sheet`** — слайдеры rows (1-100) и cols (1-26). Существующие данные сохраняются при изменении размеров.
+
+### Performance
+- **icon-resolver** переписан со статического map (`src/lib/blocks/icon-resolver.ts`) — раньше `import * as LucideIcons` тянул весь набор иконок (~1500 SVG) в bundle, что увеличивало `/cashflow` First Load до **344 kB**. Теперь **176 kB** (-49%).
+
+### Verified
+- ✅ `pnpm build` — 26 страниц + новые `/api/cashflow/aggregate`, `/api/cashflow/meta`. `/cashflow` 29 kB / 176 kB First Load.
+
+### Use case (как просил пользователь)
+> «Общее поступление за всё время с определённого канала (АО ТБанк)»
+
+1. Edit mode → «+ Добавить блок» → KPI / Статистика → **«KPI с фильтрами»**
+2. На шаге настройки: metric = `Поступления`, period = `за всё время`, контрагент содержит = `ТБанк`
+3. (опционально) tab «Внешний вид» → выбрать синий цвет акцента и иконку `Banknote`
+4. tab «Размер» → задать ширину 6, высоту 2
+5. «Создать блок» → блок появляется на странице, делает запрос к `/api/cashflow/aggregate` и показывает сумму
+
+---
+
 ## [0.8.0] - 2026-05-10
 
 ### Added — Configurable Block-Grid Architecture (главная UI-фишка)

@@ -1,4 +1,4 @@
-// PURPOSE: BlockGrid — обёртка над react-grid-layout с edit mode и persist API
+// PURPOSE: BlockGrid — react-grid-layout обёртка с edit mode, settings dialog, persist API
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -8,7 +8,8 @@ import { Button } from '@/components/ui/button';
 import type { BlockInstance } from '@/lib/blocks/types';
 import { getBlockDef, sanitizeBlocks } from '@/lib/blocks/registry';
 import { BlockChrome } from './block-chrome';
-import { AddBlockDialog } from './add-block-dialog';
+import { AddBlockDialog, type AddBlockResult } from './add-block-dialog';
+import { BlockSettingsDialog } from './block-settings-dialog';
 
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
@@ -31,10 +32,10 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
   const [blocks, setBlocks] = useState<BlockInstance[]>(() => sanitizeBlocks(initialBlocks));
   const [editMode, setEditMode] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
+  const [settingsId, setSettingsId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Авто-сохранение через 800ms после последнего изменения
   const scheduleSave = useCallback(
     (next: BlockInstance[]) => {
       if (saveTimer.current) clearTimeout(saveTimer.current);
@@ -88,23 +89,23 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
     });
   }
 
-  function onAddBlock(type: string) {
-    const def = getBlockDef(type);
+  function onAddBlock(result: AddBlockResult) {
+    const def = getBlockDef(result.type);
     if (!def) return;
     const id =
       typeof crypto !== 'undefined' && 'randomUUID' in crypto
         ? crypto.randomUUID()
         : `b_${Math.random().toString(36).slice(2)}_${Date.now()}`;
-    // Найти первое свободное Y
     const maxY = blocks.reduce((m, b) => Math.max(m, b.y + b.h), 0);
     const newBlock: BlockInstance = {
       id,
-      type,
+      type: result.type,
       x: 0,
       y: maxY,
-      w: def.defaultSize.w,
-      h: def.defaultSize.h,
-      config: def.defaultConfig?.(),
+      w: result.size.w,
+      h: result.size.h,
+      config: result.config,
+      appearance: result.appearance,
     };
     setBlocks((prev) => {
       const next = [...prev, newBlock];
@@ -123,12 +124,19 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
   }
 
   function onConfigChange(id: string, config: Record<string, unknown>) {
+    updateBlock(id, { config });
+  }
+
+  function updateBlock(id: string, patch: Partial<BlockInstance>) {
     setBlocks((prev) => {
-      const next = prev.map((b) => (b.id === id ? { ...b, config } : b));
+      const next = prev.map((b) => (b.id === id ? { ...b, ...patch } : b));
       scheduleSave(next);
       return next;
     });
   }
+
+  const settingsBlock = blocks.find((b) => b.id === settingsId) ?? null;
+  const settingsDef = settingsBlock ? getBlockDef(settingsBlock.type) : null;
 
   const grid = (
     <ResponsiveGridLayout
@@ -152,7 +160,9 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
           <div key={b.id}>
             <BlockChrome
               editMode={editMode}
+              appearance={b.appearance}
               onRemove={() => onRemoveBlock(b.id)}
+              onOpenSettings={() => setSettingsId(b.id)}
             >
               <Render
                 instance={b}
@@ -206,6 +216,16 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
         onAdd={onAddBlock}
         onClose={() => setShowAdd(false)}
       />
+
+      {settingsBlock && settingsDef && (
+        <BlockSettingsDialog
+          open={settingsId !== null}
+          onClose={() => setSettingsId(null)}
+          def={settingsDef}
+          instance={settingsBlock}
+          onChange={(patch) => updateBlock(settingsBlock.id, patch)}
+        />
+      )}
     </div>
   );
 }

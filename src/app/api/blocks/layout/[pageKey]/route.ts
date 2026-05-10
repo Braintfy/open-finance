@@ -6,6 +6,15 @@ import { loadLayout, saveLayout } from '@/lib/blocks/queries';
 
 const PageKey = z.string().min(1).max(64).regex(/^[a-z0-9_-]+$/i);
 
+const AppearanceSchema = z
+  .object({
+    title: z.string().max(200).optional(),
+    borderColor: z.string().max(40).optional(),
+    accentColor: z.string().max(40).optional(),
+    icon: z.string().max(40).optional(),
+  })
+  .optional();
+
 const BlockInstanceSchema = z.object({
   id: z.string().min(1).max(64),
   type: z.string().min(1).max(64),
@@ -14,6 +23,7 @@ const BlockInstanceSchema = z.object({
   w: z.number().int().min(1).max(50),
   h: z.number().int().min(1).max(100),
   config: z.record(z.string(), z.unknown()).optional(),
+  appearance: AppearanceSchema,
 });
 
 const PutBody = z.object({

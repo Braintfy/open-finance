@@ -21,6 +21,7 @@ import {
 import { formatRubles, formatDate } from '@/lib/utils';
 import { useCashflowData, type CashflowTx } from './cashflow-data';
 import { TransactionDialog } from './transaction-dialog';
+import { resolveIcon } from '../icon-resolver';
 
 // ============================================================================
 // stat.income / stat.expense / stat.balance — KPI карточки
@@ -31,22 +32,27 @@ function StatCard({
   value,
   icon,
   big,
+  accent,
 }: {
   label: string;
   value: number;
   icon?: React.ReactNode;
   big?: boolean;
+  accent?: string;
 }) {
   return (
     <Card className="h-full">
       <CardHeader className="pb-2">
         <CardTitle className="flex items-center gap-2 text-sm font-normal text-muted-foreground">
           {icon}
-          {label}
+          <span className="line-clamp-1">{label}</span>
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <div className={`${big ? 'text-3xl' : 'text-2xl'} font-semibold tabular-nums`}>
+        <div
+          className={`${big ? 'text-3xl' : 'text-2xl'} font-semibold tabular-nums`}
+          style={accent ? { color: accent } : undefined}
+        >
           {value < 0 ? '−' : ''}
           {formatRubles(Math.abs(value))}
         </div>
@@ -55,35 +61,44 @@ function StatCard({
   );
 }
 
-function RenderIncome(_props: BlockRenderProps) {
+function RenderIncome({ instance }: BlockRenderProps) {
   const { summary, loading } = useCashflowData();
+  const Icon = resolveIcon(instance.appearance?.icon, ArrowDown);
+  const accent = instance.appearance?.accentColor;
   return (
     <StatCard
-      label="Доходы за месяц"
+      label={instance.appearance?.title ?? 'Доходы за месяц'}
       value={loading ? 0 : summary.incomeTotal}
-      icon={<ArrowDown className="h-4 w-4 text-green-600" />}
+      icon={<Icon className="h-4 w-4" style={{ color: accent ?? '#16a34a' }} />}
+      accent={accent}
     />
   );
 }
 
-function RenderExpense(_props: BlockRenderProps) {
+function RenderExpense({ instance }: BlockRenderProps) {
   const { summary, loading } = useCashflowData();
+  const Icon = resolveIcon(instance.appearance?.icon, ArrowUp);
+  const accent = instance.appearance?.accentColor;
   return (
     <StatCard
-      label="Расходы за месяц"
+      label={instance.appearance?.title ?? 'Расходы за месяц'}
       value={loading ? 0 : summary.expenseTotal}
-      icon={<ArrowUp className="h-4 w-4 text-red-600" />}
+      icon={<Icon className="h-4 w-4" style={{ color: accent ?? '#dc2626' }} />}
+      accent={accent}
     />
   );
 }
 
-function RenderBalance(_props: BlockRenderProps) {
+function RenderBalance({ instance }: BlockRenderProps) {
   const { summary, loading } = useCashflowData();
+  const Icon = resolveIcon(instance.appearance?.icon, Wallet);
+  const accent = instance.appearance?.accentColor;
   return (
     <StatCard
-      label="Баланс"
+      label={instance.appearance?.title ?? 'Баланс'}
       value={loading ? 0 : summary.balance}
-      icon={<Wallet className="h-4 w-4 text-muted-foreground" />}
+      icon={<Icon className="h-4 w-4" style={accent ? { color: accent } : undefined} />}
+      accent={accent}
       big
     />
   );
@@ -142,12 +157,18 @@ function RenderTopCategories({ instance }: BlockRenderProps) {
   const sliced = rows.slice(0, cfg.limit);
   const max = sliced.length > 0 ? Math.max(...sliced.map((r) => r.total)) : 1;
 
+  const accent =
+    instance.appearance?.accentColor ??
+    (cfg.type === 'income' ? '#10b981' : '#ef4444');
+  const title =
+    instance.appearance?.title ??
+    cfg.title ??
+    (cfg.type === 'income' ? 'Топ доходов' : 'Топ расходов');
+
   return (
     <Card className="h-full overflow-hidden">
       <CardHeader>
-        <CardTitle className="text-base">
-          {cfg.title ?? (cfg.type === 'income' ? 'Топ доходов' : 'Топ расходов')}
-        </CardTitle>
+        <CardTitle className="text-base">{title}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3 overflow-y-auto">
         {loading ? (
@@ -165,10 +186,11 @@ function RenderTopCategories({ instance }: BlockRenderProps) {
               </div>
               <div className="h-1.5 overflow-hidden rounded-full bg-muted">
                 <div
-                  className={`h-full rounded-full ${
-                    cfg.type === 'income' ? 'bg-green-500' : 'bg-red-500'
-                  }`}
-                  style={{ width: `${Math.round((r.total / max) * 100)}%` }}
+                  className="h-full rounded-full"
+                  style={{
+                    width: `${Math.round((r.total / max) * 100)}%`,
+                    backgroundColor: accent,
+                  }}
                 />
               </div>
             </div>
@@ -176,6 +198,56 @@ function RenderTopCategories({ instance }: BlockRenderProps) {
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function TopCategoriesSettings({
+  config,
+  onChange,
+}: {
+  config: Record<string, unknown>;
+  onChange: (c: Record<string, unknown>) => void;
+}) {
+  const cfg = TopCatsConfig.parse(config ?? {});
+  return (
+    <div className="space-y-4">
+      <div className="space-y-2">
+        <label className="text-sm font-medium">Что показывать</label>
+        <div className="flex gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant={cfg.type === 'income' ? 'default' : 'outline'}
+            onClick={() => onChange({ ...cfg, type: 'income' })}
+            className="flex-1"
+          >
+            Доходы
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant={cfg.type === 'expense' ? 'default' : 'outline'}
+            onClick={() => onChange({ ...cfg, type: 'expense' })}
+            className="flex-1"
+          >
+            Расходы
+          </Button>
+        </div>
+      </div>
+      <div className="space-y-2">
+        <label className="text-sm font-medium">
+          Количество строк: <span className="tabular-nums">{cfg.limit}</span>
+        </label>
+        <input
+          type="range"
+          min={1}
+          max={20}
+          value={cfg.limit}
+          onChange={(e) => onChange({ ...cfg, limit: Number(e.target.value) })}
+          className="w-full accent-primary"
+        />
+      </div>
+    </div>
   );
 }
 
@@ -190,6 +262,7 @@ export const TopCategoriesBlock: BlockDef = {
   pages: ['cashflow', 'dashboard'],
   configSchema: TopCatsConfig,
   defaultConfig: () => ({ type: 'expense', limit: 5 }),
+  SettingsForm: TopCategoriesSettings,
   Render: RenderTopCategories,
 };
 
@@ -230,7 +303,9 @@ function RenderTransactionsList({ instance }: BlockRenderProps) {
   return (
     <Card className="flex h-full flex-col overflow-hidden">
       <CardHeader className="flex flex-row items-center justify-between pb-3">
-        <CardTitle className="text-base">{cfg.title ?? 'История операций'}</CardTitle>
+        <CardTitle className="text-base">
+          {instance.appearance?.title ?? cfg.title ?? 'История операций'}
+        </CardTitle>
         {transactions.length > 0 && (
           <Button
             variant="ghost"
@@ -376,10 +451,42 @@ function RenderTransactionsList({ instance }: BlockRenderProps) {
   );
 }
 
+function TransactionsSettings({
+  config,
+  onChange,
+}: {
+  config: Record<string, unknown>;
+  onChange: (c: Record<string, unknown>) => void;
+}) {
+  const cfg = TxListConfig.parse(config ?? {});
+  return (
+    <div className="space-y-4">
+      <div className="space-y-2">
+        <label className="text-sm font-medium">
+          Сколько строк показывать: <span className="tabular-nums">{cfg.limit}</span>
+        </label>
+        <input
+          type="range"
+          min={5}
+          max={200}
+          step={5}
+          value={cfg.limit}
+          onChange={(e) => onChange({ ...cfg, limit: Number(e.target.value) })}
+          className="w-full accent-primary"
+        />
+        <div className="flex justify-between text-xs text-muted-foreground">
+          <span>5</span>
+          <span>200</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export const TransactionsListBlock: BlockDef = {
   type: 'cashflow.transactions',
   displayName: 'Список операций',
-  description: 'Список последних транзакций с фильтрами',
+  description: 'Список последних транзакций с edit/delete и Очистить всё',
   category: 'tables',
   icon: ListOrdered,
   defaultSize: { w: 12, h: 6 },
@@ -387,5 +494,6 @@ export const TransactionsListBlock: BlockDef = {
   pages: ['cashflow'],
   configSchema: TxListConfig,
   defaultConfig: () => ({ limit: 50 }),
+  SettingsForm: TransactionsSettings,
   Render: RenderTransactionsList,
 };
