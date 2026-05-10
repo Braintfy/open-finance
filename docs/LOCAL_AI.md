@@ -1,95 +1,140 @@
-# Локальная AI-модель в dev (Ollama)
+# Локальный AI для разработки (Ollama)
 
-> Зачем: разрабатывать с реальным AI без расходов на API и без VPN.
-> Как работает: Ollama крутится у тебя на маке, отдаёт OpenAI-совместимый JSON, наш `OllamaProvider` к нему ходит.
+## Зачем
 
-## Способ 1 — через Ollama.app (рекомендую для соло-разработчика)
+В разработке не хочется тратить деньги на API. Ollama запускает модели локально и предоставляет HTTP API совместимый с OpenAI-форматом (с нюансами).
 
-Самый простой. Один раз поставил — забыл.
+## Шаг 1: Установка Ollama
 
 ```bash
-# Установка (один раз)
+# macOS:
 brew install ollama
-
-# Запустить как сервис (автостарт при перезагрузке)
 brew services start ollama
 
-# Скачать модель (~5 GB, делается один раз)
-ollama pull qwen2.5:7b
+# Linux:
+curl -fsSL https://ollama.com/install.sh | sh
 
-# Проверить что живо
+# Проверка:
 curl http://localhost:11434/api/tags
-# или
+# → {"models":[]}
 pnpm ollama:check
 ```
 
-**Какую модель брать на M-серии Mac:**
+После этого Ollama слушает на `http://localhost:11434`.
 
-| Модель | Размер | RAM | Качество | Скорость | Когда брать |
-|--------|--------|-----|----------|----------|-------------|
-| `qwen2.5:3b` | 2 GB | 4 GB | средне | ~50 t/s | минимальный mac, быстрые ответы |
-| `qwen2.5:7b` ✅ | 4.7 GB | 8 GB | хорошо | ~25 t/s | **дефолт** для разработки |
-| `llama3.1:8b` | 4.7 GB | 8 GB | хорошо | ~20 t/s | альтернатива qwen |
-| `qwen2.5:14b` | 9 GB | 16 GB | отлично | ~10 t/s | если M2 Pro+ |
-| `qwen2.5:32b` | 20 GB | 32 GB | premium | ~5 t/s | M3 Max / Studio |
+## Шаг 2: Скачать модель
 
-Для embeddings (RAG-память) отдельно:
+### Через UI приложения (рекомендуется)
+
+1. Открой `/admin/ai/local-models` под аккаунтом super-admin
+2. Выбери модель из каталога → нажми «Загрузить»
+3. Прогресс-бар покажет скачивание
+4. После загрузки модель появится в «Установленных»
+
+### Через CLI
 
 ```bash
-ollama pull nomic-embed-text
+ollama pull qwen2.5:7b
+ollama pull nomic-embed-text   # для RAG embeddings (обязательно если AI используется)
 ```
 
-## Способ 2 — Ollama в Docker (если хочешь изолировать)
+## Подбор модели под Mac M3 18GB
 
-Не рекомендую на macOS: контейнер не видит Apple Silicon GPU и крутится на CPU в 5–10 раз медленнее. На Linux-сервере — нормально.
+Mac M3 с 18GB unified memory — sweet spot для локального LLM. Apple Silicon GPU использует ту же память, поэтому модели работают шустро.
+
+| Модель | Размер | Скорость на M3 18GB | Качество русского |
+|--------|--------|---------------------|-------------------|
+| `qwen2.5:7b` | 4.7 GB | ~30-40 ток/с | ⭐⭐⭐⭐ хорошо |
+| `qwen2.5:14b` | 9 GB | ~15-20 ток/с | ⭐⭐⭐⭐⭐ отлично, но медленно |
+| `llama3.2:3b` | 2 GB | ~60+ ток/с | ⭐⭐⭐ нормально |
+| `llama3.1:8b` | 4.7 GB | ~30 ток/с | ⭐⭐⭐ нормально |
+| `gemma2:9b` | 5.4 GB | ~25 ток/с | ⭐⭐⭐⭐ хорошо |
+| `nomic-embed-text` | 274 MB | мгновенно | — для embeddings |
+
+**Рекомендация для M3 18GB:** `qwen2.5:7b` (чат) + `nomic-embed-text` (RAG).
+
+Если памяти мало — переключайся на `llama3.2:3b`.
+
+## Шаг 3: Подключить в Open Finance
+
+В `.env.local`:
+
+```bash
+AI_DEFAULT_PROVIDER=ollama
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_DEFAULT_MODEL=qwen2.5:7b
+```
+
+После рестарта dev-сервера AI-инструменты будут ходить в Ollama.
+
+## Тест
+
+```bash
+# Прямой:
+curl http://localhost:11434/api/generate -d '{
+  "model": "qwen2.5:7b",
+  "prompt": "Привет! Кто ты?",
+  "stream": false
+}'
+
+# Через UI: /admin/ai/local-models — увидишь модель в «Установленных»
+```
+
+## Ollama в Docker (не рекомендуется на mac)
+
+На macOS контейнер не видит Apple Silicon GPU и крутится на CPU в 5–10 раз медленнее. На Linux-сервере — нормально.
 
 ```yaml
-# Если всё-таки надо, добавь в docker-compose.yml:
+# docker-compose.yml фрагмент:
 ollama:
   image: ollama/ollama:latest
   container_name: openfinance-ollama
-  ports:
-    - "11434:11434"
-  volumes:
-    - openfinance_ollama_data:/root/.ollama
+  ports: ['127.0.0.1:11434:11434']
+  volumes: [openfinance_ollama:/root/.ollama]
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
 ```
 
-## Способ 3 — Через настройки в админке (план)
+## Troubleshooting
 
-В роадмапе: страница `/admin/ai/local-models` где:
+### Модель «тормозит»
+- `ollama ps` — модель должна быть в памяти
+- Большие модели (14B+) выгружаются между запросами на 18GB
+- Закрой Chrome и тяжёлые приложения — освободит RAM
 
-1. Кнопка «Скачать qwen2.5:7b» — фронт триггерит API → backend пушит `ollama pull` через локального демона
-2. Прогресс-бар скачивания (стриминг от Ollama API)
-3. Список установленных моделей + кнопка «Удалить»
-4. Тест-чат прямо из админки
+### `curl: (7) Failed to connect`
+```bash
+brew services start ollama
+# или вручную:
+ollama serve
+```
 
-API Ollama для этого:
-- `GET /api/tags` — список моделей
-- `POST /api/pull` — скачать (стриминг JSON)
-- `DELETE /api/delete` — удалить
-- `POST /api/generate` — чат
+### Порт 11434 занят
+```bash
+OLLAMA_HOST=127.0.0.1:11500 ollama serve
+# и в .env.local:
+OLLAMA_BASE_URL=http://localhost:11500
+```
 
-**Примечание по безопасности:** менеджмент моделей доступен ТОЛЬКО когда:
-- `NODE_ENV=development` ИЛИ
-- Это Tauri-сборка (Local-First режим, всё локально)
+### `pnpm ollama:check` показывает ошибку
+Ollama не запущена. См. выше — `brew services start ollama`.
 
-В SaaS-проде эта страница недоступна.
+## Альтернативы Ollama
 
-## Что делать если Ollama не поднимается
+| Решение | Когда |
+|---------|-------|
+| **Ollama** | дефолт, простота, авто-загрузка |
+| **LM Studio** | GUI без кода, но только macOS/Win |
+| **llama.cpp** | максимум контроля |
+| **vLLM** | прод-inference, тонкая настройка |
 
-1. Проверь `brew services list` — должен быть `ollama started`
-2. Проверь порт: `lsof -i :11434`
-3. Логи: `tail -f ~/.ollama/logs/server.log`
-4. Если занят порт — выключи через `brew services stop ollama` и запусти руками: `OLLAMA_HOST=127.0.0.1:11434 ollama serve`
+## Ссылки
 
-## Когда Ollama НЕ нужен
-
-- В админке выбран `mock` провайдер (`AI_DEFAULT_PROVIDER=mock`)
-- Юзер использует Anthropic/OpenAI с реальным ключом
-- На продакшене SaaS
-
-## Связанные файлы
-
-- `src/lib/ai/providers/ollama.ts` — провайдер (TODO в Этапе 2)
-- `src/lib/ai/providers/mock.ts` — mock-провайдер для тестов (TODO)
-- `.env.example` — `OLLAMA_BASE_URL`, `OLLAMA_DEFAULT_MODEL`, `AI_DEFAULT_PROVIDER`
+- [Ollama library](https://ollama.com/library)
+- [Apple Silicon perf benchmarks](https://github.com/ggerganov/llama.cpp/discussions/4167)
+- [Qwen 2.5 release notes](https://qwenlm.github.io/blog/qwen2.5/)

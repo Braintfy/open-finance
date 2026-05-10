@@ -13,6 +13,8 @@ import {
   type SessionPayload,
 } from './session';
 import { env } from '@/lib/env';
+import { sendMail } from '@/lib/email/transport';
+import { welcomeEmail, resetPasswordEmail } from '@/lib/email/templates';
 
 export type RegisterInput = {
   email: string;
@@ -106,6 +108,12 @@ export async function register(input: RegisterInput): Promise<AuthResult> {
     tenantId: result.tenantId,
   });
 
+  // Welcome email (best-effort, ошибки не блокируют регистрацию)
+  void sendMail({
+    to: email,
+    ...welcomeEmail({ name: input.name ?? null, appUrl: env.APP_URL || 'http://localhost:3000' }),
+  });
+
   return { ok: true, userId: result.userId, tenantId: result.tenantId };
 }
 
@@ -177,11 +185,11 @@ export async function requestPasswordReset(email: string) {
       passwordResetExpiresAt: new Date(Date.now() + 60 * 60 * 1000), // 1 час
     })
     .where(eq(users.id, user.id));
-  // TODO: отправить email с ссылкой /auth/reset-password?token=...
-  // В dev — просто логируем.
-  if (env.NODE_ENV === 'development') {
-    console.log(`[auth] Password reset token for ${normalized}: ${token}`);
-  }
+  // Отправляем reset email (в dev без SMTP уйдёт в консоль)
+  void sendMail({
+    to: normalized,
+    ...resetPasswordEmail({ token, appUrl: env.APP_URL || 'http://localhost:3000' }),
+  });
   return { ok: true as const };
 }
 

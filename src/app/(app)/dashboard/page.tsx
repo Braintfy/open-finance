@@ -1,10 +1,15 @@
-// PURPOSE: Главный экран дашборда — пока заглушка с приветствием
+// PURPOSE: Главный экран дашборда
 import Link from 'next/link';
+import { redirect } from 'next/navigation';
+import { eq } from 'drizzle-orm';
+import { Inbox, Wallet, Calendar } from 'lucide-react';
 import { auth } from '@/lib/auth';
 import { db } from '@/lib/db/client';
 import { tenants } from '@/lib/db/schema/tenants';
-import { eq } from 'drizzle-orm';
-import { redirect } from 'next/navigation';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { getCashflowSummary } from '@/lib/cashflow/queries';
+import { formatRubles } from '@/lib/utils';
 
 export default async function DashboardPage() {
   const session = await auth();
@@ -16,44 +21,128 @@ export default async function DashboardPage() {
     tenant = rows[0];
   }
 
-  // Если ещё не прошёл онбординг — отправляем туда
   if (tenant && !tenant.onboardingCompleted) {
     redirect('/onboarding');
   }
 
+  const summary = session.tenantId
+    ? await getCashflowSummary(
+        session.tenantId,
+        new Date(new Date().getFullYear(), new Date().getMonth(), 1)
+      )
+    : { incomeTotal: 0, expenseTotal: 0, balance: 0, incomeCount: 0, expenseCount: 0 };
+
+  const hasData = summary.incomeCount + summary.expenseCount > 0;
+
   return (
-    <div className="mx-auto max-w-5xl">
-      <h1 className="mb-2 text-2xl font-semibold text-zinc-900">Привет, {session.email.split('@')[0]}</h1>
-      <p className="mb-8 text-zinc-600">
-        Добро пожаловать в Open Finance. Это ранняя foundation-версия — модули появятся в Этапе 1.
-      </p>
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div>
+        <h1 className="text-2xl font-semibold">
+          Привет, {session.email.split('@')[0]}
+        </h1>
+        <p className="text-muted-foreground">
+          {hasData
+            ? `Сводка за текущий месяц`
+            : `Начните с импорта выписки или добавления первой операции`}
+        </p>
+      </div>
+
+      {hasData && (
+        <div className="grid gap-4 md:grid-cols-3">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-normal text-muted-foreground">Доходы</CardTitle>
+            </CardHeader>
+            <CardContent className="text-2xl font-semibold text-green-600">
+              {formatRubles(summary.incomeTotal)}
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-normal text-muted-foreground">Расходы</CardTitle>
+            </CardHeader>
+            <CardContent className="text-2xl font-semibold text-red-600">
+              {formatRubles(summary.expenseTotal)}
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-normal text-muted-foreground">Баланс</CardTitle>
+            </CardHeader>
+            <CardContent
+              className={`text-3xl font-semibold ${
+                summary.balance >= 0 ? 'text-foreground' : 'text-red-600'
+              }`}
+            >
+              {summary.balance < 0 ? '−' : ''}
+              {formatRubles(Math.abs(summary.balance))}
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       <div className="grid gap-4 md:grid-cols-3">
-        <Card title="Денежный поток" href="/cashflow" desc="Доходы и расходы по счетам" />
-        <Card title="Inbox" href="/inbox" desc="Чеки, счета, договоры — AI разберёт" />
-        <Card title="Дедлайны" href="/deadlines" desc="Налоги, отчёты, обязательства" />
+        <ModuleCard
+          icon={<Wallet className="size-5" />}
+          title="Денежный поток"
+          desc="Доходы и расходы, импорт выписок"
+          href="/cashflow"
+        />
+        <ModuleCard
+          icon={<Inbox className="size-5" />}
+          title="Inbox"
+          desc="Чеки, счета, договоры — AI разберёт"
+          href="/inbox"
+          comingSoon
+        />
+        <ModuleCard
+          icon={<Calendar className="size-5" />}
+          title="Дедлайны"
+          desc="Налоги, отчёты, обязательства"
+          href="/deadlines"
+          comingSoon
+        />
       </div>
 
-      <div className="mt-8 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-        <strong>Foundation phase.</strong> Сейчас работают только auth, лендинг и каркас. Модули в разработке.
-        План:{' '}
-        <Link href="/PLAN.md" className="underline">
-          PLAN.md
-        </Link>
-        .
-      </div>
+      <Alert variant="warning">
+        <AlertDescription>
+          <strong>Foundation phase.</strong> Сейчас работают auth, лендинг, cashflow с импортом
+          CSV/XLSX. Inbox, Deadlines, AI-секретарь — в разработке. План:{' '}
+          <Link href="/PLAN.md" className="underline">
+            PLAN.md
+          </Link>
+          .
+        </AlertDescription>
+      </Alert>
     </div>
   );
 }
 
-function Card({ title, href, desc }: { title: string; href: string; desc: string }) {
-  return (
-    <Link
-      href={href}
-      className="block rounded-xl border border-zinc-200 bg-white p-5 transition hover:border-zinc-400 hover:shadow-sm"
-    >
-      <div className="mb-1 font-medium text-zinc-900">{title}</div>
-      <div className="text-sm text-zinc-500">{desc}</div>
-    </Link>
+function ModuleCard({
+  icon,
+  title,
+  desc,
+  href,
+  comingSoon,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  desc: string;
+  href: string;
+  comingSoon?: boolean;
+}) {
+  const inner = (
+    <Card className={`transition-shadow ${comingSoon ? 'opacity-60' : 'hover:shadow-md'}`}>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-muted-foreground">{icon}</div>
+          {comingSoon && <span className="text-xs text-muted-foreground">скоро</span>}
+        </div>
+        <CardTitle className="text-base">{title}</CardTitle>
+      </CardHeader>
+      <CardContent className="text-sm text-muted-foreground">{desc}</CardContent>
+    </Card>
   );
+  if (comingSoon) return inner;
+  return <Link href={href}>{inner}</Link>;
 }

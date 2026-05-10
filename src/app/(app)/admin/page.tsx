@@ -25,7 +25,7 @@ export default async function AdminPage() {
           { href: '/admin/settings', label: 'Открытая регистрация / by-invite' },
         ]} />
         <Section title="AI и инфраструктура" links={[
-          { href: '/admin/ai/local-models', label: 'Локальные модели (Ollama)' },
+          { href: '/admin/ai/local-models', label: 'Локальные модели (Ollama) — менеджер' },
           { href: '/admin/vpn', label: 'VPN для зарубежных AI API' },
           { href: '/admin/audit', label: 'AI Audit log' },
         ]} />

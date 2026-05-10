@@ -8,8 +8,10 @@ const envSchema = z.object({
   REDIS_URL: z.string().url().optional(),
 
   // Auth
-  NEXTAUTH_SECRET: z.string().min(32).optional(),
-  NEXTAUTH_URL: z.string().url().optional(),
+  // В dev допустимо пустое (включится fallback в session.ts).
+  // В проде getSecretKey() кинет ошибку если NEXTAUTH_SECRET не задан или короче 32 символов.
+  NEXTAUTH_SECRET: z.string().optional().or(z.literal('')),
+  NEXTAUTH_URL: z.string().url().optional().or(z.literal('')),
 
   // AI providers (BYOK или server-side)
   ANTHROPIC_API_KEY: z.string().optional(),
@@ -54,6 +56,14 @@ const envSchema = z.object({
 
   // Sentry (мониторинг)
   SENTRY_DSN: z.string().url().optional().or(z.literal('')),
+
+  // SMTP (рассылка почты)
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().optional(),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASSWORD: z.string().optional(),
+  SMTP_FROM: z.string().optional(),
+  APP_URL: z.string().url().optional().or(z.literal('')),
 
   // Feature flags
   FEATURE_OPEN_REGISTRATION: z
@@ -104,6 +114,12 @@ export const env = envSchema.parse({
   CLOUDPAYMENTS_PUBLIC_ID: process.env.CLOUDPAYMENTS_PUBLIC_ID,
   CLOUDPAYMENTS_API_PASSWORD: process.env.CLOUDPAYMENTS_API_PASSWORD,
   SENTRY_DSN: process.env.SENTRY_DSN,
+  SMTP_HOST: process.env.SMTP_HOST,
+  SMTP_PORT: process.env.SMTP_PORT,
+  SMTP_USER: process.env.SMTP_USER,
+  SMTP_PASSWORD: process.env.SMTP_PASSWORD,
+  SMTP_FROM: process.env.SMTP_FROM,
+  APP_URL: process.env.APP_URL,
   FEATURE_OPEN_REGISTRATION: process.env.FEATURE_OPEN_REGISTRATION,
   FEATURE_ONBOARDING_WIZARD: process.env.FEATURE_ONBOARDING_WIZARD,
   FEATURE_BILLING_MOCK: process.env.FEATURE_BILLING_MOCK,

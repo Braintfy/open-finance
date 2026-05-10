@@ -18,13 +18,17 @@ export type SessionPayload = {
 };
 
 function getSecretKey(): Uint8Array {
+  const raw = env.NEXTAUTH_SECRET;
   const secret =
-    env.NEXTAUTH_SECRET ??
-    (env.NODE_ENV === 'development'
-      ? 'dev-only-do-not-use-in-prod-min-32-chars-please'
-      : undefined);
+    raw && raw.length >= 32
+      ? raw
+      : env.NODE_ENV === 'development'
+        ? 'dev-only-do-not-use-in-prod-min-32-chars-please'
+        : null;
   if (!secret) {
-    throw new Error('NEXTAUTH_SECRET не задан в проде');
+    throw new Error(
+      'NEXTAUTH_SECRET не задан или короче 32 символов. Сгенерируйте: openssl rand -base64 48'
+    );
   }
   return new TextEncoder().encode(secret);
 }

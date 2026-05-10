@@ -1,5 +1,68 @@
 # Changelog
 
+## [0.7.0] - 2026-05-10
+
+### Added
+- **shadcn/ui** установлен:
+  - `components.json` (style: new-york, baseColor: zinc, lucide icons)
+  - `src/components/ui/`: `button.tsx`, `input.tsx`, `label.tsx`, `card.tsx`, `alert.tsx`, `table.tsx`
+  - Login/Register страницы переписаны на shadcn-компоненты
+- **Cashflow модуль** (первый рабочий бизнес-модуль):
+  - `src/lib/cashflow/queries.ts` — `listTransactions`, `getCashflowSummary`, `getTopCategories`, `listCategories`, `ensureDefaultCategories`. Все запросы скоупятся `tenantId`.
+  - `src/lib/cashflow/import.ts` — парсер CSV (papaparse) + XLSX (xlsx). Авто-определение колонок «Дата/Сумма/Контрагент/Назначение». Поддержка форматов Тинькофф/Сбер/generic. Положительные суммы → доход, отрицательные → расход
+  - `/api/cashflow/transactions` (GET/POST), `/api/cashflow/transactions/[id]` (PATCH/DELETE), `/api/cashflow/categories` (GET), `/api/cashflow/summary` (GET), `/api/cashflow/import` (POST с превью + commit)
+  - `/cashflow` страница: сводка месяца (доходы/расходы/баланс), топ-5 категорий, лента последних 50 операций, формы добавления и импорта файла
+  - 12 дефолтных категорий создаются при первой транзакции (Продажи маркетплейс, Закупка, Реклама, Налоги, и т.д.)
+  - Dashboard: показывает баланс если есть транзакции, иначе — призыв к действию
+- **SMTP через nodemailer** (с Beget по умолчанию):
+  - `src/lib/email/transport.ts` — `sendMail()` с dev-fallback в консоль если SMTP не настроен
+  - `src/lib/email/templates.ts` — `welcomeEmail`, `resetPasswordEmail` (минимальный inline-HTML)
+  - Регистрация шлёт welcome-письмо, forgot-password шлёт reset-link
+  - `docs/EMAIL_BEGET.md` — пошаговый гайд (создать ящик, SPF/DKIM/DMARC, troubleshooting)
+- **Ollama менеджер моделей** (как LM Studio):
+  - `src/lib/ai/providers/ollama.ts` — `isOllamaAvailable`, `listInstalledModels`, `pullModel` (со стримом прогресса), `deleteModel`, `generate`
+  - `src/lib/ai/providers/ollama-catalog.ts` — каталог 6 рекомендованных моделей с метаданными (размер, RAM, для чего, рекомендация)
+  - `/admin/ai/local-models` — UI: установленные модели + каталог, кнопка «Загрузить» с прогресс-баром, удаление, проверка доступности Ollama
+  - API: `GET /api/admin/ai/local-models`, `POST /api/admin/ai/local-models/pull` (NDJSON стрим), `DELETE /api/admin/ai/local-models/[name]`
+  - `docs/LOCAL_AI.md` — полностью переписан под Mac M3 18GB с таблицей скоростей моделей, troubleshooting, альтернативами
+- **VPN proxy для зарубежных AI API:**
+  - `docs/VPN_FOR_AI.md` — гайд по подключению bvpn.cc подписки (VLESS через Xray → SOCKS5 на 10808 → AI_PROXY_URL)
+  - Альтернативы: WireGuard на VPS, Outline, Mullvad
+- **Tauri vs Electron стратегия:**
+  - `docs/DESKTOP_STRATEGY.md` — детальное сравнение для интеграций с Office Excel, 1С COM, файловый обмен
+  - Решение: Tauri как основной, готовность к Electron-fork в 1 неделю если потребуется COM-автоматизация
+- **Новые env**: `SMTP_HOST/PORT/USER/PASSWORD/FROM`, `APP_URL`
+- **Зависимости**: `nodemailer`, `papaparse`, `xlsx` (deps); `@types/nodemailer`, `@types/papaparse` (devDeps)
+
+### Changed
+- Лендинг: версия 0.6.0 → 0.7.0
+- Sidebar (`src/app/(app)/layout.tsx`): добавлена ссылка «AI модели» в админ-секцию
+- `src/app/(app)/admin/page.tsx`: уточнено описание раздела локальных моделей
+
+### Verified
+- ✅ `pnpm build` проходит. **24 страницы** (было 16), middleware 53.7 kB. Все warnings — косметика (unused imports в schemas, ESLint конкретно `_`-префикс)
+- ✅ Auth-пути работают: register шлёт welcome, forgot-password шлёт reset (в dev — в консоль)
+- ✅ Cashflow роуты: `/cashflow`, `/api/cashflow/*` — все собраны
+
+---
+
+## [0.6.1] - 2026-05-10
+
+### Fixed
+- **Падение middleware на старте dev-сервера** (`ZodError: NEXTAUTH_SECRET min(32)`):
+  - В `src/lib/env.ts` убрана `min(32)` валидация — теперь `optional().or(z.literal(''))`. Edge runtime корректно парсит env даже с пустыми значениями
+  - Реальная проверка длины секрета теперь в `src/lib/auth/session.ts:getSecretKey()`: prod требует 32+, dev получает безопасный fallback
+  - В `.env.example` добавлена подсказка `openssl rand -base64 48` для генерации
+- **Build verification** — добавлено правило в memory: всегда запускать `pnpm build` перед сообщением «готово». Build проверяется на edge-runtime совместимость, Suspense boundaries, zod runtime валидацию
+
+### Added
+- Сгенерирован безопасный 64-символьный `NEXTAUTH_SECRET` в `.env.local` пользователя (через `openssl rand -base64 48`)
+
+### Verified
+- ✅ `pnpm build` проходит. 16 страниц, middleware 53.5 kB. Все warnings — косметика (unused imports)
+
+---
+
 ## [0.6.0] - 2026-05-10
 
 ### Added

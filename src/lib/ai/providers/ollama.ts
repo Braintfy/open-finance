@@ -1,0 +1,89 @@
+// PURPOSE: Клиент к локальной Ollama (http://localhost:11434).
+// Поддержка: список установленных моделей, pull (с прогрессом), генерация.
+
+import { env } from '@/lib/env';
+
+const BASE = env.OLLAMA_BASE_URL;
+
+export type OllamaModel = {
+  name: string;
+  size: number; // bytes
+  modified_at: string;
+  details?: {
+    family?: string;
+    parameter_size?: string;
+    quantization_level?: string;
+  };
+};
+
+export async function isOllamaAvailable(): Promise<boolean> {
+  try {
+    const res = await fetch(`${BASE}/api/tags`, { signal: AbortSignal.timeout(2000) });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function listInstalledModels(): Promise<OllamaModel[]> {
+  const res = await fetch(`${BASE}/api/tags`);
+  if (!res.ok) throw new Error(`Ollama API ${res.status}`);
+  const data = (await res.json()) as { models?: OllamaModel[] };
+  return data.models ?? [];
+}
+
+export async function pullModel(name: string, onProgress?: (status: string, percent?: number) => void): Promise<void> {
+  const res = await fetch(`${BASE}/api/pull`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, stream: true }),
+  });
+  if (!res.ok) throw new Error(`Pull failed: ${res.status}`);
+  if (!res.body) return;
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split('\n');
+    buf = lines.pop() ?? '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const ev = JSON.parse(line) as { status?: string; total?: number; completed?: number };
+        const percent = ev.total && ev.completed ? Math.round((ev.completed / ev.total) * 100) : undefined;
+        onProgress?.(ev.status ?? '', percent);
+      } catch {
+        // ignore non-json lines
+      }
+    }
+  }
+}
+
+export async function deleteModel(name: string): Promise<void> {
+  const res = await fetch(`${BASE}/api/delete`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) throw new Error(`Delete failed: ${res.status}`);
+}
+
+export async function generate(input: { model: string; prompt: string; system?: string }): Promise<string> {
+  const res = await fetch(`${BASE}/api/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: input.model,
+      prompt: input.prompt,
+      system: input.system,
+      stream: false,
+    }),
+  });
+  if (!res.ok) throw new Error(`Generate failed: ${res.status}`);
+  const data = (await res.json()) as { response: string };
+  return data.response;
+}

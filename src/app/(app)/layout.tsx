@@ -15,7 +15,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       <aside className="w-60 border-r border-zinc-200 bg-white p-4">
         <div className="mb-8 px-2">
           <div className="text-lg font-semibold text-zinc-900">Open Finance</div>
-          <div className="text-xs text-zinc-500">v0.6.0</div>
+          <div className="text-xs text-zinc-500">v0.7.0</div>
         </div>
         <nav className="space-y-1 text-sm">
           <Link href="/dashboard" className="block rounded-md px-3 py-2 text-zinc-700 hover:bg-zinc-100">
@@ -40,6 +40,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
               </div>
               <Link href="/admin" className="block rounded-md px-3 py-2 text-zinc-700 hover:bg-zinc-100">
                 Панель
+              </Link>
+              <Link href="/admin/ai/local-models" className="block rounded-md px-3 py-2 text-zinc-700 hover:bg-zinc-100">
+                AI модели
               </Link>
               <Link href="/admin/users" className="block rounded-md px-3 py-2 text-zinc-700 hover:bg-zinc-100">
                 Пользователи
