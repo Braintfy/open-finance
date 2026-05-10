@@ -1,0 +1,74 @@
+// PURPOSE: GET/PUT /api/blocks/layout/[pageKey] — персональный layout страницы
+import { NextResponse } from 'next/server';
+import { z } from 'zod';
+import { auth } from '@/lib/auth';
+import { loadLayout, saveLayout } from '@/lib/blocks/queries';
+
+const PageKey = z.string().min(1).max(64).regex(/^[a-z0-9_-]+$/i);
+
+const BlockInstanceSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.string().min(1).max(64),
+  x: z.number().int().min(0).max(50),
+  y: z.number().int().min(0).max(1000),
+  w: z.number().int().min(1).max(50),
+  h: z.number().int().min(1).max(100),
+  config: z.record(z.string(), z.unknown()).optional(),
+});
+
+const PutBody = z.object({
+  blocks: z.array(BlockInstanceSchema).max(100),
+  hiddenSections: z.array(z.string().max(64)).max(50).optional(),
+});
+
+export async function GET(
+  _req: Request,
+  { params }: { params: Promise<{ pageKey: string }> }
+) {
+  const session = await auth();
+  if (!session?.tenantId || !session.userId) {
+    return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
+  }
+  const { pageKey: rawKey } = await params;
+  const parseKey = PageKey.safeParse(rawKey);
+  if (!parseKey.success) {
+    return NextResponse.json({ ok: false, error: 'Invalid pageKey' }, { status: 400 });
+  }
+  const layout = await loadLayout({
+    tenantId: session.tenantId,
+    userId: session.userId,
+    pageKey: parseKey.data,
+  });
+  return NextResponse.json({ ok: true, ...layout });
+}
+
+export async function PUT(
+  req: Request,
+  { params }: { params: Promise<{ pageKey: string }> }
+) {
+  const session = await auth();
+  if (!session?.tenantId || !session.userId) {
+    return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
+  }
+  const { pageKey: rawKey } = await params;
+  const parseKey = PageKey.safeParse(rawKey);
+  if (!parseKey.success) {
+    return NextResponse.json({ ok: false, error: 'Invalid pageKey' }, { status: 400 });
+  }
+  const json = await req.json();
+  const body = PutBody.safeParse(json);
+  if (!body.success) {
+    return NextResponse.json(
+      { ok: false, error: body.error.issues[0]?.message ?? 'Bad request' },
+      { status: 400 }
+    );
+  }
+  await saveLayout({
+    tenantId: session.tenantId,
+    userId: session.userId,
+    pageKey: parseKey.data,
+    blocks: body.data.blocks,
+    hiddenSections: body.data.hiddenSections,
+  });
+  return NextResponse.json({ ok: true });
+}

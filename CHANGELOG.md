@@ -1,5 +1,64 @@
 # Changelog
 
+## [0.8.0] - 2026-05-10
+
+### Added — Configurable Block-Grid Architecture (главная UI-фишка)
+- **DB schema `block_layouts`** — `src/lib/db/schema/block-layouts.ts`. Хранит layout per `(tenantId, userId, pageKey)` с полями `blocks JSON` (массив `BlockInstance`), `hiddenSections JSON`. Уникальный индекс `(tenant_id, user_id, page_key)`.
+- **Drizzle миграция** `drizzle/0000_abnormal_queen_noir.sql` сгенерирована (12 таблиц, включая `block_layouts`).
+- **`tenant_settings.aiSystemPrompt`** в `TenantSettings` — кастомный system prompt для всех AI вызовов tenant'а.
+- **Block Registry** — `src/lib/blocks/registry.ts`:
+  - `getBlockDef(type)`, `listBlocksForPage(pageKey)`, `listAllBlocks()`
+  - `DEFAULT_LAYOUTS.cashflow` — дефолтный layout если у пользователя нет своего
+  - `sanitizeBlocks(blocks)` — обрезает блоки с неизвестным `type`
+- **Каталог блоков для Cashflow** — `src/lib/blocks/catalog/cashflow.tsx`:
+  - `stat.income` / `stat.expense` / `stat.balance` — KPI-карточки
+  - `cashflow.top-categories` — топ категорий с прогресс-барами (configurable: `type`, `limit`, `title`)
+  - `cashflow.transactions` — список операций с edit/delete иконками, "Очистить всё" и встроенными модалками подтверждения и редактирования
+- **Sheet block (Excel-like)** — `src/lib/blocks/catalog/sheet.tsx`:
+  - Произвольная таблица с редактируемыми ячейками (10×5 по дефолту, до 200×26)
+  - Авто-сохранение состояния в `instance.config.cells` через `onConfigChange`
+- **`BlockGrid` компонент** — `src/components/blocks/block-grid.tsx`:
+  - Обёртка над `react-grid-layout` с responsive breakpoints (lg/md/sm/xs/xxs)
+  - Edit mode toggle (кнопка «Настроить» ↔ «Готово»)
+  - Drag-handle (центральная зона над блоком в edit mode), resize handles
+  - Авто-сохранение layout (debounce 800ms) в API через `PUT /api/blocks/layout/[pageKey]`
+  - Колбэк `onConfigChange` пробрасывается в блоки (для Sheet и future blocks)
+- **`BlockChrome`** — `src/components/blocks/block-chrome.tsx`. Drag handle + кнопка удаления блока (только в edit mode).
+- **`AddBlockDialog`** — `src/components/blocks/add-block-dialog.tsx`. Каталог блоков с поиском, группировкой по категориям (KPI / Таблицы / Графики / Прочее), пометкой «уже на странице».
+- **API `GET/PUT /api/blocks/layout/[pageKey]`** — `src/app/api/blocks/layout/[pageKey]/route.ts`. Zod-валидация всей структуры BlockInstance, лимит 100 блоков на страницу.
+- **`loadLayout` / `saveLayout`** — `src/lib/blocks/queries.ts`. Upsert через `onConflictDoUpdate` по `(tenant_id, user_id, page_key)`. Если у пользователя нет своего layout — возвращает дефолтный.
+- **Cashflow-data Provider** — `src/lib/blocks/catalog/cashflow-data.tsx`. Контекст со сводкой/категориями/транзакциями страницы — все cashflow-блоки делят одну выборку, без дубликатов запросов.
+
+### Changed
+- `/cashflow` **полностью переведён на Block-Grid**:
+  - `cashflow-client.tsx` теперь — обёртка с заголовком, кнопками «Импорт» / «Добавить» (модалки) и `<BlockGrid>` внутри
+  - Дефолтный layout: 3 KPI (доходы / расходы / баланс), 2 топ-категории, список операций — итого 6 блоков
+  - Пользователь может удалять блоки, добавлять новые из каталога (включая Sheet), drag-resize
+- `/cashflow` 19.7 kB → **26.4 kB** (от добавления react-grid-layout, edit mode UI, Sheet block)
+- shadcn `AlertDialog` (`@radix-ui/react-alert-dialog 1.1.15`) и `react-grid-layout 1.5.3` (стабильная v1, у v2 нет `WidthProvider`) добавлены как зависимости.
+
+### Pending для следующих итераций
+- Edit mode для **per-block config** (UI-настройки топ-категорий: тип/лимит/заголовок) — сейчас config редактируется только программно
+- `/settings` — управление видимостью разделов навигации (`hiddenSections`)
+- Ollama: `/api/ps`, `/api/show`, выгрузка моделей из памяти
+- AI system prompt: дефолтный для qwen2.5:7b + UI-редактор в `/admin/ai`
+- AI-flow «Импорт через AI» в Cashflow — анализ файла LLM перед коммитом
+- Перевод `/dashboard` на Block-Grid
+
+### Verified
+- ✅ `pnpm build` — 24 страницы + `/api/blocks/layout/[pageKey]` (143 kB), middleware 53.7 kB
+- ✅ `pnpm drizzle-kit generate` — миграция сгенерирована (12 таблиц)
+
+### Migration TODO (выполнить вручную)
+```bash
+# Применить миграцию к локальной БД (Postgres в docker, port 5434)
+pnpm db:migrate
+# или для prod
+DATABASE_URL=... pnpm db:migrate
+```
+
+---
+
 ## [0.7.1] - 2026-05-10
 
 ### Fixed

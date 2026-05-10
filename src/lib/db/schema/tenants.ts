@@ -1,5 +1,5 @@
 // PURPOSE: Multi-tenant организации (рабочее пространство пользователя)
-import { pgTable, uuid, text, timestamp, varchar, jsonb, boolean } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, timestamp, varchar, jsonb, boolean } from 'drizzle-orm/pg-core';
 
 export const tenants = pgTable('tenants', {
   id: uuid('id').defaultRandom().primaryKey(),
@@ -28,6 +28,7 @@ export type TenantSettings = {
   aiProvider?: 'anthropic' | 'openai' | 'yandex' | 'gigachat' | 'ollama' | 'mock';
   aiModel?: string;
   aiTokenLimit?: number; // дневной лимит
+  aiSystemPrompt?: string; // кастомный system prompt для всех AI вызовов tenant'а
   notifications?: {
     telegram?: boolean;
     email?: boolean;
