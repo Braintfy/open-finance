@@ -39,7 +39,7 @@ cp .env.example .env.local
 # 2. Установка зависимостей
 pnpm install
 
-# 3. Запуск БД+кэш+S3 (Postgres с pgvector на 5433, Redis 6380, MinIO 9100, Adminer 8081)
+# 3. Запуск БД+кэш+S3 (Postgres с pgvector на 5434, Redis 6380, MinIO 9100, Adminer 8081)
 pnpm docker:up
 
 # 4. Применить схему БД
@@ -64,7 +64,7 @@ Adminer (web UI для Postgres): [http://localhost:8081](http://localhost:8081)
 
 | Сервис | Порт | Почему не дефолтный |
 |---------|------|-------------------|
-| Postgres | 5433 | чтобы не конфликтовать с другими локальными PG (например `braint` на 5432) |
+| Postgres | 5434 | чтобы не конфликтовать с другими локальными PG (например `braint` на 5432) |
 | Redis | 6380 | тоже во избежание конфликтов |
 | MinIO API | 9100 | |
 | MinIO Console | 9101 | |

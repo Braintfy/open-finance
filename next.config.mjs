@@ -12,7 +12,10 @@ const nextConfig = {
           typedRoutes: true,
         },
       }),
-  // Поддержка Tauri (output: export для desktop)
+  // Поддержка Tauri (output: export для desktop).
+  // ВНИМАНИЕ: с output:'export' middleware и API routes НЕ работают.
+  // Для Tauri-сборки нужно: либо SPA-only часть UI без middleware/API, либо отдельный сервер для API.
+  // План: Tauri-версия будет ходить на тот же SaaS API (offline-режим — позже через локальный SQLite).
   output: process.env.TAURI_BUILD ? 'export' : undefined,
   images: {
     unoptimized: !!process.env.TAURI_BUILD,

@@ -6,7 +6,7 @@ export default function HomePage() {
     <main className="container mx-auto flex min-h-screen flex-col items-center justify-center px-4 py-16">
       <div className="max-w-2xl space-y-8 text-center">
         <div className="space-y-3">
-          <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">v0.4.0 · MVP foundation</p>
+          <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">v0.6.0 · MVP foundation</p>
           <h1 className="text-balance text-4xl font-semibold tracking-tight sm:text-5xl">
             Open Finance — AI Финансовый Управляющий
           </h1>
@@ -18,7 +18,7 @@ export default function HomePage() {
 
         <div className="flex flex-wrap items-center justify-center gap-3">
           <Link
-            href="/dashboard"
+            href="/register"
             className="inline-flex h-10 items-center justify-center rounded-lg bg-primary px-5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
           >
             Попробовать Pro · 14 дней бесплатно

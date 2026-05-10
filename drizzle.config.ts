@@ -13,7 +13,7 @@ export default {
   dbCredentials: {
     url:
       process.env.DATABASE_URL ??
-      'postgresql://openfinance_user:openfinance_local_dev@localhost:5433/openfinance_dev',
+      'postgresql://openfinance_user:openfinance_local_dev@localhost:5434/openfinance_dev',
   },
   verbose: true,
   strict: true,

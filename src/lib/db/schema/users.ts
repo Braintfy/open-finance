@@ -7,8 +7,15 @@ export const users = pgTable('users', {
   email: varchar('email', { length: 255 }).notNull().unique(),
   passwordHash: text('password_hash'),
   name: varchar('name', { length: 200 }),
+  // Глобальная роль платформы. Для tenant-уровня — memberships.role
+  globalRole: varchar('global_role', { length: 20 }).notNull().default('user'),
+  // 'user' | 'admin' | 'super_admin'
   emailVerifiedAt: timestamp('email_verified_at'),
   twoFactorEnabled: boolean('two_factor_enabled').notNull().default(false),
+  // Сброс пароля
+  passwordResetToken: varchar('password_reset_token', { length: 100 }),
+  passwordResetExpiresAt: timestamp('password_reset_expires_at'),
+  lastLoginAt: timestamp('last_login_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });

@@ -1,25 +1,24 @@
-// PURPOSE: Точка входа auth — динамический выбор драйвера v5 (default) или v4 (fallback).
-// Когда v5 (Auth.js / next-auth@5) выйдет из beta — оставим только её.
-// Пока обе ветки только заготовки, реальная имплементация в Этапе 1.
+// PURPOSE: Точка входа auth — реальная имплементация поверх JWT cookie.
+// API сделан совместимым с NextAuth v5 (auth/signIn/signOut), чтобы потом легко мигрировать.
 
 import { env } from '@/lib/env';
+import { register, login, logout, getSession, requestPasswordReset, confirmPasswordReset } from './actions';
 
-export type AuthDriver = 'v4' | 'v5';
+export type AuthDriver = 'v4' | 'v5' | 'minimal';
 
-export const authDriver: AuthDriver = env.AUTH_DRIVER;
+// Сейчас используется minimal (свой JWT). v4/v5 — для будущей миграции.
+export const authDriver: AuthDriver = 'minimal';
 
-// Реальные модули подключим в Этапе 1:
-//   v5: src/lib/auth/v5.ts (NextAuth.js 5 с Drizzle adapter)
-//   v4: src/lib/auth/v4.ts (NextAuth.js 4 как fallback)
-//
-// Внешний API будет одинаковый:
-//   import { auth, signIn, signOut } from '@/lib/auth';
-//
-// Это позволит откатиться сменой одного env-флага.
+export const auth = getSession;
+export const signIn = login;
+export const signOut = logout;
+export const signUp = register;
+export { requestPasswordReset, confirmPasswordReset };
 
 export function getAuthInfo() {
   return {
     driver: authDriver,
+    targetDriver: env.AUTH_DRIVER,
     openRegistration: env.FEATURE_OPEN_REGISTRATION,
   };
 }

@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.6.0] - 2026-05-10
+
+### Added
+- **Реальный auth поверх JWT cookie + bcrypt** (без NextAuth, чтобы не зависеть от beta v5):
+  - `src/lib/auth/password.ts` — `hashPassword`/`verifyPassword`/`generatePasswordResetToken`. bcrypt 12 rounds
+  - `src/lib/auth/session.ts` — `jose` JWT в httpOnly cookie `of_session`. Edge-runtime совместимо. TTL 30 дней
+  - `src/lib/auth/actions.ts` — `register`/`login`/`logout`/`requestPasswordReset`/`confirmPasswordReset`. Транзакции для атомарной regsitration (user + tenant + membership owner за раз)
+  - `src/lib/auth/index.ts` — единая точка входа `auth()`/`signIn()`/`signUp()`/`signOut()`. API совместим с NextAuth v5 для будущей миграции
+- **API routes:**
+  - `POST /api/auth/register`, `POST /api/auth/login`, `POST /api/auth/logout`, `POST /api/auth/forgot-password`
+  - `POST /api/onboarding/complete` — фиксирует выбор шаблона и помечает tenant как прошедший онбординг
+- **Страницы:**
+  - `src/app/(auth)/login/page.tsx` + `register` + `forgot-password` — минималистичный UI, поддержка `?next=` редиректа
+  - `src/app/(app)/layout.tsx` — приватный layout с сайдбаром, навигацией и `LogoutButton`. Для admin показывается доп. секция
+  - `src/app/(app)/dashboard/page.tsx` — главный экран с проверкой onboardingCompleted
+  - `src/app/(app)/onboarding/page.tsx` — упрощённый визард на одном шаге (выбор типа деятельности из 6). Полный визард — Этап 1
+  - `src/app/(app)/admin/page.tsx` — админ-панель со статистикой (users/tenants/подписки), списком разделов
+  - `src/components/logout-button.tsx`
+- **Middleware** — реальная JWT проверка вместо заглушки:
+  - Public paths: `/`, `/login`, `/register`, `/forgot-password`, `/reset-password`, `/api/auth`, `/api/health`
+  - Admin paths: `/admin`, `/api/admin` — нужна роль `admin`/`super_admin`, иначе редирект `/dashboard` или 403 для API
+  - Прокидывает `x-user-id`, `x-tenant-id`, `x-user-role` в заголовки для server components
+- **Schema users расширена:** `globalRole` (`user`/`admin`/`super_admin`), `passwordResetToken`, `passwordResetExpiresAt`, `lastLoginAt`
+- **CLI скрипты для админа:**
+  - `pnpm db:seed` — `scripts/seed.ts` создаёт дефолтного `super_admin` с email/паролем из `SEED_*` env (дефолт: `admin@openfinance.local` / `admin12345`)
+  - `pnpm admin:reset-password <email> <new-password>` — `scripts/reset-password.ts`
+  - `pnpm admin:create <email> <password> [--admin|--super-admin]` — `scripts/create-user.ts`
+- **Auth dependencies:** `bcryptjs`, `jose` (deps); `@types/bcryptjs`, `tsx` (devDeps)
+- **`SEED_ADMIN_*`** в `.env.example`
+
+### Changed
+- **Postgres порт `5433` → `5434`** во всех файлах (.env.example, README, drizzle.config.ts) — пользователь сменил в docker-compose
+- **Лендинг:** кнопка «Попробовать Pro» теперь ведёт на `/register` (раньше `/dashboard`). Версия в надписи 0.4.0 → 0.6.0
+
+### Notes
+- **Lint-ошибки про `bcryptjs`/`jose`/`@components/logout-button`** ожидаемы до `pnpm install` — после исчезнут
+- Reset-password ссылка пока не отправляется на email (нет SMTP) — токен пишется в консоль сервера в dev. Email-доставка будет в Этапе 1 после интеграции SMTP/SendGrid
+
+---
+
 ## [0.5.0] - 2026-05-10
 
 ### Fixed

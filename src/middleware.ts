@@ -1,32 +1,67 @@
-// PURPOSE: Next.js middleware — auth check + tenant context
-// Добавляет cookie-based session проверку и устанавливает tenant context
-// TODO: реализовать после Auth (Этап 1 PLAN.md)
+// PURPOSE: Next.js middleware — JWT-cookie auth + защита приватных маршрутов
 import { NextResponse, type NextRequest } from 'next/server';
+import { verifySessionToken, SESSION_COOKIE_NAME } from '@/lib/auth/session';
 
-const PUBLIC_PATHS = ['/', '/login', '/register', '/api/auth', '/api/health'];
+const PUBLIC_PATHS = [
+  '/',
+  '/login',
+  '/register',
+  '/forgot-password',
+  '/reset-password',
+  '/api/auth',
+  '/api/health',
+];
 
-export function middleware(request: NextRequest) {
+const ADMIN_PATHS = ['/admin', '/api/admin'];
+
+function isPublic(pathname: string) {
+  return PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p + '/'));
+}
+
+function isAdminPath(pathname: string) {
+  return ADMIN_PATHS.some((p) => pathname === p || pathname.startsWith(p + '/'));
+}
+
+export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // Публичные маршруты пропускаем
-  if (PUBLIC_PATHS.some((p) => pathname.startsWith(p))) {
+  if (isPublic(pathname)) {
     return NextResponse.next();
   }
 
-  // TODO: реальная auth-проверка через NextAuth.js v5
-  // const session = await auth();
-  // if (!session) return NextResponse.redirect(new URL('/login', request.url));
+  const token = request.cookies.get(SESSION_COOKIE_NAME)?.value;
+  const session = token ? await verifySessionToken(token) : null;
 
-  // TODO: загрузить tenant context, прокинуть в headers
-  // const tenant = await getTenantBySession(session);
-  // request.headers.set('x-tenant-id', tenant.id);
+  if (!session) {
+    if (pathname.startsWith('/api/')) {
+      return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
+    }
+    const url = new URL('/login', request.url);
+    url.searchParams.set('next', pathname);
+    return NextResponse.redirect(url);
+  }
 
-  return NextResponse.next();
+  if (isAdminPath(pathname)) {
+    if (session.globalRole !== 'admin' && session.globalRole !== 'super_admin') {
+      if (pathname.startsWith('/api/')) {
+        return NextResponse.json({ ok: false, error: 'Forbidden' }, { status: 403 });
+      }
+      return NextResponse.redirect(new URL('/dashboard', request.url));
+    }
+  }
+
+  // Прокидываем контекст в заголовки для серверных компонентов
+  const headers = new Headers(request.headers);
+  headers.set('x-user-id', session.userId);
+  if (session.tenantId) headers.set('x-tenant-id', session.tenantId);
+  headers.set('x-user-role', session.globalRole);
+
+  return NextResponse.next({ request: { headers } });
 }
 
 export const config = {
   matcher: [
-    // Не запускаем middleware на статических ассетах
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+    // Не запускаем middleware на статике
+    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)',
   ],
 };
