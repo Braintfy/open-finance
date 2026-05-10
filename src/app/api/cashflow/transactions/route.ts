@@ -1,6 +1,7 @@
 // PURPOSE: GET/POST /api/cashflow/transactions — список и создание транзакций
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
+import { eq } from 'drizzle-orm';
 import { auth } from '@/lib/auth';
 import { db } from '@/lib/db/client';
 import { transactions } from '@/lib/db/schema/transactions';
@@ -73,4 +74,24 @@ export async function POST(req: Request) {
     .returning();
 
   return NextResponse.json({ ok: true, transaction: tx });
+}
+
+// DELETE /api/cashflow/transactions?confirm=true — удалить все транзакции текущего tenant
+export async function DELETE(req: Request) {
+  const session = await auth();
+  if (!session?.tenantId) {
+    return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
+  }
+  const url = new URL(req.url);
+  if (url.searchParams.get('confirm') !== 'true') {
+    return NextResponse.json(
+      { ok: false, error: 'Передайте ?confirm=true для подтверждения массового удаления' },
+      { status: 400 }
+    );
+  }
+  const result = await db
+    .delete(transactions)
+    .where(eq(transactions.tenantId, session.tenantId))
+    .returning({ id: transactions.id });
+  return NextResponse.json({ ok: true, deleted: result.length });
 }

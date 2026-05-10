@@ -19,12 +19,64 @@ export type ParseResult = {
   errors: string[];
 };
 
+export type DetectedFormat = ParseResult['detectedFormat'];
+
 const HEADER_HINTS = {
-  date: ['date', 'дата', 'дата операции', 'дата платежа'],
-  amount: ['amount', 'сумма', 'сумма операции', 'сумма (руб)', 'сумма платежа'],
-  description: ['description', 'описание', 'назначение', 'назначение платежа', 'комментарий'],
-  counterparty: ['counterparty', 'контрагент', 'получатель', 'плательщик', 'наименование операции'],
+  date: [
+    'date',
+    'дата',
+    'дата операции',
+    'дата платежа',
+    'дата проведения', // Тинькофф
+  ],
+  amount: [
+    'amount',
+    'сумма',
+    'сумма операции',
+    'сумма (руб)',
+    'сумма платежа',
+    'сумма в валюте счёта', // Тинькофф
+    'сумма в валюте счета',
+  ],
+  description: [
+    'description',
+    'описание',
+    'назначение',
+    'назначение платежа',
+    'комментарий',
+    'описание операции', // Тинькофф
+  ],
+  counterparty: [
+    'counterparty',
+    'контрагент',
+    'получатель',
+    'плательщик',
+    'наименование операции',
+    'наименование контрагента', // Тинькофф
+  ],
+  // Отдельная колонка типа операции (Дебет/Кредит в Тинькофф)
+  type: [
+    'тип операции (пополнение/списание)',
+    'тип операции',
+    'type',
+    'операция',
+  ],
 };
+
+function parseTypeFromColumn(value: unknown): 'income' | 'expense' | null {
+  if (!value) return null;
+  const s = String(value).trim().toLowerCase();
+  if (!s) return null;
+  // Тинькофф: «Кредит» = поступление на счёт (доход),
+  // «Дебет» = списание со счёта (расход).
+  if (s.startsWith('кредит') || s.startsWith('попол') || s === 'credit' || s === 'income') {
+    return 'income';
+  }
+  if (s.startsWith('дебет') || s.startsWith('списа') || s === 'debit' || s === 'expense') {
+    return 'expense';
+  }
+  return null;
+}
 
 function findHeader(headers: string[], hints: string[]): string | undefined {
   const lower = headers.map((h) => (h ?? '').toString().trim().toLowerCase());
@@ -68,7 +120,11 @@ function parseDate(value: unknown): Date | null {
   return isNaN(d.getTime()) ? null : d;
 }
 
-function rowsToTransactions(records: Array<Record<string, unknown>>, headers: string[]): ParseResult {
+function rowsToTransactions(
+  records: Array<Record<string, unknown>>,
+  headers: string[],
+  baseFormat: ParseResult['detectedFormat'] = 'generic-csv'
+): ParseResult {
   const errors: string[] = [];
   if (records.length === 0) {
     return { rows: [], detectedFormat: 'unknown', errors: ['Файл пустой'] };
@@ -78,6 +134,11 @@ function rowsToTransactions(records: Array<Record<string, unknown>>, headers: st
   const amountKey = findHeader(headers, HEADER_HINTS.amount);
   const descKey = findHeader(headers, HEADER_HINTS.description);
   const cpKey = findHeader(headers, HEADER_HINTS.counterparty);
+  const typeKey = findHeader(headers, HEADER_HINTS.type);
+
+  // Авто-определение формата Тинькофф (есть колонка типа + русские заголовки)
+  const isTinkoff = !!typeKey && headers.some((h) => /номер сч/i.test(h ?? ''));
+  const detectedFormat: ParseResult['detectedFormat'] = isTinkoff ? 'tinkoff' : baseFormat;
 
   if (!dateKey || !amountKey) {
     return {
@@ -96,27 +157,46 @@ function rowsToTransactions(records: Array<Record<string, unknown>>, headers: st
     const date = parseDate(r[dateKey]);
     const amt = parseAmountToKopecks(r[amountKey]);
     if (!date || !amt) {
-      // пропускаем но не считаем ошибкой (часто пустые/итоговые строки)
       continue;
     }
+    // Если есть отдельная колонка типа (Тинькофф Дебет/Кредит) — используем её,
+    // иначе от знака суммы (отрицательная = расход).
+    const typeFromCol = typeKey ? parseTypeFromColumn(r[typeKey]) : null;
+    const finalType: 'income' | 'expense' = typeFromCol ?? amt.type;
+
     rows.push({
       date,
       amount: amt.amount,
-      type: amt.type,
+      type: finalType,
       counterparty: cpKey ? String(r[cpKey] ?? '').trim() || undefined : undefined,
       description: descKey ? String(r[descKey] ?? '').trim() || undefined : undefined,
       raw: r,
     });
   }
 
-  return { rows, detectedFormat: 'generic-csv', errors };
+  return { rows, detectedFormat, errors };
+}
+
+function detectDelimiter(text: string): string {
+  // Берём первую непустую строку (заголовок) и сравниваем счётчики ; , \t
+  const firstLine = text.split('\n').find((l) => l.trim().length > 0) ?? '';
+  const counts: Record<string, number> = {
+    ';': (firstLine.match(/;/g) ?? []).length,
+    ',': (firstLine.match(/,/g) ?? []).length,
+    '\t': (firstLine.match(/\t/g) ?? []).length,
+  };
+  const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+  return top && top[1] > 0 ? top[0] : ',';
 }
 
 export function parseCsv(text: string): ParseResult {
+  // Снимаем BOM если есть (Тинькофф пишет UTF-8 с BOM).
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+  const delimiter = detectDelimiter(text);
   const result = Papa.parse<Record<string, unknown>>(text, {
     header: true,
     skipEmptyLines: true,
-    delimiter: text.includes(';') && !text.includes(',') ? ';' : undefined,
+    delimiter,
   });
   if (result.errors.length > 0) {
     return {

@@ -9,11 +9,20 @@
 ### Ключевые принципы
 - **AI-first над всеми данными** — AI работает поверх ВСЕХ данных пользователя как единый разум, не локально по одному модулю
 - **Модульный конструктор** — каждый собирает под себя (селлер, фрилансер, ИП, малый бизнес)
+- **Block-Grid UI как Lego** — каждая страница это настраиваемая сетка блоков (см. раздел «Configurable Block-Grid Architecture»). Пользователь видит только нужное, может добавлять/двигать/удалять блоки
 - **Доступность** — сложная финансовая аналитика простым языком, понятный UX
 - **Прогнозы > отчёты** — фокус на будущее, а не только фиксация прошлого
 - **Единое окно** — все деньги в одном месте (МП + банки + касса + налоги)
 - **Простая структура для AI агентов** — код и данные организованы так, чтобы любой AI-агент (наш встроенный или внешний типа Claude Code) разбирался за минуты
 - **Graceful degradation** — без AI приложение работает как обычная финансовая программа; с AI — становится умным секретарём
+
+> ## ⏸️ Отложенные направления (не забыть)
+> - **Этап 5 (Налоги РФ)** — после Cashflow + Inbox + AI-секретаря. По договорённости.
+> - **Глубокая COM-интеграция Excel/1С** — после первых 100+ юзеров и опроса. Если спрос есть — Electron Pro Desktop fork (см. `docs/DESKTOP_STRATEGY.md`).
+> - **VPS / production деплой** — после стабильной локальной работы и MVP-набора фич. Сейчас локалка на Mac M3.
+> - **Мобильное приложение (React Native + Expo)** — Phase 3.
+> - **Tauri 2.0 desktop сборка** — Phase 2, после стабилизации SaaS.
+> - **Электронные интеграции (банки/маркетплейсы)** — после Cashflow + Inbox. Сейчас работаем через ручной импорт CSV/XLSX выписок.
 
 ---
 
@@ -561,6 +570,62 @@ export const aiUsage = pgTable('ai_usage', {
 - **Desktop shell:** Tauri 2.0 (Phase 2 для local-first версии)
 - **Email/IMAP:** node-imap + mailparser
 - **Telegram:** grammY (Bot API) + GramJS (MTProto, Phase 2)
+- **Block grid (UI-каркас):** **react-grid-layout** — drag, resize, breakpoints, JSON-сериализация
+
+### Configurable Block-Grid Architecture (главная UI-фишка)
+
+**Концепция:** Open Finance — это **Lego-конструктор** для финансов. Каждая страница — настраиваемая сетка блоков (как Notion / Grafana / Android desktop). Пользователь:
+- Видит **только нужное** ему по умолчанию (минимальный набор)
+- Может **добавлять блоки** из каталога: статистика, графики, Excel-таблицы, заметки, AI-виджеты
+- Может **двигать, ресайзить, удалять** блоки в edit mode
+- Может **скрывать целые разделы** навигации (Inbox, Дедлайны, Налоги — если не нужны)
+- Может **создавать собственные блоки** — Sheet (Excel-подобный), Markdown, Custom AI
+
+**Важно:** ЭТО НЕ опциональная фича — это базовый UI-паттерн всего приложения. Дашборд, Cashflow, Inbox, отчёты — все на BlockGrid. Только auth/onboarding/settings — простые формы.
+
+**Антипаттерны:**
+- ❌ Dropdown-меню где «прячется» функционал
+- ❌ Жёстко свёрстанные страницы-простыни
+- ❌ Модалки для основного содержимого (только для коротких форм)
+
+**Реализация:**
+
+```ts
+// src/lib/blocks/types.ts
+type BlockInstance = { id: string; type: string; x:number; y:number; w:number; h:number; config?: any };
+type BlockDef = {
+  type: string;                          // 'stat.income' | 'sheet' | ...
+  displayName: string;
+  category: 'stats' | 'tables' | 'charts' | 'custom';
+  icon: LucideIcon;
+  defaultSize: { w: number; h: number };
+  minSize: { w: number; h: number };
+  configSchema?: z.ZodSchema;
+  Render: (props: { instance: BlockInstance; tenantId: string }) => ReactNode;
+};
+
+// БД схема:
+block_layouts {
+  id, tenantId, userId, pageKey, blocks JSONB, hiddenSections JSONB, updatedAt
+  unique (tenantId, userId, pageKey)
+}
+```
+
+**Каталог блоков (старт v0.8.0):**
+| Тип | Категория | Где |
+|-----|-----------|-----|
+| `stat.income`, `stat.expense`, `stat.balance` | stats | cashflow, dashboard |
+| `cashflow.top-categories` | tables | cashflow |
+| `cashflow.transactions-list` | tables | cashflow |
+| `sheet` | tables | везде (произвольная Excel-таблица) |
+| `markdown` (потом) | custom | везде |
+| `chart.line`, `chart.donut` (потом) | charts | cashflow |
+
+**Persistence:** layout сохраняется per `(tenantId, userId, pageKey)`. Default layout если в БД пусто.
+
+**Edit mode:** toggle в правом верхнем углу страницы. В edit mode появляются drag-handles, кнопка "+", иконки удаления у блоков.
+
+**Hidden sections:** в `/settings` пользователь убирает галочки с разделов навигации (Inbox, Дедлайны, и т.д.) — они исчезают из sidebar, но остаются доступными по прямой ссылке.
 
 ### Выбор ORM: Drizzle ORM (вместо Prisma)
 
