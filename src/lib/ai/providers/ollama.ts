@@ -72,6 +72,53 @@ export async function deleteModel(name: string): Promise<void> {
   if (!res.ok) throw new Error(`Delete failed: ${res.status}`);
 }
 
+export type RunningModel = {
+  name: string;
+  model: string;
+  size: number;
+  size_vram?: number;
+  digest?: string;
+  details?: OllamaModel['details'];
+  expires_at?: string;
+};
+
+/** GET /api/ps — модели, загруженные в память */
+export async function listRunningModels(): Promise<RunningModel[]> {
+  const res = await fetch(`${BASE}/api/ps`);
+  if (!res.ok) throw new Error(`Ollama API ${res.status}`);
+  const data = (await res.json()) as { models?: RunningModel[] };
+  return data.models ?? [];
+}
+
+/** POST /api/show — полные детали модели (modelfile, parameters, license, template) */
+export async function showModel(name: string): Promise<{
+  license?: string;
+  modelfile?: string;
+  parameters?: string;
+  template?: string;
+  system?: string;
+  details?: OllamaModel['details'];
+  model_info?: Record<string, unknown>;
+}> {
+  const res = await fetch(`${BASE}/api/show`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) throw new Error(`Show failed: ${res.status}`);
+  return (await res.json()) as Record<string, unknown>;
+}
+
+/** Выгрузить модель из памяти (Ollama: generate с keep_alive=0) */
+export async function unloadModel(name: string): Promise<void> {
+  const res = await fetch(`${BASE}/api/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: name, keep_alive: 0 }),
+  });
+  if (!res.ok) throw new Error(`Unload failed: ${res.status}`);
+}
+
 export async function generate(input: { model: string; prompt: string; system?: string }): Promise<string> {
   const res = await fetch(`${BASE}/api/generate`, {
     method: 'POST',

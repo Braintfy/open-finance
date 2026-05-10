@@ -1,19 +1,22 @@
-// PURPOSE: Главный экран дашборда
+// PURPOSE: Главный экран дашборда — Block-Grid
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { eq } from 'drizzle-orm';
-import { Inbox, Wallet, Calendar } from 'lucide-react';
 import { auth } from '@/lib/auth';
 import { db } from '@/lib/db/client';
 import { tenants } from '@/lib/db/schema/tenants';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { getCashflowSummary } from '@/lib/cashflow/queries';
-import { formatRubles } from '@/lib/utils';
+import {
+  getCashflowSummary,
+  getTopCategories,
+  listTransactions,
+} from '@/lib/cashflow/queries';
+import { loadLayout } from '@/lib/blocks/queries';
+import { DashboardClient } from './dashboard-client';
 
 export default async function DashboardPage() {
   const session = await auth();
-  if (!session) redirect('/login');
+  if (!session?.userId) redirect('/login');
 
   let tenant: typeof tenants.$inferSelect | undefined;
   if (session.tenantId) {
@@ -25,124 +28,57 @@ export default async function DashboardPage() {
     redirect('/onboarding');
   }
 
-  const summary = session.tenantId
-    ? await getCashflowSummary(
-        session.tenantId,
-        new Date(new Date().getFullYear(), new Date().getMonth(), 1)
-      )
-    : { incomeTotal: 0, expenseTotal: 0, balance: 0, incomeCount: 0, expenseCount: 0 };
+  if (!session.tenantId) {
+    return (
+      <div className="mx-auto max-w-2xl">
+        <Alert variant="warning">
+          <AlertDescription>
+            Организация не найдена. Обратитесь к администратору или пройдите{' '}
+            <Link href="/onboarding" className="underline">
+              onboarding
+            </Link>
+            .
+          </AlertDescription>
+        </Alert>
+      </div>
+    );
+  }
+
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const [summary, topIncome, topExpense, recent, layout] = await Promise.all([
+    getCashflowSummary(session.tenantId, monthStart),
+    getTopCategories(session.tenantId, 'income', 5),
+    getTopCategories(session.tenantId, 'expense', 5),
+    listTransactions({ tenantId: session.tenantId, limit: 50 }),
+    loadLayout({
+      tenantId: session.tenantId,
+      userId: session.userId,
+      pageKey: 'dashboard',
+    }),
+  ]);
 
   const hasData = summary.incomeCount + summary.expenseCount > 0;
+  const greeting = session.email.split('@')[0];
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold">
-          Привет, {session.email.split('@')[0]}
-        </h1>
-        <p className="text-muted-foreground">
-          {hasData
-            ? `Сводка за текущий месяц`
-            : `Начните с импорта выписки или добавления первой операции`}
-        </p>
-      </div>
-
-      {hasData && (
-        <div className="grid gap-4 md:grid-cols-3">
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-normal text-muted-foreground">Доходы</CardTitle>
-            </CardHeader>
-            <CardContent className="text-2xl font-semibold text-green-600">
-              {formatRubles(summary.incomeTotal)}
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-normal text-muted-foreground">Расходы</CardTitle>
-            </CardHeader>
-            <CardContent className="text-2xl font-semibold text-red-600">
-              {formatRubles(summary.expenseTotal)}
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-normal text-muted-foreground">Баланс</CardTitle>
-            </CardHeader>
-            <CardContent
-              className={`text-3xl font-semibold ${
-                summary.balance >= 0 ? 'text-foreground' : 'text-red-600'
-              }`}
-            >
-              {summary.balance < 0 ? '−' : ''}
-              {formatRubles(Math.abs(summary.balance))}
-            </CardContent>
-          </Card>
-        </div>
-      )}
-
-      <div className="grid gap-4 md:grid-cols-3">
-        <ModuleCard
-          icon={<Wallet className="size-5" />}
-          title="Денежный поток"
-          desc="Доходы и расходы, импорт выписок"
-          href="/cashflow"
-        />
-        <ModuleCard
-          icon={<Inbox className="size-5" />}
-          title="Inbox"
-          desc="Чеки, счета, договоры — AI разберёт"
-          href="/inbox"
-          comingSoon
-        />
-        <ModuleCard
-          icon={<Calendar className="size-5" />}
-          title="Дедлайны"
-          desc="Налоги, отчёты, обязательства"
-          href="/deadlines"
-          comingSoon
-        />
-      </div>
-
-      <Alert variant="warning">
-        <AlertDescription>
-          <strong>Foundation phase.</strong> Сейчас работают auth, лендинг, cashflow с импортом
-          CSV/XLSX. Inbox, Deadlines, AI-секретарь — в разработке. План:{' '}
-          <Link href="/PLAN.md" className="underline">
-            PLAN.md
-          </Link>
-          .
-        </AlertDescription>
-      </Alert>
-    </div>
+    <DashboardClient
+      tenantId={session.tenantId}
+      greeting={greeting}
+      hasData={hasData}
+      initialBlocks={layout.blocks}
+      summary={summary}
+      topIncome={topIncome}
+      topExpense={topExpense}
+      initialTransactions={recent.map((t) => ({
+        id: t.id,
+        amount: t.amount,
+        type: t.type as 'income' | 'expense',
+        description: t.description,
+        counterparty: t.counterparty,
+        occurredAt: t.occurredAt.toISOString(),
+        source: t.source,
+      }))}
+    />
   );
-}
-
-function ModuleCard({
-  icon,
-  title,
-  desc,
-  href,
-  comingSoon,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  desc: string;
-  href: string;
-  comingSoon?: boolean;
-}) {
-  const inner = (
-    <Card className={`transition-shadow ${comingSoon ? 'opacity-60' : 'hover:shadow-md'}`}>
-      <CardHeader>
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2 text-muted-foreground">{icon}</div>
-          {comingSoon && <span className="text-xs text-muted-foreground">скоро</span>}
-        </div>
-        <CardTitle className="text-base">{title}</CardTitle>
-      </CardHeader>
-      <CardContent className="text-sm text-muted-foreground">{desc}</CardContent>
-    </Card>
-  );
-  if (comingSoon) return inner;
-  return <Link href={href}>{inner}</Link>;
 }

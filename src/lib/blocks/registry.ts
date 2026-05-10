@@ -9,6 +9,7 @@ import {
 } from './catalog/cashflow';
 import { SheetBlock } from './catalog/sheet';
 import { StatCustomBlock } from './catalog/stat-custom';
+import { NavigateCardBlock } from './catalog/navigate-card';
 
 const ALL_BLOCKS: BlockDef[] = [
   StatIncomeBlock,
@@ -18,6 +19,7 @@ const ALL_BLOCKS: BlockDef[] = [
   TopCategoriesBlock,
   TransactionsListBlock,
   SheetBlock,
+  NavigateCardBlock,
 ];
 
 const REGISTRY = new Map<string, BlockDef>(ALL_BLOCKS.map((b) => [b.type, b]));
@@ -38,6 +40,60 @@ export function listAllBlocks(): BlockDef[] {
 
 /** Дефолтные layout'ы для страниц — используются если у пользователя нет своего */
 export const DEFAULT_LAYOUTS: Record<string, PageLayout> = {
+  dashboard: {
+    pageKey: 'dashboard',
+    blocks: [
+      { id: 'dash-income', type: 'stat.income', x: 0, y: 0, w: 4, h: 2 },
+      { id: 'dash-expense', type: 'stat.expense', x: 4, y: 0, w: 4, h: 2 },
+      { id: 'dash-balance', type: 'stat.balance', x: 8, y: 0, w: 4, h: 2 },
+      {
+        id: 'dash-nav-cashflow',
+        type: 'navigate.card',
+        x: 0,
+        y: 2,
+        w: 4,
+        h: 2,
+        config: {
+          href: '/cashflow',
+          title: 'Денежный поток',
+          description: 'Доходы и расходы, импорт выписок',
+          comingSoon: false,
+        },
+        appearance: { icon: 'Wallet' },
+      },
+      {
+        id: 'dash-nav-inbox',
+        type: 'navigate.card',
+        x: 4,
+        y: 2,
+        w: 4,
+        h: 2,
+        config: {
+          href: '/inbox',
+          title: 'Inbox',
+          description: 'Чеки, счета, договоры — AI разберёт',
+          comingSoon: true,
+        },
+        appearance: { icon: 'Receipt' },
+      },
+      {
+        id: 'dash-nav-deadlines',
+        type: 'navigate.card',
+        x: 8,
+        y: 2,
+        w: 4,
+        h: 2,
+        config: {
+          href: '/deadlines',
+          title: 'Дедлайны',
+          description: 'Налоги, отчёты, обязательства',
+          comingSoon: true,
+        },
+        appearance: { icon: 'Calendar' },
+      },
+    ],
+    hiddenSections: [],
+  },
   cashflow: {
     pageKey: 'cashflow',
     blocks: [

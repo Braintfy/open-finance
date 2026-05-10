@@ -1,5 +1,81 @@
 # Changelog
 
+## [0.8.3] - 2026-05-10
+
+### Added — /dashboard на Block-Grid
+- **`DEFAULT_LAYOUTS.dashboard`** в `src/lib/blocks/registry.ts` — 3 KPI (income/expense/balance) + 3 navigation-карточки (cashflow/inbox/deadlines)
+- **Новый блок `navigate.card`** — `src/lib/blocks/catalog/navigate-card.tsx`:
+  - Кликабельная карточка-ссылка на раздел с иконкой, заголовком, описанием
+  - SettingsForm: title / description / href / comingSoon (checkbox)
+  - Применяет `appearance.icon` и `accentColor` (цветной фон иконки 15% opacity)
+  - Coming-soon pill (Linear-style) + disabled стиль (opacity-60)
+- **`/dashboard/page.tsx`** полностью переписан: server-side load layout + cashflow-data → передаёт в `DashboardClient`
+- **`DashboardClient`** (`dashboard-client.tsx`) — обёртка с Notion-like header + BlockGrid + CashflowDataProvider. Foundation-phase Alert сохранён (text-xs)
+
+### Added — Sidebar/Header переделаны под Design System
+- **Sidebar** (`src/app/(app)/layout.tsx`):
+  - Ширина w-56 (было w-60), px-2 py-3 (было p-4)
+  - Nav-items: h-auto px-2 py-1.5 text-[13px], иконка 14px, hover:bg-accent
+  - Admin section: text-[10px] uppercase tracking-wider (Linear-style)
+  - Version badge text-[10px]
+  - Иконки для всех пунктов (lucide): LayoutDashboard, Inbox, Wallet, Calendar, Settings, Shield, Cpu, Sparkles, Users, Wrench
+- **Header** h-10 (было h-14), border-border/60, px-4 (было px-6), email в text-xs
+
+### Added — Ollama: полное управление моделями
+- **Новые функции** в `src/lib/ai/providers/ollama.ts`:
+  - `listRunningModels()` — `GET /api/ps`
+  - `showModel(name)` — `POST /api/show` (modelfile, parameters, template, system, license)
+  - `unloadModel(name)` — `POST /api/generate` с `keep_alive: 0`
+- **Новые API**:
+  - `GET /api/admin/ai/local-models/ps` — запущенные модели с RAM/VRAM/expires
+  - `GET /api/admin/ai/local-models/[name]/show` — детали модели
+  - `POST /api/admin/ai/local-models/[name]/unload` — выгрузка из памяти
+- **UI `/admin/ai/local-models`** расширен:
+  - Секция **«В памяти»** (автообновление каждые 5 сек) — показывает name, RAM, VRAM, TTL + кнопка «Выгрузить»
+  - Бейдж `loaded` (зелёный) на installed-карточках для моделей в памяти
+  - Кнопка `Info` — открывает Dialog с modelfile / parameters / template / system / license
+  - Весь UI переделан под новый Design System: рамки rounded-lg, p-3, text-xs, pill-badges h-4 rounded-full, иконки 14px
+
+### Added — AI System Prompt (дефолтный + UI-редактор)
+- **`src/lib/ai/system-prompt.ts`**:
+  - `DEFAULT_SYSTEM_PROMPT` — оптимизирован под qwen2.5:7b (~450 слов): роль AI-секретаря, контекст РФ, принципы работы с Tools Layer, формат ответов, запреты (юрконсультации, курсы валют)
+  - `getSystemPrompt(settings)` — возвращает `tenantSettings.aiSystemPrompt` override или дефолт
+- **API `GET/PUT /api/admin/ai/system-prompt`**:
+  - GET возвращает `{default, custom, usingDefault}`
+  - PUT сохраняет в `tenants.settings.aiSystemPrompt` (если тот же как default — сохраняет пустую строку → используется дефолт)
+- **UI `/admin/ai/system-prompt`**:
+  - Textarea 24 строки с `font-mono text-xs`
+  - Счётчик «строк · символов» в шапке редактора
+  - Alert с текущим статусом (использует дефолтный / кастомный)
+  - Кнопки «К дефолту» (confirm) и «Сохранить»
+  - Disabled «Сохранить» когда нет изменений
+  - Details-секция с подсказками по написанию prompt
+  - Ссылка в sidebar: «AI prompt» (иконка Sparkles)
+
+### Changed
+- **Dashboard** убран оригинальный `dashboard/page.tsx` code — теперь файл всего 80 строк (server-side load + pass в client)
+- **Bundle sizes** после очистки .next: `/dashboard` 1.02 kB / 180 kB, `/cashflow` 2.45 kB / 182 kB (shared chunks пересчитались, фактический payload уменьшился за счёт общих модулей)
+
+### Verified
+- ✅ `pnpm build` — 30 страниц + 6 AI API endpoints. Все блоки доступны на dashboard через конструктор (Settings → Добавить)
+
+### Использование
+**Dashboard-конструктор:**
+1. `/dashboard` → «Настроить»
+2. Можно добавлять любые блоки из всех категорий: KPI, stat.custom с фильтрами, таблицы, sheet, navigate.card
+3. Перетаскивать, ресайзить, удалять, сбрасывать к дефолту
+
+**Ollama управление:**
+1. `/admin/ai/local-models` → если модель загружена в память, видно в «В памяти» с кнопкой «Выгрузить»
+2. На каждой installed-карточке — иконка `i` показывает modelfile/parameters/system prompt/license
+
+**AI prompt:**
+1. `/admin/ai/system-prompt` → редактируйте дефолтный, сохраните
+2. Все AI-вызовы этого tenant'а будут использовать ваш prompt
+3. «К дефолту» → возвращает стандартную версию
+
+---
+
 ## [0.8.2] - 2026-05-10
 
 ### Added — Фундаментальный Design System (Linear/Notion-inspired)
