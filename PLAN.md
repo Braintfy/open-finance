@@ -1156,12 +1156,56 @@ interface PaymentProvider {
 - [ ] Кнопка «Стереть всю мою память» в settings
 - [ ] Audit log того, что AI узнал и сделал
 
-### Этап 9 — Связи + Mindmap (1 неделя)
-- [ ] ReactFlow граф связей между модулями
-- [ ] Формулы между модулями (`@module.field`)
-- [ ] Auto-recalculation при изменении данных
-- [ ] Визуализация: режимы граф / дерево / таблица
-- [ ] `@mentions` в редакторе блоков
+### Этап 9 — Block Relationships + Mindmap (1 неделя)
+
+**Концепция:** блоки и модули = ячейки Excel. Один блок может быть СУММОЙ/СРЕДНИМ/MIN/MAX
+от значений других блоков. AI-агенты внутри блока тоже опираются на ссылки на источники.
+
+#### MVP уже реализован (v0.8.7):
+- ✅ Тип `BlockRef` + `BlockDependencies` (`src/lib/blocks/types.ts`)
+- ✅ Reactive value store `BlockValuesProvider` (`src/lib/blocks/values.tsx`):
+  - `useBlockValuePublisher(blockId, output)` — блок-источник публикует свои значения
+  - `useBlockValue(ref)` — подписка на одно значение
+  - `useBlockDependencyResult(deps)` — агрегированный результат для computed-блока
+- ✅ Блок `computed.sum` (`src/lib/blocks/catalog/computed.tsx`):
+  - Поддерживает `sum / avg / min / max / count` (formula/ai — заглушки)
+  - Сам публикует свой результат → можно цеплять computed → computed
+- ✅ UI `BlockReferencePicker` (`src/components/blocks/block-reference-picker.tsx`):
+  - Выбор блоков-источников + тип агрегации
+  - Поиск по названиям блоков (Notion-style picker)
+- ✅ Таб «Связи» в `BlockSettingsDialog` (показывается если `def.supportsDependencies`)
+- ✅ Mindmap overlay (`block-relations-overlay.tsx`):
+  - SVG bezier-кривые между связанными блоками
+  - Полупрозрачно по умолчанию (не мешает виду)
+  - Кнопка «Связи» в шапке BlockGrid → акцентный режим со стрелками + лейблами
+- ✅ Zod-валидация `dependencies` в API
+- ✅ KPI блоки (`stat.income/expense/balance`) публикуют свои значения
+
+#### Ещё не реализовано (Phase 2, v0.9.x):
+- [ ] **Cross-page ссылки** — сейчас только в пределах одной страницы. Нужен глобальный store
+  через DB-кэш (или WebSocket sync). Сейчас `BlockRef.pageKey` поле есть, но игнорируется.
+- [ ] **Formula-режим** — произвольная формула с синтаксисом `@block.field * 0.06 + @other.value`.
+  Нужен парсер выражений (можно использовать `expr-eval` или `mathjs`).
+- [ ] **AI-агрегация** — микроагент в блоке (`aggregation: 'ai'`) с конфигом промпта.
+  Зависит от Этапа 4 (AI Orchestrator).
+- [ ] **ReactFlow** для отдельной страницы-карты `/relations` с zoom/pan/auto-layout.
+  Сейчас mindmap — простой SVG overlay поверх grid'а.
+- [ ] **Cycle detection** — сейчас `useBlockDependencyResult` ре-рендерит на каждое изменение
+  store, что в теории может вызвать бесконечный цикл если A→B→A. Нужен граф-обход с защитой.
+- [ ] **Topological sort** для порядка вычислений (когда A зависит от B, B от C → C первым).
+- [ ] **`@mentions` в текстовых блоках** — для inline-ссылок типа «Налог за месяц: @taxes.amount».
+- [ ] **Связи между модулями** (не блоками) — например, модуль «Налоги» подписан на
+  модуль «Cashflow» (читает все доходы за период). Нужна абстракция выше блоков.
+
+#### Notion-inspired UI (см. memory `Notion UX patterns`):
+- ✅ Hover-controls в `BlockChrome` (drag-handle + toolbar появляются с задержкой 250мс)
+- ✅ AlertDialog вместо `confirm()` для destructive actions
+- ✅ Auto-save при изменении layout (debounce 300ms + sendBeacon на unload)
+- [ ] Slash-commands `/` в текстовых блоках
+- [ ] Templates для пустых страниц
+- [ ] Cmd+K command palette (Этап 2)
+- [ ] Toggle blocks (collapsible)
+- [ ] Inline `@mentions` picker
 
 ### Этап 10 — Smart-уведомления (1 неделя)
 - [ ] Telegram Bot + Email (Nodemailer)

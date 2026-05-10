@@ -32,18 +32,21 @@ export type BlockSize = {
   density: BlockDensity;
 };
 
-/** Пороги для определения density (в пикселях, используем площадь + минимум по обоим осям) */
+/** Пороги для определения density. Используем площадь + минимум по обоим осям.
+ * Агрессивные пороги — буквально только крошечные блоки фолбекают на sm/xs.
+ * Цель: по умолчанию блоки показывают ПОЛНЫЙ формат сумм (md path), не compact.
+ */
 const DENSITY_THRESHOLDS = {
   // xs: оба размера очень малы (1x1 ~100×40)
-  xsMaxW: 150,
-  xsMaxH: 80,
-  xsMaxArea: 12_000, // 150×80
-  // sm: один из размеров мал И площадь мала (≤240×140 = 33_600)
-  smMaxW: 180,
-  smMaxH: 90,
-  smMaxArea: 33_600,
-  // md: средний размер (≤480×280 = 134_400)
-  mdMaxArea: 134_400,
+  xsMaxW: 130,
+  xsMaxH: 70,
+  xsMaxArea: 9_000,
+  // sm: реально маленькие блоки
+  smMaxW: 160,
+  smMaxH: 80,
+  smMaxArea: 22_000,
+  // md: базовый вариант (тут ПОЛНЫЙ формат сумм)
+  mdMaxArea: 200_000,
 };
 
 function computeDensity(width: number, height: number): BlockDensity {

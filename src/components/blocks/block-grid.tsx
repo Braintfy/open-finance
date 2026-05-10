@@ -3,7 +3,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Responsive, WidthProvider, type Layout } from 'react-grid-layout';
-import { Plus, Pencil, Check, RotateCcw } from 'lucide-react';
+import { Plus, Pencil, Check, RotateCcw, Network } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   AlertDialog,
@@ -21,6 +21,8 @@ import { BlockChrome } from './block-chrome';
 import { AddBlockDialog, type AddBlockResult } from './add-block-dialog';
 import { BlockSettingsDialog } from './block-settings-dialog';
 import { BlockSizeProvider } from './block-size';
+import { BlockValuesProvider } from '@/lib/blocks/values';
+import { BlockRelationsOverlay } from './block-relations-overlay';
 
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
@@ -65,6 +67,23 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [settingsId, setSettingsId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  /** Mindmap-overlay: связи между блоками. Выкл/Вкл через кнопку. */
+  const [showRelations, setShowRelations] = useState(false);
+  const gridContainerRef = useRef<HTMLDivElement | null>(null);
+  /** Есть ли хотя бы одна связь между блоками — для показа toggle кнопки */
+  const hasRelations = useMemo(
+    () => blocks.some((b) => b.dependencies && b.dependencies.sources.length > 0),
+    [blocks]
+  );
+  /** Map blockId → label для BlockReferencePicker в settings dialog */
+  const blockLabels = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const b of blocks) {
+      const def = getBlockDef(b.type);
+      m[b.id] = b.appearance?.title ?? def?.displayName ?? b.id;
+    }
+    return m;
+  }, [blocks]);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingBlocks = useRef<BlockInstance[] | null>(null);
 
@@ -244,50 +263,58 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
   const settingsDef = settingsBlock ? getBlockDef(settingsBlock.type) : null;
 
   const grid = (
-    <ResponsiveGridLayout
-      className="layout"
-      layouts={layouts}
-      breakpoints={BREAKPOINTS}
-      cols={COLS}
-      rowHeight={40}
-      isDraggable={editMode}
-      isResizable={editMode}
-      onLayoutChange={onLayoutChange}
-      draggableHandle=".block-drag-handle"
-      margin={[10, 10]}
-      containerPadding={[0, 0]}
-    >
-      {blocks.map((b) => {
-        const def = getBlockDef(b.type);
-        if (!def) return null;
-        const Render = def.Render;
-        return (
-          <div key={b.id}>
-            <BlockChrome
-              editMode={editMode}
-              appearance={b.appearance}
-              onRemove={() => onRemoveBlock(b.id)}
-              onOpenSettings={() => setSettingsId(b.id)}
-            >
-              <BlockSizeProvider minContent={def.minContentSize}>
-                <Render
-                  instance={b}
-                  tenantId={tenantId}
-                  onConfigChange={(cfg) => onConfigChange(b.id, cfg)}
-                />
-              </BlockSizeProvider>
-            </BlockChrome>
-          </div>
-        );
-      })}
-    </ResponsiveGridLayout>
+    <div ref={gridContainerRef} className="relative">
+      <ResponsiveGridLayout
+        className="layout"
+        layouts={layouts}
+        breakpoints={BREAKPOINTS}
+        cols={COLS}
+        rowHeight={40}
+        isDraggable={editMode}
+        isResizable={editMode}
+        onLayoutChange={onLayoutChange}
+        draggableHandle=".block-drag-handle"
+        margin={[10, 10]}
+        containerPadding={[0, 0]}
+      >
+        {blocks.map((b) => {
+          const def = getBlockDef(b.type);
+          if (!def) return null;
+          const Render = def.Render;
+          return (
+            <div key={b.id} data-block-id={b.id}>
+              <BlockChrome
+                editMode={editMode}
+                appearance={b.appearance}
+                onRemove={() => onRemoveBlock(b.id)}
+                onOpenSettings={() => setSettingsId(b.id)}
+              >
+                <BlockSizeProvider minContent={def.minContentSize}>
+                  <Render
+                    instance={b}
+                    tenantId={tenantId}
+                    onConfigChange={(cfg) => onConfigChange(b.id, cfg)}
+                  />
+                </BlockSizeProvider>
+              </BlockChrome>
+            </div>
+          );
+        })}
+      </ResponsiveGridLayout>
+      <BlockRelationsOverlay
+        blocks={blocks}
+        containerRef={gridContainerRef}
+        highlighted={showRelations}
+      />
+    </div>
   );
 
   return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-          {saving && <span>Сохранение…</span>}
+    <BlockValuesProvider>
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+            {saving && <span>Сохранение…</span>}
           {editMode && (
             <span className="inline-flex h-5 items-center rounded-full bg-amber-50 px-2 font-medium text-amber-700 ring-1 ring-inset ring-amber-200 dark:bg-amber-950 dark:text-amber-400 dark:ring-amber-800">
               Редактирование
@@ -295,6 +322,16 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
           )}
         </div>
         <div className="flex gap-1.5">
+          {hasRelations && (
+            <Button
+              variant={showRelations ? 'default' : 'ghost'}
+              size="sm"
+              onClick={() => setShowRelations((v) => !v)}
+              title={showRelations ? 'Скрыть связи' : 'Показать связи между блоками'}
+            >
+              <Network /> Связи
+            </Button>
+          )}
           {editMode && (
             <>
               <Button variant="ghost" size="sm" onClick={resetToDefaults}>
@@ -354,6 +391,7 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
           onClose={() => setSettingsId(null)}
           def={settingsDef}
           instance={settingsBlock}
+          blockLabels={blockLabels}
           onChange={(patch) => updateBlock(settingsBlock.id, patch)}
         />
       )}
@@ -378,6 +416,7 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+      </div>
+    </BlockValuesProvider>
   );
 }

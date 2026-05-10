@@ -23,6 +23,7 @@ import { useCashflowData, type CashflowTx } from './cashflow-data';
 import { TransactionDialog } from './transaction-dialog';
 import { resolveIcon } from '../icon-resolver';
 import { useBlockDensity } from '@/components/blocks/block-size';
+import { useBlockValuePublisher } from '../values';
 
 // ============================================================================
 // stat.income / stat.expense / stat.balance — KPI карточки
@@ -70,11 +71,12 @@ function StatCard({
     );
   }
 
-  // SM — иконка + число, подпись маленькая
+  // SM — иконка + число, полный формат с truncate при переполнении
   if (density === 'sm') {
     return (
       <Card className="flex h-full flex-col justify-center p-3">
-        <div className="flex items-center gap-1.5">{icon}
+        <div className="flex items-center gap-1.5">
+          {icon}
           <span className="truncate text-xs font-medium text-muted-foreground">{label}</span>
         </div>
         <div
@@ -83,7 +85,7 @@ function StatCard({
           title={`${sign}${formatRubles(Math.abs(value))}`}
         >
           {sign}
-          {formatCompactRubles(value)}
+          {formatRubles(Math.abs(value))}
         </div>
       </Card>
     );
@@ -115,10 +117,12 @@ function RenderIncome({ instance }: BlockRenderProps) {
   const { summary, loading } = useCashflowData();
   const Icon = resolveIcon(instance.appearance?.icon, ArrowDown);
   const accent = instance.appearance?.accentColor;
+  const value = loading ? 0 : summary.incomeTotal;
+  useBlockValuePublisher(instance.id, { value, label: instance.appearance?.title ?? 'Доходы за месяц' });
   return (
     <StatCard
       label={instance.appearance?.title ?? 'Доходы за месяц'}
-      value={loading ? 0 : summary.incomeTotal}
+      value={value}
       icon={<Icon className="h-4 w-4" style={{ color: accent ?? '#16a34a' }} />}
       accent={accent}
     />
@@ -129,10 +133,12 @@ function RenderExpense({ instance }: BlockRenderProps) {
   const { summary, loading } = useCashflowData();
   const Icon = resolveIcon(instance.appearance?.icon, ArrowUp);
   const accent = instance.appearance?.accentColor;
+  const value = loading ? 0 : summary.expenseTotal;
+  useBlockValuePublisher(instance.id, { value, label: instance.appearance?.title ?? 'Расходы за месяц' });
   return (
     <StatCard
       label={instance.appearance?.title ?? 'Расходы за месяц'}
-      value={loading ? 0 : summary.expenseTotal}
+      value={value}
       icon={<Icon className="h-4 w-4" style={{ color: accent ?? '#dc2626' }} />}
       accent={accent}
     />
@@ -143,10 +149,12 @@ function RenderBalance({ instance }: BlockRenderProps) {
   const { summary, loading } = useCashflowData();
   const Icon = resolveIcon(instance.appearance?.icon, Wallet);
   const accent = instance.appearance?.accentColor;
+  const value = loading ? 0 : summary.balance;
+  useBlockValuePublisher(instance.id, { value, label: instance.appearance?.title ?? 'Баланс' });
   return (
     <StatCard
       label={instance.appearance?.title ?? 'Баланс'}
-      value={loading ? 0 : summary.balance}
+      value={value}
       icon={<Icon className="h-4 w-4" style={accent ? { color: accent } : undefined} />}
       accent={accent}
       big

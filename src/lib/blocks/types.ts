@@ -15,16 +15,61 @@ export type BlockAppearance = {
   icon?: string;
 };
 
-/** Один блок на странице — позиция в гриде + произвольный config + appearance */
+/**
+ * Связь блока с другими блоками (Excel-style references).
+ * Позволяет одному блоку использовать значения из других блоков как источники.
+ *
+ * Пример: блок «Сумма поступлений от ИП» зависит от 4 KPI-блоков
+ * с поступлениями от разных контрагентов и суммирует их.
+ *
+ * Ссылка: pageKey + blockId (можно ссылаться между страницами).
+ * Если pageKey не указан — ссылка локальная (на текущую страницу).
+ */
+export type BlockRef = {
+  /** ID блока-источника */
+  blockId: string;
+  /** Ключ страницы блока-источника (опционально для cross-page ссылок) */
+  pageKey?: string;
+  /**
+   * Имя поля в выходных данных блока-источника.
+   * По умолчанию 'value' (для KPI-блоков). Для table-блоков может быть column name.
+   */
+  field?: string;
+  /** Человекочитаемая подпись для UI (необязательно — кэш для скорости) */
+  label?: string;
+};
+
+/**
+ * Зависимости блока. Используется computed-блоками (sum / formula / aggregation).
+ * Реактивный пересчёт: при изменении любого источника блок пересчитывается.
+ */
+export type BlockDependencies = {
+  /** Список блоков-источников (Excel: «эта ячейка зависит от A1, B2, C5») */
+  sources: BlockRef[];
+  /**
+   * Тип агрегации/вычисления:
+   * - 'sum' — сумма значений всех источников
+   * - 'avg' — среднее
+   * - 'min' / 'max'
+   * - 'count' — количество не-null источников
+   * - 'formula' — произвольная формула (см. config.formula, синтаксис @block.field)
+   * - 'ai' — AI-агент собирает/вычисляет данные (см. config.aiPrompt)
+   */
+  aggregation: 'sum' | 'avg' | 'min' | 'max' | 'count' | 'formula' | 'ai';
+};
+
+/** Один блок на странице — позиция в гриде + произвольный config + appearance + зависимости */
 export type BlockInstance = {
   id: string; // uuid
-  type: string; // ключ из registry, e.g. 'stat.income' | 'sheet'
+  type: string; // ключ из registry, e.g. 'stat.income' | 'sheet' | 'computed.sum'
   x: number; // grid column 0..N
   y: number;
   w: number; // ширина в колонках
   h: number; // высота в строках
   config?: Record<string, unknown>;
   appearance?: BlockAppearance;
+  /** Зависимости от других блоков (Excel-style cell references). Только у computed-блоков. */
+  dependencies?: BlockDependencies;
 };
 
 export type BlockCategory = 'stats' | 'tables' | 'charts' | 'custom';
@@ -39,6 +84,11 @@ export type BlockDef = {
   defaultSize: { w: number; h: number };
   /** Минимум в ячейках grid (1x1 разрешено по умолчанию) */
   minSize: { w: number; h: number };
+  /**
+   * Блок поддерживает зависимости от других блоков (computed.sum, formula, AI и т.п.).
+   * Если true — в Settings dialog появляется таб «Связи» с BlockReferencePicker.
+   */
+  supportsDependencies?: boolean;
   /**
    * Минимальный размер в пикселях, при котором контент ещё читаем.
    * Если реальный размер меньше — BlockGrid покажет warning overlay.

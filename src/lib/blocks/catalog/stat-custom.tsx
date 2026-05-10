@@ -142,8 +142,9 @@ function RenderStatCustom({ instance }: BlockRenderProps) {
         <div
           className="mt-0.5 truncate text-lg font-semibold tabular-nums"
           style={accentColor ? { color: accentColor } : undefined}
+          title={loading ? undefined : `${sign}${display}`}
         >
-          {loading ? '—' : `${sign}${compactDisplay}`}
+          {loading ? '—' : `${sign}${display}`}
         </div>
       </Card>
     );

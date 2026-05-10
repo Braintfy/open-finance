@@ -14,13 +14,15 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Check, Square } from 'lucide-react';
-import type { BlockAppearance, BlockDef, BlockInstance } from '@/lib/blocks/types';
+import type { BlockAppearance, BlockDef, BlockDependencies, BlockInstance } from '@/lib/blocks/types';
 import { ACCENT_COLORS, ICON_NAMES } from '@/lib/blocks/types';
 import { resolveIcon } from '@/lib/blocks/icon-resolver';
 import { cn } from '@/lib/utils';
+import { BlockReferencePicker } from './block-reference-picker';
 
 const TABS = [
   { key: 'params', label: 'Параметры' },
+  { key: 'links', label: 'Связи' },
   { key: 'appearance', label: 'Внешний вид' },
   { key: 'size', label: 'Размер' },
 ] as const;
@@ -31,15 +33,23 @@ export function BlockSettingsDialog({
   onClose,
   def,
   instance,
+  blockLabels,
   onChange,
 }: {
   open: boolean;
   onClose: () => void;
   def: BlockDef;
   instance: BlockInstance;
+  /** Map blockId → label всех блоков страницы (для BlockReferencePicker) */
+  blockLabels?: Record<string, string>;
   onChange: (next: Partial<BlockInstance>) => void;
 }) {
-  const [tab, setTab] = useState<TabKey>(def.SettingsForm ? 'params' : 'appearance');
+  const initialTab: TabKey = def.SettingsForm
+    ? 'params'
+    : def.supportsDependencies
+      ? 'links'
+      : 'appearance';
+  const [tab, setTab] = useState<TabKey>(initialTab);
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
@@ -55,8 +65,8 @@ export function BlockSettingsDialog({
         <div className="-mx-6 border-b px-6">
           <div className="flex gap-1">
             {TABS.map((t) => {
-              const disabled = t.key === 'params' && !def.SettingsForm;
-              if (disabled) return null;
+              if (t.key === 'params' && !def.SettingsForm) return null;
+              if (t.key === 'links' && !def.supportsDependencies) return null;
               return (
                 <button
                   key={t.key}
@@ -81,6 +91,15 @@ export function BlockSettingsDialog({
             <def.SettingsForm
               config={instance.config ?? {}}
               onChange={(config) => onChange({ config })}
+            />
+          )}
+
+          {tab === 'links' && def.supportsDependencies && (
+            <BlockReferencePicker
+              value={instance.dependencies}
+              selfBlockId={instance.id}
+              blockLabels={blockLabels}
+              onChange={(deps: BlockDependencies) => onChange({ dependencies: deps })}
             />
           )}
 

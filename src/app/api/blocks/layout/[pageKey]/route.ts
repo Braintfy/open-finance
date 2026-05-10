@@ -16,6 +16,20 @@ const AppearanceSchema = z
   })
   .optional();
 
+const BlockRefSchema = z.object({
+  blockId: z.string().min(1).max(64),
+  pageKey: z.string().max(64).optional(),
+  field: z.string().max(64).optional(),
+  label: z.string().max(200).optional(),
+});
+
+const BlockDependenciesSchema = z
+  .object({
+    sources: z.array(BlockRefSchema).max(32),
+    aggregation: z.enum(['sum', 'avg', 'min', 'max', 'count', 'formula', 'ai']),
+  })
+  .optional();
+
 const BlockInstanceSchema = z.object({
   id: z.string().min(1).max(64),
   type: z.string().min(1).max(64),
@@ -25,6 +39,7 @@ const BlockInstanceSchema = z.object({
   h: z.number().int().min(1).max(100),
   config: z.record(z.string(), z.unknown()).optional(),
   appearance: AppearanceSchema,
+  dependencies: BlockDependenciesSchema,
 });
 
 const PutBody = z.object({

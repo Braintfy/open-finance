@@ -1,5 +1,60 @@
 # Changelog
 
+## [0.8.7] - 2026-05-11
+
+### Added — Block Relationships (Excel-style ссылки между блоками)
+- **Тип `BlockDependencies`** в `src/lib/blocks/types.ts` — `sources: BlockRef[]` + `aggregation: 'sum'|'avg'|'min'|'max'|'count'|'formula'|'ai'`
+- **Reactive value store** `src/lib/blocks/values.tsx`:
+  - `BlockValuesProvider` — на уровне страницы (внутри BlockGrid)
+  - `useBlockValuePublisher(blockId, output)` — блок-источник публикует свои значения
+  - `useBlockValue(ref)` — подписка на одно значение по ссылке
+  - `useBlockDependencyResult(deps)` — агрегированный результат для computed-блока
+- **Блок `computed.sum`** (`src/lib/blocks/catalog/computed.tsx`):
+  - Поддерживает sum/avg/min/max/count (formula/ai — заглушки до Этапа 4)
+  - Сам публикует свой результат → цепочки computed → computed работают
+  - Адаптивный рендер xs/sm/md/lg
+- **`BlockReferencePicker`** (`src/components/blocks/block-reference-picker.tsx`):
+  - Notion-style выбор блоков-источников + тип агрегации
+  - Поиск по названиям, исключает self из источников
+- **Таб «Связи»** в `BlockSettingsDialog` (показывается если `def.supportsDependencies === true`)
+- **Zod-валидация** `dependencies` в API route — поддержка POST/PUT
+- **KPI блоки** (`stat.income/expense/balance`) теперь публикуют свои значения
+
+### Added — Mindmap overlay (визуализация связей)
+- **`BlockRelationsOverlay`** (`src/components/blocks/block-relations-overlay.tsx`):
+  - SVG bezier-кривые между связанными блоками
+  - Стрелки направления (markers)
+  - Полупрозрачно по умолчанию (opacity 0.18, dashed) — не мешает виду
+  - Toggle-кнопка «Связи» в шапке BlockGrid → акцент (opacity 0.85, solid, лейблы агрегации)
+- Кнопка показывается ТОЛЬКО если есть хотя бы одна связь между блоками
+- ResizeObserver + 300ms re-poll для обновления координат при drag/resize
+
+### Changed — Notion-style hover controls
+- **`BlockChrome`**: drag-handle и action toolbar появляются при hover с задержкой 250ms
+- В edit mode — все контролы видны всегда (как было)
+- Кнопка «Удалить» (X) — только в edit mode (защита от случайных удалений)
+- Кнопка «Настройки» — на hover, можно открыть быстро без edit mode
+
+### Changed — Полный формат сумм (formatRubles вместо compact)
+- **Density thresholds** ужесточены — реально маленькие блоки попадают в xs/sm:
+  - xs: ≤130×70 ИЛИ area ≤ 9_000
+  - sm: ≤160×80 ИЛИ area ≤ 22_000
+  - md: area ≤ 200_000 (тут полный формат)
+- **`StatCard` SM density** теперь использует `formatRubles` (полный) с truncate fallback и tooltip
+- **`StatCustomBlock` SM density** аналогично — full format с truncate
+
+### Verified
+- ✅ `pnpm build` — 30 страниц, /cashflow вырос с 183kB → 188kB (+5kB новые модули)
+- ✅ Layout с dependencies сохраняется и загружается корректно (Zod schema валидирует)
+- ✅ Mindmap overlay рендерится поверх grid'а без блокировки кликов
+
+### Memory
+- 📝 Notion UX-паттерны сохранены в memory (15 паттернов из Notion для применения в проекте)
+- 📝 Block Relationships архитектура — отдельная memory с примерами кода
+- 📝 PLAN.md → раздел «Этап 9» обновлён с MVP-чеклистом и Phase-2 списком
+
+---
+
 ## [0.8.6] - 2026-05-10
 
 ### Fixed — Layout persistence (final fix, race condition)
