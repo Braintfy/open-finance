@@ -3,7 +3,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Responsive, WidthProvider, type Layout } from 'react-grid-layout';
-import { Plus, Pencil, Check } from 'lucide-react';
+import { Plus, Pencil, Check, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import type { BlockInstance } from '@/lib/blocks/types';
 import { getBlockDef, sanitizeBlocks } from '@/lib/blocks/registry';
@@ -16,6 +16,25 @@ import 'react-resizable/css/styles.css';
 import './block-grid.css';
 
 const ResponsiveGridLayout = WidthProvider(Responsive);
+
+function EmptyState({ onAdd, onReset }: { onAdd: () => void; onReset: () => void }) {
+  return (
+    <div className="flex min-h-[320px] flex-col items-center justify-center rounded-lg border border-dashed border-border/60 bg-muted/30 p-10 text-center">
+      <div className="mb-1 text-sm font-semibold">Пусто</div>
+      <p className="mb-4 max-w-sm text-xs text-muted-foreground">
+        На этой странице нет блоков. Добавьте свои или восстановите исходную раскладку.
+      </p>
+      <div className="flex gap-2">
+        <Button variant="outline" size="sm" onClick={onReset}>
+          <RotateCcw /> Вернуть по умолчанию
+        </Button>
+        <Button size="sm" onClick={onAdd}>
+          <Plus /> Добавить блок
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 const COLS = { lg: 12, md: 12, sm: 6, xs: 4, xxs: 2 };
 const BREAKPOINTS = { lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 };
@@ -135,6 +154,26 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
     });
   }
 
+  async function resetToDefaults() {
+    if (
+      !confirm(
+        'Сбросить раскладку к исходной? Все пользовательские блоки и настройки будут удалены.'
+      )
+    ) {
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/blocks/layout/${pageKey}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.ok) {
+        setBlocks(sanitizeBlocks(data.blocks ?? []));
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
   const settingsBlock = blocks.find((b) => b.id === settingsId) ?? null;
   const settingsDef = settingsBlock ? getBlockDef(settingsBlock.type) : null;
 
@@ -177,17 +216,26 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
   );
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
           {saving && <span>Сохранение…</span>}
-          {editMode && <span className="text-amber-600">Режим редактирования</span>}
-        </div>
-        <div className="flex gap-2">
           {editMode && (
-            <Button variant="outline" size="sm" onClick={() => setShowAdd(true)}>
-              <Plus className="h-4 w-4" /> Добавить блок
-            </Button>
+            <span className="inline-flex h-5 items-center rounded-full bg-amber-50 px-2 font-medium text-amber-700 ring-1 ring-inset ring-amber-200 dark:bg-amber-950 dark:text-amber-400 dark:ring-amber-800">
+              Редактирование
+            </span>
+          )}
+        </div>
+        <div className="flex gap-1.5">
+          {editMode && (
+            <>
+              <Button variant="ghost" size="sm" onClick={resetToDefaults}>
+                <RotateCcw /> Сбросить
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => setShowAdd(true)}>
+                <Plus /> Добавить
+              </Button>
+            </>
           )}
           <Button
             variant={editMode ? 'default' : 'outline'}
@@ -196,18 +244,30 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
           >
             {editMode ? (
               <>
-                <Check className="h-4 w-4" /> Готово
+                <Check /> Готово
               </>
             ) : (
               <>
-                <Pencil className="h-4 w-4" /> Настроить
+                <Pencil /> Настроить
               </>
             )}
           </Button>
         </div>
       </div>
 
-      {children ? children(grid) : grid}
+      {blocks.length === 0 ? (
+        <EmptyState
+          onAdd={() => {
+            setEditMode(true);
+            setShowAdd(true);
+          }}
+          onReset={resetToDefaults}
+        />
+      ) : children ? (
+        children(grid)
+      ) : (
+        grid
+      )}
 
       <AddBlockDialog
         open={showAdd}

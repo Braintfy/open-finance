@@ -1,5 +1,60 @@
 # Changelog
 
+## [0.8.2] - 2026-05-10
+
+### Added — Фундаментальный Design System (Linear/Notion-inspired)
+- **Memory-правило** «Design System: Linear/Notion-inspired Compact UI» — обязательные правила для всех новых модулей (Inbox, Deadlines, Dashboard, Settings, ...). Зафиксировано как global rule.
+- **Базовые tokens** (`src/app/globals.css`):
+  - `html { font-size: 14px }` (было 16px) → вся типографика на 12.5% плотнее
+  - `letter-spacing: -0.01em` + `font-feature-settings: 'ss01' 1` (Linear-like)
+  - Тонкие scrollbars 10px через `::-webkit-scrollbar`
+  - Auto-применяемые `h1/h2/h3` с `tracking-tight`
+  - Design tokens `--font-size-*`, `--space-*` как CSS variables
+  - Утилиты `.kbd` (для keyboard hints в стиле Linear) и `.section-divider`
+
+### Changed — Все shadcn primitives переделаны под Linear/Notion
+- **`Button`** (`src/components/ui/button.tsx`):
+  - default `h-8 px-3 text-sm` (было `h-10 px-4`)
+  - sm `h-7 px-2.5 text-xs`, **xs `h-6 px-2`** (новый)
+  - icon `h-8 w-8`, **icon-sm `h-7 w-7`**, **icon-xs `h-6 w-6`** (новые)
+  - SVG `size-3.5` (14px) вместо 16px, gap `1.5` вместо `2`
+  - `ring-offset-1` вместо `ring-offset-2`
+- **`Card`** (`src/components/ui/card.tsx`):
+  - `rounded-lg` вместо `rounded-xl`, **убран `shadow-sm`**
+  - `p-4` вместо `p-6` в header/content/footer
+  - CardTitle: `text-sm font-semibold leading-tight` (было без size)
+  - CardDescription: `text-xs` (было text-sm)
+- **`Input`**: `h-8 px-2.5 py-1` (было `h-10 px-3 py-2`), `focus-visible:ring-1 ring-offset-0`
+- **`Dialog`**: `p-5 gap-3` (было `p-6 gap-4`), Title `text-base`, Description `text-xs`
+- **`Label`**: `text-xs font-medium` (было text-sm)
+
+### Changed — Cashflow страница и блоки
+- **Заголовок `/cashflow`** — Notion-like: `text-lg font-semibold` + subtitle `text-xs`, border-b снизу, кнопки справа `size="sm"`
+- **KPI карточки** — значения `text-xl` (было text-2xl/3xl), иконки 14px, header pb-1.5
+- **Stat-custom** — компактнее counts `text-[11px]`
+- **Edit mode toolbar** — pill-статус «Редактирование» в amber (Linear-style status pill), кнопки иконок svg-only при compacted
+- **BlockChrome** — компактнее drag handle и кнопки (7×7 ring-1)
+- **BlockSettingsDialog / AddBlockDialog** — space-y-3.5, gap-1.5, палитра цветов уменьшена с 36px до 28px
+
+### Added — Reset layout (восстановление дефолтной раскладки)
+- **API `DELETE /api/blocks/layout/[pageKey]`** — удаляет пользовательскую запись, возвращает `DEFAULT_LAYOUTS[pageKey]`
+- **`deleteLayout()`** в `src/lib/blocks/queries.ts`
+- **Кнопка «Сбросить»** в edit mode toolbar `BlockGrid` — с confirm() и `router.refresh()` после
+- **EmptyState** — когда блоков 0 на странице, показывается плашка `border-dashed bg-muted/30` с кнопками «Вернуть по умолчанию» и «Добавить блок» (теперь пользователь с пустым layout не видит пустой экран)
+
+### Fixed
+- Проблема: после ручного удаления всех блоков `/cashflow` показывала пустой экран без выхода → теперь EmptyState + reset кнопка
+
+### Verified
+- ✅ `pnpm build` — 26 страниц, `/cashflow` 29 kB / 176 kB First Load, без регрессий
+
+### Как восстановить дефолтные блоки
+1. `/cashflow` → увидеть EmptyState или нажать «Настроить»
+2. Нажать «Сбросить» → подтвердить
+3. Появятся 6 дефолтных блоков (Доходы/Расходы/Баланс + Топ доходов/расходов + История операций)
+
+---
+
 ## [0.8.1] - 2026-05-10
 
 ### Added — Полная настраиваемость блоков

@@ -36,6 +36,22 @@ export async function loadLayout(args: {
   };
 }
 
+export async function deleteLayout(args: {
+  tenantId: string;
+  userId: string;
+  pageKey: string;
+}): Promise<void> {
+  await db
+    .delete(blockLayouts)
+    .where(
+      and(
+        eq(blockLayouts.tenantId, args.tenantId),
+        eq(blockLayouts.userId, args.userId),
+        eq(blockLayouts.pageKey, args.pageKey)
+      )
+    );
+}
+
 export async function saveLayout(args: {
   tenantId: string;
   userId: string;

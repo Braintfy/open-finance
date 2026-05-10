@@ -132,8 +132,8 @@ export function AppearanceForm({
   }
 
   return (
-    <div className="space-y-5">
-      <div className="space-y-2">
+    <div className="space-y-3.5">
+      <div className="space-y-1.5">
         <Label htmlFor="block-title">Заголовок</Label>
         <Input
           id="block-title"
@@ -143,7 +143,7 @@ export function AppearanceForm({
         />
       </div>
 
-      <div className="space-y-2">
+      <div className="space-y-1.5">
         <Label>Цвет рамки</Label>
         <ColorPalette
           value={appearance.borderColor}
@@ -151,26 +151,26 @@ export function AppearanceForm({
         />
       </div>
 
-      <div className="space-y-2">
+      <div className="space-y-1.5">
         <Label>Цвет акцента</Label>
-        <p className="text-xs text-muted-foreground">
-          Используется для иконок и прогресс-баров внутри блока
-        </p>
         <ColorPalette
           value={appearance.accentColor}
           onChange={(v) => set('accentColor', v || undefined)}
         />
+        <p className="text-[11px] text-muted-foreground">
+          Используется для иконок и значений внутри блока
+        </p>
       </div>
 
-      <div className="space-y-2">
+      <div className="space-y-1.5">
         <Label>Иконка</Label>
-        <p className="text-xs text-muted-foreground">
-          Заменяет иконку внутри блока (если блок её показывает). По умолчанию: <code>{defaultIcon}</code>
-        </p>
         <IconPalette
           value={appearance.icon}
           onChange={(v) => set('icon', v || undefined)}
         />
+        <p className="text-[11px] text-muted-foreground">
+          По умолчанию: <code className="rounded bg-muted px-1 py-0.5 text-[10px]">{defaultIcon}</code>
+        </p>
       </div>
     </div>
   );
@@ -184,7 +184,7 @@ function ColorPalette({
   onChange: (v: string) => void;
 }) {
   return (
-    <div className="flex flex-wrap gap-2">
+    <div className="flex flex-wrap gap-1.5">
       {ACCENT_COLORS.map((c) => {
         const active = (value ?? '') === c.value;
         return (
@@ -193,18 +193,18 @@ function ColorPalette({
             type="button"
             onClick={() => onChange(c.value)}
             className={cn(
-              'flex h-9 w-9 items-center justify-center rounded-md border transition',
-              active ? 'ring-2 ring-primary ring-offset-2' : 'hover:scale-105'
+              'flex h-7 w-7 items-center justify-center rounded border transition',
+              active ? 'ring-2 ring-primary ring-offset-1' : 'hover:scale-110'
             )}
             style={{
               backgroundColor: c.value || 'transparent',
-              borderColor: c.value ? c.value : 'var(--border)',
+              borderColor: c.value ? c.value : 'hsl(var(--border))',
             }}
             title={c.name}
           >
             {active && (
               <Check
-                className="h-4 w-4"
+                className="h-3 w-3"
                 style={{ color: c.value ? 'white' : 'currentColor' }}
               />
             )}

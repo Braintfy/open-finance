@@ -97,25 +97,25 @@ function RenderStatCustom({ instance }: BlockRenderProps) {
       : '';
 
   return (
-    <Card className="h-full">
-      <CardHeader className="pb-2">
-        <CardTitle className="flex items-center gap-2 text-sm font-normal text-muted-foreground">
+    <Card className="flex h-full flex-col">
+      <CardHeader className="pb-1.5">
+        <CardTitle className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
           <Icon
-            className="h-4 w-4"
+            className="h-3.5 w-3.5"
             style={accentColor ? { color: accentColor } : undefined}
           />
           <span className="line-clamp-1">{title}</span>
         </CardTitle>
       </CardHeader>
-      <CardContent>
+      <CardContent className="flex flex-1 flex-col justify-center">
         <div
-          className="text-3xl font-semibold tabular-nums"
+          className="text-xl font-semibold tabular-nums tracking-tight"
           style={accentColor ? { color: accentColor } : undefined}
         >
           {loading ? '—' : `${sign}${display}`}
         </div>
         {!loading && cfg.metric !== 'count' && count > 0 && (
-          <div className="mt-1 text-xs text-muted-foreground">
+          <div className="mt-0.5 text-[11px] text-muted-foreground">
             {count} {pluralRu(count, ['операция', 'операции', 'операций'])}
           </div>
         )}

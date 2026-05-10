@@ -41,6 +41,22 @@
     --ring: 217 91% 60%;
 
     --radius: 0.5rem;
+
+    /* === DESIGN TOKENS (Linear/Notion inspired) === */
+    --font-size-xs: 11px;
+    --font-size-sm: 12px;
+    --font-size-base: 13px;
+    --font-size-md: 14px;
+    --font-size-lg: 16px;
+    --font-size-xl: 20px;
+    --font-size-2xl: 24px;
+
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 20px;
+    --space-6: 24px;
   }
 
   .dark {
@@ -85,16 +101,66 @@
   * {
     @apply border-border;
   }
+  html {
+    font-size: 14px;
+  }
   body {
     @apply bg-background text-foreground antialiased;
     font-feature-settings:
       'rlig' 1,
-      'calt' 1;
+      'calt' 1,
+      'ss01' 1;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    letter-spacing: -0.01em;
+  }
+
+  /* Linear/Notion-inspired compact headings */
+  h1 {
+    @apply text-2xl font-semibold tracking-tight;
+  }
+  h2 {
+    @apply text-lg font-semibold tracking-tight;
+  }
+  h3 {
+    @apply text-base font-semibold tracking-tight;
+  }
+
+  /* Thinner scrollbars (Linear style) */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
+    border-radius: 8px;
+    border: 2px solid hsl(var(--background));
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground) / 0.4);
+  }
+
+  /* Better focus rings (Linear-style subtle) */
+  :focus-visible {
+    outline: none;
   }
 }
 
 @layer utilities {
   .text-balance {
     text-wrap: balance;
+  }
+
+  /* Keyboard shortcut hint (Linear-style) */
+  .kbd {
+    @apply inline-flex h-5 min-w-[20px] items-center justify-center rounded border border-border bg-muted px-1 font-mono text-[10px] font-medium text-muted-foreground;
+  }
+
+  /* Subtle section divider */
+  .section-divider {
+    @apply border-t border-border/50;
   }
 }

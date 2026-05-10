@@ -54,18 +54,18 @@ export function CashflowClient({
   const [showImport, setShowImport] = useState(false);
 
   return (
-    <div className="mx-auto max-w-[1400px] space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">Денежный поток</h1>
-          <p className="text-sm text-muted-foreground">Сводка за текущий месяц</p>
+    <div className="mx-auto max-w-[1400px] space-y-4">
+      <div className="flex items-center justify-between gap-4 border-b border-border/60 pb-3">
+        <div className="min-w-0">
+          <h1 className="truncate text-lg font-semibold tracking-tight">Денежный поток</h1>
+          <p className="text-xs text-muted-foreground">Сводка за текущий месяц</p>
         </div>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={() => setShowImport(true)}>
-            <Upload className="h-4 w-4" /> Импорт CSV/XLSX
+        <div className="flex shrink-0 gap-1.5">
+          <Button variant="outline" size="sm" onClick={() => setShowImport(true)}>
+            <Upload /> Импорт
           </Button>
-          <Button onClick={() => setShowAdd(true)}>
-            <Plus className="h-4 w-4" /> Добавить
+          <Button size="sm" onClick={() => setShowAdd(true)}>
+            <Plus /> Добавить
           </Button>
         </div>
       </div>

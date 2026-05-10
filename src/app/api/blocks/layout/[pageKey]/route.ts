@@ -2,7 +2,8 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { auth } from '@/lib/auth';
-import { loadLayout, saveLayout } from '@/lib/blocks/queries';
+import { loadLayout, saveLayout, deleteLayout } from '@/lib/blocks/queries';
+import { getDefaultLayout } from '@/lib/blocks/registry';
 
 const PageKey = z.string().min(1).max(64).regex(/^[a-z0-9_-]+$/i);
 
@@ -81,4 +82,26 @@ export async function PUT(
     hiddenSections: body.data.hiddenSections,
   });
   return NextResponse.json({ ok: true });
+}
+
+export async function DELETE(
+  _req: Request,
+  { params }: { params: Promise<{ pageKey: string }> }
+) {
+  const session = await auth();
+  if (!session?.tenantId || !session.userId) {
+    return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
+  }
+  const { pageKey: rawKey } = await params;
+  const parseKey = PageKey.safeParse(rawKey);
+  if (!parseKey.success) {
+    return NextResponse.json({ ok: false, error: 'Invalid pageKey' }, { status: 400 });
+  }
+  await deleteLayout({
+    tenantId: session.tenantId,
+    userId: session.userId,
+    pageKey: parseKey.data,
+  });
+  const defaults = getDefaultLayout(parseKey.data);
+  return NextResponse.json({ ok: true, ...defaults });
 }

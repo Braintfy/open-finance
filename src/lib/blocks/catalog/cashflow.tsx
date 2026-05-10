@@ -41,16 +41,16 @@ function StatCard({
   accent?: string;
 }) {
   return (
-    <Card className="h-full">
-      <CardHeader className="pb-2">
-        <CardTitle className="flex items-center gap-2 text-sm font-normal text-muted-foreground">
+    <Card className="flex h-full flex-col">
+      <CardHeader className="pb-1.5">
+        <CardTitle className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
           {icon}
           <span className="line-clamp-1">{label}</span>
         </CardTitle>
       </CardHeader>
-      <CardContent>
+      <CardContent className="flex flex-1 items-center">
         <div
-          className={`${big ? 'text-3xl' : 'text-2xl'} font-semibold tabular-nums`}
+          className={`${big ? 'text-2xl' : 'text-xl'} font-semibold tabular-nums tracking-tight`}
           style={accent ? { color: accent } : undefined}
         >
           {value < 0 ? '−' : ''}
