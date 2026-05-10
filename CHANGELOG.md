@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.8.6] - 2026-05-10
+
+### Fixed — Layout persistence (final fix, race condition)
+- **Root cause v2**: даже после фикса 0.8.5 layout мог сбрасываться — `fetch` с `keepalive: true` не гарантирует, что сервер успеет обработать запрос ДО следующей перезагрузки страницы (request улетает, но новая страница может прочитать БД раньше)
+- **Решение**:
+  - **`navigator.sendBeacon`** — гарантированная доставка через OS-level network stack, browser ждёт завершения перед закрытием вкладки
+  - sendBeacon использует **только POST** → добавлен `POST` handler в `/api/blocks/layout/[pageKey]` (семантически идентичен PUT)
+  - **Debounce 800ms → 300ms** — резко уменьшает окно race condition
+  - **Race в `doSave`**: pending обнулялся даже если за время fetch'а пришли новые изменения. Теперь `pendingBlocks.current = null` только если он === сохранённым данным
+  - **`performReset`** отменяет pending save перед DELETE (иначе stale данные могли перезаписать дефолты)
+
+### Changed — UI: подтверждение сброса раскладки
+- **Системный `confirm()` заменён на `AlertDialog`** в `block-grid.tsx`
+- Linear/Notion-style модалка с заголовком, описанием, и destructive-стилем для кнопки «Сбросить»
+- Используется существующий компонент `src/components/ui/alert-dialog.tsx` (Radix UI)
+
+### Verified
+- ✅ `pnpm build` — 30 страниц, без регрессий
+- ✅ `/api/blocks/layout/[pageKey]` поддерживает GET/PUT/POST/DELETE
+- ✅ sendBeacon работает в Chrome/Firefox/Safari (стандарт W3C)
+
+---
+
 ## [0.8.5] - 2026-05-10
 
 ### Fixed — Layout persistence bug (critical)

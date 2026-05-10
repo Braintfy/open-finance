@@ -5,6 +5,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Responsive, WidthProvider, type Layout } from 'react-grid-layout';
 import { Plus, Pencil, Check, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import type { BlockInstance } from '@/lib/blocks/types';
 import { getBlockDef, sanitizeBlocks } from '@/lib/blocks/registry';
 import { BlockChrome } from './block-chrome';
@@ -52,12 +62,11 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
   const [blocks, setBlocks] = useState<BlockInstance[]>(() => sanitizeBlocks(initialBlocks));
   const [editMode, setEditMode] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [settingsId, setSettingsId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingBlocks = useRef<BlockInstance[] | null>(null);
-  const blocksRef = useRef<BlockInstance[]>(blocks);
-  blocksRef.current = blocks;
 
   const doSave = useCallback(
     async (data: BlockInstance[]) => {
@@ -68,7 +77,12 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ blocks: data }),
         });
-        pendingBlocks.current = null;
+        // Очищаем pending только если он всё ещё указывает на эти же данные.
+        // Если пока летел fetch, пользователь сделал новые изменения — pendingBlocks
+        // уже указывает на них и НЕ должен быть обнулён (иначе flushSave потеряет их).
+        if (pendingBlocks.current === data) {
+          pendingBlocks.current = null;
+        }
       } catch (e) {
         console.error('save layout failed', e);
       } finally {
@@ -82,28 +96,42 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
     (next: BlockInstance[]) => {
       pendingBlocks.current = next;
       if (saveTimer.current) clearTimeout(saveTimer.current);
+      // 300ms — очень короткий debounce для минимизации race condition с unload
       saveTimer.current = setTimeout(() => {
         doSave(next);
-      }, 800);
+      }, 300);
     },
     [doSave]
   );
 
+  // Гарантированный флаш на unload — sendBeacon копирует данные в OS-level очередь и доставит их даже после закрытия вкладки
   const flushSave = useCallback(() => {
     if (saveTimer.current) {
       clearTimeout(saveTimer.current);
       saveTimer.current = null;
     }
     const data = pendingBlocks.current;
-    if (data) {
-      pendingBlocks.current = null;
-      fetch(`/api/blocks/layout/${pageKey}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ blocks: data }),
-        keepalive: true,
-      }).catch(() => {});
+    if (!data) return;
+    pendingBlocks.current = null;
+    const url = `/api/blocks/layout/${pageKey}`;
+    const payload = JSON.stringify({ blocks: data });
+    // sendBeacon — гарантированная доставка (поддерживает только POST), API имеет POST handler
+    if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+      try {
+        const blob = new Blob([payload], { type: 'application/json' });
+        const ok = navigator.sendBeacon(url, blob);
+        if (ok) return;
+      } catch {
+        // fallthrough
+      }
     }
+    // Fallback — fetch с keepalive
+    fetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload,
+      keepalive: true,
+    }).catch(() => {});
   }, [pageKey]);
 
   useEffect(() => {
@@ -188,14 +216,14 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
     });
   }
 
-  async function resetToDefaults() {
-    if (
-      !confirm(
-        'Сбросить раскладку к исходной? Все пользовательские блоки и настройки будут удалены.'
-      )
-    ) {
-      return;
+  async function performReset() {
+    setShowResetConfirm(false);
+    // Отменяем любой pending save — он бы перезаписал дефолты
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
     }
+    pendingBlocks.current = null;
     setSaving(true);
     try {
       const res = await fetch(`/api/blocks/layout/${pageKey}`, { method: 'DELETE' });
@@ -206,6 +234,10 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
     } finally {
       setSaving(false);
     }
+  }
+
+  function resetToDefaults() {
+    setShowResetConfirm(true);
   }
 
   const settingsBlock = blocks.find((b) => b.id === settingsId) ?? null;
@@ -325,6 +357,27 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
           onChange={(patch) => updateBlock(settingsBlock.id, patch)}
         />
       )}
+
+      <AlertDialog open={showResetConfirm} onOpenChange={setShowResetConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Сбросить раскладку к исходной?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Все пользовательские блоки и настройки этой страницы будут удалены и
+              заменены дефолтным набором. Действие нельзя отменить.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Отмена</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={performReset}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Сбросить
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

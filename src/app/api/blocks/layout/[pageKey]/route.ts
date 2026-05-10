@@ -53,9 +53,9 @@ export async function GET(
   return NextResponse.json({ ok: true, ...layout });
 }
 
-export async function PUT(
+async function handleSave(
   req: Request,
-  { params }: { params: Promise<{ pageKey: string }> }
+  params: Promise<{ pageKey: string }>
 ) {
   const session = await auth();
   if (!session?.tenantId || !session.userId) {
@@ -66,7 +66,18 @@ export async function PUT(
   if (!parseKey.success) {
     return NextResponse.json({ ok: false, error: 'Invalid pageKey' }, { status: 400 });
   }
-  const json = await req.json();
+  // sendBeacon отправляет Blob с типом application/json — поддерживаем и его, и обычный JSON
+  let json: unknown;
+  try {
+    json = await req.json();
+  } catch {
+    const text = await req.text();
+    try {
+      json = JSON.parse(text);
+    } catch {
+      return NextResponse.json({ ok: false, error: 'Invalid JSON' }, { status: 400 });
+    }
+  }
   const body = PutBody.safeParse(json);
   if (!body.success) {
     return NextResponse.json(
@@ -82,6 +93,22 @@ export async function PUT(
     hiddenSections: body.data.hiddenSections,
   });
   return NextResponse.json({ ok: true });
+}
+
+export async function PUT(
+  req: Request,
+  { params }: { params: Promise<{ pageKey: string }> }
+) {
+  return handleSave(req, params);
+}
+
+// POST используется navigator.sendBeacon (он умеет только POST) для гарантированного
+// сохранения при unload страницы. Семантически идентичен PUT.
+export async function POST(
+  req: Request,
+  { params }: { params: Promise<{ pageKey: string }> }
+) {
+  return handleSave(req, params);
 }
 
 export async function DELETE(
