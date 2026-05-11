@@ -65,10 +65,10 @@ export async function createProxyDispatcher(
 
   if (config.type === 'http' || config.type === 'https') {
     try {
-      // Dynamic import чтобы не требовать undici как зависимость на этапе build
-      // Next.js Node runtime содержит undici внутри, но не всегда экспортирует.
-      // @ts-expect-error - undici опциональная зависимость
-      const undici = await import('undici').catch(() => null);
+      const importRuntime = new Function('specifier', 'return import(specifier)') as (
+        specifier: string,
+      ) => Promise<unknown>;
+      const undici = await importRuntime('undici').catch(() => null);
       if (!undici) {
         throw new Error(
           'Пакет undici не установлен. Установите: pnpm add undici',

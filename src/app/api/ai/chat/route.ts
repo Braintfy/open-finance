@@ -12,7 +12,7 @@ import { eq } from 'drizzle-orm';
 import { env } from '@/lib/env';
 import { listInstalledModels, isChatCapableModel } from '@/lib/ai/providers/ollama';
 import { streamOpenAICompat } from '@/lib/ai/providers/openai-compat';
-import type { SuggestedAction } from '@/lib/ai/micro-agent/types';
+import type { BlockContext, SuggestedAction } from '@/lib/ai/micro-agent/types';
 
 export const runtime = 'nodejs';
 export const maxDuration = 120;
@@ -79,31 +79,171 @@ async function resolveModel(requested: string): Promise<{ model: string; fallbac
 }
 
 /** Попытаться извлечь JSON action из ответа AI */
-export function parseAction(content: string): SuggestedAction | undefined {
-  // Ищем ```json блок
-  const jsonMatch = content.match(/```json\s*\n?([\s\S]*?)\n?\s*```/);
-  if (!jsonMatch) return undefined;
+export function parseAction(content: string, blockContext?: BlockContext): SuggestedAction | undefined {
+  const candidates = extractJsonCandidates(content);
 
-  try {
-    const parsed = JSON.parse(jsonMatch[1]) as { action?: string; data?: Record<string, unknown> };
-    if (!parsed.action || !parsed.data) return undefined;
+  for (const candidate of candidates) {
+    const parsed = tryParseJson(candidate);
+    const action = normalizeParsedAction(parsed, blockContext);
+    if (action) return action;
+  }
 
-    switch (parsed.action) {
-      case 'update_block':
-        return { type: 'update_block', payload: parsed.data };
-      case 'create_block': {
-        const blockType = (parsed.data as { blockType?: string }).blockType ?? 'custom.data';
-        const config = (parsed.data as { config?: Record<string, unknown> }).config ?? parsed.data;
-        return { type: 'create_block', payload: { blockType, config } };
+  return undefined;
+}
+
+function extractJsonCandidates(content: string): string[] {
+  const candidates: string[] = [];
+  const fenceRegex = /```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/gi;
+  let match: RegExpExecArray | null;
+  while ((match = fenceRegex.exec(content)) !== null) {
+    if (match[1]?.trim()) candidates.push(match[1].trim());
+  }
+
+  const balanced = extractFirstJsonObject(content);
+  if (balanced) candidates.push(balanced);
+
+  const trimmed = content.trim();
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) candidates.push(trimmed);
+
+  return Array.from(new Set(candidates));
+}
+
+function extractFirstJsonObject(content: string): string | undefined {
+  const start = content.indexOf('{');
+  if (start === -1) return undefined;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < content.length; i++) {
+    const ch = content[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
       }
-      case 'text_only':
-        return { type: 'text_only', payload: { text: (parsed.data as { text?: string }).text ?? '' } };
-      default:
-        return undefined;
+      continue;
     }
+
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === '{') {
+      depth += 1;
+    } else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) return content.slice(start, i + 1);
+    }
+  }
+  return undefined;
+}
+
+function tryParseJson(candidate: string): unknown {
+  const normalized = candidate
+    .trim()
+    .replace(/^\uFEFF/, '')
+    .replace(/,\s*([}\]])/g, '$1');
+  try {
+    return JSON.parse(normalized);
   } catch {
     return undefined;
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function normalizeParsedAction(parsed: unknown, blockContext?: BlockContext): SuggestedAction | undefined {
+  if (!isRecord(parsed)) return undefined;
+
+  const action = typeof parsed.action === 'string'
+    ? parsed.action
+    : typeof parsed.type === 'string'
+      ? parsed.type
+      : undefined;
+
+  const data = parsed.data ?? parsed.payload ?? parsed.config;
+
+  if (action === 'update_block') {
+    if (Array.isArray(data)) return { type: 'update_block', payload: { rows: data } };
+    if (isRecord(data) && isRecord(data.config)) return { type: 'update_block', payload: data.config };
+    if (isRecord(data)) return { type: 'update_block', payload: data };
+    if (isRecord(parsed.config)) return { type: 'update_block', payload: parsed.config };
+    if (looksLikeBlockConfig(parsed)) {
+      const payload = Object.fromEntries(
+        Object.entries(parsed).filter(([key]) => key !== 'action' && key !== 'type'),
+      );
+      return { type: 'update_block', payload };
+    }
+    return undefined;
+  }
+
+  if (action === 'create_block') {
+    if (Array.isArray(data)) {
+      return { type: 'create_block', payload: { blockType: 'custom.data', config: { rows: data } } };
+    }
+    const source = isRecord(data) ? data : parsed;
+    const blockType = typeof source.blockType === 'string'
+      ? source.blockType
+      : typeof source.type === 'string'
+        ? source.type
+        : inferBlockTypeFromPayload(source);
+    const config = isRecord(source.config)
+      ? source.config
+      : isRecord(data)
+        ? data
+        : source;
+    return { type: 'create_block', payload: { blockType, config } };
+  }
+
+  if (action === 'text_only') {
+    const source = isRecord(data) ? data : parsed;
+    return {
+      type: 'text_only',
+      payload: { text: typeof source.text === 'string' ? source.text : '' },
+    };
+  }
+
+  if (typeof parsed.blockType === 'string' || isRecord(parsed.config)) {
+    const blockType = typeof parsed.blockType === 'string'
+      ? parsed.blockType
+      : typeof parsed.type === 'string'
+        ? parsed.type
+        : inferBlockTypeFromPayload(parsed);
+    const config = isRecord(parsed.config) ? parsed.config : parsed;
+    return { type: 'create_block', payload: { blockType, config } };
+  }
+
+  if (looksLikeBlockConfig(parsed)) {
+    if (blockContext?.blockType && blockContext.blockType !== 'ai.micro-agent') {
+      return { type: 'update_block', payload: parsed };
+    }
+    return {
+      type: 'create_block',
+      payload: { blockType: inferBlockTypeFromPayload(parsed), config: parsed },
+    };
+  }
+
+  return undefined;
+}
+
+function looksLikeBlockConfig(value: Record<string, unknown>): boolean {
+  return (
+    'rows' in value ||
+    'cells' in value ||
+    'items' in value ||
+    'title' in value ||
+    'value' in value ||
+    'label' in value
+  );
+}
+
+function inferBlockTypeFromPayload(value: Record<string, unknown>): string {
+  if ('cells' in value || 'cols' in value || 'colCount' in value) return 'sheet';
+  return 'custom.data';
 }
 
 /**
@@ -185,7 +325,7 @@ export async function POST(req: Request) {
               sse(controller, {
                 type: 'done',
                 content: fullContent,
-                suggestedAction: parseAction(fullContent),
+                suggestedAction: parseAction(fullContent, blockContext ?? undefined),
                 model: externalModel,
                 provider: externalConfig.provider,
                 totalTokens,
@@ -303,7 +443,7 @@ export async function POST(req: Request) {
               if (chunk.done) {
                 const evalCount = chunk.eval_count ?? totalTokens;
                 const evalDurationSec = chunk.eval_duration ? chunk.eval_duration / 1e9 : 0;
-                const suggestedAction = parseAction(fullContent);
+                const suggestedAction = parseAction(fullContent, blockContext ?? undefined);
                 sse(controller, {
                   type: 'done',
                   content: fullContent,

@@ -51,6 +51,220 @@ function EmptyState({ onAdd, onReset }: { onAdd: () => void; onReset: () => void
   );
 }
 
+const AI_MUTABLE_BLOCK_TYPES = new Set(['sheet', 'custom.data', 'navigate.card', 'ai.micro-agent']);
+
+function makeId(prefix: string): string {
+  return typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `${prefix}_${Math.random().toString(36).slice(2)}_${Date.now()}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function toNumber(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value !== 'string') return 0;
+  const hasCurrency = /₽|руб/i.test(value);
+  const normalized = value
+    .replace(/\s/g, '')
+    .replace(/[₽рруб.]/gi, '')
+    .replace(',', '.');
+  const parsed = Number.parseFloat(normalized);
+  if (!Number.isFinite(parsed)) return 0;
+  return hasCurrency ? Math.round(parsed * 100) : parsed;
+}
+
+function normalizeCustomDataConfig(
+  raw: Record<string, unknown>,
+  current: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const sourceRows = Array.isArray(raw.rows)
+    ? raw.rows
+    : Array.isArray(raw.items)
+      ? raw.items
+      : Array.isArray(raw.data)
+        ? raw.data
+        : ('label' in raw || 'value' in raw || 'amount' in raw)
+          ? [raw]
+          : Array.isArray(current.rows)
+            ? current.rows
+            : [];
+
+  const rows = sourceRows.map((row, index) => {
+    if (isRecord(row)) {
+      return {
+        id: typeof row.id === 'string' ? row.id : makeId('ai_row'),
+        label: String(row.label ?? row.name ?? row.title ?? row.category ?? row.description ?? `Строка ${index + 1}`),
+        value: toNumber(row.value ?? row.amount ?? row.total ?? row.sum ?? 0),
+      };
+    }
+    return {
+      id: makeId('ai_row'),
+      label: String(row),
+      value: 0,
+    };
+  });
+
+  const publishMode = ['sum', 'avg', 'count', 'last'].includes(String(raw.publishMode))
+    ? raw.publishMode
+    : current.publishMode ?? 'sum';
+  const format = ['rubles', 'number', 'percent'].includes(String(raw.format))
+    ? raw.format
+    : current.format ?? 'rubles';
+
+  return {
+    ...current,
+    ...raw,
+    rows,
+    publishMode,
+    format,
+    showKopecks: typeof raw.showKopecks === 'boolean' || raw.showKopecks === null
+      ? raw.showKopecks
+      : current.showKopecks ?? null,
+  };
+}
+
+function columnIndex(label: string): number {
+  return label
+    .toUpperCase()
+    .split('')
+    .reduce((acc, ch) => acc * 26 + (ch.charCodeAt(0) - 64), 0) - 1;
+}
+
+function normalizeSheetCells(rawCells: unknown, rows: number, cols: number): string[][] {
+  const cells = Array.from({ length: rows }, () => Array.from({ length: cols }, () => ''));
+  if (Array.isArray(rawCells)) {
+    rawCells.forEach((row, r) => {
+      if (!Array.isArray(row)) return;
+      row.forEach((cell, c) => {
+        if (r < rows && c < cols) cells[r][c] = String(cell ?? '');
+      });
+    });
+    return cells;
+  }
+  if (isRecord(rawCells)) {
+    Object.entries(rawCells).forEach(([addr, value]) => {
+      const match = addr.match(/^([A-Z]+)(\d+)$/i);
+      if (!match) return;
+      const c = columnIndex(match[1]);
+      const r = Number.parseInt(match[2], 10) - 1;
+      if (r >= 0 && r < rows && c >= 0 && c < cols) cells[r][c] = String(value ?? '');
+    });
+  }
+  return cells;
+}
+
+function normalizeSheetConfig(
+  raw: Record<string, unknown>,
+  current: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const rawCells = raw.cells;
+  const rowCountFromCells = Array.isArray(rawCells) ? rawCells.length : 0;
+  const colCountFromCells = Array.isArray(rawCells)
+    ? Math.max(1, ...rawCells.map((row) => Array.isArray(row) ? row.length : 0))
+    : isRecord(rawCells)
+      ? Math.max(1, ...Object.keys(rawCells).map((addr) => {
+          const match = addr.match(/^([A-Z]+)(\d+)$/i);
+          return match ? columnIndex(match[1]) + 1 : 1;
+        }))
+      : 0;
+  const maxRowFromAddress = isRecord(rawCells)
+    ? Math.max(1, ...Object.keys(rawCells).map((addr) => {
+        const match = addr.match(/^([A-Z]+)(\d+)$/i);
+        return match ? Number.parseInt(match[2], 10) : 1;
+      }))
+    : 0;
+  const requestedRows = Number(raw.rows ?? raw.rowCount ?? current.rows ?? 10);
+  const requestedCols = Number(raw.cols ?? raw.colCount ?? current.cols ?? 5);
+  const rows = Math.min(
+    200,
+    Math.max(
+      1,
+      Number.isFinite(requestedRows) ? requestedRows : 10,
+      rowCountFromCells,
+      maxRowFromAddress,
+    ),
+  );
+  const cols = Math.min(
+    26,
+    Math.max(
+      1,
+      Number.isFinite(requestedCols) ? requestedCols : 5,
+      colCountFromCells,
+    ),
+  );
+
+  return {
+    ...current,
+    ...raw,
+    title: String(raw.title ?? current.title ?? 'Таблица'),
+    rows,
+    cols,
+    cells: normalizeSheetCells(rawCells ?? current.cells, rows, cols),
+    colWidths: normalizeNumberArray(raw.colWidths, current.colWidths, cols, 100),
+    rowHeights: normalizeNumberArray(raw.rowHeights, current.rowHeights, rows, 28),
+    headerCells: normalizeHeaderCells(raw.headerCells ?? current.headerCells, rows),
+  };
+}
+
+function normalizeNumberArray(
+  raw: unknown,
+  current: unknown,
+  length: number,
+  fallback: number,
+): number[] {
+  const source = Array.isArray(raw) ? raw : Array.isArray(current) ? current : [];
+  return Array.from({ length }, (_, index) => {
+    const value = Number(source[index]);
+    return Number.isFinite(value) ? value : fallback;
+  });
+}
+
+function normalizeHeaderCells(raw: unknown, rows: number): Array<Record<string, unknown>> {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return [
+      { id: makeId('ai_header'), label: 'Название', value: 'Таблица', width: 200 },
+      { id: makeId('ai_header'), label: 'Итого', value: `=SUM(A1:A${rows})`, width: 150 },
+    ];
+  }
+
+  return raw.map((cell, index) => {
+    const source = isRecord(cell) ? cell : {};
+    const width = Number(source.width);
+    return {
+      id: typeof source.id === 'string' ? source.id : makeId('ai_header'),
+      label: String(source.label ?? `Поле ${index + 1}`),
+      value: String(source.value ?? ''),
+      ...(Number.isFinite(width) ? { width } : {}),
+    };
+  });
+}
+
+function inferBlockTypeFromAiConfig(raw: Record<string, unknown>): string {
+  if ('cells' in raw || 'cols' in raw || 'colCount' in raw) return 'sheet';
+  return 'custom.data';
+}
+
+function normalizeAiConfigForBlock(
+  blockType: string,
+  raw: Record<string, unknown>,
+  current: Record<string, unknown> = {},
+): Record<string, unknown> {
+  if (blockType === 'sheet') return normalizeSheetConfig(raw, current);
+  if (blockType === 'custom.data') return normalizeCustomDataConfig(raw, current);
+  return { ...current, ...raw };
+}
+
+function shouldCreateInsteadOfUpdate(blockType: string, payload: Record<string, unknown>): boolean {
+  if (!AI_MUTABLE_BLOCK_TYPES.has(blockType)) return true;
+  if (blockType !== 'ai.micro-agent') return false;
+  return Object.keys(payload).some(
+    (key) => !['blockPrompt', 'model', 'lastResult', 'lastActionType'].includes(key),
+  );
+}
+
 const COLS = { lg: 12, md: 12, sm: 6, xs: 4, xxs: 2 };
 const BREAKPOINTS = { lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 };
 
@@ -251,10 +465,7 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
   function onAddBlock(result: AddBlockResult) {
     const def = getBlockDef(result.type);
     if (!def) return;
-    const id =
-      typeof crypto !== 'undefined' && 'randomUUID' in crypto
-        ? crypto.randomUUID()
-        : `b_${Math.random().toString(36).slice(2)}_${Date.now()}`;
+    const id = makeId('b');
     const maxY = blocks.reduce((m, b) => Math.max(m, b.y + b.h), 0);
     const newBlock: BlockInstance = {
       id,
@@ -288,6 +499,67 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
 
   function onConfigChange(id: string, config: Record<string, unknown>) {
     updateBlock(id, { config });
+  }
+
+  function applyAiConfigToBlock(id: string, blockType: string, payload: Record<string, unknown>) {
+    setBlocks((prev) => {
+      const next = prev.map((b) => {
+        if (b.id !== id) return b;
+        return {
+          ...b,
+          config: normalizeAiConfigForBlock(blockType, payload, b.config ?? {}),
+        };
+      });
+      scheduleSave(next);
+      return next;
+    });
+  }
+
+  function createBlockFromAi(blockType: string, rawConfig: Record<string, unknown>) {
+    const fallbackType = inferBlockTypeFromAiConfig(rawConfig);
+    const def = getBlockDef(blockType) ?? getBlockDef(fallbackType);
+    if (!def) return;
+
+    setBlocks((prev) => {
+      const maxY = prev.reduce((m, b) => Math.max(m, b.y + b.h), 0);
+      const config = normalizeAiConfigForBlock(
+        def.type,
+        rawConfig,
+        def.defaultConfig?.() ?? {},
+      );
+      const newBlock: BlockInstance = {
+        id: makeId('ai_block'),
+        type: def.type,
+        x: 0,
+        y: maxY,
+        w: def.defaultSize.w,
+        h: def.defaultSize.h,
+        config,
+        appearance: typeof config.title === 'string' ? { title: config.title } : undefined,
+      };
+      const next = [...prev, newBlock];
+      scheduleSave(next);
+      return next;
+    });
+  }
+
+  function applyAiAction(action: SuggestedAction) {
+    if (!aiBlockId) return;
+    const target = blocks.find((b) => b.id === aiBlockId);
+    if (!target) return;
+
+    if (action.type === 'update_block') {
+      if (shouldCreateInsteadOfUpdate(target.type, action.payload)) {
+        createBlockFromAi(inferBlockTypeFromAiConfig(action.payload), action.payload);
+        return;
+      }
+      applyAiConfigToBlock(target.id, target.type, action.payload);
+      return;
+    }
+
+    if (action.type === 'create_block') {
+      createBlockFromAi(action.payload.blockType, action.payload.config);
+    }
   }
 
   function updateBlock(id: string, patch: Partial<BlockInstance>) {
@@ -479,13 +751,7 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
           blockData: blocks.find((b) => b.id === aiBlockId)?.config as Record<string, unknown> | undefined,
           pageKey,
         } satisfies BlockContext : undefined}
-        onApply={(action: SuggestedAction) => {
-          if (!aiBlockId) return;
-          if (action.type === 'update_block') {
-            onConfigChange(aiBlockId, action.payload);
-          }
-          // create_block could be handled here in the future
-        }}
+        onApply={applyAiAction}
       />
 
       <AlertDialog open={showResetConfirm} onOpenChange={setShowResetConfirm}>

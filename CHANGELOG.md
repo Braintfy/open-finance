@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.12] - 2026-05-11
+
+### Fixed
+- **AI Micro-Agent apply flow** — `parseAction()` теперь извлекает action из fenced/unfenced JSON, поддерживает `payload`/`config` и инферит `update_block`/`create_block` по структуре ответа.
+- **Block-Grid persistence** — `BlockGrid` применяет `update_block` через нормализацию config и обрабатывает `create_block` с сохранением в `/api/blocks/layout/[pageKey]`.
+- **Sheet AI config** — prompt capabilities обновлён под реальный формат `sheet`: `rows`, `cols`, `cells: string[][]`, чтобы AI-результат сразу отрисовывался.
+- **Proxy build warning** — `undici` импортируется только runtime-способом, чтобы сборка не предупреждала при выключенном proxy.
+
 ## [0.9.11] - 2026-05-11
 
 ### Fixed (CRITICAL)
