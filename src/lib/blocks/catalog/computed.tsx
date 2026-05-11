@@ -3,9 +3,12 @@
 'use client';
 
 import { Calculator, Sigma } from 'lucide-react';
-import type { BlockDef, BlockRenderProps } from '../types';
+import { z } from 'zod';
+import type { BlockDef, BlockRenderProps, BlockSettingsFormProps } from '../types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { useFormatRubles } from '@/lib/format-settings';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
+import { useFormatSettings, formatRublesWithSettings } from '@/lib/format-settings';
 import { useBlockDensity } from '@/components/blocks/block-size';
 import {
   useBlockDependencyResult,
@@ -16,9 +19,16 @@ import {
 // computed.sum — агрегация значений N других блоков
 // ============================================================================
 
+const ComputedConfig = z.object({
+  showKopecks: z.boolean().nullable().default(null),
+});
+
 function RenderComputedSum({ instance }: BlockRenderProps) {
   const density = useBlockDensity();
-  const fmt = useFormatRubles();
+  const cfg = ComputedConfig.safeParse(instance.config ?? {});
+  const { settings } = useFormatSettings();
+  const showKopecks = (cfg.success ? cfg.data.showKopecks : null) ?? settings.showKopecks;
+  const fmt = (v: number) => formatRublesWithSettings(v, showKopecks);
   const { value, sourceValues, missing } = useBlockDependencyResult(instance.dependencies);
   const accent = instance.appearance?.accentColor;
   const title = instance.appearance?.title ?? 'Агрегация';
@@ -110,6 +120,44 @@ function RenderComputedSum({ instance }: BlockRenderProps) {
   );
 }
 
+function ComputedSettingsForm({ config, onChange }: BlockSettingsFormProps) {
+  const cfg = ComputedConfig.parse(config ?? {});
+  return (
+    <div className="space-y-4">
+      <div className="space-y-1.5">
+        <Label>Копейки</Label>
+        <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
+          <div className="min-w-0">
+            <div className="text-xs font-medium">Показывать копейки</div>
+            <div className="text-[11px] text-muted-foreground">
+              {cfg.showKopecks === null
+                ? 'Глобальная настройка'
+                : cfg.showKopecks
+                  ? '1 234,56 ₽'
+                  : '1 235 ₽'}
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5">
+            {cfg.showKopecks !== null && (
+              <button
+                type="button"
+                onClick={() => onChange({ ...cfg, showKopecks: null })}
+                className="text-[10px] text-muted-foreground hover:text-foreground"
+              >
+                Сбросить
+              </button>
+            )}
+            <Switch
+              checked={cfg.showKopecks ?? false}
+              onCheckedChange={(v) => onChange({ ...cfg, showKopecks: v })}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export const ComputedSumBlock: BlockDef = {
   type: 'computed.sum',
   displayName: 'Агрегация (формула)',
@@ -120,7 +168,10 @@ export const ComputedSumBlock: BlockDef = {
   defaultSize: { w: 4, h: 2 },
   minSize: { w: 2, h: 1 },
   minContentSize: { w: 100, h: 60 },
-  pages: ['*'], // доступен на любой странице
+  pages: ['*'],
+  configSchema: ComputedConfig,
+  defaultConfig: () => ({ showKopecks: null }),
   supportsDependencies: true,
+  SettingsForm: ComputedSettingsForm,
   Render: RenderComputedSum,
 };

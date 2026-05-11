@@ -5,9 +5,11 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowDown, ArrowUp, Wallet, ListOrdered, BarChart3, Pencil, Trash2 } from 'lucide-react';
 import { z } from 'zod';
-import type { BlockDef, BlockRenderProps } from '../types';
+import type { BlockDef, BlockRenderProps, BlockSettingsFormProps } from '../types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -19,12 +21,20 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { formatDate } from '@/lib/utils';
-import { useFormatRubles } from '@/lib/format-settings';
+import { useFormatSettings, formatRublesWithSettings } from '@/lib/format-settings';
 import { useCashflowData, type CashflowTx } from './cashflow-data';
 import { TransactionDialog } from './transaction-dialog';
-import { resolveIcon } from '../icon-resolver';
+import { resolveIconWithAnimation } from '../icon-resolver';
 import { useBlockDensity } from '@/components/blocks/block-size';
 import { useBlockValuePublisher } from '../values';
+
+// ============================================================================
+// Shared KPI config
+// ============================================================================
+
+const KpiConfig = z.object({
+  showKopecks: z.boolean().nullable().default(null),
+});
 
 // ============================================================================
 // stat.income / stat.expense / stat.balance — KPI карточки
@@ -44,15 +54,17 @@ function StatCard({
   icon,
   big,
   accent,
+  showKopecks,
 }: {
   label: string;
   value: number;
   icon?: React.ReactNode;
   big?: boolean;
   accent?: string;
+  showKopecks: boolean;
 }) {
   const density = useBlockDensity();
-  const fmt = useFormatRubles();
+  const fmt = (v: number) => formatRublesWithSettings(v, showKopecks);
   const sign = value < 0 ? '−' : '';
 
   // XS — только значение крупно, без header
@@ -116,52 +128,102 @@ function StatCard({
   );
 }
 
+function useKpiKopecks(config: unknown): boolean {
+  const cfg = KpiConfig.safeParse(config ?? {});
+  const { settings } = useFormatSettings();
+  return (cfg.success ? cfg.data.showKopecks : null) ?? settings.showKopecks;
+}
+
 function RenderIncome({ instance }: BlockRenderProps) {
   const { summary, loading } = useCashflowData();
-  const Icon = resolveIcon(instance.appearance?.icon, ArrowDown);
+  const { Icon, animClass } = resolveIconWithAnimation(instance.appearance?.icon, ArrowDown);
   const accent = instance.appearance?.accentColor;
   const value = loading ? 0 : summary.incomeTotal;
+  const showKopecks = useKpiKopecks(instance.config);
   useBlockValuePublisher(instance.id, { value, label: instance.appearance?.title ?? 'Доходы за месяц' });
   return (
     <StatCard
       label={instance.appearance?.title ?? 'Доходы за месяц'}
       value={value}
-      icon={<Icon className="h-4 w-4" style={{ color: accent ?? '#16a34a' }} />}
+      icon={<Icon className={`h-4 w-4 ${animClass}`} style={{ color: accent ?? '#16a34a' }} />}
       accent={accent}
+      showKopecks={showKopecks}
     />
   );
 }
 
 function RenderExpense({ instance }: BlockRenderProps) {
   const { summary, loading } = useCashflowData();
-  const Icon = resolveIcon(instance.appearance?.icon, ArrowUp);
+  const { Icon, animClass } = resolveIconWithAnimation(instance.appearance?.icon, ArrowUp);
   const accent = instance.appearance?.accentColor;
   const value = loading ? 0 : summary.expenseTotal;
+  const showKopecks = useKpiKopecks(instance.config);
   useBlockValuePublisher(instance.id, { value, label: instance.appearance?.title ?? 'Расходы за месяц' });
   return (
     <StatCard
       label={instance.appearance?.title ?? 'Расходы за месяц'}
       value={value}
-      icon={<Icon className="h-4 w-4" style={{ color: accent ?? '#dc2626' }} />}
+      icon={<Icon className={`h-4 w-4 ${animClass}`} style={{ color: accent ?? '#dc2626' }} />}
       accent={accent}
+      showKopecks={showKopecks}
     />
   );
 }
 
 function RenderBalance({ instance }: BlockRenderProps) {
   const { summary, loading } = useCashflowData();
-  const Icon = resolveIcon(instance.appearance?.icon, Wallet);
+  const { Icon, animClass } = resolveIconWithAnimation(instance.appearance?.icon, Wallet);
   const accent = instance.appearance?.accentColor;
   const value = loading ? 0 : summary.balance;
+  const showKopecks = useKpiKopecks(instance.config);
   useBlockValuePublisher(instance.id, { value, label: instance.appearance?.title ?? 'Баланс' });
   return (
     <StatCard
       label={instance.appearance?.title ?? 'Баланс'}
       value={value}
-      icon={<Icon className="h-4 w-4" style={accent ? { color: accent } : undefined} />}
+      icon={<Icon className={`h-4 w-4 ${animClass}`} style={accent ? { color: accent } : undefined} />}
       accent={accent}
+      showKopecks={showKopecks}
       big
     />
+  );
+}
+
+function KpiSettingsForm({ config, onChange }: BlockSettingsFormProps) {
+  const cfg = KpiConfig.parse(config ?? {});
+  return (
+    <div className="space-y-4">
+      <div className="space-y-1.5">
+        <Label>Копейки</Label>
+        <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
+          <div className="min-w-0">
+            <div className="text-xs font-medium">Показывать копейки</div>
+            <div className="text-[11px] text-muted-foreground">
+              {cfg.showKopecks === null
+                ? 'Глобальная настройка'
+                : cfg.showKopecks
+                  ? '1 234,56 ₽'
+                  : '1 235 ₽'}
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5">
+            {cfg.showKopecks !== null && (
+              <button
+                type="button"
+                onClick={() => onChange({ ...cfg, showKopecks: null })}
+                className="text-[10px] text-muted-foreground hover:text-foreground"
+              >
+                Сбросить
+              </button>
+            )}
+            <Switch
+              checked={cfg.showKopecks ?? false}
+              onCheckedChange={(v) => onChange({ ...cfg, showKopecks: v })}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -175,6 +237,9 @@ export const StatIncomeBlock: BlockDef = {
   minSize: { w: 1, h: 1 },
   minContentSize: { w: 80, h: 40 },
   pages: ['cashflow', 'dashboard'],
+  configSchema: KpiConfig,
+  defaultConfig: () => ({ showKopecks: null }),
+  SettingsForm: KpiSettingsForm,
   Render: RenderIncome,
 };
 
@@ -188,6 +253,9 @@ export const StatExpenseBlock: BlockDef = {
   minSize: { w: 1, h: 1 },
   minContentSize: { w: 80, h: 40 },
   pages: ['cashflow', 'dashboard'],
+  configSchema: KpiConfig,
+  defaultConfig: () => ({ showKopecks: null }),
+  SettingsForm: KpiSettingsForm,
   Render: RenderExpense,
 };
 
@@ -201,6 +269,9 @@ export const StatBalanceBlock: BlockDef = {
   minSize: { w: 1, h: 1 },
   minContentSize: { w: 80, h: 40 },
   pages: ['cashflow', 'dashboard'],
+  configSchema: KpiConfig,
+  defaultConfig: () => ({ showKopecks: null }),
+  SettingsForm: KpiSettingsForm,
   Render: RenderBalance,
 };
 
@@ -212,13 +283,16 @@ const TopCatsConfig = z.object({
   type: z.enum(['income', 'expense']).default('expense'),
   title: z.string().optional(),
   limit: z.number().int().min(1).max(20).default(5),
+  showKopecks: z.boolean().nullable().default(null),
 });
 
 function RenderTopCategories({ instance }: BlockRenderProps) {
   const cfg = TopCatsConfig.parse(instance.config ?? {});
   const { topIncome, topExpense, loading } = useCashflowData();
   const density = useBlockDensity();
-  const fmt = useFormatRubles();
+  const { settings } = useFormatSettings();
+  const showKopecks = cfg.showKopecks ?? settings.showKopecks;
+  const fmt = (v: number) => formatRublesWithSettings(v, showKopecks);
   const rows = cfg.type === 'income' ? topIncome : topExpense;
 
   // Ограничение по плотности: чем меньше места — тем меньше строк
@@ -325,6 +399,37 @@ function TopCategoriesSettings({
           className="w-full accent-primary"
         />
       </div>
+
+      <div className="space-y-1.5">
+        <Label>Копейки</Label>
+        <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
+          <div className="min-w-0">
+            <div className="text-xs font-medium">Показывать копейки</div>
+            <div className="text-[11px] text-muted-foreground">
+              {cfg.showKopecks === null
+                ? 'Глобальная настройка'
+                : cfg.showKopecks
+                  ? '1 234,56 ₽'
+                  : '1 235 ₽'}
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5">
+            {cfg.showKopecks !== null && (
+              <button
+                type="button"
+                onClick={() => onChange({ ...cfg, showKopecks: null })}
+                className="text-[10px] text-muted-foreground hover:text-foreground"
+              >
+                Сбросить
+              </button>
+            )}
+            <Switch
+              checked={cfg.showKopecks ?? false}
+              onCheckedChange={(v) => onChange({ ...cfg, showKopecks: v })}
+            />
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -340,7 +445,7 @@ export const TopCategoriesBlock: BlockDef = {
   minContentSize: { w: 180, h: 120 },
   pages: ['cashflow', 'dashboard'],
   configSchema: TopCatsConfig,
-  defaultConfig: () => ({ type: 'expense', limit: 5 }),
+  defaultConfig: () => ({ type: 'expense', limit: 5, showKopecks: null }),
   SettingsForm: TopCategoriesSettings,
   Render: RenderTopCategories,
 };
@@ -352,13 +457,16 @@ export const TopCategoriesBlock: BlockDef = {
 const TxListConfig = z.object({
   limit: z.number().int().min(5).max(200).default(50),
   title: z.string().optional(),
+  showKopecks: z.boolean().nullable().default(null),
 });
 
 function RenderTransactionsList({ instance }: BlockRenderProps) {
   const cfg = TxListConfig.parse(instance.config ?? {});
   const { transactions, loading } = useCashflowData();
   const router = useRouter();
-  const fmt = useFormatRubles();
+  const { settings } = useFormatSettings();
+  const showKopecks = cfg.showKopecks ?? settings.showKopecks;
+  const fmt = (v: number) => formatRublesWithSettings(v, showKopecks);
   const [editing, setEditing] = useState<CashflowTx | null>(null);
   const [editingNew, setEditingNew] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
@@ -557,6 +665,37 @@ function TransactionsSettings({
         <div className="flex justify-between text-xs text-muted-foreground">
           <span>5</span>
           <span>200</span>
+        </div>
+      </div>
+
+      <div className="space-y-1.5">
+        <Label>Копейки</Label>
+        <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
+          <div className="min-w-0">
+            <div className="text-xs font-medium">Показывать копейки</div>
+            <div className="text-[11px] text-muted-foreground">
+              {cfg.showKopecks === null
+                ? 'Глобальная настройка'
+                : cfg.showKopecks
+                  ? '1 234,56 ₽'
+                  : '1 235 ₽'}
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5">
+            {cfg.showKopecks !== null && (
+              <button
+                type="button"
+                onClick={() => onChange({ ...cfg, showKopecks: null })}
+                className="text-[10px] text-muted-foreground hover:text-foreground"
+              >
+                Сбросить
+              </button>
+            )}
+            <Switch
+              checked={cfg.showKopecks ?? false}
+              onCheckedChange={(v) => onChange({ ...cfg, showKopecks: v })}
+            />
+          </div>
         </div>
       </div>
     </div>

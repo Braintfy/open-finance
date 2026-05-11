@@ -1,8 +1,9 @@
-// PURPOSE: Input для ввода денежных сумм с автоподставкой запятой (копейки).
-// Хранит значение в копейках (integer), отображает с разделителем дробной части.
+// PURPOSE: Input для ввода денежных сумм с автоподставкой запятой (ATM-style).
+// Последние 2 цифры — всегда копейки. Запятая появляется автоматически.
+// Хранит значение в копейках (integer).
 'use client';
 
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useCallback, useRef, useEffect } from 'react';
 import { cn } from '@/lib/utils';
 
 type CurrencyInputProps = {
@@ -10,152 +11,129 @@ type CurrencyInputProps = {
   value: number;
   /** Callback при изменении — передаёт значение в копейках */
   onChange: (valueInKopecks: number) => void;
-  /** Показывать дробную часть (копейки) */
+  /** Показывать дробную часть (копейки) — ATM-style auto-comma */
   showKopecks?: boolean;
   className?: string;
   placeholder?: string;
 };
 
 /**
- * Форматирует число копеек в строку для отображения в инпуте.
- * showKopecks=true: "1 234,56"
- * showKopecks=false: "1 234"
+ * ATM-style форматирование: "20 000,44" для 2000044 копеек.
+ * Запятая всегда фиксирована перед последними 2 цифрами.
  */
-function formatForDisplay(kopecks: number, showKopecks: boolean): string {
-  if (showKopecks) {
-    const rubles = Math.floor(Math.abs(kopecks) / 100);
-    const kop = Math.abs(kopecks) % 100;
-    const sign = kopecks < 0 ? '-' : '';
-    const rublesStr = rubles.toLocaleString('ru-RU');
-    const kopStr = kop.toString().padStart(2, '0');
-    return `${sign}${rublesStr},${kopStr}`;
-  }
-  const rubles = Math.round(kopecks / 100);
-  return rubles.toLocaleString('ru-RU');
+function formatKopecks(kopecks: number): string {
+  const abs = Math.abs(kopecks);
+  const sign = kopecks < 0 ? '-' : '';
+  const rubles = Math.floor(abs / 100);
+  const kop = abs % 100;
+  const rublesStr = rubles.toLocaleString('ru-RU');
+  const kopStr = kop.toString().padStart(2, '0');
+  return `${sign}${rublesStr},${kopStr}`;
 }
 
-/**
- * Парсит строку ввода пользователя в копейки.
- * Принимает: "1234,56", "1 234,56", "1234.56", "1234"
- */
-function parseToKopecks(input: string, showKopecks: boolean): number {
-  // Убираем пробелы (разделители тысяч)
-  let cleaned = input.replace(/\s/g, '').replace(/\u00a0/g, '');
-  
-  // Определяем знак
-  const negative = cleaned.startsWith('-');
-  if (negative) cleaned = cleaned.slice(1);
-  
-  // Заменяем точку на запятую для единообразия
-  cleaned = cleaned.replace('.', ',');
-  
-  // Убираем всё кроме цифр и запятой
-  cleaned = cleaned.replace(/[^\d,]/g, '');
-  
-  if (!cleaned) return 0;
-
-  if (showKopecks) {
-    const parts = cleaned.split(',');
-    const rublesPart = parseInt(parts[0] || '0', 10) || 0;
-    let kopecksPart = 0;
-    if (parts[1] !== undefined) {
-      // Берём первые 2 цифры после запятой
-      const kopStr = parts[1].slice(0, 2).padEnd(2, '0');
-      kopecksPart = parseInt(kopStr, 10) || 0;
-    }
-    const total = rublesPart * 100 + kopecksPart;
-    return negative ? -total : total;
-  }
-  
-  // Без копеек — вводим рубли целиком
-  const rubles = parseInt(cleaned.replace(',', ''), 10) || 0;
-  return negative ? -(rubles * 100) : rubles * 100;
+/** Форматирование только рублей (без копеек) */
+function formatRubles(kopecks: number): string {
+  const rubles = Math.round(kopecks / 100);
+  if (rubles === 0 && kopecks === 0) return '0';
+  return rubles.toLocaleString('ru-RU');
 }
 
 export function CurrencyInput({
   value,
   onChange,
-  showKopecks = false,
+  showKopecks = true,
   className,
   placeholder,
 }: CurrencyInputProps) {
-  const [displayValue, setDisplayValue] = useState(() => formatForDisplay(value, showKopecks));
-  const [isFocused, setIsFocused] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  const lastValueRef = useRef(value);
+  const internalRef = useRef(value);
 
-  // Синхронизация при внешнем изменении value
+  // Sync display when value changes externally
   useEffect(() => {
-    if (!isFocused && value !== lastValueRef.current) {
-      setDisplayValue(formatForDisplay(value, showKopecks));
-      lastValueRef.current = value;
-    }
-  }, [value, showKopecks, isFocused]);
-
-  // При смене showKopecks переформатировать
-  useEffect(() => {
-    if (!isFocused) {
-      setDisplayValue(formatForDisplay(value, showKopecks));
-    }
-  }, [showKopecks, value, isFocused]);
-
-  const handleFocus = useCallback(() => {
-    setIsFocused(true);
-    // При фокусе показываем "чистое" число для удобства редактирования
-    if (showKopecks) {
-      const rubles = Math.floor(Math.abs(value) / 100);
-      const kop = Math.abs(value) % 100;
-      const sign = value < 0 ? '-' : '';
-      const kopStr = kop.toString().padStart(2, '0');
-      setDisplayValue(kop > 0 ? `${sign}${rubles},${kopStr}` : `${sign}${rubles}`);
-    } else {
-      const rubles = Math.round(value / 100);
-      setDisplayValue(rubles === 0 ? '' : rubles.toString());
+    if (internalRef.current !== value) {
+      internalRef.current = value;
+      if (inputRef.current && document.activeElement !== inputRef.current) {
+        inputRef.current.value = showKopecks ? formatKopecks(value) : formatRubles(value);
+      }
     }
   }, [value, showKopecks]);
 
-  const handleBlur = useCallback(() => {
-    setIsFocused(false);
-    const parsed = parseToKopecks(displayValue, showKopecks);
-    lastValueRef.current = parsed;
-    onChange(parsed);
-    setDisplayValue(formatForDisplay(parsed, showKopecks));
-  }, [displayValue, showKopecks, onChange]);
+  // Set initial display value
+  useEffect(() => {
+    if (inputRef.current) {
+      inputRef.current.value = showKopecks ? formatKopecks(value) : formatRubles(value);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showKopecks]);
 
-  const handleChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const raw = e.target.value;
-      setDisplayValue(raw);
-      
-      // Realtime parse для live update
-      const parsed = parseToKopecks(raw, showKopecks);
-      if (parsed !== lastValueRef.current) {
-        lastValueRef.current = parsed;
-        onChange(parsed);
+  const handleInput = useCallback(
+    (e: React.FormEvent<HTMLInputElement>) => {
+      const input = e.currentTarget;
+      // Extract only digits from input
+      const digits = input.value.replace(/[^\d]/g, '');
+
+      if (showKopecks) {
+        // ATM-style: all digits represent kopecks amount
+        const kopecks = parseInt(digits, 10) || 0;
+        internalRef.current = kopecks;
+        onChange(kopecks);
+        // Reformat with comma
+        input.value = formatKopecks(kopecks);
+      } else {
+        // No kopecks: digits are rubles
+        const rubles = parseInt(digits, 10) || 0;
+        const kopecks = rubles * 100;
+        internalRef.current = kopecks;
+        onChange(kopecks);
+        input.value = formatRubles(kopecks);
       }
     },
     [showKopecks, onChange]
   );
 
+  const handleFocus = useCallback(() => {
+    const input = inputRef.current;
+    if (input) {
+      // Select all on focus for easy replacement
+      requestAnimationFrame(() => input.select());
+    }
+  }, []);
+
+  const handleBlur = useCallback(() => {
+    const input = inputRef.current;
+    if (input) {
+      // Ensure clean display on blur
+      input.value = showKopecks
+        ? formatKopecks(internalRef.current)
+        : formatRubles(internalRef.current);
+    }
+  }, [showKopecks]);
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
-      // При вводе запятой в режиме showKopecks — если запятой ещё нет, подставить
-      if (showKopecks && (e.key === ',' || e.key === '.')) {
-        if (displayValue.includes(',')) {
-          e.preventDefault(); // Запрещаем вторую запятую
-        }
+      // Allow: backspace, delete, tab, escape, enter, arrows, home, end, select all
+      const allowed = [
+        'Backspace', 'Delete', 'Tab', 'Escape', 'Enter',
+        'ArrowLeft', 'ArrowRight', 'Home', 'End',
+      ];
+      if (allowed.includes(e.key)) return;
+      // Allow Ctrl+A, Ctrl+C, Ctrl+V, Ctrl+X
+      if ((e.ctrlKey || e.metaKey) && ['a', 'c', 'v', 'x'].includes(e.key)) return;
+      // Only allow digits
+      if (!/^\d$/.test(e.key)) {
+        e.preventDefault();
       }
     },
-    [showKopecks, displayValue]
+    []
   );
 
   return (
     <input
       ref={inputRef}
       type="text"
-      inputMode="decimal"
-      value={displayValue}
-      onChange={handleChange}
+      inputMode="numeric"
+      defaultValue={showKopecks ? formatKopecks(value) : formatRubles(value)}
+      onInput={handleInput}
       onFocus={handleFocus}
       onBlur={handleBlur}
       onKeyDown={handleKeyDown}

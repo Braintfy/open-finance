@@ -11,7 +11,7 @@ import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { useFormatSettings, formatRublesWithSettings } from '@/lib/format-settings';
-import { resolveIcon } from '../icon-resolver';
+import { resolveIconWithAnimation } from '../icon-resolver';
 import { useBlockDensity } from '@/components/blocks/block-size';
 
 function formatCompact(v: number): string {
@@ -89,7 +89,7 @@ function RenderStatCustom({ instance }: BlockRenderProps) {
 
   const accentColor = instance.appearance?.accentColor;
   const iconName = instance.appearance?.icon;
-  const Icon = resolveIcon(iconName, Sparkles);
+  const { Icon, animClass } = resolveIconWithAnimation(iconName, Sparkles);
 
   const title =
     instance.appearance?.title ??
@@ -120,7 +120,7 @@ function RenderStatCustom({ instance }: BlockRenderProps) {
       <Card className="flex h-full items-center justify-center p-1">
         <div className="flex items-center gap-1">
           <Icon
-            className="h-3 w-3 shrink-0"
+            className={`h-3 w-3 shrink-0 ${animClass}`}
             style={accentColor ? { color: accentColor } : undefined}
           />
           <span
@@ -140,7 +140,7 @@ function RenderStatCustom({ instance }: BlockRenderProps) {
       <Card className="flex h-full flex-col justify-center p-2.5">
         <div className="flex items-center gap-1">
           <Icon
-            className="h-3.5 w-3.5 shrink-0"
+            className={`h-3.5 w-3.5 shrink-0 ${animClass}`}
             style={accentColor ? { color: accentColor } : undefined}
           />
           <span className="truncate text-[11px] font-medium text-muted-foreground">{title}</span>
@@ -161,7 +161,7 @@ function RenderStatCustom({ instance }: BlockRenderProps) {
       <CardHeader className="pb-1.5">
         <CardTitle className="flex items-center gap-1.5 text-[13px] font-medium text-muted-foreground">
           <Icon
-            className="h-4 w-4"
+            className={`h-4 w-4 ${animClass}`}
             style={accentColor ? { color: accentColor } : undefined}
           />
           <span className="line-clamp-1">{title}</span>

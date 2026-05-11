@@ -14,7 +14,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
-import { ICON_CATEGORIES, FAVORITE_ICONS } from '@/lib/blocks/icon-library';
+import { ICON_CATEGORIES, FAVORITE_ICONS, getIconAnimationClass } from '@/lib/blocks/icon-library';
 
 type IconPickerModalProps = {
   open: boolean;
@@ -54,8 +54,8 @@ export function IconPickerModal({ open, onClose, value, onChange }: IconPickerMo
   );
 
   return (
-    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="flex h-[80vh] max-h-[600px] max-w-2xl flex-col p-0">
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()} modal={false}>
+      <DialogContent className="flex h-[80vh] max-h-[600px] max-w-2xl flex-col p-0" onPointerDownOutside={(e) => e.preventDefault()}>
         <DialogHeader className="border-b px-4 pb-3 pt-4">
           <DialogTitle className="text-sm font-semibold">Библиотека иконок</DialogTitle>
           <div className="relative mt-2">
@@ -109,25 +109,31 @@ export function IconPickerModal({ open, onClose, value, onChange }: IconPickerMo
                 Найдено: {filteredIcons.length}
               </div>
             )}
+            {activeCategory === 'animated' && !search.trim() && (
+              <div className="mb-2 text-[11px] text-muted-foreground">
+                Наведите на иконку чтобы увидеть анимацию
+              </div>
+            )}
             <div className="grid grid-cols-8 gap-1">
-              {filteredIcons.slice(0, 300).map((name) => {
+              {filteredIcons.slice(0, 300).map((name, idx) => {
                 const IconComp = icons[name as keyof typeof icons] as LucideIcon | undefined;
                 if (!IconComp) return null;
                 const isActive = value === name;
+                const animCls = activeCategory === 'animated' ? getIconAnimationClass(name) : '';
                 return (
                   <button
-                    key={name}
+                    key={`${name}-${idx}`}
                     type="button"
                     onClick={() => handleSelect(name)}
                     className={cn(
-                      'flex h-9 w-9 items-center justify-center rounded-md border transition',
+                      'group flex h-9 w-9 items-center justify-center rounded-md border transition',
                       isActive
                         ? 'border-primary bg-primary/10 ring-2 ring-primary'
                         : 'border-transparent hover:border-border hover:bg-accent'
                     )}
                     title={name}
                   >
-                    <IconComp className="h-4 w-4" />
+                    <IconComp className={cn('h-4 w-4', animCls)} />
                   </button>
                 );
               })}

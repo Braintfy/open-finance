@@ -229,6 +229,45 @@ export const ICON_CATEGORIES: IconCategory[] = [
       'Bug', 'Skull', 'Siren', 'FileWarning',
     ],
   },
+  {
+    key: 'animated',
+    label: 'Анимированные',
+    icons: [
+      // Loaders & spinners
+      'Loader', 'Loader2', 'LoaderCircle', 'LoaderPinwheel',
+      'RefreshCw', 'RefreshCcw', 'RotateCw', 'RotateCcw',
+      // Pulse / heartbeat
+      'Heart', 'HeartPulse', 'Activity', 'AudioWaveform',
+      // Motion / movement
+      'ArrowUpDown', 'ArrowLeftRight', 'MoveHorizontal', 'MoveVertical',
+      'ChevronsUpDown', 'ChevronsLeftRight',
+      'Orbit', 'Satellite', 'SatelliteDish',
+      // Attention / notification
+      'Bell', 'BellRing', 'BellDot', 'AlertCircle', 'AlertTriangle',
+      'ShieldAlert', 'Siren', 'OctagonAlert',
+      // Progress
+      'Hourglass', 'Timer', 'Clock', 'Gauge', 'CircleDashed',
+      // Data flow / sync
+      'ArrowDownUp', 'ArrowUpFromLine', 'ArrowDownToLine',
+      'CloudUpload', 'CloudDownload', 'Download', 'Upload',
+      'Repeat', 'Repeat2', 'Shuffle',
+      // Sparkle / magic
+      'Sparkles', 'Sparkle', 'Stars', 'Wand2', 'WandSparkles',
+      'Zap', 'ZapOff', 'Flame', 'PartyPopper',
+      // Bounce / scale
+      'Maximize', 'Minimize', 'Expand', 'Shrink',
+      'ZoomIn', 'ZoomOut', 'Fullscreen',
+      // Wobble / shake
+      'Phone', 'PhoneCall', 'Vibrate',
+      'HandMetal', 'Hand', 'ThumbsUp', 'ThumbsDown',
+      // Typing / processing
+      'Ellipsis', 'MoreHorizontal', 'Braces', 'Terminal',
+      'BrainCircuit', 'Bot', 'Cpu',
+      // Waves
+      'Waves', 'Wind', 'CloudLightning', 'Tornado',
+      'Radio', 'Wifi', 'Signal', 'Podcast',
+    ],
+  },
 ];
 
 /** Все уникальные имена иконок из всех категорий */
@@ -237,4 +276,36 @@ export function getAllIconNames(): string[] {
   FAVORITE_ICONS.forEach((n) => set.add(n));
   ICON_CATEGORIES.forEach((cat) => cat.icons.forEach((n) => set.add(n)));
   return Array.from(set);
+}
+
+/** Set of icon names from the "animated" category — used for hover animations */
+export const ANIMATED_ICONS = new Set(
+  ICON_CATEGORIES.find((c) => c.key === 'animated')?.icons ?? []
+);
+
+/**
+ * CSS animation class to apply on hover for a given icon name.
+ * Returns empty string if icon is not in the animated set.
+ */
+export function getIconAnimationClass(iconName: string | undefined): string {
+  if (!iconName || !ANIMATED_ICONS.has(iconName)) return '';
+
+  // Spinners / loaders
+  if (/^(Loader|Refresh|Rotate)/i.test(iconName)) return 'icon-spin';
+  // Pulse / heartbeat
+  if (/^(Heart|Activity|Audio)/i.test(iconName)) return 'icon-pulse';
+  // Bell / shake
+  if (/^(Bell|Phone|Vibrate|Siren)/i.test(iconName)) return 'icon-shake';
+  // Sparkle / flash
+  if (/^(Sparkle|Sparkles|Star|Wand|Zap|Flame|Party)/i.test(iconName)) return 'icon-flash';
+  // Bounce / arrows / movement
+  if (/^(Arrow|Chevron|Move|Bounce|Download|Upload|Cloud)/i.test(iconName)) return 'icon-bounce';
+  // Scale / zoom
+  if (/^(Maximize|Minimize|Expand|Shrink|Zoom|Full)/i.test(iconName)) return 'icon-scale';
+  // Orbit / rotate slowly
+  if (/^(Orbit|Satellite|Globe|Repeat|Shuffle)/i.test(iconName)) return 'icon-spin-slow';
+  // Waves
+  if (/^(Waves|Wind|Radio|Wifi|Signal|Podcast|Tornado)/i.test(iconName)) return 'icon-pulse';
+  // Default for all animated icons
+  return 'icon-bounce';
 }

@@ -76,7 +76,7 @@ export function BlockChrome({
 
   return (
     <div
-      className="group/block relative h-full w-full"
+      className="group group/block relative h-full w-full"
       style={wrapperStyle}
       onMouseEnter={handleEnter}
       onMouseLeave={handleLeave}

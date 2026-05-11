@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.9.5] - 2026-05-11
+
+### Added
+- **Анимированные иконки** — новая категория «Анимированные» в `icon-library.ts` с ~65 уникальных иконок (Loaders, Pulse, Motion, Sparkle, Waves, Progress и т.д.)
+- **Hover-анимация иконок на блоках** — при наведении на блок анимированная иконка проигрывает одиночную CSS-анимацию (spin, pulse, shake, flash, bounce, scale). 7 типов анимации подбираются по имени иконки через `getIconAnimationClass()`. Keyframes в `globals.css`
+- **`resolveIconWithAnimation()`** — новый экспорт из `icon-resolver.ts`, возвращает `{ Icon, animClass }` для удобного применения
+- **showKopecks во ВСЕХ блоках** — настройка копеек добавлена в: `stat.income`, `stat.expense`, `stat.balance`, `cashflow.top-categories`, `cashflow.transactions`, `computed.sum`. Каждый блок имеет toggle в настройках
+- **KpiSettingsForm** — новая форма настроек для KPI-блоков (income/expense/balance) с toggle копеек
+- **ComputedSettingsForm** — форма настроек для computed.sum с toggle копеек
+
+### Changed
+- **CurrencyInput переделан на ATM-style** — запятая появляется автоматически при вводе цифр. Последние 2 цифры всегда копейки. Пользователь просто вводит цифры, форматирование (пробелы-разделители + запятая) происходит мгновенно
+- **cashflow.tsx** — все денежные блоки (StatCard, TopCategories, TransactionsList) переведены с `useFormatRubles()` на per-block `showKopecks` через `useFormatSettings() + formatRublesWithSettings()`
+- **computed.tsx** — переведён с `useFormatRubles()` на per-block настройку
+- **block-chrome.tsx** — добавлен класс `group` для триггера CSS анимаций на hover
+- **icon-picker-modal.tsx** — исправлена ошибка дублирующихся ключей, добавлен `modal={false}` для вложенного Dialog, анимированные иконки показывают preview при hover в модалке
+
 ## [0.9.4] - 2026-05-11
 
 ### Added
