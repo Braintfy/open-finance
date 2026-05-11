@@ -3,7 +3,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef, useMemo, useContext, type CSSProperties } from 'react';
-import { Table2, FunctionSquare } from 'lucide-react';
+import { Table2, FunctionSquare, Check, X as XIcon } from 'lucide-react';
 import { z } from 'zod';
 import type { BlockDef, BlockRenderProps, BlockSettingsFormProps } from '../types';
 import { Card, CardContent } from '@/components/ui/card';
@@ -106,7 +106,6 @@ type BlockSourcePage = {
 type BlockSourceGroup = {
   id: string;
   label: string;
-  description: string;
   count: number;
 };
 
@@ -408,26 +407,15 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
 
   const sourceGroups = useMemo<BlockSourceGroup[]>(() => {
     const total = blockSourcePages.reduce((acc, page) => acc + page.blocks.length, 0);
-    const categoryCounts = new Map<string, number>();
-    blockSourcePages.forEach((page) => {
-      page.blocks.forEach((block) => {
-        categoryCounts.set(block.category, (categoryCounts.get(block.category) ?? 0) + 1);
-      });
-    });
     return [
-      { id: 'all', label: 'Все блоки', description: 'Все страницы и категории', count: total },
-      ...blockSourcePages.map((page) => ({
-        id: `page:${page.pageKey}`,
-        label: page.pageLabel,
-        description: 'Страница',
-        count: page.blocks.length,
-      })),
-      ...Array.from(categoryCounts.entries()).map(([category, count]) => ({
-        id: `category:${category}`,
-        label: category,
-        description: 'Категория',
-        count,
-      })),
+      { id: 'all', label: 'Все блоки', count: total },
+      ...blockSourcePages
+        .filter((page) => page.blocks.length > 0)
+        .map((page) => ({
+          id: `page:${page.pageKey}`,
+          label: page.pageLabel,
+          count: page.blocks.length,
+        })),
     ];
   }, [blockSourcePages]);
 
@@ -438,7 +426,6 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
         ...page,
         blocks: page.blocks.filter((block) => {
           if (selectedSourceGroup.startsWith('page:') && selectedSourceGroup.slice(5) !== page.pageKey) return false;
-          if (selectedSourceGroup.startsWith('category:') && selectedSourceGroup.slice(9) !== block.category) return false;
           if (!q) return true;
           return [page.pageLabel, block.category, block.typeLabel, block.label, block.blockId]
             .join(' ')
@@ -694,9 +681,11 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
       setEditValue(raw);
       setFormulaMode(raw.startsWith('='));
     } else if (e.key === 'Escape') {
+      if (editingHeaderId) setEditingHeaderId(null);
       setEditing(false);
       setFormulaMode(false);
       setTouchPickMode(false);
+      setCaretPos(null);
       setEditValue(cells[activeCell.r]?.[activeCell.c] ?? '');
     }
   }
@@ -1036,7 +1025,7 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
               @Блок
             </button>
             <DialogContent
-              className="w-[min(94vw,920px)] max-w-none gap-0 overflow-hidden p-0"
+              className="w-[min(94vw,640px)] max-w-none gap-0 overflow-hidden p-0"
               onOpenAutoFocus={(e) => {
                 e.preventDefault();
               }}
@@ -1046,103 +1035,87 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
                 editInputRef.current?.focus();
               }}
             >
-              <DialogHeader className="border-b border-border/60 px-5 py-4">
+              <DialogHeader className="border-b border-border/60 px-4 py-3">
                 <DialogTitle className="text-sm">Вставить значение блока</DialogTitle>
                 <DialogDescription className="text-[11px]">
-                  Выберите страницу, категорию, блок и конкретное поле для формулы
+                  Выберите блок и поле для формулы
                 </DialogDescription>
               </DialogHeader>
-              <div className="grid min-h-[420px] grid-cols-[240px_minmax(0,1fr)]">
-                <aside className="border-r border-border/60 bg-muted/20 p-3">
-                  <Input
-                    placeholder="Поиск блоков..."
-                    value={blockSearch}
-                    onChange={(e) => setBlockSearch(e.target.value)}
-                    className="h-8 text-xs"
-                  />
-                  <div className="mt-3 space-y-1">
+              <div className="grid min-h-[320px] grid-cols-[180px_minmax(0,1fr)]">
+                <aside className="border-r border-border/60 bg-muted/20">
+                  <div className="border-b border-border/40 px-3 py-2">
+                    <Input
+                      placeholder="Поиск..."
+                      value={blockSearch}
+                      onChange={(e) => setBlockSearch(e.target.value)}
+                      className="h-7 text-xs"
+                    />
+                  </div>
+                  <div className="space-y-0.5 p-2">
                     {sourceGroups.map((group) => (
                       <button
                         key={group.id}
                         type="button"
                         onClick={() => setSelectedSourceGroup(group.id)}
                         className={
-                          'flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-2 text-left transition ' +
+                          'flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-xs transition ' +
                           (selectedSourceGroup === group.id
-                            ? 'bg-background text-foreground shadow-sm ring-1 ring-border/70'
+                            ? 'bg-background font-medium text-foreground shadow-sm ring-1 ring-border/70'
                             : 'text-muted-foreground hover:bg-background/60 hover:text-foreground')
                         }
                       >
-                        <span className="min-w-0">
-                          <span className="block truncate text-xs font-medium">{group.label}</span>
-                          <span className="block truncate text-[10px]">{group.description}</span>
-                        </span>
-                        <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] tabular-nums">
-                          {group.count}
-                        </span>
+                        <span className="truncate">{group.label}</span>
+                        <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{group.count}</span>
                       </button>
                     ))}
                   </div>
                 </aside>
-                <div className="max-h-[520px] overflow-y-auto p-4">
+                <div className="max-h-[420px] overflow-y-auto">
                   {sourceLoading ? (
                     <p className="py-12 text-center text-xs text-muted-foreground">Загружаю блоки…</p>
                   ) : filteredSourcePages.length === 0 ? (
                     <p className="py-12 text-center text-xs text-muted-foreground">
-                      Нет доступных блоков. Добавьте блоки на страницах или измените поиск.
+                      Нет доступных блоков.
                     </p>
                   ) : (
-                    <div className="space-y-4">
+                    <div>
                       {filteredSourcePages.map((page) => (
-                        <section key={page.pageKey} className="space-y-2">
-                          <div className="sticky top-0 z-10 flex items-center justify-between bg-background/95 py-1 backdrop-blur">
-                            <div className="text-xs font-semibold text-foreground">{page.pageLabel}</div>
-                            <div className="text-[10px] text-muted-foreground">{page.blocks.length} блоков</div>
+                        <section key={page.pageKey}>
+                          <div className="sticky top-0 z-10 border-b border-border/40 bg-muted/30 px-3 py-1.5">
+                            <span className="text-[11px] font-semibold text-muted-foreground">{page.pageLabel}</span>
                           </div>
-                          <div className="grid gap-2">
-                            {page.blocks.map((block) => (
-                              <div
-                                key={`${block.pageKey}:${block.blockId}`}
-                                className="rounded-lg border border-border/60 bg-card p-3 shadow-sm transition hover:border-primary/40"
-                              >
-                                <div className="flex items-start justify-between gap-3">
-                                  <div className="min-w-0">
-                                    <div className="truncate text-sm font-medium text-foreground">{block.label}</div>
-                                    <div className="mt-0.5 text-[11px] text-muted-foreground">
-                                      {block.category} · {block.typeLabel}
-                                    </div>
-                                  </div>
-                                  <div className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                                    {block.fields.length} поля
-                                  </div>
+                          {page.blocks.map((block) => (
+                            <div
+                              key={`${block.pageKey}:${block.blockId}`}
+                              className="border-b border-border/30 px-3 py-2 transition last:border-b-0 hover:bg-accent/30"
+                            >
+                              <div className="flex items-center gap-2">
+                                <div className="min-w-0 flex-1">
+                                  <div className="truncate text-xs font-medium text-foreground">{block.label}</div>
+                                  <div className="text-[10px] text-muted-foreground">{block.category} · {block.typeLabel}</div>
                                 </div>
-                                <div className="mt-3 grid gap-1.5 sm:grid-cols-2">
-                                  {block.fields.map((field) => {
+                                <div className="flex shrink-0 gap-1">
+                                  {block.fields.filter((f) => f.name !== 'label').map((field) => {
                                     const preview = field.value !== null && field.value !== undefined
-                                      ? String(field.value).slice(0, 28)
-                                      : 'нет значения';
+                                      ? String(field.value).slice(0, 16)
+                                      : '—';
                                     return (
                                       <button
                                         key={field.name}
                                         type="button"
-                                        className="flex min-h-9 items-center justify-between gap-2 rounded-md bg-muted/30 px-2.5 py-1.5 text-left ring-1 ring-border/50 transition hover:bg-primary/10 hover:ring-primary/40"
+                                        className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] ring-1 ring-border/60 transition hover:bg-primary/10 hover:ring-primary/40"
                                         onClick={() => insertBlockField(block, field)}
                                         title={`${field.label} = ${preview}`}
                                       >
-                                        <span className="min-w-0">
-                                          <span className="block truncate text-xs font-medium text-primary">{field.label}</span>
-                                          <span className="block truncate text-[10px] text-muted-foreground">{field.name}</span>
-                                        </span>
-                                        <span className="max-w-[180px] truncate text-right text-[11px] tabular-nums text-foreground">
-                                          {preview}
-                                        </span>
+                                        <span className="font-medium text-primary">{field.label}</span>
+                                        <span className="text-muted-foreground">{preview}</span>
                                       </button>
                                     );
                                   })}
                                 </div>
                               </div>
-                            ))}
-                          </div>
+                            </div>
+                          ))}
                         </section>
                       ))}
                     </div>
@@ -1256,6 +1229,39 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
           </tbody>
         </table>
       </CardContent>
+
+      {/* Accept / Cancel floating buttons (BlockChrome style) */}
+      {(activeCell || editingHeaderId) && editing && (
+        <div className="absolute bottom-1.5 right-1.5 z-30 flex gap-1">
+          <button
+            type="button"
+            className="flex h-7 w-7 items-center justify-center rounded-full bg-background/95 text-green-600 shadow-sm ring-1 ring-border transition hover:bg-green-50 dark:hover:bg-green-950"
+            onClick={() => commitEdit()}
+            title="Принять (Enter)"
+          >
+            <Check className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            className="flex h-7 w-7 items-center justify-center rounded-full bg-background/95 text-red-600 shadow-sm ring-1 ring-border transition hover:bg-red-50 dark:hover:bg-red-950"
+            onClick={() => {
+              if (editingHeaderId) {
+                setEditingHeaderId(null);
+              }
+              setEditing(false);
+              setFormulaMode(false);
+              setTouchPickMode(false);
+              setCaretPos(null);
+              if (activeCell) {
+                setEditValue(cells[activeCell.r]?.[activeCell.c] ?? '');
+              }
+            }}
+            title="Отменить (Esc)"
+          >
+            <XIcon className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
     </Card>
   );
 }

@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.9.17] - 2026-05-12
+
+### Changed
+- **Sheet: @Блок picker** — модалка компактнее (640px), sidebar показывает только страницы с блоками (без пустых категорий), блоки в плоском списке с кнопками полей inline, поле `label` скрыто для краткости.
+- **Sheet: header editing UX** — Escape сбрасывает editingHeaderId и caretPos.
+
+### Added
+- **Sheet: accept/cancel buttons** — плавающие кнопки `✓` / `✕` в правом нижнем углу блока при редактировании ячейки/header, стиль аналогичен `block-chrome.tsx` (rounded-full, ghost, shadow+ring).
+
 ## [0.9.16] - 2026-05-12
 
 ### Changed
