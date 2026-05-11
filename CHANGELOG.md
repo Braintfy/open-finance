@@ -1,10 +1,41 @@
 # Changelog
 
+## [0.9.10] - 2026-05-11
+
+### Added
+- **Streaming AI responses** — AI пишет в реальном времени, видно процесс генерации (`/api/ai/chat` теперь NDJSON streaming с событиями `start`/`token`/`done`/`error`/`aborted`)
+- **Live preview во время генерации** — пользователь видит что AI пишет токен за токеном с мигающим курсором
+- **Кнопка «Остановить»** — abort streaming в любой момент (через AbortController на клиенте + req.signal на сервере)
+- **Счётчик токенов** — в footer модалки: `N токенов · X.X т/с · Ys` во время генерации
+- **Финальная статистика** — `N токенов · X.X т/с` после `done` (из `eval_count` и `eval_duration` Ollama)
+- **Model auto-fallback** — если запрошенная модель не установлена, автоматически используется первая доступная (`listInstalledModels()` → `/api/tags`). Badge «fallback» в UI.
+- **Понятная ошибка «нет моделей»** — «Нет установленных моделей Ollama. Установите: ollama pull qwen2.5:0.5b»
+
+### Fixed
+- **Ollama error 404: model 'qwen2.5:7b' not found** — Root cause: hardcoded дефолтная модель не проверялась на наличие. Теперь `resolveModel()` смотрит установленные модели и fallback'ится на первую.
+- **«AI обрабатывает запрос...» без feedback** — заменено на полноценный stream с token preview + stats
+
+### Changed
+- `MicroAgentDialog`: переработан flow с `loading` boolean → `streaming` + богатое состояние (streamingContent, tokenCount, elapsedSec, finalStats, currentModel, usedFallback)
+- `ai.micro-agent` block: обновлён под NDJSON streaming (ждёт `done` событие)
+- `parseAction` экспортируется из `route.ts` для использования в streaming pipeline
+
+## [0.9.9] - 2026-05-11
+
+### Added
+- **Block Capabilities** (`src/lib/ai/micro-agent/block-capabilities.ts`) — AI теперь получает полный контекст возможностей блока: что он умеет, какой формат config ожидается, какие ограничения. Не будет пытаться сделать таблицу из KPI-блока.
+
+### Fixed
+- **fetch failed при вызове AI** — Root cause: использовался `process.env.OLLAMA_HOST` (не существует) вместо типизированного `env.OLLAMA_BASE_URL`. Ollama всегда fallback'ился на `localhost:11434` что не работает на prod.
+- **Улучшенные ошибки Ollama** — вместо "fetch failed" показывает «Не удалось подключиться к Ollama (url). Убедитесь что Ollama запущена: ollama serve»
+- **Timeout 120s** — добавлен AbortController с 120s timeout для Ollama (qwen2.5:7b может думать долго)
+- **maxDuration: 120** — увеличен лимит Next.js route handler
+- **Модель из env** — используется `env.OLLAMA_DEFAULT_MODEL` вместо hardcoded `qwen2.5:7b`
+
 ## [0.9.8] - 2026-05-11
 
 ### Added
-- **AI Micro-Agent модуль** — универсальный AI-помощник для быстрого создания и заполнения блоков из разнородных данных
-  - **API endpoint** `/api/ai/chat` — POST, принимает messages + blockContext + images (vision), вызывает Ollama `/api/chat`
+- **AI Micro-Agent модуль** — универсальный AI-помощник для быстрого создания и заполнения блоков из разнородных данных(vision), вызывает Ollama `/api/chat`
   - **MicroAgentDialog** (`src/components/micro-agent/micro-agent-dialog.tsx`) — модалка с полем ввода, quick action табы (Суммировать, По ячейкам, Рассчитать, Извлечь, Категоризировать), загрузка изображений, голосовой ввод (Web Speech API), превью результата с Apply/Retry
   - **Блок `ai.micro-agent`** (`src/lib/blocks/catalog/ai-micro-agent.tsx`) — standalone блок-тип в каталоге, добавляется на любую страницу; внутри — input + quick actions + результат AI
   - **Кнопка ✨ в block-chrome** — вызывает MicroAgentDialog в контексте любого блока (тип, данные, страница)

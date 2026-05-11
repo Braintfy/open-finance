@@ -69,17 +69,63 @@ function RenderMicroAgent({ instance, onConfigChange }: BlockRenderProps) {
           model: config.model || undefined,
         }),
       });
-      const data = await res.json();
-      if (!data.ok) {
-        setError(data.error ?? 'Ошибка AI');
-      } else {
-        const resp = data as MicroAgentResponse;
-        setResponse(resp);
-        // Сохраняем последний результат в config
+
+      // Если сервер вернул JSON ошибки (auth / resolve) — обработать
+      const contentType = res.headers.get('content-type') ?? '';
+      if (!contentType.includes('x-ndjson')) {
+        const data = await res.json().catch(() => ({ error: 'Неверный ответ сервера' }));
+        setError(data.error ?? `Ошибка (${res.status})`);
+        return;
+      }
+
+      if (!res.body) {
+        setError('Пустой ответ от сервера');
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let finalResp: MicroAgentResponse | null = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const evt = JSON.parse(line) as {
+              type: string;
+              content?: string;
+              suggestedAction?: MicroAgentResponse['suggestedAction'];
+              model?: string;
+              error?: string;
+            };
+            if (evt.type === 'done' && evt.content) {
+              finalResp = {
+                content: evt.content,
+                suggestedAction: evt.suggestedAction,
+                model: evt.model ?? '',
+              };
+            } else if (evt.type === 'error') {
+              setError(evt.error ?? 'Ошибка AI');
+            }
+          } catch {
+            // битый chunk
+          }
+        }
+      }
+
+      if (finalResp) {
+        setResponse(finalResp);
         onConfigChange?.({
           ...config,
-          lastResult: resp.content.replace(/```json[\s\S]*?```/g, '').trim().slice(0, 500),
-          lastActionType: resp.suggestedAction?.type ?? 'text_only',
+          lastResult: finalResp.content.replace(/```json[\s\S]*?```/g, '').trim().slice(0, 500),
+          lastActionType: finalResp.suggestedAction?.type ?? 'text_only',
         } as unknown as Record<string, unknown>);
       }
     } catch (e) {

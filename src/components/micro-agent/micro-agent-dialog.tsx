@@ -1,7 +1,7 @@
 // PURPOSE: Модалка AI Micro-Agent — ввод запроса, аттачменты, quick actions, вызов AI, превью результата
 'use client';
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Sparkles,
   Send,
@@ -9,12 +9,13 @@ import {
   Image as ImageIcon,
   Mic,
   MicOff,
-  Paperclip,
   X,
   Check,
   RotateCcw,
   ChevronDown,
   ChevronUp,
+  Square,
+  Zap,
 } from 'lucide-react';
 import {
   Dialog,
@@ -59,13 +60,30 @@ export function MicroAgentDialog({
   const [showBlockPrompt, setShowBlockPrompt] = useState(false);
   const [selectedAction, setSelectedAction] = useState<QuickAction | null>(null);
   const [images, setImages] = useState<string[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [streaming, setStreaming] = useState(false);
+  const [streamingContent, setStreamingContent] = useState('');
+  const [currentModel, setCurrentModel] = useState<string | null>(null);
+  const [usedFallback, setUsedFallback] = useState(false);
+  const [tokenCount, setTokenCount] = useState(0);
+  const [elapsedSec, setElapsedSec] = useState(0);
+  const [finalStats, setFinalStats] = useState<{ tokensPerSec: number; totalTokens: number } | null>(null);
   const [response, setResponse] = useState<MicroAgentResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recognitionRef = useRef<any>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const startTimeRef = useRef<number>(0);
+
+  // Обновляем таймер пока идёт streaming
+  useEffect(() => {
+    if (!streaming) return;
+    const interval = setInterval(() => {
+      setElapsedSec((Date.now() - startTimeRef.current) / 1000);
+    }, 100);
+    return () => clearInterval(interval);
+  }, [streaming]);
 
   // ── Speech Recognition (Web Speech API) ──
   const startRecording = useCallback(() => {
@@ -117,10 +135,26 @@ export function MicroAgentDialog({
     setImages((prev) => prev.filter((_, i) => i !== idx));
   }
 
-  // ── Submit ──
+  // ── Stop generation ──
+  const handleStop = useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
+
+  // ── Submit (streaming) ──
   async function handleSubmit() {
     if (!input.trim() && images.length === 0) return;
-    setLoading(true);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+    startTimeRef.current = Date.now();
+
+    setStreaming(true);
+    setStreamingContent('');
+    setCurrentModel(null);
+    setUsedFallback(false);
+    setTokenCount(0);
+    setElapsedSec(0);
+    setFinalStats(null);
     setError(null);
     setResponse(null);
 
@@ -128,6 +162,7 @@ export function MicroAgentDialog({
       const res = await fetch('/api/ai/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           messages: [
             {
@@ -141,16 +176,89 @@ export function MicroAgentDialog({
           blockPrompt: blockPrompt.trim() || undefined,
         }),
       });
-      const data = await res.json();
-      if (!data.ok) {
-        setError(data.error ?? 'Ошибка AI');
-      } else {
-        setResponse(data as MicroAgentResponse);
+
+      // Если сервер вернул JSON ошибки (auth / fallback resolution) — обработать
+      const contentType = res.headers.get('content-type') ?? '';
+      if (!contentType.includes('x-ndjson')) {
+        const data = await res.json().catch(() => ({ error: 'Неверный ответ сервера' }));
+        setError(data.error ?? `Ошибка сервера (${res.status})`);
+        setStreaming(false);
+        return;
+      }
+
+      if (!res.body) {
+        setError('Пустой ответ от сервера');
+        setStreaming(false);
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const evt = JSON.parse(line) as
+              | { type: 'start'; model: string; fallback: boolean }
+              | { type: 'token'; delta: string; total: number }
+              | {
+                  type: 'done';
+                  content: string;
+                  suggestedAction?: SuggestedAction;
+                  model: string;
+                  totalTokens: number;
+                  durationSec: number;
+                  tokensPerSec: number;
+                }
+              | { type: 'error'; error: string }
+              | { type: 'aborted' };
+
+            if (evt.type === 'start') {
+              setCurrentModel(evt.model);
+              setUsedFallback(evt.fallback);
+            } else if (evt.type === 'token') {
+              setStreamingContent((prev) => prev + evt.delta);
+              setTokenCount(evt.total);
+            } else if (evt.type === 'done') {
+              setResponse({
+                content: evt.content,
+                suggestedAction: evt.suggestedAction,
+                model: evt.model,
+              });
+              setFinalStats({
+                tokensPerSec: evt.tokensPerSec,
+                totalTokens: evt.totalTokens,
+              });
+              setStreaming(false);
+            } else if (evt.type === 'error') {
+              setError(evt.error);
+              setStreaming(false);
+            } else if (evt.type === 'aborted') {
+              setStreaming(false);
+            }
+          } catch {
+            // битый chunk
+          }
+        }
       }
     } catch (e) {
+      if (e instanceof Error && e.name === 'AbortError') {
+        // Пользователь сам остановил
+        setStreaming(false);
+        return;
+      }
       setError(e instanceof Error ? e.message : 'Network error');
+      setStreaming(false);
     } finally {
-      setLoading(false);
+      abortRef.current = null;
     }
   }
 
@@ -170,15 +278,24 @@ export function MicroAgentDialog({
   }
 
   function resetState() {
+    abortRef.current?.abort();
     setInput('');
     setImages([]);
     setResponse(null);
     setError(null);
     setSelectedAction(null);
+    setStreaming(false);
+    setStreamingContent('');
+    setCurrentModel(null);
+    setUsedFallback(false);
+    setTokenCount(0);
+    setElapsedSec(0);
+    setFinalStats(null);
   }
 
   const hasResult = response !== null;
   const canApply = response?.suggestedAction && response.suggestedAction.type !== 'text_only';
+  const liveTokensPerSec = elapsedSec > 0 ? tokenCount / elapsedSec : 0;
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) resetState(); onOpenChange(o); }}>
@@ -264,7 +381,7 @@ export function MicroAgentDialog({
           )}
 
           {/* Input area */}
-          {!hasResult && (
+          {!hasResult && !streaming && (
             <div className="relative">
               <textarea
                 value={input}
@@ -277,7 +394,7 @@ export function MicroAgentDialog({
                 }}
                 placeholder="Опишите что нужно сделать, вставьте текст/данные..."
                 rows={4}
-                disabled={loading}
+                disabled={streaming}
                 className="w-full resize-none rounded-md border bg-background px-3 py-2.5 pr-24 text-sm focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50"
               />
               {/* Attachment bar */}
@@ -320,12 +437,39 @@ export function MicroAgentDialog({
             </div>
           )}
 
+          {/* Live streaming preview */}
+          {streaming && (
+            <div className="rounded-md border bg-muted/20 p-3">
+              <div className="mb-1.5 flex items-center gap-2 text-[11px] text-muted-foreground">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                {currentModel ? (
+                  <>
+                    AI пишет через <span className="font-medium text-foreground">{currentModel}</span>
+                    {usedFallback && (
+                      <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950 dark:text-amber-400">
+                        fallback
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  'Подключение к Ollama...'
+                )}
+              </div>
+              <div className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-relaxed">
+                {streamingContent || (
+                  <span className="text-muted-foreground italic">Ожидание ответа...</span>
+                )}
+                {streamingContent && <span className="inline-block h-3 w-1 animate-pulse bg-foreground" />}
+              </div>
+            </div>
+          )}
+
           {/* Response preview */}
           {hasResult && response && (
             <div className="rounded-md border bg-muted/20 p-3">
-              <div className="mb-2 flex items-center gap-2 text-[11px] text-muted-foreground">
+              <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
                 <Sparkles className="h-3 w-3" />
-                Ответ от {response.model}
+                Ответ от <span className="font-medium text-foreground">{response.model}</span>
                 {response.suggestedAction && (
                   <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
                     {response.suggestedAction.type === 'update_block' && 'Обновить блок'}
@@ -333,9 +477,14 @@ export function MicroAgentDialog({
                     {response.suggestedAction.type === 'text_only' && 'Текст'}
                   </span>
                 )}
+                {finalStats && (
+                  <span className="ml-auto flex items-center gap-1 font-mono">
+                    <Zap className="h-3 w-3" />
+                    {finalStats.totalTokens} токенов · {finalStats.tokensPerSec.toFixed(1)} т/с
+                  </span>
+                )}
               </div>
               <div className="max-h-60 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed">
-                {/* Показываем текст без JSON-блока */}
                 {response.content.replace(/```json[\s\S]*?```/g, '').trim()}
               </div>
               {response.suggestedAction && response.suggestedAction.type !== 'text_only' && (
@@ -350,34 +499,44 @@ export function MicroAgentDialog({
               )}
             </div>
           )}
-
-          {/* Loading */}
-          {loading && (
-            <div className="flex items-center gap-2 py-4 text-xs text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              AI обрабатывает запрос...
-            </div>
-          )}
         </div>
 
         {/* Footer actions */}
-        <div className="flex items-center justify-between border-t px-5 py-3">
-          <div className="text-[11px] text-muted-foreground">
-            {!hasResult && 'Ctrl+Enter — отправить'}
-            {hasResult && canApply && 'Проверьте результат и примените'}
+        <div className="flex items-center justify-between gap-3 border-t px-5 py-3">
+          <div className="flex min-w-0 flex-1 items-center gap-3 text-[11px] text-muted-foreground">
+            {streaming ? (
+              <span className="flex items-center gap-3 font-mono">
+                <span className="flex items-center gap-1">
+                  <Zap className="h-3 w-3" />
+                  {tokenCount} токенов
+                </span>
+                <span>{liveTokensPerSec.toFixed(1)} т/с</span>
+                <span>{elapsedSec.toFixed(1)}с</span>
+              </span>
+            ) : (
+              <>
+                {!hasResult && '⌘/Ctrl+Enter — отправить'}
+                {hasResult && canApply && 'Проверьте результат и примените'}
+              </>
+            )}
           </div>
           <div className="flex gap-1.5">
-            {!hasResult && (
+            {streaming && (
+              <Button variant="destructive" size="sm" onClick={handleStop}>
+                <Square className="h-3.5 w-3.5" /> Остановить
+              </Button>
+            )}
+            {!streaming && !hasResult && (
               <Button
                 size="sm"
                 onClick={handleSubmit}
-                disabled={loading || (!input.trim() && images.length === 0)}
+                disabled={!input.trim() && images.length === 0}
               >
-                {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                <Send className="h-3.5 w-3.5" />
                 Отправить
               </Button>
             )}
-            {hasResult && (
+            {!streaming && hasResult && (
               <>
                 <Button variant="outline" size="sm" onClick={handleRetry}>
                   <RotateCcw className="h-3.5 w-3.5" /> Переделать

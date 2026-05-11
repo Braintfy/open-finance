@@ -54,11 +54,12 @@
 - `/Users/firay/open-finance/` — локальная версия (personal use, старый код)
 - `/Users/firay/NALOG/` — алгоритмы налогов для миграции в `modules/taxes/`
 
-## Текущий статус (v0.9.0)
-- Фаза: **Block-Grid Architecture** — UI-конструктор работает
-- Готово: auth, cashflow CRUD, Block-Grid (drag/resize/persist), Block Relationships (reactive store, computed blocks, dependencies, cycle detection), Cmd+K Command Palette, Chart block (Recharts), mindmap overlay, cross-page pins, custom data block, sheet block
-- Block catalog: `stat.income`, `stat.expense`, `stat.balance`, `stat.custom`, `top-categories`, `transactions`, `sheet`, `navigate.card`, `computed.sum`, `custom.data`, `chart.cashflow`
-- Следующий шаг: Formula mode, AI aggregation, ReactFlow relations map, inline @mentions
+## Текущий статус (v0.9.10)
+- Фаза: **AI Micro-Agent + Block-Grid Architecture**
+- Готово: auth, cashflow CRUD, Block-Grid (drag/resize/persist), Block Relationships (reactive store, computed blocks, dependencies, cycle detection), Cmd+K Command Palette, Chart block (Recharts), mindmap overlay, cross-page pins, custom data block, sheet block (Excel-формулы), **AI Micro-Agent** (модалка + блок + block-capabilities + streaming + token counter + stop button + model fallback)
+- Block catalog: `stat.income`, `stat.expense`, `stat.balance`, `stat.custom`, `top-categories`, `transactions`, `sheet`, `navigate.card`, `computed.sum`, `custom.data`, `chart.cashflow`, **`ai.micro-agent`**
+- AI: `/api/ai/chat` endpoint (Ollama NDJSON streaming), system prompt builder, block capabilities descriptor, vision/voice, auto model fallback
+- Следующий шаг: OpenAI/Claude provider, Model selector UI, Whisper transcription, Cmd+K AI action, create_block on apply
 
 ## Команды
 ```bash

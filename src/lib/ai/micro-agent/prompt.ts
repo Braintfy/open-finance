@@ -1,6 +1,7 @@
 // PURPOSE: Построитель промптов для AI Micro-Agent — собирает system prompt + block context + quick action
 import type { BlockContext, QuickAction } from './types';
 import { QUICK_ACTIONS } from './types';
+import { getBlockCapabilityPrompt } from './block-capabilities';
 
 /** Базовый system prompt микроагента (поверх глобального AI system prompt) */
 const MICRO_AGENT_SYSTEM = `Ты — AI-микроагент Open Finance. Твоя задача — помогать пользователю быстро создавать и заполнять блоки данных.
@@ -23,19 +24,22 @@ const MICRO_AGENT_SYSTEM = `Ты — AI-микроагент Open Finance. Тв�
 \`\`\`
 
 ### Для action: "update_block"
-data = объект config блока. Для custom.data:
-{ "rows": [{ "id": "uuid", "label": "Название", "value": 12300 }], "publishMode": "sum", "format": "rubles" }
+data = объект config блока (формат зависит от типа блока — см. раздел "Возможности блока" ниже)
 
 ### Для action: "create_block"
 data = { "blockType": "custom.data" | "sheet", "config": { ... } }
+Используй "sheet" для таблиц с несколькими колонками, "custom.data" для простых списков (label + value).
 
 ### Для action: "text_only"
 data = { "text": "Просто текстовый ответ без мутаций" }
+Используй это если блок нельзя обновить или нужно уточнение.
 
 ## Правила
 - Суммы всегда в копейках (целые числа). 1500₽ = 150000
 - Не выдумывай данные — только то что есть во входе
 - Если не можешь разобрать — спроси уточнение (action: text_only)
+- Если блок нельзя обновить (read-only) — предложи создать новый блок (create_block) или объясни пользователю
+- Смотри раздел "Возможности блока" ниже чтобы понять какой формат ответа нужен
 - Русский язык`;
 
 /**
@@ -86,6 +90,10 @@ export function buildMicroAgentSystemPrompt(opts: {
 
   const blockCtx = formatBlockContext(opts.blockContext);
   if (blockCtx) parts.push(`\n${blockCtx}`);
+
+  // Добавить описание возможностей блока (что можно делать, формат config)
+  const capabilityPrompt = getBlockCapabilityPrompt(opts.blockContext?.blockType);
+  if (capabilityPrompt) parts.push(capabilityPrompt);
 
   const actionPrompt = getQuickActionPrompt(opts.quickAction);
   if (actionPrompt) parts.push(actionPrompt);
