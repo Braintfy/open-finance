@@ -1,4 +1,5 @@
-// PURPOSE: Резолвер lucide-иконки по имени (статический map только нужных, чтобы не раздувать bundle)
+// PURPOSE: Резолвер lucide-иконки по имени.
+// Статический map для часто используемых (быстрый доступ в блоках) + dynamic fallback через icons export.
 import {
   ArrowDown,
   ArrowUp,
@@ -20,10 +21,17 @@ import {
   ShoppingCart,
   Receipt,
   Coins,
+  Heart,
+  Star,
+  Zap,
+  Users,
+  Database,
+  Sparkles,
+  icons,
   type LucideIcon,
 } from 'lucide-react';
 
-const MAP: Record<string, LucideIcon> = {
+const STATIC_MAP: Record<string, LucideIcon> = {
   ArrowDown,
   ArrowUp,
   Wallet,
@@ -44,9 +52,21 @@ const MAP: Record<string, LucideIcon> = {
   ShoppingCart,
   Receipt,
   Coins,
+  Heart,
+  Star,
+  Zap,
+  Users,
+  Database,
+  Sparkles,
 };
 
+/**
+ * Резолвит иконку по имени. Сначала из статического map (быстрый), потом из полного каталога lucide.
+ */
 export function resolveIcon(name: string | undefined, fallback: LucideIcon): LucideIcon {
   if (!name) return fallback;
-  return MAP[name] ?? fallback;
+  if (STATIC_MAP[name]) return STATIC_MAP[name];
+  // Dynamic lookup from full lucide icons catalog
+  const dynamic = icons[name as keyof typeof icons] as LucideIcon | undefined;
+  return dynamic ?? fallback;
 }

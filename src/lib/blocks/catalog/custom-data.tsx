@@ -11,7 +11,9 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { useFormatRubles } from '@/lib/format-settings';
+import { Switch } from '@/components/ui/switch';
+import { useFormatSettings, formatRublesWithSettings } from '@/lib/format-settings';
+import { CurrencyInput } from '@/components/ui/currency-input';
 import { useBlockDensity } from '@/components/blocks/block-size';
 import { useBlockValuePublisher } from '../values';
 
@@ -32,18 +34,20 @@ const ConfigSchema = z.object({
   publishMode: z.enum(['sum', 'avg', 'count', 'last']).default('sum'),
   /** Формат значений: 'rubles' (₽) | 'number' | 'percent' */
   format: z.enum(['rubles', 'number', 'percent']).default('rubles'),
+  /** Показывать копейки (per-block override, null = использовать глобальную настройку) */
+  showKopecks: z.boolean().nullable().default(null),
 });
 type Config = z.infer<typeof ConfigSchema>;
 
 function parseConfig(raw: unknown): Config {
   const r = ConfigSchema.safeParse(raw ?? {});
   if (r.success) return r.data;
-  return { rows: [], publishMode: 'sum', format: 'rubles' };
+  return { rows: [], publishMode: 'sum', format: 'rubles', showKopecks: null };
 }
 
-function formatValue(v: number, format: Config['format'], fmt?: (n: number) => string): string {
-  if (format === 'rubles') return fmt ? fmt(v) : `${new Intl.NumberFormat('ru-RU').format(Math.round(v / 100))} \u20bd`;
-  if (format === 'percent') return `${v.toFixed(1)}%`;
+function formatValue(v: number, format: Config['format'], showKopecks: boolean): string {
+  if (format === 'rubles') return formatRublesWithSettings(v, showKopecks);
+  if (format === 'percent') return `${(v / 100).toFixed(1)}%`;
   return v.toLocaleString('ru-RU');
 }
 
@@ -74,7 +78,8 @@ function makeRowId(): string {
 function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
   const config = parseConfig(instance.config);
   const density = useBlockDensity();
-  const fmt = useFormatRubles();
+  const { settings: globalSettings } = useFormatSettings();
+  const showKopecks = config.showKopecks ?? globalSettings.showKopecks;
   const accent = instance.appearance?.accentColor;
   const title = instance.appearance?.title ?? 'Данные';
   const publishValue = computePublishValue(config.rows, config.publishMode);
@@ -117,7 +122,7 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
           className="truncate text-center text-sm font-semibold tabular-nums"
           style={accent ? { color: accent } : undefined}
         >
-          {formatValue(publishValue, config.format, fmt)}
+          {formatValue(publishValue, config.format, showKopecks)}
         </div>
       </Card>
     );
@@ -135,7 +140,7 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
           className="mt-0.5 truncate text-lg font-semibold tabular-nums"
           style={accent ? { color: accent } : undefined}
         >
-          {formatValue(publishValue, config.format, fmt)}
+          {formatValue(publishValue, config.format, showKopecks)}
         </div>
       </Card>
     );
@@ -153,7 +158,7 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
           className="text-base font-semibold tabular-nums"
           style={accent ? { color: accent } : undefined}
         >
-          {formatValue(publishValue, config.format, fmt)}
+          {formatValue(publishValue, config.format, showKopecks)}
         </div>
       </CardHeader>
       <CardContent className="flex flex-1 flex-col gap-1.5 overflow-y-auto pb-3 pt-1">
@@ -175,10 +180,10 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
                   className="h-7 flex-1 border-none bg-transparent px-1 text-xs shadow-none focus-visible:bg-background"
                   placeholder="Название"
                 />
-                <Input
-                  type="number"
+                <CurrencyInput
                   value={row.value}
-                  onChange={(e) => updateRow(row.id, { value: parseFloat(e.target.value) || 0 })}
+                  showKopecks={config.format === 'rubles' ? showKopecks : false}
+                  onChange={(v) => updateRow(row.id, { value: v })}
                   className="h-7 w-24 border-none bg-transparent px-1 text-right text-xs tabular-nums shadow-none focus-visible:bg-background"
                 />
                 <button
@@ -281,6 +286,39 @@ function CustomDataSettingsForm({ config, onChange }: BlockSettingsFormProps) {
         </div>
       </div>
 
+      {parsed.format === 'rubles' && (
+        <div className="space-y-1.5">
+          <Label>Копейки</Label>
+          <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
+            <div className="min-w-0">
+              <div className="text-xs font-medium">Показывать копейки</div>
+              <div className="text-[11px] text-muted-foreground">
+                {parsed.showKopecks === null
+                  ? 'Используется глобальная настройка'
+                  : parsed.showKopecks
+                    ? 'Включено (1 234,56 ₽)'
+                    : 'Выключено (1 235 ₽)'}
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5">
+              {parsed.showKopecks !== null && (
+                <button
+                  type="button"
+                  onClick={() => set('showKopecks', null)}
+                  className="text-[10px] text-muted-foreground hover:text-foreground"
+                >
+                  Сбросить
+                </button>
+              )}
+              <Switch
+                checked={parsed.showKopecks ?? false}
+                onCheckedChange={(v) => set('showKopecks', v)}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="rounded-md bg-muted/30 p-2.5 text-[11px] text-muted-foreground">
         Строки данных редактируются прямо в блоке (нажмите на текст или число). AI-автозаполнение
         из истории операций — в разработке.
@@ -305,7 +343,7 @@ export const CustomDataBlock: BlockDef = {
   minContentSize: { w: 200, h: 100 },
   pages: ['*'],
   configSchema: ConfigSchema,
-  defaultConfig: () => ({ rows: [], publishMode: 'sum', format: 'rubles' }),
+  defaultConfig: () => ({ rows: [], publishMode: 'sum', format: 'rubles', showKopecks: null }),
   supportsDependencies: false, // сам публикует значения, но не зависит от других
   SettingsForm: CustomDataSettingsForm,
   Render: RenderCustomData,

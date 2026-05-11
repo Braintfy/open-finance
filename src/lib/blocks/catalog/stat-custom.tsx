@@ -9,7 +9,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
-import { useFormatRubles } from '@/lib/format-settings';
+import { Switch } from '@/components/ui/switch';
+import { useFormatSettings, formatRublesWithSettings } from '@/lib/format-settings';
 import { resolveIcon } from '../icon-resolver';
 import { useBlockDensity } from '@/components/blocks/block-size';
 
@@ -26,6 +27,8 @@ const StatCustomConfig = z.object({
   period: z.enum(['month', 'quarter', 'year', 'all_time']).default('month'),
   counterparty: z.string().optional(),
   source: z.string().optional(),
+  /** Per-block kopecks override (null = global setting) */
+  showKopecks: z.boolean().nullable().default(null),
 });
 
 type Cfg = z.infer<typeof StatCustomConfig>;
@@ -94,9 +97,10 @@ function RenderStatCustom({ instance }: BlockRenderProps) {
       (cfg.counterparty ? ` · ${cfg.counterparty}` : '') +
       (cfg.source ? ` · ${cfg.source}` : '');
 
-  const fmt = useFormatRubles();
+  const { settings: globalSettings } = useFormatSettings();
+  const showKopecks = cfg.showKopecks ?? globalSettings.showKopecks;
   const display =
-    cfg.metric === 'count' ? `${value ?? 0}` : fmt(Math.abs(value ?? 0));
+    cfg.metric === 'count' ? `${value ?? 0}` : formatRublesWithSettings(Math.abs(value ?? 0), showKopecks);
   const sign =
     cfg.metric === 'balance' && (value ?? 0) < 0
       ? '−'
@@ -297,6 +301,39 @@ function StatCustomSettings({ config, onChange }: BlockSettingsFormProps) {
           </p>
         )}
       </div>
+
+      {cfg.metric !== 'count' && (
+        <div className="space-y-1.5">
+          <Label>Копейки</Label>
+          <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
+            <div className="min-w-0">
+              <div className="text-xs font-medium">Показывать копейки</div>
+              <div className="text-[11px] text-muted-foreground">
+                {cfg.showKopecks === null
+                  ? 'Глобальная настройка'
+                  : cfg.showKopecks
+                    ? '1 234,56 ₽'
+                    : '1 235 ₽'}
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5">
+              {cfg.showKopecks !== null && (
+                <button
+                  type="button"
+                  onClick={() => set('showKopecks', null)}
+                  className="text-[10px] text-muted-foreground hover:text-foreground"
+                >
+                  Сбросить
+                </button>
+              )}
+              <Switch
+                checked={cfg.showKopecks ?? false}
+                onCheckedChange={(v) => set('showKopecks', v)}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

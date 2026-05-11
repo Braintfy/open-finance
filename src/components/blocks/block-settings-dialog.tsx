@@ -1,7 +1,7 @@
 // PURPOSE: Универсальная настройка существующего блока (внешний вид + размер + параметры)
 'use client';
 
-import { useState } from 'react';
+import { useState, lazy, Suspense } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -13,12 +13,16 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
-import { Check, Square } from 'lucide-react';
+import { Check, Square, Grid3X3 } from 'lucide-react';
 import type { BlockAppearance, BlockDef, BlockDependencies, BlockInstance } from '@/lib/blocks/types';
 import { ACCENT_COLORS, ICON_NAMES } from '@/lib/blocks/types';
 import { resolveIcon } from '@/lib/blocks/icon-resolver';
 import { cn } from '@/lib/utils';
 import { BlockReferencePicker } from './block-reference-picker';
+
+const IconPickerModal = lazy(() =>
+  import('./icon-picker-modal').then((m) => ({ default: m.IconPickerModal }))
+);
 
 const TABS = [
   { key: 'params', label: 'Параметры' },
@@ -245,38 +249,62 @@ function IconPalette({
   value: string | undefined;
   onChange: (v: string) => void;
 }) {
+  const [modalOpen, setModalOpen] = useState(false);
+
   return (
-    <div className="grid grid-cols-10 gap-1">
-      <button
+    <>
+      <div className="grid grid-cols-10 gap-1">
+        <button
+          type="button"
+          onClick={() => onChange('')}
+          className={cn(
+            'flex h-8 w-8 items-center justify-center rounded border text-xs text-muted-foreground transition',
+            !value ? 'ring-2 ring-primary' : 'hover:bg-accent'
+          )}
+          title="По умолчанию"
+        >
+          —
+        </button>
+        {ICON_NAMES.map((n) => {
+          const Icon = resolveIcon(n, Square);
+          const active = value === n;
+          return (
+            <button
+              key={n}
+              type="button"
+              onClick={() => onChange(n)}
+              className={cn(
+                'flex h-8 w-8 items-center justify-center rounded border transition',
+                active ? 'ring-2 ring-primary' : 'hover:bg-accent'
+              )}
+              title={n}
+            >
+              <Icon className="h-4 w-4" />
+            </button>
+          );
+        })}
+      </div>
+      <Button
         type="button"
-        onClick={() => onChange('')}
-        className={cn(
-          'flex h-8 w-8 items-center justify-center rounded border text-xs text-muted-foreground transition',
-          !value ? 'ring-2 ring-primary' : 'hover:bg-accent'
-        )}
-        title="По умолчанию"
+        variant="outline"
+        size="sm"
+        className="mt-2 w-full"
+        onClick={() => setModalOpen(true)}
       >
-        —
-      </button>
-      {ICON_NAMES.map((n) => {
-        const Icon = resolveIcon(n, Square);
-        const active = value === n;
-        return (
-          <button
-            key={n}
-            type="button"
-            onClick={() => onChange(n)}
-            className={cn(
-              'flex h-8 w-8 items-center justify-center rounded border transition',
-              active ? 'ring-2 ring-primary' : 'hover:bg-accent'
-            )}
-            title={n}
-          >
-            <Icon className="h-4 w-4" />
-          </button>
-        );
-      })}
-    </div>
+        <Grid3X3 className="h-3.5 w-3.5" />
+        Выбрать из каталога ({'>'}1500 иконок)
+      </Button>
+      {modalOpen && (
+        <Suspense fallback={null}>
+          <IconPickerModal
+            open={modalOpen}
+            onClose={() => setModalOpen(false)}
+            value={value}
+            onChange={onChange}
+          />
+        </Suspense>
+      )}
+    </>
   );
 }
 
