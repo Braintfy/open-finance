@@ -80,6 +80,29 @@ const SheetConfig = z.object({
 type SheetCfg = z.infer<typeof SheetConfig>;
 type HeaderCell = z.infer<typeof HeaderCellSchema>;
 
+type BlockSourceField = {
+  name: string;
+  label: string;
+  value: number | string | null;
+};
+
+type BlockSourceBlock = {
+  blockId: string;
+  pageKey: string;
+  pageLabel: string;
+  type: string;
+  typeLabel: string;
+  category: string;
+  label: string;
+  fields: BlockSourceField[];
+};
+
+type BlockSourcePage = {
+  pageKey: string;
+  pageLabel: string;
+  blocks: BlockSourceBlock[];
+};
+
 // ============================================================================
 // Helpers
 // ============================================================================
@@ -154,7 +177,7 @@ function evaluateFormula(
   try {
     // Заменяем @blockRef на значения из блоков
     let expr = formula;
-    const blockRefPattern = /@(\w+)/g;
+    const blockRefPattern = /@([A-Za-z0-9_.:-]+)/g;
     let m: RegExpExecArray | null;
     while ((m = blockRefPattern.exec(formula)) !== null) {
       const refName = m[1];
@@ -281,6 +304,8 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
   /** Inline picker для @block mentions */
   const [blockPickerOpen, setBlockPickerOpen] = useState(false);
   const [blockSearch, setBlockSearch] = useState('');
+  const [sourcePages, setSourcePages] = useState<BlockSourcePage[]>([]);
+  const [sourceLoading, setSourceLoading] = useState(false);
   const [colWidths, setColWidths] = useState<number[]>(
     () => cfg.colWidths ?? Array(cfg.cols).fill(DEFAULT_COL_WIDTH)
   );
@@ -295,6 +320,7 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
   );
   const editInputRef = useRef<HTMLInputElement>(null);
   const sheetRef = useRef<HTMLDivElement>(null);
+  const openingBlockPickerRef = useRef(false);
   const resizingCol = useRef<{ col: number; startX: number; startW: number } | null>(null);
   const resizingRow = useRef<{ row: number; startY: number; startH: number } | null>(null);
 
@@ -307,13 +333,86 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
   const liveValues = useAllBlockValues();
   const blockValues: Record<string, number | string | null> = useMemo(() => {
     const result: Record<string, number | string | null> = { ...liveValues };
+    sourcePages.forEach((page) => {
+      page.blocks.forEach((block) => {
+        block.fields.forEach((field) => {
+          const scopedKey = `${block.pageKey}:${block.blockId}.${field.name}`;
+          const localKey = field.name === 'value' ? block.blockId : `${block.blockId}.${field.name}`;
+          result[scopedKey] = liveValues[scopedKey] ?? field.value;
+          if (result[localKey] === undefined) result[localKey] = liveValues[localKey] ?? field.value;
+        });
+      });
+    });
     const refs = cfg.blockRefs ?? {};
     Object.entries(refs).forEach(([name, val]) => {
       result[name] = val ?? liveValues[name] ?? null;
     });
     return result;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveValues, cfg.blockRefs]);
+  }, [liveValues, cfg.blockRefs, sourcePages]);
+
+  useEffect(() => {
+    if (!blockPickerOpen) return;
+    let cancelled = false;
+    setSourceLoading(true);
+    fetch('/api/blocks/sources')
+      .then((r) => r.json())
+      .then((data) => {
+        if (!cancelled && data.ok && Array.isArray(data.pages)) {
+          setSourcePages(data.pages);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setSourcePages([]);
+      })
+      .finally(() => {
+        if (!cancelled) setSourceLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [blockPickerOpen]);
+
+  const blockSourcePages = useMemo<BlockSourcePage[]>(() => {
+    const liveBlocks: BlockSourceBlock[] = availableBlocks.map((b) => ({
+      blockId: b.blockId,
+      pageKey: 'current',
+      pageLabel: 'Текущая страница',
+      type: 'live',
+      typeLabel: 'Live block',
+      category: 'Текущая страница',
+      label: String(liveValues[`${b.blockId}.label`] ?? `Блок ${b.blockId.slice(0, 8)}`),
+      fields: b.fields.map((field) => ({
+        name: field,
+        label: field === 'value' ? 'Значение' : field === 'count' ? 'Количество' : field,
+        value: liveValues[field === 'value' ? b.blockId : `${b.blockId}.${field}`] ?? null,
+      })),
+    }));
+    const pages = sourcePages.map((page) => ({
+      ...page,
+      blocks: page.blocks.filter((block) => block.blockId !== instance.id),
+    }));
+    const hasLivePage = liveBlocks.length > 0;
+    return hasLivePage
+      ? [{ pageKey: 'current', pageLabel: 'Текущая страница', blocks: liveBlocks }, ...pages]
+      : pages;
+  }, [availableBlocks, liveValues, sourcePages, instance.id]);
+
+  const filteredSourcePages = useMemo(() => {
+    const q = blockSearch.trim().toLowerCase();
+    return blockSourcePages
+      .map((page) => ({
+        ...page,
+        blocks: page.blocks.filter((block) => {
+          if (!q) return true;
+          return [page.pageLabel, block.category, block.typeLabel, block.label, block.blockId]
+            .join(' ')
+            .toLowerCase()
+            .includes(q);
+        }),
+      }))
+      .filter((page) => page.blocks.length > 0);
+  }, [blockSearch, blockSourcePages]);
 
   // Вычисляем все ячейки
   const evaluatedCells = useMemo(() => {
@@ -465,6 +564,7 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
   }
 
   function closePickers() {
+    openingBlockPickerRef.current = false;
     setBlockPickerOpen(false);
     setTouchPickMode(false);
   }
@@ -724,6 +824,7 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
             onSelect={handleEditSelect}
             onBlur={(e) => {
               const related = e.relatedTarget as HTMLElement | null;
+              if (openingBlockPickerRef.current || blockPickerOpen) return;
               if ((formulaMode || editingHeaderId) && related && sheetRef.current?.contains(related)) return;
               commitEdit();
             }}
@@ -816,11 +917,31 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
           ))}
           <div className="mx-1 h-3 w-px bg-border/50" />
           {/* @Block mention picker */}
-          <Dialog open={blockPickerOpen} onOpenChange={setBlockPickerOpen}>
+          <Dialog
+            open={blockPickerOpen}
+            onOpenChange={(open) => {
+              setBlockPickerOpen(open);
+              if (!open) openingBlockPickerRef.current = false;
+            }}
+          >
             <button
               type="button"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => setBlockPickerOpen(true)}
+              onPointerDown={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                openingBlockPickerRef.current = true;
+              }}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                openingBlockPickerRef.current = true;
+              }}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                openingBlockPickerRef.current = true;
+                setBlockPickerOpen(true);
+              }}
               className={
                 'flex h-5 shrink-0 items-center rounded px-1.5 text-[10px] font-semibold transition ' +
                 (blockPickerOpen
@@ -831,7 +952,17 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
             >
               @Блок
             </button>
-            <DialogContent className="max-w-sm gap-3 p-4">
+            <DialogContent
+              className="max-w-sm gap-3 p-4"
+              onOpenAutoFocus={(e) => {
+                e.preventDefault();
+              }}
+              onCloseAutoFocus={(e) => {
+                e.preventDefault();
+                openingBlockPickerRef.current = false;
+                editInputRef.current?.focus();
+              }}
+            >
               <DialogHeader className="space-y-1">
                 <DialogTitle className="text-sm">Вставить значение блока</DialogTitle>
                 <DialogDescription className="text-[11px]">
@@ -845,46 +976,58 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
                 className="h-7 text-xs"
               />
               <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
-                {availableBlocks.length === 0 ? (
+                {sourceLoading ? (
+                  <p className="py-4 text-center text-xs text-muted-foreground">Загружаю блоки…</p>
+                ) : filteredSourcePages.length === 0 ? (
                   <p className="py-4 text-center text-xs text-muted-foreground">
-                    Нет доступных блоков. Убедитесь, что на странице есть блоки с публикуемыми значениями.
+                    Нет доступных блоков. Добавьте блоки на страницах или измените поиск.
                   </p>
                 ) : (
-                  availableBlocks
-                    .filter((b) => {
-                      if (!blockSearch) return true;
-                      const label = String(liveValues[`${b.blockId}.label`] ?? `Блок ${b.blockId.slice(0, 8)}`).toLowerCase();
-                      return label.includes(blockSearch.toLowerCase());
-                    })
-                    .map((b) => {
-                      const blockLabel = liveValues[`${b.blockId}.label`] ?? `Блок ${b.blockId.slice(0, 8)}`;
-                      return (
-                        <div
-                          key={b.blockId}
-                          className="rounded-md border border-border/40 bg-muted/20 p-2"
-                        >
-                          <div className="text-xs font-medium text-foreground">{blockLabel}</div>
+                  filteredSourcePages.map((page) => (
+                    <div key={page.pageKey} className="space-y-1.5">
+                      <div className="sticky top-0 z-10 bg-background/95 py-1 text-[11px] font-semibold text-muted-foreground">
+                        {page.pageLabel}
+                      </div>
+                      {page.blocks.map((block) => (
+                        <div key={`${block.pageKey}:${block.blockId}`} className="rounded-md border border-border/40 bg-muted/20 p-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="truncate text-xs font-medium text-foreground">{block.label}</div>
+                              <div className="text-[10px] text-muted-foreground">
+                                {block.category} · {block.typeLabel}
+                              </div>
+                            </div>
+                          </div>
                           <div className="mt-1.5 flex flex-wrap gap-1">
-                            {b.fields.map((field) => {
-                              const key = field === 'value' ? b.blockId : `${b.blockId}.${field}`;
-                              const val = liveValues[key];
-                              const preview = val !== null && val !== undefined ? ` ${String(val).slice(0, 14)}` : '';
+                            {block.fields.map((field) => {
+                              const ref =
+                                block.pageKey === 'current'
+                                  ? field.name === 'value'
+                                    ? block.blockId
+                                    : `${block.blockId}.${field.name}`
+                                  : `${block.pageKey}:${block.blockId}.${field.name}`;
+                              const preview = field.value !== null && field.value !== undefined
+                                ? ` ${String(field.value).slice(0, 18)}`
+                                : '';
                               return (
                                 <button
-                                  key={field}
+                                  key={field.name}
                                   type="button"
                                   className="inline-flex items-center gap-1 rounded bg-background px-1.5 py-0.5 text-[11px] ring-1 ring-border/60 transition hover:bg-accent hover:ring-border"
                                   onClick={() => {
-                                    const ref = field === 'value' ? b.blockId : `${b.blockId}.${field}`;
                                     const prefix = editValue.startsWith('=') ? '' : '=';
                                     insertTextAtCursor(prefix + '@' + ref);
+                                    if (field.value !== null && field.value !== undefined) {
+                                      const nextRefs = { ...(cfg.blockRefs ?? {}), [ref]: field.value };
+                                      queueMicrotask(() => saveConfig({ blockRefs: nextRefs }));
+                                    }
                                     setFormulaMode(true);
                                     setBlockPickerOpen(false);
                                     setBlockSearch('');
                                   }}
-                                  title={`${field}${preview ? ' = ' + preview : ''}`}
+                                  title={`${field.label}${preview ? ' = ' + preview : ''}`}
                                 >
-                                  <span className="font-medium text-primary">{field}</span>
+                                  <span className="font-medium text-primary">{field.label}</span>
                                   {preview && (
                                     <span className="text-muted-foreground">{preview}</span>
                                   )}
@@ -893,8 +1036,9 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
                             })}
                           </div>
                         </div>
-                      );
-                    })
+                      ))}
+                    </div>
+                  ))
                 )}
               </div>
             </DialogContent>

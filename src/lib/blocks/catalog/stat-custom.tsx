@@ -13,6 +13,7 @@ import { Switch } from '@/components/ui/switch';
 import { useFormatSettings, formatRublesWithSettings } from '@/lib/format-settings';
 import { resolveIconWithAnimation } from '../icon-resolver';
 import { useBlockDensity } from '@/components/blocks/block-size';
+import { useBlockValuePublisher } from '../values';
 
 function formatCompact(v: number): string {
   const abs = Math.abs(v);
@@ -96,6 +97,11 @@ function RenderStatCustom({ instance }: BlockRenderProps) {
     `${METRIC_LABELS[cfg.metric]} ${PERIOD_LABELS[cfg.period]}` +
       (cfg.counterparty ? ` · ${cfg.counterparty}` : '') +
       (cfg.source ? ` · ${cfg.source}` : '');
+  useBlockValuePublisher(instance.id, {
+    value: value ?? 0,
+    count,
+    label: title,
+  });
 
   const { settings: globalSettings } = useFormatSettings();
   const showKopecks = cfg.showKopecks ?? globalSettings.showKopecks;

@@ -140,7 +140,11 @@ function RenderIncome({ instance }: BlockRenderProps) {
   const accent = instance.appearance?.accentColor;
   const value = loading ? 0 : summary.incomeTotal;
   const showKopecks = useKpiKopecks(instance.config);
-  useBlockValuePublisher(instance.id, { value, label: instance.appearance?.title ?? 'Доходы за месяц' });
+  useBlockValuePublisher(instance.id, {
+    value,
+    count: loading ? 0 : summary.incomeCount,
+    label: instance.appearance?.title ?? 'Доходы за месяц',
+  });
   return (
     <StatCard
       label={instance.appearance?.title ?? 'Доходы за месяц'}
@@ -158,7 +162,11 @@ function RenderExpense({ instance }: BlockRenderProps) {
   const accent = instance.appearance?.accentColor;
   const value = loading ? 0 : summary.expenseTotal;
   const showKopecks = useKpiKopecks(instance.config);
-  useBlockValuePublisher(instance.id, { value, label: instance.appearance?.title ?? 'Расходы за месяц' });
+  useBlockValuePublisher(instance.id, {
+    value,
+    count: loading ? 0 : summary.expenseCount,
+    label: instance.appearance?.title ?? 'Расходы за месяц',
+  });
   return (
     <StatCard
       label={instance.appearance?.title ?? 'Расходы за месяц'}
@@ -176,7 +184,11 @@ function RenderBalance({ instance }: BlockRenderProps) {
   const accent = instance.appearance?.accentColor;
   const value = loading ? 0 : summary.balance;
   const showKopecks = useKpiKopecks(instance.config);
-  useBlockValuePublisher(instance.id, { value, label: instance.appearance?.title ?? 'Баланс' });
+  useBlockValuePublisher(instance.id, {
+    value,
+    count: loading ? 0 : summary.incomeCount + summary.expenseCount,
+    label: instance.appearance?.title ?? 'Баланс',
+  });
   return (
     <StatCard
       label={instance.appearance?.title ?? 'Баланс'}

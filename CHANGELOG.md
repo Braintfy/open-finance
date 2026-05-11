@@ -10,11 +10,14 @@
 - **Sheet: MAX_ROW/MAX_COLUMN** — добавлен robust fallback (`?? 1048576` / `?? 16384`) если named exports недоступны; сравнение через `>=` вместо `===`
 
 ### Added
-- **Sheet: @block live references** — кнопка `@Блок` открывает модалку (Dialog) со списком всех доступных блоков страницы; каждый блок показывает свои поля (value, count, label и др.) с превью значений. При клике по полю вставляется `@blockId.field` в формулу. Значения блоков берутся из reactive `BlockValuesContext` store — формулы реактивно пересчитываются при изменении источника.
+- **Sheet: @block live references** — кнопка `@Блок` открывает модалку (Dialog) со списком блоков текущей и сохранённых страниц через `/api/blocks/sources`; каждый блок показывает поля `value`, `count`, `label` и превью значений. При клике по полю вставляется `@page:blockId.field` в формулу и значение кэшируется в `config.blockRefs`.
 - **Sheet: reactive block values hook** — `useAllBlockValues()` подписывается на `BlockValuesContext` и возвращает все живые значения (`blockId` → `output.value`, `blockId.field` → `output.field`).
+- **Blocks sources API** — добавлен `GET /api/blocks/sources` с tenant/user scoping, каталогизацией блоков по страницам/типам и серверным расчётом `value/count` для cashflow KPI и custom KPI.
 
 ### Changed
 - **Sheet: formula engine** — `evaluateFormula` результат обрабатывает `boolean`, `null`, `undefined`, `FormulaError` объекты; добавлен `simpleMathEval` как last-resort fallback в catch
+- **Cashflow KPI outputs** — `stat.income`, `stat.expense`, `stat.balance`, `stat.custom` публикуют не только `value`, но и `count`, чтобы Sheet мог привязывать сумму или количество операций.
+- **Sheet: formula references** — parser поддерживает ссылки с дефисами, точками и страницами (`@cashflow:block-id.count`), а не только `@word`.
 
 ## [0.9.14] - 2026-05-11
 

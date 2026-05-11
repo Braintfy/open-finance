@@ -7,6 +7,8 @@ export type CashflowSummary = {
   incomeTotal: number;
   expenseTotal: number;
   balance: number;
+  incomeCount: number;
+  expenseCount: number;
 };
 
 export type CashflowCategory = {
@@ -34,7 +36,7 @@ type Ctx = {
 };
 
 const CashflowDataContext = createContext<Ctx>({
-  summary: { incomeTotal: 0, expenseTotal: 0, balance: 0 },
+  summary: { incomeTotal: 0, expenseTotal: 0, balance: 0, incomeCount: 0, expenseCount: 0 },
   topIncome: [],
   topExpense: [],
   transactions: [],
