@@ -190,6 +190,25 @@ function formatComputedValue(value: number | string, money: boolean, showKopecks
   return money ? formatKopecksValue(value, showKopecks) : formatPlainNumber(value);
 }
 
+function refFieldName(ref: string): string {
+  const source = ref.includes(':') ? ref.slice(ref.lastIndexOf(':') + 1) : ref;
+  const dot = source.lastIndexOf('.');
+  return dot >= 0 ? source.slice(dot + 1) : 'value';
+}
+
+function refIsPlainNumber(ref: string): boolean {
+  const field = refFieldName(ref);
+  return /^[A-Z]+\d+$/.test(field) || ['count', 'raw', 'label'].includes(field);
+}
+
+function formulaReferencesMoneyRefs(raw: string): boolean {
+  const refs = raw.matchAll(/@([A-Za-z0-9_.:-]+)/g);
+  for (const match of refs) {
+    if (!refIsPlainNumber(match[1])) return true;
+  }
+  return false;
+}
+
 type CellComputation = {
   display: string;
   value: number | string;
@@ -351,7 +370,7 @@ function computeCell(
     return { display: raw, value: n ?? raw, money: false };
   }
   const result = evaluateFormula(raw.slice(1), cells, evaluated, blockValues);
-  const money = raw.includes('@') || formulaReferencesMoneyCells(raw, moneyCells);
+  const money = formulaReferencesMoneyRefs(raw) || formulaReferencesMoneyCells(raw, moneyCells);
   return { display: formatComputedValue(result, money, showKopecks), value: result, money };
 }
 

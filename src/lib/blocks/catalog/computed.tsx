@@ -15,6 +15,23 @@ import {
   useBlockValuePublisher,
 } from '../values';
 
+function refFieldName(ref: string): string {
+  const source = ref.includes(':') ? ref.slice(ref.lastIndexOf(':') + 1) : ref;
+  const dot = source.lastIndexOf('.');
+  return dot >= 0 ? source.slice(dot + 1) : 'value';
+}
+
+function refIsPlainNumber(ref: string): boolean {
+  const field = refFieldName(ref);
+  return /^[A-Z]+\d+$/.test(field) || ['count', 'raw', 'label'].includes(field);
+}
+
+function formatPlainNumber(value: number): string {
+  return new Intl.NumberFormat('ru-RU', {
+    maximumFractionDigits: Number.isInteger(value) ? 0 : 2,
+  }).format(value);
+}
+
 // ============================================================================
 // computed.sum — агрегация значений N других блоков
 // ============================================================================
@@ -28,7 +45,8 @@ function RenderComputedSum({ instance }: BlockRenderProps) {
   const cfg = ComputedConfig.safeParse(instance.config ?? {});
   const { settings } = useFormatSettings();
   const showKopecks = (cfg.success ? cfg.data.showKopecks : null) ?? settings.showKopecks;
-  const fmt = (v: number) => formatRublesWithSettings(v, showKopecks);
+  const moneyAggregation = (instance.dependencies?.sources ?? []).some((src) => !refIsPlainNumber(`${src.blockId}.${src.field ?? 'value'}`));
+  const fmt = (v: number) => moneyAggregation ? formatRublesWithSettings(v, showKopecks) : formatPlainNumber(v);
   const { value, sourceValues, missing } = useBlockDependencyResult(instance.dependencies);
   const accent = instance.appearance?.accentColor;
   const title = instance.appearance?.title ?? 'Агрегация';

@@ -49,6 +49,7 @@ const ConfigSchema = z.object({
   showFormulaBar: z.boolean().default(true),
   showKopecks: z.boolean().nullable().default(null),
   blockRefs: z.record(z.string(), z.union([z.string(), z.number(), z.null()])).optional(),
+  moneyRefs: z.record(z.string(), z.boolean()).optional(),
 });
 
 type Config = z.infer<typeof ConfigSchema>;
@@ -74,6 +75,37 @@ function formatPlainNumber(value: number): string {
 
 function formatKopecksValue(value: number, showKopecks: boolean): string {
   return formatRublesWithSettings(value, showKopecks).replace(/\s?₽$/, '');
+}
+
+function refFieldName(ref: string): string {
+  const source = ref.includes(':') ? ref.slice(ref.lastIndexOf(':') + 1) : ref;
+  const dot = source.lastIndexOf('.');
+  return dot >= 0 ? source.slice(dot + 1) : 'value';
+}
+
+function refIsPlainNumber(ref: string): boolean {
+  const field = refFieldName(ref);
+  return /^[A-Z]+\d+$/.test(field) || ['count', 'raw', 'label'].includes(field);
+}
+
+function formulaReferencesMoney(raw: string, moneyRefs?: Record<string, boolean>): boolean {
+  const refs = raw.matchAll(/@([A-Za-z0-9_.:-]+)/g);
+  for (const match of refs) {
+    const ref = match[1];
+    if (moneyRefs && ref in moneyRefs) {
+      if (moneyRefs[ref]) return true;
+      continue;
+    }
+    if (!refIsPlainNumber(ref)) return true;
+  }
+  return false;
+}
+
+function sourceFieldIsMoney(block: SourceBlock, field: SourceField): boolean {
+  if (refIsPlainNumber(`${block.blockId}.${field.name}`)) return false;
+  if (block.category === 'Таблицы') return false;
+  if (['KPI', 'Кэшфлоу', 'Данные', 'Вычисления'].includes(block.category)) return true;
+  return field.name === 'value';
 }
 
 function useAllBlockValues(): Record<string, number | string | null> {
@@ -111,6 +143,7 @@ function evaluateValue(
   raw: string,
   blockValues: Record<string, number | string | null>,
   showKopecks: boolean,
+  moneyRefs?: Record<string, boolean>,
 ): { display: string; value: number | string } {
   if (!raw.startsWith('=')) {
     const parsed = parseCellNumber(raw);
@@ -126,10 +159,11 @@ function evaluateValue(
     expr = expr.replace(m[0], val !== null && val !== undefined ? String(val) : '0');
   }
 
+  const money = formulaReferencesMoney(raw, moneyRefs);
   const result = simpleMathEval(expr);
   if (result !== null) {
     return {
-      display: raw.includes('@') ? formatKopecksValue(result, showKopecks) : formatPlainNumber(result),
+      display: money ? formatKopecksValue(result, showKopecks) : formatPlainNumber(result),
       value: result,
     };
   }
@@ -139,7 +173,7 @@ function evaluateValue(
     const parsed = parser.parse(expr, { row: 1, col: 1, sheet: 'Sheet1' });
     if (typeof parsed === 'number') {
       return {
-        display: raw.includes('@') ? formatKopecksValue(parsed, showKopecks) : formatPlainNumber(parsed),
+        display: money ? formatKopecksValue(parsed, showKopecks) : formatPlainNumber(parsed),
         value: parsed,
       };
     }
@@ -193,7 +227,23 @@ function RenderExcelCell({ instance, onConfigChange }: BlockRenderProps) {
     return result;
   }, [config.blockRefs, liveValues, sourcePages]);
 
-  const computed = useMemo(() => evaluateValue(config.value, blockValues, showKopecks), [config.value, blockValues, showKopecks]);
+  const moneyRefs = useMemo(() => {
+    const result: Record<string, boolean> = { ...(config.moneyRefs ?? {}) };
+    sourcePages.forEach((page) => {
+      page.blocks.forEach((block) => {
+        block.fields.forEach((field) => {
+          const money = sourceFieldIsMoney(block, field);
+          const scopedKey = `${block.pageKey}:${block.blockId}.${field.name}`;
+          const localKey = field.name === 'value' ? block.blockId : `${block.blockId}.${field.name}`;
+          if (!(scopedKey in result)) result[scopedKey] = money;
+          if (!(localKey in result)) result[localKey] = money;
+        });
+      });
+    });
+    return result;
+  }, [config.moneyRefs, sourcePages]);
+
+  const computed = useMemo(() => evaluateValue(config.value, blockValues, showKopecks, moneyRefs), [config.value, blockValues, showKopecks, moneyRefs]);
 
   useBlockValuePublisher(instance.id, {
     value: typeof computed.value === 'number' ? computed.value : null,
@@ -307,8 +357,9 @@ function RenderExcelCell({ instance, onConfigChange }: BlockRenderProps) {
     pos = Math.max(1, Math.min(pos, base.length));
     const nextValue = base.slice(0, pos) + token + base.slice(pos);
     const nextRefs = { ...(config.blockRefs ?? {}), [ref]: field.value };
+    const nextMoneyRefs = { ...(config.moneyRefs ?? {}), [ref]: sourceFieldIsMoney(block, field) };
     setDraft(nextValue);
-    save({ value: nextValue, blockRefs: nextRefs });
+    save({ value: nextValue, blockRefs: nextRefs, moneyRefs: nextMoneyRefs });
     setBlockPickerOpen(false);
     setBlockSearch('');
     const newPos = pos + token.length;
@@ -589,6 +640,7 @@ function ExcelCellSettings({ config, onChange }: BlockSettingsFormProps) {
       ...parsed,
       value: `${base}${spacer}${token}`,
       blockRefs: { ...(parsed.blockRefs ?? {}), [ref]: field.value },
+      moneyRefs: { ...(parsed.moneyRefs ?? {}), [ref]: sourceFieldIsMoney(block, field) },
     } as unknown as Record<string, unknown>);
     setLinkPickerOpen(false);
     setBlockSearch('');
