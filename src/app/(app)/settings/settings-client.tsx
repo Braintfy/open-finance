@@ -14,7 +14,6 @@ import {
   Sparkles,
   Users,
   Wrench,
-  Globe2,
   Eye,
   EyeOff,
   Save,
@@ -71,7 +70,6 @@ const MAIN_NAV: NavItem[] = [
 const ADMIN_NAV: NavItem[] = [
   { key: 'admin', label: 'Панель админа', description: 'Управление tenant', icon: Shield, adminOnly: true },
   { key: 'admin-ai-models', label: 'AI модели', description: 'Ollama', icon: Cpu, adminOnly: true },
-  { key: 'admin-ai-providers', label: 'Внешние API + VPN', description: 'OpenAI/Claude/OpenRouter + proxy', icon: Globe2, adminOnly: true },
   { key: 'admin-ai-prompt', label: 'AI prompt', description: 'System prompt', icon: Sparkles, adminOnly: true },
   { key: 'admin-users', label: 'Пользователи', description: 'Управление users', icon: Users, adminOnly: true },
   { key: 'admin-settings', label: 'Настройки платформы', description: 'Tenant settings', icon: Wrench, adminOnly: true },

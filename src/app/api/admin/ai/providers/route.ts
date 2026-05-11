@@ -93,6 +93,7 @@ export async function PUT(req: Request) {
     const currentKey = settings.aiExternal?.apiKey ?? '';
     const newKey = incoming.apiKey.includes('••••') ? currentKey : incoming.apiKey;
     settings.aiExternal = { ...incoming, apiKey: newKey };
+    settings.aiProvider = incoming.enabled ? 'openai' : 'ollama';
   }
 
   if (body.aiProxy !== undefined) {

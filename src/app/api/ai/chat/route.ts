@@ -254,6 +254,22 @@ function sse(controller: ReadableStreamDefaultController, data: Record<string, u
   controller.enqueue(new TextEncoder().encode(JSON.stringify(data) + '\n'));
 }
 
+function formatOllamaError(status: number, text: string, model: string): string {
+  let message = text.trim();
+  try {
+    const parsed = JSON.parse(message) as { error?: string };
+    if (parsed.error) message = parsed.error;
+  } catch {
+    message = text.trim();
+  }
+
+  if (/unable to load model/i.test(message)) {
+    return `Ollama не смогла загрузить модель "${model}". Обычно это повреждённый или неполностью скачанный blob модели. Удалите модель в разделе AI модели и скачайте заново; если это HuggingFace GGUF — попробуйте другую квантизацию или repo. Детали: ${message}`;
+  }
+
+  return `Ollama error ${status}: ${message.slice(0, 200)}`;
+}
+
 export async function POST(req: Request) {
   const session = await auth();
   if (!session?.tenantId) {
@@ -286,7 +302,11 @@ export async function POST(req: Request) {
 
   const externalConfig = tenantSettings?.aiExternal;
   const proxyConfig = tenantSettings?.aiProxy;
-  const useExternal = externalConfig?.enabled && externalConfig.apiKey && externalConfig.baseUrl;
+  const useExternal =
+    tenantSettings?.aiProvider !== 'ollama' &&
+    externalConfig?.enabled &&
+    externalConfig.apiKey &&
+    externalConfig.baseUrl;
 
   // Пробросить abort от клиента (кнопка "Остановить")
   const upstreamController = new AbortController();
@@ -363,7 +383,7 @@ export async function POST(req: Request) {
   let resolvedModel: string;
   let usedFallback = false;
   try {
-    const res = await resolveModel(model || env.OLLAMA_DEFAULT_MODEL);
+    const res = await resolveModel(model || tenantSettings?.aiModel || env.OLLAMA_DEFAULT_MODEL);
     resolvedModel = res.model;
     usedFallback = res.fallback;
   } catch (e) {
@@ -400,7 +420,7 @@ export async function POST(req: Request) {
           const text = await ollamaRes.text().catch(() => '');
           sse(controller, {
             type: 'error',
-            error: `Ollama error ${ollamaRes.status}: ${text.slice(0, 200)}`,
+            error: formatOllamaError(ollamaRes.status, text, resolvedModel),
           });
           controller.close();
           return;
@@ -433,7 +453,16 @@ export async function POST(req: Request) {
                 done?: boolean;
                 eval_count?: number;
                 eval_duration?: number;
+                error?: string;
               };
+              if (chunk.error) {
+                sse(controller, {
+                  type: 'error',
+                  error: formatOllamaError(500, JSON.stringify({ error: chunk.error }), resolvedModel),
+                });
+                controller.close();
+                return;
+              }
               const piece = chunk.message?.content ?? '';
               if (piece) {
                 fullContent += piece;

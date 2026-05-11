@@ -72,7 +72,7 @@ const EMPTY_PROXY: AiProxy = {
   password: '',
 };
 
-export default function AiProvidersPage() {
+export default function AiProvidersPage({ embedded = false }: { embedded?: boolean } = {}) {
   const [external, setExternal] = useState<AiExternal>(EMPTY_EXTERNAL);
   const [proxy, setProxy] = useState<AiProxy>(EMPTY_PROXY);
   const [showApiKey, setShowApiKey] = useState(false);
@@ -203,22 +203,28 @@ export default function AiProvidersPage() {
   }
 
   const selectedProvider = PROVIDERS.find((p) => p.id === external.provider);
+  const rootClass = embedded ? 'space-y-4' : 'mx-auto max-w-[1200px] space-y-4';
+  const headerClass = embedded ? 'pb-2' : undefined;
+  const titleClass = embedded ? 'flex items-center gap-2 text-sm' : 'flex items-center gap-2 text-base';
+  const saveClass = embedded
+    ? 'flex items-center justify-end gap-3'
+    : 'sticky bottom-0 -mx-2 flex items-center justify-end gap-3 border-t border-border/60 bg-background/95 px-2 py-3 backdrop-blur';
 
   return (
-    <div className="mx-auto max-w-[1100px] space-y-6">
-      <div className="border-b border-border/60 pb-3">
+    <div className={rootClass}>
+      {!embedded && <div className="border-b border-border/60 pb-3">
         <h1 className="text-lg font-semibold tracking-tight">AI Провайдеры и Сеть</h1>
         <p className="text-xs text-muted-foreground">
           Внешние API (OpenAI / Claude / OpenRouter), VPN-прокси и диагностика
         </p>
-      </div>
+      </div>}
 
       {/* ─────────── Диагностика ─────────── */}
       <Card>
-        <CardHeader>
+        <CardHeader className={headerClass}>
           <div className="flex items-start justify-between gap-2">
             <div>
-              <CardTitle className="flex items-center gap-2 text-base">
+              <CardTitle className={titleClass}>
                 <Activity className="h-4 w-4" />
                 Диагностика
               </CardTitle>
@@ -271,8 +277,8 @@ export default function AiProvidersPage() {
 
       {/* ─────────── Внешний AI Provider ─────────── */}
       <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
+        <CardHeader className={headerClass}>
+          <CardTitle className={titleClass}>
             <Globe className="h-4 w-4" />
             Внешний AI API
           </CardTitle>
@@ -430,8 +436,8 @@ export default function AiProvidersPage() {
 
       {/* ─────────── VPN / Proxy ─────────── */}
       <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
+        <CardHeader className={headerClass}>
+          <CardTitle className={titleClass}>
             <Shield className="h-4 w-4" />
             VPN / Прокси
           </CardTitle>
@@ -540,7 +546,7 @@ export default function AiProvidersPage() {
       </Card>
 
       {/* ─────────── Сохранить ─────────── */}
-      <div className="sticky bottom-0 -mx-2 flex items-center justify-end gap-3 border-t border-border/60 bg-background/95 px-2 py-3 backdrop-blur">
+      <div className={saveClass}>
         {savedAt && (
           <span className="text-xs text-muted-foreground">Сохранено: {savedAt}</span>
         )}

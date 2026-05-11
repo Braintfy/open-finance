@@ -1,7 +1,6 @@
 // PURPOSE: Менеджер локальных AI-моделей (Ollama) — как LM Studio, compact Linear-style
 'use client';
 
-import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import {
   Download,
@@ -12,11 +11,12 @@ import {
   Info,
   Power,
   MemoryStick,
-  Globe2,
+  Star,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import AiProvidersPage from '../providers/page';
 import {
   Dialog,
   DialogContent,
@@ -86,6 +86,7 @@ type ApiResponse = {
   ollamaAvailable: boolean;
   installed: Installed[];
   catalog: CatalogModel[];
+  defaultModel?: string | null;
   hint?: string;
 };
 
@@ -112,10 +113,12 @@ function formatExpires(iso?: string): string {
 }
 
 export default function LocalModelsPage() {
+  const [activeTab, setActiveTab] = useState<'local' | 'providers'>('local');
   const [data, setData] = useState<ApiResponse | null>(null);
   const [running, setRunning] = useState<RunningModel[]>([]);
   const [loading, setLoading] = useState(true);
   const [pulling, setPulling] = useState<Record<string, { status: string; percent?: number; error?: boolean }>>({});
+  const [settingDefault, setSettingDefault] = useState<string | null>(null);
   const [showInfo, setShowInfo] = useState<{ name: string; info: Record<string, unknown> } | null>(
     null
   );
@@ -138,6 +141,9 @@ export default function LocalModelsPage() {
   }
 
   useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('tab') === 'providers') {
+      setActiveTab('providers');
+    }
     refresh();
     const iv = setInterval(() => {
       fetch('/api/admin/ai/local-models/ps')
@@ -147,6 +153,17 @@ export default function LocalModelsPage() {
     }, 5000);
     return () => clearInterval(iv);
   }, []);
+
+  function switchTab(tab: 'local' | 'providers') {
+    setActiveTab(tab);
+    const url = new URL(window.location.href);
+    if (tab === 'providers') {
+      url.searchParams.set('tab', 'providers');
+    } else {
+      url.searchParams.delete('tab');
+    }
+    window.history.replaceState(null, '', url);
+  }
 
   async function pull(modelId: string) {
     setPulling((p) => ({ ...p, [modelId]: { status: 'starting…' } }));
@@ -224,6 +241,25 @@ export default function LocalModelsPage() {
     setTimeout(refresh, 300);
   }
 
+  async function makeDefaultModel(name: string) {
+    setSettingDefault(name);
+    try {
+      const res = await fetch('/api/admin/ai/local-models', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ defaultModel: name }),
+      });
+      const json = (await res.json()) as { ok: boolean; error?: string };
+      if (!res.ok || !json.ok) {
+        alert(json.error ?? 'Не удалось выбрать основную модель');
+        return;
+      }
+      await refresh();
+    } finally {
+      setSettingDefault(null);
+    }
+  }
+
   async function openInfo(name: string) {
     const res = await fetch(`/api/admin/ai/local-models/${encodeURIComponent(name)}/show`);
     const info = await res.json();
@@ -255,27 +291,43 @@ export default function LocalModelsPage() {
 
   const installedSet = new Set((data?.installed ?? []).map((m) => m.name));
   const runningSet = new Set(running.map((m) => m.name));
+  const defaultModel = data?.defaultModel ?? null;
 
   return (
     <div className="mx-auto max-w-[1200px] space-y-4">
       <div className="flex items-center justify-between gap-4 border-b border-border/60 pb-3">
         <div className="min-w-0">
-          <h1 className="truncate text-lg font-semibold tracking-tight">Локальные AI-модели</h1>
+          <h1 className="truncate text-lg font-semibold tracking-tight">AI модели</h1>
           <p className="text-xs text-muted-foreground">
-            Ollama — установка, выгрузка из памяти, детали модели
+            Локальные Ollama-модели, внешние API, VPN-прокси и диагностика
           </p>
         </div>
-        <div className="flex gap-2">
-          <Button asChild variant="outline" size="sm">
-            <Link href="/admin/ai/providers">
-              <Globe2 /> Внешние API + VPN
-            </Link>
-          </Button>
-          <Button variant="outline" size="sm" onClick={refresh} disabled={loading}>
-            <RefreshCw className={loading ? 'animate-spin' : ''} /> Обновить
-          </Button>
-        </div>
+        <Button variant="outline" size="sm" onClick={refresh} disabled={loading}>
+          <RefreshCw className={loading ? 'animate-spin' : ''} /> Обновить
+        </Button>
       </div>
+
+      <div className="inline-flex rounded-lg border bg-muted/30 p-1">
+        <button
+          type="button"
+          onClick={() => switchTab('local')}
+          className={activeTab === 'local' ? 'rounded-md bg-background px-3 py-1.5 text-xs font-medium shadow-sm' : 'rounded-md px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground'}
+        >
+          Локальные модели
+        </button>
+        <button
+          type="button"
+          onClick={() => switchTab('providers')}
+          className={activeTab === 'providers' ? 'rounded-md bg-background px-3 py-1.5 text-xs font-medium shadow-sm' : 'rounded-md px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground'}
+        >
+          Внешние API + VPN
+        </button>
+      </div>
+
+      {activeTab === 'providers' ? (
+        <AiProvidersPage embedded />
+      ) : (
+        <>
 
       {data && !data.ollamaAvailable && (
         <Alert variant="warning">
@@ -330,8 +382,11 @@ ollama pull qwen2.5:7b`}
 
       {/* Установленные */}
       <section>
-        <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          Установленные ({data?.installed.length ?? 0})
+        <div className="mb-2 flex flex-wrap items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          <span>Установленные ({data?.installed.length ?? 0})</span>
+          {defaultModel && (
+            <span className="normal-case tracking-normal text-primary">Основная: {defaultModel}</span>
+          )}
         </div>
         {data?.installed.length === 0 ? (
           <Card>
@@ -348,6 +403,11 @@ ollama pull qwen2.5:7b`}
                     <div className="min-w-0">
                       <CardTitle className="flex items-center gap-2 text-sm">
                         <span className="truncate">{m.name}</span>
+                        {defaultModel === m.name && (
+                          <span className="inline-flex h-4 items-center rounded-full bg-primary/10 px-1.5 text-[10px] font-medium text-primary">
+                            основная
+                          </span>
+                        )}
                         {runningSet.has(m.name) && (
                           <span className="inline-flex h-4 items-center rounded-full bg-emerald-50 px-1.5 text-[10px] font-medium text-emerald-700 ring-1 ring-inset ring-emerald-200 dark:bg-emerald-950 dark:text-emerald-400 dark:ring-emerald-800">
                             loaded
@@ -376,10 +436,21 @@ ollama pull qwen2.5:7b`}
                     </div>
                   </div>
                 </CardHeader>
-                <CardContent className="flex gap-3 pt-0 text-[11px] text-muted-foreground">
-                  <span>Размер: {formatBytes(m.size)}</span>
-                  {m.details?.parameter_size && <span>Параметры: {m.details.parameter_size}</span>}
-                  {m.details?.quantization_level && <span>Q: {m.details.quantization_level}</span>}
+                <CardContent className="flex flex-wrap items-center justify-between gap-2 pt-0">
+                  <div className="flex flex-wrap gap-3 text-[11px] text-muted-foreground">
+                    <span>Размер: {formatBytes(m.size)}</span>
+                    {m.details?.parameter_size && <span>Параметры: {m.details.parameter_size}</span>}
+                    {m.details?.quantization_level && <span>Q: {m.details.quantization_level}</span>}
+                  </div>
+                  <Button
+                    variant={defaultModel === m.name ? 'outline' : 'ghost'}
+                    size="xs"
+                    onClick={() => makeDefaultModel(m.name)}
+                    disabled={settingDefault === m.name || defaultModel === m.name}
+                  >
+                    <Star className={defaultModel === m.name ? 'fill-primary text-primary' : ''} />
+                    {defaultModel === m.name ? 'Основная' : 'Сделать основной'}
+                  </Button>
                 </CardContent>
               </Card>
             ))}
@@ -586,6 +657,8 @@ ollama pull qwen2.5:7b`}
           {showInfo && <ModelInfoView info={showInfo.info} />}
         </DialogContent>
       </Dialog>
+        </>
+      )}
     </div>
   );
 }
