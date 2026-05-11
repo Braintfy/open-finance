@@ -748,6 +748,7 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
                           ? 'ring-2 ring-inset ring-primary/60'
                           : 'hover:bg-accent/30')
                       }
+                      tabIndex={-1}
                       onClick={() => handleCellClick(r, c)}
                       style={{ height: rowHeights[r] ?? DEFAULT_ROW_HEIGHT }}
                     >
