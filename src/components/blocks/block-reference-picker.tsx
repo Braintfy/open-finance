@@ -2,19 +2,22 @@
 // Используется в settings computed-блоков (sum/avg/formula/AI) для настройки зависимостей.
 'use client';
 
-import { Check, Plus, X } from 'lucide-react';
+import { AlertTriangle, Check, Plus, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { useAvailableBlockSources } from '@/lib/blocks/values';
-import type { BlockRef, BlockDependencies } from '@/lib/blocks/types';
-import { useState } from 'react';
+import type { BlockRef, BlockDependencies, BlockInstance } from '@/lib/blocks/types';
+import { buildDependencyGraph, wouldCreateCycle, findCyclicBlocks } from '@/lib/blocks/graph';
+import { useMemo, useState } from 'react';
 
 type Props = {
   /** Текущие зависимости (могут быть undefined) */
   value: BlockDependencies | undefined;
   /** ID блока, который НЕ должен быть в списке источников (сам себя нельзя брать) */
   selfBlockId?: string;
+  /** Все блоки на текущей странице — для cycle detection */
+  allBlocks?: BlockInstance[];
   /** Map blockId → human label (для красивого UI). Если не передано — показываем blockId */
   blockLabels?: Record<string, string>;
   onChange: (deps: BlockDependencies) => void;
@@ -30,13 +33,20 @@ const AGGREGATIONS: Array<{ value: BlockDependencies['aggregation']; label: stri
   { value: 'ai', label: 'AI-агент', hint: 'AI-микроагент собирает данные (планируется)' },
 ];
 
-export function BlockReferencePicker({ value, selfBlockId, blockLabels, onChange }: Props) {
+export function BlockReferencePicker({ value, selfBlockId, allBlocks, blockLabels, onChange }: Props) {
   const available = useAvailableBlockSources();
   const [searchOpen, setSearchOpen] = useState(false);
   const [search, setSearch] = useState('');
 
   const sources: BlockRef[] = value?.sources ?? [];
   const aggregation: BlockDependencies['aggregation'] = value?.aggregation ?? 'sum';
+
+  // Граф зависимостей для cycle detection
+  const graph = useMemo(
+    () => (allBlocks ? buildDependencyGraph(allBlocks) : new Map<string, Set<string>>()),
+    [allBlocks]
+  );
+  const cyclicBlocks = useMemo(() => findCyclicBlocks(graph), [graph]);
 
   const candidateSources = available.filter(
     (a) =>
@@ -51,6 +61,10 @@ export function BlockReferencePicker({ value, selfBlockId, blockLabels, onChange
   });
 
   function addSource(blockId: string) {
+    // Cycle detection: если добавление создаст цикл — блокируем
+    if (selfBlockId && wouldCreateCycle(graph, selfBlockId, blockId)) {
+      return; // UI уже помечает кнопку как disabled
+    }
     const next: BlockDependencies = {
       sources: [...sources, { blockId, field: 'value' }],
       aggregation,
@@ -151,16 +165,30 @@ export function BlockReferencePicker({ value, selfBlockId, blockLabels, onChange
               <div className="max-h-40 space-y-0.5 overflow-y-auto">
                 {filtered.map((cand) => {
                   const label = blockLabels?.[cand.blockId] ?? `Блок ${cand.blockId.slice(0, 8)}`;
+                  const createsCycle = !!selfBlockId && wouldCreateCycle(graph, selfBlockId, cand.blockId);
+                  const isCyclic = cyclicBlocks.has(cand.blockId);
                   return (
                     <button
                       key={cand.blockId}
                       type="button"
                       onClick={() => addSource(cand.blockId)}
-                      className="flex w-full items-center justify-between gap-2 rounded px-2 py-1 text-left text-xs hover:bg-accent"
+                      disabled={createsCycle}
+                      className={
+                        'flex w-full items-center justify-between gap-2 rounded px-2 py-1 text-left text-xs ' +
+                        (createsCycle
+                          ? 'cursor-not-allowed opacity-50'
+                          : 'hover:bg-accent')
+                      }
+                      title={createsCycle ? 'Добавление создаст циклическую зависимость' : undefined}
                     >
-                      <span className="truncate">{label}</span>
+                      <span className="flex items-center gap-1 truncate">
+                        {(createsCycle || isCyclic) && (
+                          <AlertTriangle className="h-3 w-3 shrink-0 text-amber-500" />
+                        )}
+                        {label}
+                      </span>
                       <span className="shrink-0 text-[10px] text-muted-foreground">
-                        {cand.fields.join(', ')}
+                        {createsCycle ? 'цикл' : cand.fields.join(', ')}
                       </span>
                     </button>
                   );

@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { auth } from '@/lib/auth';
 import { LogoutButton } from '@/components/logout-button';
+import { CommandPalette } from '@/components/command-palette';
 import { loadLayout } from '@/lib/blocks/queries';
 
 type NavItem = {
@@ -69,7 +70,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       <aside className="w-56 shrink-0 border-r border-border/60 bg-background px-2 py-3">
         <div className="mb-4 px-2">
           <div className="text-sm font-semibold tracking-tight">Open Finance</div>
-          <div className="text-[10px] text-muted-foreground">v0.8.2</div>
+          <div className="text-[10px] text-muted-foreground">v0.9.0</div>
         </div>
         <nav className="space-y-0.5">
           {mainNav.map(({ key: _k, protected: _p, ...rest }) => (
@@ -89,7 +90,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-10 shrink-0 items-center justify-between border-b border-border/60 bg-background px-4">
-          <div className="text-xs text-muted-foreground">{session.email}</div>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-muted-foreground">{session.email}</span>
+            <CommandPalette />
+          </div>
           <LogoutButton />
         </header>
         <main className="min-w-0 flex-1 p-4 md:p-5">{children}</main>

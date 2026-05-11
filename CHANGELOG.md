@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.9.0] - 2026-05-11
+
+### Added
+- **Cycle Detection** — `src/lib/blocks/graph.ts` граф-утилиты: `buildDependencyGraph`, `wouldCreateCycle`, `findCyclicBlocks`, `topologicalSort`, `findDependents`. Интегрировано в `BlockReferencePicker` — при добавлении зависимости, создающей цикл, кандидат отображается как disabled с ⚠️ иконкой и подписью «цикл»
+- **Cmd+K Command Palette** — `src/components/command-palette.tsx` глобальный поиск + быстрые действия (навигация, тема, добавление транзакции). Открывается по `Cmd+K` / `Ctrl+K`, встроен в header layout
+- **Chart Block (Recharts)** — `src/lib/blocks/catalog/chart-cashflow.tsx` блок `chart.cashflow` с типами Bar/Line/Area, группировкой по дням/неделям/месяцам, настройками серий данных (доход/расход/баланс). Adaptive density, responsive, tooltip с форматированием ₽
+
+### Changed
+- **BlockReferencePicker** — принимает `allBlocks` prop для cycle detection; показывает warning icon на блоках, уже участвующих в циклах
+- **BlockSettingsDialog** — прокидывает `allBlocks` в BlockReferencePicker
+- **BlockGrid** — передаёт `blocks` в settings dialog для cycle detection
+- **App Layout** — добавлен CommandPalette в header, версия обновлена на v0.9.0
+
+### Dependencies
+- `recharts@3.8.1` — библиотека графиков
+
 ## [0.8.9] - 2026-05-11
 
 ### Fixed — CRITICAL: блоки не сохранялись в БД (save всегда писал [])

@@ -12,6 +12,7 @@ import { StatCustomBlock } from './catalog/stat-custom';
 import { NavigateCardBlock } from './catalog/navigate-card';
 import { ComputedSumBlock } from './catalog/computed';
 import { CustomDataBlock } from './catalog/custom-data';
+import { CashflowChartBlock } from './catalog/chart-cashflow';
 
 const ALL_BLOCKS: BlockDef[] = [
   StatIncomeBlock,
@@ -24,6 +25,7 @@ const ALL_BLOCKS: BlockDef[] = [
   NavigateCardBlock,
   ComputedSumBlock,
   CustomDataBlock,
+  CashflowChartBlock,
 ];
 
 const REGISTRY = new Map<string, BlockDef>(ALL_BLOCKS.map((b) => [b.type, b]));

@@ -34,6 +34,7 @@ export function BlockSettingsDialog({
   def,
   instance,
   blockLabels,
+  allBlocks,
   onChange,
 }: {
   open: boolean;
@@ -42,6 +43,8 @@ export function BlockSettingsDialog({
   instance: BlockInstance;
   /** Map blockId → label всех блоков страницы (для BlockReferencePicker) */
   blockLabels?: Record<string, string>;
+  /** Все блоки на странице — для cycle detection в BlockReferencePicker */
+  allBlocks?: BlockInstance[];
   onChange: (next: Partial<BlockInstance>) => void;
 }) {
   const initialTab: TabKey = def.SettingsForm
@@ -98,6 +101,7 @@ export function BlockSettingsDialog({
             <BlockReferencePicker
               value={instance.dependencies}
               selfBlockId={instance.id}
+              allBlocks={allBlocks}
               blockLabels={blockLabels}
               onChange={(deps: BlockDependencies) => onChange({ dependencies: deps })}
             />

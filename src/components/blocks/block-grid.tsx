@@ -445,6 +445,7 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
           def={settingsDef}
           instance={settingsBlock}
           blockLabels={blockLabels}
+          allBlocks={blocks}
           onChange={(patch) => updateBlock(settingsBlock.id, patch)}
         />
       )}
