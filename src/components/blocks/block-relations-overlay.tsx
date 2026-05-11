@@ -84,10 +84,13 @@ export function BlockRelationsOverlay({ blocks, containerRef, highlighted }: Pro
 
   if (edges.length === 0) return null;
 
-  // Стили: полупрозрачные по умолчанию, акцентные при highlighted
-  const strokeOpacity = highlighted ? 0.85 : 0.18;
-  const strokeWidth = highlighted ? 2.5 : 1.5;
-  const labelOpacity = highlighted ? 1 : 0.4;
+  // FIX: CSS-переменные `var(--primary)` НЕ работают в SVG-атрибутах stroke/fill —
+  // только в style. Используем явный hex/rgb. По умолчанию — синий (Tailwind blue-500),
+  // в highlighted — насыщенный indigo (более акцентный).
+  const STROKE_COLOR = highlighted ? '#4f46e5' : '#3b82f6';
+  const strokeOpacity = highlighted ? 0.9 : 0.35;
+  const strokeWidth = highlighted ? 2.5 : 1.8;
+  const labelOpacity = highlighted ? 1 : 0.5;
 
   return (
     <svg
@@ -98,7 +101,7 @@ export function BlockRelationsOverlay({ blocks, containerRef, highlighted }: Pro
     >
       <defs>
         <marker
-          id="block-arrow"
+          id={`block-arrow-${highlighted ? 'hl' : 'dim'}`}
           viewBox="0 0 10 10"
           refX="8"
           refY="5"
@@ -106,7 +109,7 @@ export function BlockRelationsOverlay({ blocks, containerRef, highlighted }: Pro
           markerHeight="5"
           orient="auto-start-reverse"
         >
-          <path d="M 0 0 L 10 5 L 0 10 z" fill="hsl(var(--primary))" />
+          <path d="M 0 0 L 10 5 L 0 10 z" fill={STROKE_COLOR} fillOpacity={strokeOpacity} />
         </marker>
       </defs>
       {edges.map((edge, i) => {
@@ -126,31 +129,31 @@ export function BlockRelationsOverlay({ blocks, containerRef, highlighted }: Pro
             <path
               d={path}
               fill="none"
-              stroke="hsl(var(--primary))"
+              stroke={STROKE_COLOR}
               strokeWidth={strokeWidth}
               strokeOpacity={strokeOpacity}
-              strokeDasharray={highlighted ? '0' : '4 3'}
-              markerEnd="url(#block-arrow)"
+              strokeDasharray={highlighted ? '0' : '5 4'}
+              markerEnd={`url(#block-arrow-${highlighted ? 'hl' : 'dim'})`}
               className="transition-all duration-300"
             />
             {highlighted && edge.label && (
               <g style={{ opacity: labelOpacity }} className="transition-opacity duration-300">
                 <rect
-                  x={midX - 18}
-                  y={midY - 8}
-                  width="36"
-                  height="16"
-                  rx="8"
-                  fill="hsl(var(--background))"
-                  stroke="hsl(var(--primary))"
-                  strokeOpacity="0.4"
+                  x={midX - 22}
+                  y={midY - 9}
+                  width="44"
+                  height="18"
+                  rx="9"
+                  fill="white"
+                  stroke={STROKE_COLOR}
+                  strokeOpacity={0.5}
                 />
                 <text
                   x={midX}
-                  y={midY + 3}
+                  y={midY + 4}
                   textAnchor="middle"
-                  className="fill-primary text-[10px] font-medium"
-                  style={{ fontSize: 10 }}
+                  fill={STROKE_COLOR}
+                  style={{ fontSize: 10, fontWeight: 600 }}
                 >
                   {edge.label}
                 </text>

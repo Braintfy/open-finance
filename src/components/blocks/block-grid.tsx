@@ -70,6 +70,14 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
   /** Mindmap-overlay: связи между блоками. Выкл/Вкл через кнопку. */
   const [showRelations, setShowRelations] = useState(false);
   const gridContainerRef = useRef<HTMLDivElement | null>(null);
+  /**
+   * SAFEGUARD против критического бага «блоки исчезают»: если хоть раз были
+   * не-пустые blocks, мы НЕ позволяем сохранять [] без явного намерения user'а
+   * (Reset / поочерёдное удаление через X). Защита от race condition в RGL,
+   * где onLayoutChange может прислать [] во время mount/unmount.
+   */
+  const hadBlocksRef = useRef<boolean>((initialBlocks?.length ?? 0) > 0);
+  const explicitClearRef = useRef<boolean>(false);
   /** Есть ли хотя бы одна связь между блоками — для показа toggle кнопки */
   const hasRelations = useMemo(
     () => blocks.some((b) => b.dependencies && b.dependencies.sources.length > 0),
@@ -89,13 +97,34 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
 
   const doSave = useCallback(
     async (data: BlockInstance[]) => {
+      // CRITICAL SAFEGUARD: не сохраняем [] если у user'а БЫЛИ блоки
+      // и он не нажимал явно Reset / Remove. Это защита от race в RGL/state.
+      if (data.length === 0 && hadBlocksRef.current && !explicitClearRef.current) {
+        console.warn(
+          '[BlockGrid] Refused to save empty blocks (likely race condition). ' +
+            'User had blocks and did not explicitly clear them.'
+        );
+        return;
+      }
+      // После явного очищения — сбрасываем флаг (следующий save должен идти как обычно)
+      if (data.length === 0 && explicitClearRef.current) {
+        hadBlocksRef.current = false;
+        explicitClearRef.current = false;
+      } else if (data.length > 0) {
+        hadBlocksRef.current = true;
+      }
+
       setSaving(true);
       try {
-        await fetch(`/api/blocks/layout/${pageKey}`, {
+        const res = await fetch(`/api/blocks/layout/${pageKey}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ blocks: data }),
         });
+        if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          console.error('[BlockGrid] save layout failed:', res.status, text);
+        }
         // Очищаем pending только если он всё ещё указывает на эти же данные.
         // Если пока летел fetch, пользователь сделал новые изменения — pendingBlocks
         // уже указывает на них и НЕ должен быть обнулён (иначе flushSave потеряет их).
@@ -131,6 +160,12 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
     }
     const data = pendingBlocks.current;
     if (!data) return;
+    // CRITICAL SAFEGUARD: см. doSave — не сохраняем [] без явного намерения
+    if (data.length === 0 && hadBlocksRef.current && !explicitClearRef.current) {
+      console.warn('[BlockGrid] flushSave refused empty save (race condition guard)');
+      pendingBlocks.current = null;
+      return;
+    }
     pendingBlocks.current = null;
     const url = `/api/blocks/layout/${pageKey}`;
     const payload = JSON.stringify({ blocks: data });
@@ -177,13 +212,21 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
   }, [blocks]);
 
   function onLayoutChange(layout: Layout[]) {
-    if (!editMode) return;
     setBlocks((prev) => {
+      // SAFETY: если RGL прислал пустой layout, а блоки есть — игнорируем (баг RGL во время mount)
+      if (layout.length === 0 && prev.length > 0) return prev;
+
       const byId = new Map(layout.map((l) => [l.i, l]));
+      let changed = false;
       const next = prev.map((b) => {
         const l = byId.get(b.id);
-        return l ? { ...b, x: l.x, y: l.y, w: l.w, h: l.h } : b;
+        if (!l) return b;
+        if (l.x === b.x && l.y === b.y && l.w === b.w && l.h === b.h) return b;
+        changed = true;
+        return { ...b, x: l.x, y: l.y, w: l.w, h: l.h };
       });
+      // Сохраняем только если действительно что-то изменилось — иначе бесконечные ре-рендеры
+      if (!changed) return prev;
       scheduleSave(next);
       return next;
     });
@@ -218,6 +261,10 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
   function onRemoveBlock(id: string) {
     setBlocks((prev) => {
       const next = prev.filter((b) => b.id !== id);
+      // Если user удалил ПОСЛЕДНИЙ блок — это явное намерение очистить страницу
+      if (next.length === 0 && prev.length > 0) {
+        explicitClearRef.current = true;
+      }
       scheduleSave(next);
       return next;
     });
@@ -248,7 +295,11 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
       const res = await fetch(`/api/blocks/layout/${pageKey}`, { method: 'DELETE' });
       const data = await res.json();
       if (data.ok) {
-        setBlocks(sanitizeBlocks(data.blocks ?? []));
+        const next = sanitizeBlocks(data.blocks ?? []);
+        // Reset = явное намерение, но он возвращает дефолтный набор (обычно НЕ пустой)
+        hadBlocksRef.current = next.length > 0;
+        explicitClearRef.current = false;
+        setBlocks(next);
       }
     } finally {
       setSaving(false);
@@ -270,7 +321,7 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
         breakpoints={BREAKPOINTS}
         cols={COLS}
         rowHeight={40}
-        isDraggable={editMode}
+        isDraggable={true}
         isResizable={editMode}
         onLayoutChange={onLayoutChange}
         draggableHandle=".block-drag-handle"
@@ -286,6 +337,8 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
               <BlockChrome
                 editMode={editMode}
                 appearance={b.appearance}
+                block={b}
+                currentPageKey={pageKey}
                 onRemove={() => onRemoveBlock(b.id)}
                 onOpenSettings={() => setSettingsId(b.id)}
               >

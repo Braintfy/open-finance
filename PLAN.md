@@ -1161,7 +1161,7 @@ interface PaymentProvider {
 **Концепция:** блоки и модули = ячейки Excel. Один блок может быть СУММОЙ/СРЕДНИМ/MIN/MAX
 от значений других блоков. AI-агенты внутри блока тоже опираются на ссылки на источники.
 
-#### MVP уже реализован (v0.8.7):
+#### MVP уже реализован (v0.8.7 → v0.8.8):
 - ✅ Тип `BlockRef` + `BlockDependencies` (`src/lib/blocks/types.ts`)
 - ✅ Reactive value store `BlockValuesProvider` (`src/lib/blocks/values.tsx`):
   - `useBlockValuePublisher(blockId, output)` — блок-источник публикует свои значения
@@ -1180,6 +1180,11 @@ interface PaymentProvider {
   - Кнопка «Связи» в шапке BlockGrid → акцентный режим со стрелками + лейблами
 - ✅ Zod-валидация `dependencies` в API
 - ✅ KPI блоки (`stat.income/expense/balance`) публикуют свои значения
+- ✅ **(v0.8.8)** Универсальный data-блок `custom.data` — Excel-style ячейка с inline-редактированием строк, публикует агрегаты для других computed-блоков
+- ✅ **(v0.8.8)** `CrossPagePin` — мини-индикатор cross-page связей (UI готов; cross-page subscribe будет позже)
+- ✅ **(v0.8.8)** Defense-in-depth защита от потери блоков: `hadBlocksRef` + `explicitClearRef` в BlockGrid
+- ✅ **(v0.8.8)** Reactive store fix — `useBlockDependencyResult` корректно пересчитывается при store changes (tick в useMemo deps)
+- ✅ **(v0.8.8)** Mindmap visibility fix — inline hex colors вместо CSS-переменных (которые не работают в SVG attrs)
 
 #### Ещё не реализовано (Phase 2, v0.9.x):
 - [ ] **Cross-page ссылки** — сейчас только в пределах одной страницы. Нужен глобальный store

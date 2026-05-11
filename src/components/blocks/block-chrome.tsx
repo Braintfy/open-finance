@@ -5,7 +5,8 @@
 import { GripVertical, X, Settings2 } from 'lucide-react';
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
-import type { BlockAppearance } from '@/lib/blocks/types';
+import type { BlockAppearance, BlockInstance } from '@/lib/blocks/types';
+import { CrossPagePin } from './cross-page-pin';
 
 /** Задержка появления hover-контролов в обычном режиме (Notion = 0мс, мы ставим лёгкую задержку чтобы избежать мигания) */
 const HOVER_REVEAL_DELAY_MS = 250;
@@ -14,12 +15,18 @@ export function BlockChrome({
   children,
   editMode,
   appearance,
+  block,
+  currentPageKey,
   onRemove,
   onOpenSettings,
 }: {
   children: ReactNode;
   editMode: boolean;
   appearance?: BlockAppearance;
+  /** Блок целиком (для CrossPagePin — нужны dependencies) */
+  block?: BlockInstance;
+  /** Ключ текущей страницы — для определения cross-page связей */
+  currentPageKey?: string;
   onRemove?: () => void;
   onOpenSettings?: () => void;
 }) {
@@ -71,17 +78,23 @@ export function BlockChrome({
       onMouseEnter={handleEnter}
       onMouseLeave={handleLeave}
     >
-      {/* Drag handle — сверху по центру. Drag работает только в edit mode (RGL конфиг) */}
+      {/* Drag handle — сверху по центру. Работает при hover (Notion-style) и в edit mode. */}
       <div
         className={
-          'block-drag-handle pointer-events-none absolute left-1/2 top-1 z-30 -translate-x-1/2 rounded bg-background/95 px-2 py-0.5 shadow-sm ring-1 ring-border transition-opacity duration-150 ' +
-          (showControls ? 'opacity-100 ' : 'opacity-0 ') +
-          (editMode ? 'cursor-move pointer-events-auto' : '')
+          'block-drag-handle absolute left-1/2 top-1 z-30 -translate-x-1/2 rounded bg-background/95 px-2 py-0.5 shadow-sm ring-1 ring-border transition-opacity duration-150 ' +
+          (showControls
+            ? 'cursor-move pointer-events-auto opacity-100 '
+            : 'pointer-events-none opacity-0 ')
         }
-        title={editMode ? 'Перетащить' : 'Включите режим настройки для перетаскивания'}
+        title="Перетащить блок"
       >
         <GripVertical className="h-3.5 w-3.5 text-muted-foreground" />
       </div>
+
+      {/* Cross-page pin — мини-индикатор связей с другими страницами */}
+      {block && currentPageKey && (
+        <CrossPagePin block={block} currentPageKey={currentPageKey} />
+      )}
 
       {/* Action toolbar справа-сверху */}
       <div

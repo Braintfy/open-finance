@@ -117,13 +117,16 @@ export function useBlockValuePublisher(blockId: string, output: BlockOutput): vo
  */
 export function useBlockValue(ref: BlockRef): number | string | null {
   const api = useContext(BlockValuesContext);
-  const [, setTick] = useState(0);
+  const [tick, setTick] = useState(0);
 
   useEffect(() => {
     if (!api) return;
     return api.subscribe(() => setTick((t) => t + 1));
   }, [api]);
 
+  // FIX: tick — это явный re-render trigger, а не просто счётчик.
+  // Без этого useMemo не пересчитывается на изменения store.
+  void tick;
   if (!api) return null;
   const output = api.get().values.get(ref.blockId);
   if (!output) return null;
@@ -139,7 +142,7 @@ export function useBlockDependencyResult(
   deps: BlockDependencies | undefined
 ): { value: number | null; sourceValues: Array<number | null>; missing: number } {
   const api = useContext(BlockValuesContext);
-  const [, setTick] = useState(0);
+  const [tick, setTick] = useState(0);
 
   useEffect(() => {
     if (!api) return;
@@ -189,8 +192,9 @@ export function useBlockDependencyResult(
         break;
     }
     return { value, sourceValues, missing };
+    // FIX: tick — реактивный trigger, обязателен для пересчёта на store-changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [api, deps, JSON.stringify(deps)]);
+  }, [api, deps, JSON.stringify(deps), tick]);
 }
 
 /**

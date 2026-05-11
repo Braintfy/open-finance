@@ -1,5 +1,55 @@
 # Changelog
 
+## [0.8.8] - 2026-05-11
+
+### Fixed — CRITICAL: блоки исчезали после настройки
+- **Root cause анализ**:
+  - Reactive store `useBlockDependencyResult` не пересчитывался на изменения store — `useMemo` deps не включали `tick` от subscription, поэтому computed-блоки могли использовать stale значения и вызывать каскадные re-renders
+  - `onLayoutChange` от RGL мог приходить с пустым `layout` во время mount/unmount (race condition в react-grid-layout)
+- **Защитные меры (defense in depth)**:
+  - **`hadBlocksRef` + `explicitClearRef`**: BlockGrid теперь отслеживает был ли у user'а валидный layout. Если `doSave([])` вызывается БЕЗ явного намерения user'а (Reset / поочерёдное удаление через X) — save отклоняется с warning'ом в console
+  - **`onLayoutChange` skip empty**: если RGL прислал пустой layout, а в state блоки есть — игнорируем (вероятно баг RGL)
+  - **`onLayoutChange` skip unchanged**: если позиции реально не изменились — не вызываем `scheduleSave` (избегаем бесконечных ре-рендеров)
+  - **`flushSave` тоже защищён** на unload
+- **Reactive store fix**: `useBlockValue`/`useBlockDependencyResult` теперь корректно пересчитываются на изменения store (добавлен `tick` в deps useMemo)
+- **Error handling**: HTTP 4xx/5xx от save endpoint теперь логируется в console (раньше fetch не throw'ил, ошибки были невидимы)
+
+### Fixed — Drag handle не работал при hover (вне edit mode)
+- `BlockChrome`: drag-handle теперь имеет `pointer-events-auto` + `cursor-move` когда показан (hover или edit mode)
+- `BlockGrid`: `isDraggable={true}` всегда (раньше только в edit mode); `isResizable` остаётся только в edit mode
+- `onLayoutChange` теперь работает без edit mode (drag сохраняет layout сразу)
+
+### Fixed — Mindmap overlay не виден
+- **Root cause**: CSS-переменные `hsl(var(--primary))` НЕ работают в SVG-атрибутах `stroke=""`/`fill=""` (только в style). Линии рендерились невидимым цветом
+- **Fix**: явные hex-цвета (#3b82f6 / #4f46e5 — Tailwind blue/indigo). Также увеличена opacity (dim 0.18 → 0.35), толщина (1.5 → 1.8), и pattern (4 3 → 5 4) для лучшей видимости в dim-режиме
+
+### Added — Cross-page connection mini-pin
+- Новый компонент **`CrossPagePin`** (`src/components/blocks/cross-page-pin.tsx`):
+  - Маленький круглый бейдж в правом верхнем углу блока (z-20, размер 5×5)
+  - Показывается ТОЛЬКО если блок имеет хотя бы одну зависимость с `pageKey !== currentPageKey`
+  - При hover — popover со списком cross-page связей: блок-источник, → название страницы, иконка ExternalLink
+  - Клик ведёт на нужную страницу
+- Интегрирован в `BlockChrome` через props `block` + `currentPageKey`
+- `BlockGrid` пробрасывает `pageKey` в каждый `BlockChrome`
+
+### Added — Универсальный data-блок (`custom.data`)
+- **`CustomDataBlock`** в `src/lib/blocks/catalog/custom-data.tsx`:
+  - Excel-style ячейка с произвольными строками `label + value (number)`
+  - Inline-редактирование прямо в блоке (клик на label/value)
+  - Кнопки «+ Строка» (добавить) и «AI» (заглушка для будущего автозаполнения из истории операций)
+  - **Публикует output**: `value` (по выбранной агрегации: sum/avg/count/last), `sum`, `count`, `label`. Доступен другим computed-блокам как источник
+  - **Settings**: 4 режима publishMode (Сумма/Среднее/Количество/Последнее), 3 формата значений (Рубли/Число/Процент)
+  - Адаптивный density xs/sm/md/lg
+  - Доступен на любой странице (`pages: ['*']`)
+
+### Verified
+- ✅ `pnpm build` — Exit 0, /cashflow 190kB (+2kB)
+- ✅ Drag handle работает при hover в обычном режиме
+- ✅ Mindmap линии видны (полупрозрачно по умолчанию, акцент при toggle)
+- ✅ Защита от случайного стирания блоков
+
+---
+
 ## [0.8.7] - 2026-05-11
 
 ### Added — Block Relationships (Excel-style ссылки между блоками)
