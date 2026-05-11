@@ -32,6 +32,9 @@ declare module 'fast-formula-parser' {
     parse(formula: string, position: Position, allowArray?: boolean): unknown;
   }
 
+  export const MAX_ROW: number;
+  export const MAX_COLUMN: number;
+
   export default FormulaParser;
   export { FormulaParser };
 }

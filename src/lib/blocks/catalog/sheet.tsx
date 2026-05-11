@@ -2,15 +2,48 @@
 // header-строкой с названием/итогами и связями с другими блоками.
 'use client';
 
-import { useState, useEffect, useCallback, useRef, useMemo, type CSSProperties } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo, useContext, type CSSProperties } from 'react';
 import { Table2, FunctionSquare } from 'lucide-react';
 import { z } from 'zod';
 import type { BlockDef, BlockRenderProps, BlockSettingsFormProps } from '../types';
 import { Card, CardContent } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
-import { useBlockValuePublisher } from '../values';
+import { Input } from '@/components/ui/input';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { useBlockValuePublisher, BlockValuesContext, useAvailableBlockSources } from '../values';
 import { useBlockDensity } from '@/components/blocks/block-size';
-import FormulaParser from 'fast-formula-parser';
+import FormulaParser, { MAX_ROW, MAX_COLUMN } from 'fast-formula-parser';
+
+// ============================================================================
+// Reactive Block Values Hook (reads live values from BlockValues store)
+// ============================================================================
+
+function useAllBlockValues(): Record<string, number | string | null> {
+  const api = useContext(BlockValuesContext);
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (!api) return;
+    return api.subscribe(() => setTick((t) => t + 1));
+  }, [api]);
+  return useMemo(() => {
+    if (!api) return {};
+    const result: Record<string, number | string | null> = {};
+    for (const [blockId, output] of api.get().values.entries()) {
+      for (const [field, value] of Object.entries(output)) {
+        const key = field === 'value' ? blockId : `${blockId}.${field}`;
+        result[key] = value;
+      }
+    }
+    return result;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api, tick]);
+}
 
 // ============================================================================
 // Config Schema
@@ -40,12 +73,8 @@ const SheetConfig = z.object({
   showHeader: z.boolean().default(true),
   /** Показывать formula bar */
   showFormulaBar: z.boolean().default(true),
-  /** Ссылки на внешние блоки: имя переменной → blockId.field */
-  blockRefs: z.record(z.string(), z.object({
-    blockId: z.string(),
-    field: z.string().default('value'),
-    label: z.string().optional(),
-  })).optional(),
+  /** Ссылки на внешние блоки: имя переменной → значение (или null) */
+  blockRefs: z.record(z.string(), z.union([z.string(), z.number(), z.null()])).optional(),
 });
 
 type SheetCfg = z.infer<typeof SheetConfig>;
@@ -103,6 +132,18 @@ function makeHeaderId(): string {
 // Formula Engine (lightweight, using fast-formula-parser)
 // ============================================================================
 
+/** Fallback: evaluate simple math expressions (handles =77, =21+22, etc.) */
+function simpleMathEval(expr: string): number | null {
+  if (!/^[\d\s+\-*/().,%]+$/.test(expr)) return null;
+  try {
+    const fn = new Function('return (' + expr + ')');
+    const result = fn();
+    return typeof result === 'number' && Number.isFinite(result) ? result : null;
+  } catch {
+    return null;
+  }
+}
+
 function evaluateFormula(
   formula: string,
   cells: string[][],
@@ -125,16 +166,18 @@ function evaluateFormula(
       }
     }
 
-    // Используем парсер формул
-    const MAX_ROW = FormulaParser.MAX_ROW;
-    const MAX_COLUMN = FormulaParser.MAX_COLUMN;
+    // Fallback for simple numeric or pure-math expressions
+    const simple = simpleMathEval(expr);
+    if (simple !== null) return simple;
+
+    // MAX_ROW / MAX_COLUMN from named exports (also available as FormulaParser.MAX_ROW)
+    const maxRowConst = MAX_ROW ?? FormulaParser.MAX_ROW ?? 1048576;
+    const maxColConst = MAX_COLUMN ?? FormulaParser.MAX_COLUMN ?? 16384;
 
     const parser = new FormulaParser({
       onCell: ({ row, col }: { sheet: string; row: number; col: number }) => {
         const addr = cellAddress(row - 1, col - 1);
-        // Проверяем circular
         if (visiting?.has(addr)) return 0;
-        // Проверяем кэш
         if (evaluated.has(addr)) {
           const cached = evaluated.get(addr)!;
           return typeof cached === 'number' ? cached : parseFloat(cached) || 0;
@@ -151,8 +194,8 @@ function evaluateFormula(
         return Number.isFinite(num) ? num : 0;
       },
       onRange: (ref: { from: { row: number; col: number }; to: { row: number; col: number } }) => {
-        const maxRow = ref.to.row === MAX_ROW ? cells.length : ref.to.row;
-        const maxCol = ref.to.col === MAX_COLUMN
+        const maxRow = ref.to.row >= maxRowConst ? cells.length : ref.to.row;
+        const maxCol = ref.to.col >= maxColConst
           ? (cells[0]?.length ?? 0)
           : ref.to.col;
         const arr: number[][] = [];
@@ -187,9 +230,16 @@ function evaluateFormula(
     const result = parser.parse(expr, position);
     if (typeof result === 'number') return result;
     if (typeof result === 'string') return result;
+    if (typeof result === 'boolean') return result ? 1 : 0;
+    if (result === null || result === undefined) return 0;
     if (result instanceof Error) return '#ERR';
-    return String(result ?? '');
+    // FormulaError objects
+    if (typeof result === 'object' && 'message' in (result as object)) return '#ERR';
+    return String(result);
   } catch {
+    // Last-resort fallback: try simple math
+    const fallback = simpleMathEval(formula);
+    if (fallback !== null) return fallback;
     return '#ERR';
   }
 }
@@ -226,6 +276,11 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
   const [caretPos, setCaretPos] = useState<number | null>(null);
   /** Touch-режим: явно активировать pick-cell на мобильных */
   const [touchPickMode, setTouchPickMode] = useState(false);
+  /** ID заголовочной ячейки, которую редактируем (formula mode для headers) */
+  const [editingHeaderId, setEditingHeaderId] = useState<string | null>(null);
+  /** Inline picker для @block mentions */
+  const [blockPickerOpen, setBlockPickerOpen] = useState(false);
+  const [blockSearch, setBlockSearch] = useState('');
   const [colWidths, setColWidths] = useState<number[]>(
     () => cfg.colWidths ?? Array(cfg.cols).fill(DEFAULT_COL_WIDTH)
   );
@@ -239,21 +294,26 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
     ]
   );
   const editInputRef = useRef<HTMLInputElement>(null);
+  const sheetRef = useRef<HTMLDivElement>(null);
   const resizingCol = useRef<{ col: number; startX: number; startW: number } | null>(null);
   const resizingRow = useRef<{ row: number; startY: number; startH: number } | null>(null);
 
   const title = instance.appearance?.title ?? cfg.title;
   const accent = instance.appearance?.accentColor;
 
-  // Собираем blockValues из blockRefs
+  // Собираем blockValues: сначала cfg.blockRefs (статические), затем live values из reactive store
+  // Reactive list of available block sources (for @mention picker)
+  const availableBlocks = useAvailableBlockSources();
+  const liveValues = useAllBlockValues();
   const blockValues: Record<string, number | string | null> = useMemo(() => {
+    const result: Record<string, number | string | null> = { ...liveValues };
     const refs = cfg.blockRefs ?? {};
-    const result: Record<string, number | string | null> = {};
-    Object.entries(refs).forEach(([name]) => {
-      result[name] = null;
+    Object.entries(refs).forEach(([name, val]) => {
+      result[name] = val ?? liveValues[name] ?? null;
     });
     return result;
-  }, [cfg.blockRefs]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveValues, cfg.blockRefs]);
 
   // Вычисляем все ячейки
   const evaluatedCells = useMemo(() => {
@@ -282,14 +342,15 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
     return { result, evaluated };
   }, [cells, blockValues]);
 
-  // Вычисляем header cells
+  // Вычисляем header cells (используем общий evaluated cache из основной таблицы)
   const evaluatedHeaders = useMemo(() => {
     return headerCells.map((hc) => {
       if (!hc.value.startsWith('=')) return { ...hc, computed: hc.value };
-      const computed = computeCell(hc.value, cells, new Map(), blockValues);
+      const computed = computeCell(hc.value, cells, evaluatedCells.evaluated, blockValues);
       return { ...hc, computed };
     });
-  }, [headerCells, cells, blockValues]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [headerCells, cells, blockValues, evaluatedCells.evaluated]);
 
   // Публикуем значения для других блоков
   const publishOutput = useMemo(() => {
@@ -344,19 +405,41 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
   }
 
   function handleCellClick(r: number, c: number) {
-    // В режиме формулы: клик по другой ячейке вставляет ссылку
-    if ((formulaMode || touchPickMode) && activeCell && !(activeCell.r === r && activeCell.c === c)) {
+    closePickers();
+    // В режиме формулы (в том числе для header): клик по ячейке вставляет ссылку
+    if ((formulaMode || touchPickMode) && (editingHeaderId || (activeCell && !(activeCell.r === r && activeCell.c === c)))) {
       insertCellRef(r, c);
       return;
     }
+    // Сброс редактирования header
+    if (editingHeaderId) {
+      commitEdit();
+    }
     if (activeCell?.r === r && activeCell?.c === c && editing) return;
     setActiveCell({ r, c });
+    setEditingHeaderId(null);
     setEditing(true);
     const raw = cells[r]?.[c] ?? '';
     setEditValue(raw);
     setFormulaMode(raw.startsWith('='));
     setTouchPickMode(false);
     setTimeout(() => editInputRef.current?.focus(), 0);
+  }
+
+  /** Вставляет произвольный текст в текущую позицию курсора */
+  function insertTextAtCursor(text: string) {
+    const input = editInputRef.current;
+    const pos = caretPos ?? input?.selectionStart ?? editValue.length;
+    const before = editValue.slice(0, pos);
+    const after = editValue.slice(pos);
+    const newValue = before + text + after;
+    setEditValue(newValue);
+    setCaretPos(pos + text.length);
+    setTimeout(() => {
+      input?.focus();
+      const newPos = pos + text.length;
+      input?.setSelectionRange(newPos, newPos);
+    }, 0);
   }
 
   /** Вставляет ссылку на ячейку (например A3) в текущую позицию курсора в formula bar */
@@ -381,7 +464,24 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
     }, 0);
   }
 
+  function closePickers() {
+    setBlockPickerOpen(false);
+    setTouchPickMode(false);
+  }
+
   function commitEdit() {
+    if (editingHeaderId) {
+      // Commit header cell formula
+      const next = headerCells.map((hc) => (hc.id === editingHeaderId ? { ...hc, value: editValue } : hc));
+      setHeaderCells(next);
+      queueMicrotask(() => saveConfig({ headerCells: next }));
+      setEditingHeaderId(null);
+      setFormulaMode(false);
+      setTouchPickMode(false);
+      setCaretPos(null);
+      setEditing(false);
+      return;
+    }
     if (activeCell && editing) {
       updateCell(activeCell.r, activeCell.c, editValue);
       setEditing(false);
@@ -538,7 +638,7 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
 
   // MD/LG — full spreadsheet
   return (
-    <Card className="flex h-full flex-col overflow-hidden">
+    <Card ref={sheetRef} className="flex h-full flex-col overflow-hidden">
       {/* Header summary row */}
       {cfg.showHeader && (
         <div className="flex items-center gap-0 border-b border-border/50 bg-muted/30">
@@ -565,11 +665,34 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
                 </button>
               </div>
               <input
-                className="h-5 w-full truncate border-0 bg-transparent p-0 text-xs font-semibold tabular-nums outline-none focus:ring-0"
+                className={'h-5 w-full truncate border-0 bg-transparent p-0 text-xs font-semibold tabular-nums outline-none focus:ring-0' + (editingHeaderId === hc.id ? ' ring-1 ring-primary/50 rounded px-1' : '')}
                 style={accent ? { color: accent } : undefined}
-                value={hc.value.startsWith('=') ? (hc as { computed?: string }).computed ?? '' : hc.value}
-                onChange={(e) => updateHeaderCell(hc.id, { value: e.target.value })}
-                title={hc.value.startsWith('=') ? `Формула: ${hc.value}` : undefined}
+                value={editingHeaderId === hc.id ? editValue : (hc.value.startsWith('=') ? (hc as { computed?: string }).computed ?? '' : hc.value)}
+                tabIndex={-1}
+                onMouseDown={(e) => {
+                  // Prevent stealing focus if already editing this header
+                  if (editingHeaderId === hc.id) e.preventDefault();
+                }}
+                onFocus={() => {
+                  // Activate formula bar editing for this header
+                  if (editingHeaderId !== hc.id) {
+                    if (activeCell && editing) commitEdit();
+                    setActiveCell(null);
+                    setEditingHeaderId(hc.id);
+                    setEditValue(hc.value);
+                    setEditing(true);
+                    setFormulaMode(hc.value.startsWith('='));
+                    setCaretPos(null);
+                    setTimeout(() => editInputRef.current?.focus(), 0);
+                  }
+                }}
+                onChange={(e) => {
+                  // Direct edit for non-formula headers (no formula bar)
+                  if (!editingHeaderId) {
+                    updateHeaderCell(hc.id, { value: e.target.value });
+                  }
+                }}
+                title={hc.value.startsWith('=') ? `Формула: ${hc.value}\n(Кликните для редактирования)` : 'Кликните для ввода формулы (=SUM(A1:A5))'}
               />
             </div>
           ))}
@@ -585,10 +708,12 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
       )}
 
       {/* Formula bar */}
-      {cfg.showFormulaBar && activeCell && (
+      {cfg.showFormulaBar && (activeCell || editingHeaderId) && (
         <div className="flex items-center gap-1 border-b border-border/40 bg-muted/20 px-2 py-1">
           <span className="flex h-5 min-w-[36px] items-center justify-center rounded bg-muted px-1 text-[10px] font-semibold text-muted-foreground">
-            {cellAddress(activeCell.r, activeCell.c)}
+            {editingHeaderId
+              ? (headerCells.find((h) => h.id === editingHeaderId)?.label || 'Header')
+              : cellAddress(activeCell!.r, activeCell!.c)}
           </span>
           <FunctionSquare className="h-3 w-3 text-muted-foreground/60" />
           <input
@@ -598,9 +723,8 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
             onChange={handleEditChange}
             onSelect={handleEditSelect}
             onBlur={(e) => {
-              // Не commit если клик на ячейку таблицы (formulaMode pick)
               const related = e.relatedTarget as HTMLElement | null;
-              if (formulaMode && related?.closest('table')) return;
+              if ((formulaMode || editingHeaderId) && related && sheetRef.current?.contains(related)) return;
               commitEdit();
             }}
             onKeyDown={handleKeyDown}
@@ -615,6 +739,7 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
           {/* Mobile: кнопка для активации pick-cell mode */}
           <button
             type="button"
+            onMouseDown={(e) => e.preventDefault()}
             onClick={() => {
               if (!editValue.startsWith('=')) {
                 setEditValue('=' + editValue);
@@ -637,7 +762,7 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
       )}
 
       {/* Mobile formula helpers — показываем при формуле */}
-      {cfg.showFormulaBar && activeCell && (formulaMode || touchPickMode) && (
+      {cfg.showFormulaBar && (activeCell || editingHeaderId) && (formulaMode || touchPickMode) && (
         <div className="flex items-center gap-1 overflow-x-auto border-b border-border/30 bg-muted/10 px-2 py-0.5">
           <span className="shrink-0 text-[10px] text-muted-foreground">Вставить:</span>
           {['+', '-', '*', '/', '(', ')', ',', ':'].map((op) => (
@@ -645,6 +770,7 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
               key={op}
               type="button"
               className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-muted text-[11px] font-mono transition hover:bg-muted/80"
+              onMouseDown={(e) => e.preventDefault()}
               onClick={() => {
                 const input = editInputRef.current;
                 const pos = caretPos ?? input?.selectionStart ?? editValue.length;
@@ -666,6 +792,7 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
               key={fn}
               type="button"
               className="flex h-5 shrink-0 items-center rounded bg-blue-50 px-1.5 text-[10px] font-semibold text-blue-600 transition hover:bg-blue-100 dark:bg-blue-950 dark:text-blue-400 dark:hover:bg-blue-900"
+              onMouseDown={(e) => e.preventDefault()}
               onClick={() => {
                 const fnText = fn === 'AVG' ? 'AVERAGE(' : `${fn}(`;
                 const input = editInputRef.current;
@@ -687,6 +814,91 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
               {fn}
             </button>
           ))}
+          <div className="mx-1 h-3 w-px bg-border/50" />
+          {/* @Block mention picker */}
+          <Dialog open={blockPickerOpen} onOpenChange={setBlockPickerOpen}>
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => setBlockPickerOpen(true)}
+              className={
+                'flex h-5 shrink-0 items-center rounded px-1.5 text-[10px] font-semibold transition ' +
+                (blockPickerOpen
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-amber-50 text-amber-700 hover:bg-amber-100 dark:bg-amber-950 dark:text-amber-400 dark:hover:bg-amber-900')
+              }
+              title="Вставить значение из другого блока"
+            >
+              @Блок
+            </button>
+            <DialogContent className="max-w-sm gap-3 p-4">
+              <DialogHeader className="space-y-1">
+                <DialogTitle className="text-sm">Вставить значение блока</DialogTitle>
+                <DialogDescription className="text-[11px]">
+                  Выберите блок и поле для вставки в формулу
+                </DialogDescription>
+              </DialogHeader>
+              <Input
+                placeholder="Поиск блоков..."
+                value={blockSearch}
+                onChange={(e) => setBlockSearch(e.target.value)}
+                className="h-7 text-xs"
+              />
+              <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
+                {availableBlocks.length === 0 ? (
+                  <p className="py-4 text-center text-xs text-muted-foreground">
+                    Нет доступных блоков. Убедитесь, что на странице есть блоки с публикуемыми значениями.
+                  </p>
+                ) : (
+                  availableBlocks
+                    .filter((b) => {
+                      if (!blockSearch) return true;
+                      const label = String(liveValues[`${b.blockId}.label`] ?? `Блок ${b.blockId.slice(0, 8)}`).toLowerCase();
+                      return label.includes(blockSearch.toLowerCase());
+                    })
+                    .map((b) => {
+                      const blockLabel = liveValues[`${b.blockId}.label`] ?? `Блок ${b.blockId.slice(0, 8)}`;
+                      return (
+                        <div
+                          key={b.blockId}
+                          className="rounded-md border border-border/40 bg-muted/20 p-2"
+                        >
+                          <div className="text-xs font-medium text-foreground">{blockLabel}</div>
+                          <div className="mt-1.5 flex flex-wrap gap-1">
+                            {b.fields.map((field) => {
+                              const key = field === 'value' ? b.blockId : `${b.blockId}.${field}`;
+                              const val = liveValues[key];
+                              const preview = val !== null && val !== undefined ? ` ${String(val).slice(0, 14)}` : '';
+                              return (
+                                <button
+                                  key={field}
+                                  type="button"
+                                  className="inline-flex items-center gap-1 rounded bg-background px-1.5 py-0.5 text-[11px] ring-1 ring-border/60 transition hover:bg-accent hover:ring-border"
+                                  onClick={() => {
+                                    const ref = field === 'value' ? b.blockId : `${b.blockId}.${field}`;
+                                    const prefix = editValue.startsWith('=') ? '' : '=';
+                                    insertTextAtCursor(prefix + '@' + ref);
+                                    setFormulaMode(true);
+                                    setBlockPickerOpen(false);
+                                    setBlockSearch('');
+                                  }}
+                                  title={`${field}${preview ? ' = ' + preview : ''}`}
+                                >
+                                  <span className="font-medium text-primary">{field}</span>
+                                  {preview && (
+                                    <span className="text-muted-foreground">{preview}</span>
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })
+                )}
+              </div>
+            </DialogContent>
+          </Dialog>
           {touchPickMode && (
             <span className="ml-auto shrink-0 text-[10px] text-primary">← тапните ячейку</span>
           )}
@@ -761,7 +973,7 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
                           onSelect={handleEditSelect}
                           onBlur={(e) => {
                             const related = e.relatedTarget as HTMLElement | null;
-                            if (formulaMode && related?.closest('table')) return;
+                            if ((formulaMode || editingHeaderId) && related && sheetRef.current?.contains(related)) return;
                             commitEdit();
                           }}
                           onKeyDown={handleKeyDown}
@@ -925,7 +1137,6 @@ export const SheetBlock: BlockDef = {
     ],
     showHeader: true,
     showFormulaBar: true,
-    blockRefs: {},
   }),
   SettingsForm: SheetSettings,
   Render: RenderSheet,

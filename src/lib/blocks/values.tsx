@@ -38,7 +38,7 @@ type StoreApi = {
   subscribe: (listener: () => void) => () => void;
 };
 
-const BlockValuesContext = createContext<StoreApi | null>(null);
+export const BlockValuesContext = createContext<StoreApi | null>(null);
 
 /**
  * Провайдер реактивного store для значений блоков на странице.

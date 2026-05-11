@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.9.15] - 2026-05-11
+
+### Fixed
+- **Sheet: operator buttons focus** — `onMouseDown={preventDefault}` на кнопках `+ - * /` и функциях `SUM/AVG/...` предотвращает потерю фокуса из поля ввода формулы
+- **Sheet: header #ERR** — формулы в header-ячейках теперь используют общий `evaluated` cache из основной таблицы; добавлен `simpleMathEval` fallback для простых выражений (`=77`, `=21+22`)
+- **Sheet: header formula editing** — клик по value header-ячейки активирует formula bar для редактирования; в formula mode клик по ячейкам таблицы вставляет ссылку (как в Excel)
+- **Sheet: onBlur premature commit** — `onBlur` проверяет весь `sheetRef` контейнер (не только `<table>`), предотвращая ложный commit при клике на helper-кнопки
+- **Sheet: MAX_ROW/MAX_COLUMN** — добавлен robust fallback (`?? 1048576` / `?? 16384`) если named exports недоступны; сравнение через `>=` вместо `===`
+
+### Added
+- **Sheet: @block live references** — кнопка `@Блок` открывает модалку (Dialog) со списком всех доступных блоков страницы; каждый блок показывает свои поля (value, count, label и др.) с превью значений. При клике по полю вставляется `@blockId.field` в формулу. Значения блоков берутся из reactive `BlockValuesContext` store — формулы реактивно пересчитываются при изменении источника.
+- **Sheet: reactive block values hook** — `useAllBlockValues()` подписывается на `BlockValuesContext` и возвращает все живые значения (`blockId` → `output.value`, `blockId.field` → `output.field`).
+
+### Changed
+- **Sheet: formula engine** — `evaluateFormula` результат обрабатывает `boolean`, `null`, `undefined`, `FormulaError` объекты; добавлен `simpleMathEval` как last-resort fallback в catch
+
 ## [0.9.14] - 2026-05-11
 
 ### Added
