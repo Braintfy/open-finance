@@ -9,7 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
-import { formatRubles } from '@/lib/utils';
+import { useFormatRubles } from '@/lib/format-settings';
 import { resolveIcon } from '../icon-resolver';
 import { useBlockDensity } from '@/components/blocks/block-size';
 
@@ -17,7 +17,8 @@ function formatCompact(v: number): string {
   const abs = Math.abs(v);
   if (abs >= 1_000_000_00) return `${(abs / 1_000_000_00).toFixed(1)}М₽`;
   if (abs >= 1_000_00) return `${(abs / 1_000_00).toFixed(0)}к₽`;
-  return formatRubles(abs);
+  const rubles = Math.round(abs / 100);
+  return `${new Intl.NumberFormat('ru-RU').format(rubles)} ₽`;
 }
 
 const StatCustomConfig = z.object({
@@ -93,8 +94,9 @@ function RenderStatCustom({ instance }: BlockRenderProps) {
       (cfg.counterparty ? ` · ${cfg.counterparty}` : '') +
       (cfg.source ? ` · ${cfg.source}` : '');
 
+  const fmt = useFormatRubles();
   const display =
-    cfg.metric === 'count' ? `${value ?? 0}` : formatRubles(Math.abs(value ?? 0));
+    cfg.metric === 'count' ? `${value ?? 0}` : fmt(Math.abs(value ?? 0));
   const sign =
     cfg.metric === 'balance' && (value ?? 0) < 0
       ? '−'

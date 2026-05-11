@@ -11,7 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { formatRubles } from '@/lib/utils';
+import { useFormatRubles } from '@/lib/format-settings';
 import { useBlockDensity } from '@/components/blocks/block-size';
 import { useBlockValuePublisher } from '../values';
 
@@ -41,8 +41,8 @@ function parseConfig(raw: unknown): Config {
   return { rows: [], publishMode: 'sum', format: 'rubles' };
 }
 
-function formatValue(v: number, format: Config['format']): string {
-  if (format === 'rubles') return formatRubles(v);
+function formatValue(v: number, format: Config['format'], fmt?: (n: number) => string): string {
+  if (format === 'rubles') return fmt ? fmt(v) : `${new Intl.NumberFormat('ru-RU').format(Math.round(v / 100))} \u20bd`;
   if (format === 'percent') return `${v.toFixed(1)}%`;
   return v.toLocaleString('ru-RU');
 }
@@ -74,6 +74,7 @@ function makeRowId(): string {
 function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
   const config = parseConfig(instance.config);
   const density = useBlockDensity();
+  const fmt = useFormatRubles();
   const accent = instance.appearance?.accentColor;
   const title = instance.appearance?.title ?? 'Данные';
   const publishValue = computePublishValue(config.rows, config.publishMode);
@@ -116,28 +117,25 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
           className="truncate text-center text-sm font-semibold tabular-nums"
           style={accent ? { color: accent } : undefined}
         >
-          {formatValue(publishValue, config.format)}
+          {formatValue(publishValue, config.format, fmt)}
         </div>
       </Card>
     );
   }
 
-  // SM — заголовок + итог
+  // SM — title + итог
   if (density === 'sm') {
     return (
-      <Card className="flex h-full flex-col justify-center p-3">
-        <div className="flex items-center gap-1.5">
-          <Database
-            className="h-3.5 w-3.5 shrink-0"
-            style={accent ? { color: accent } : undefined}
-          />
-          <span className="truncate text-xs font-medium text-muted-foreground">{title}</span>
+      <Card className="flex h-full flex-col justify-center p-2">
+        <div className="flex items-center gap-1">
+          <Database className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <span className="truncate text-[11px] font-medium text-muted-foreground">{title}</span>
         </div>
         <div
           className="mt-0.5 truncate text-lg font-semibold tabular-nums"
           style={accent ? { color: accent } : undefined}
         >
-          {formatValue(publishValue, config.format)}
+          {formatValue(publishValue, config.format, fmt)}
         </div>
       </Card>
     );
@@ -155,7 +153,7 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
           className="text-base font-semibold tabular-nums"
           style={accent ? { color: accent } : undefined}
         >
-          {formatValue(publishValue, config.format)}
+          {formatValue(publishValue, config.format, fmt)}
         </div>
       </CardHeader>
       <CardContent className="flex flex-1 flex-col gap-1.5 overflow-y-auto pb-3 pt-1">

@@ -2,6 +2,7 @@
 import type { Metadata, Viewport } from 'next';
 import { Inter, JetBrains_Mono } from 'next/font/google';
 import { ThemeProvider } from '@/components/theme-provider';
+import { FormatSettingsProvider } from '@/lib/format-settings';
 import './globals.css';
 
 const inter = Inter({
@@ -42,7 +43,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="ru" suppressHydrationWarning className={`${inter.variable} ${jetbrainsMono.variable}`}>
       <body className="min-h-screen bg-background font-sans text-foreground antialiased">
         <ThemeProvider attribute="class" defaultTheme="light" enableSystem>
-          {children}
+          <FormatSettingsProvider>
+            {children}
+          </FormatSettingsProvider>
         </ThemeProvider>
       </body>
     </html>

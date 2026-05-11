@@ -18,7 +18,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { formatRubles, formatDate } from '@/lib/utils';
+import { formatDate } from '@/lib/utils';
+import { useFormatRubles } from '@/lib/format-settings';
 import { useCashflowData, type CashflowTx } from './cashflow-data';
 import { TransactionDialog } from './transaction-dialog';
 import { resolveIcon } from '../icon-resolver';
@@ -33,7 +34,8 @@ function formatCompactRubles(v: number): string {
   const abs = Math.abs(v);
   if (abs >= 1_000_000_00) return `${(abs / 1_000_000_00).toFixed(1)}М₽`;
   if (abs >= 1_000_00) return `${(abs / 1_000_00).toFixed(0)}к₽`;
-  return formatRubles(abs);
+  const rubles = Math.round(abs / 100);
+  return `${new Intl.NumberFormat('ru-RU').format(rubles)} ₽`;
 }
 
 function StatCard({
@@ -50,6 +52,7 @@ function StatCard({
   accent?: string;
 }) {
   const density = useBlockDensity();
+  const fmt = useFormatRubles();
   const sign = value < 0 ? '−' : '';
 
   // XS — только значение крупно, без header
@@ -61,7 +64,7 @@ function StatCard({
           <span
             className="truncate text-sm font-semibold tabular-nums tracking-tight"
             style={accent ? { color: accent } : undefined}
-            title={`${sign}${formatRubles(Math.abs(value))}`}
+            title={`${sign}${fmt(Math.abs(value))}`}
           >
             {sign}
             {formatCompactRubles(value)}
@@ -82,10 +85,10 @@ function StatCard({
         <div
           className="mt-0.5 truncate text-base font-semibold tabular-nums tracking-tight"
           style={accent ? { color: accent } : undefined}
-          title={`${sign}${formatRubles(Math.abs(value))}`}
+          title={`${sign}${fmt(Math.abs(value))}`}
         >
           {sign}
-          {formatRubles(Math.abs(value))}
+          {fmt(Math.abs(value))}
         </div>
       </Card>
     );
@@ -106,7 +109,7 @@ function StatCard({
           style={accent ? { color: accent } : undefined}
         >
           {sign}
-          {formatRubles(Math.abs(value))}
+          {fmt(Math.abs(value))}
         </div>
       </CardContent>
     </Card>
@@ -215,6 +218,7 @@ function RenderTopCategories({ instance }: BlockRenderProps) {
   const cfg = TopCatsConfig.parse(instance.config ?? {});
   const { topIncome, topExpense, loading } = useCashflowData();
   const density = useBlockDensity();
+  const fmt = useFormatRubles();
   const rows = cfg.type === 'income' ? topIncome : topExpense;
 
   // Ограничение по плотности: чем меньше места — тем меньше строк
@@ -255,7 +259,7 @@ function RenderTopCategories({ instance }: BlockRenderProps) {
               <div className={`flex items-center justify-between gap-2 ${isCompact ? 'text-[11px]' : 'text-sm'}`}>
                 <span className="truncate font-medium">{r.categoryName}</span>
                 <span className="shrink-0 tabular-nums text-muted-foreground">
-                  {isCompact ? formatCompactRubles(r.total) : formatRubles(r.total)}
+                  {isCompact ? formatCompactRubles(r.total) : fmt(r.total)}
                 </span>
               </div>
               <div className="h-1.5 overflow-hidden rounded-full bg-muted">
@@ -354,6 +358,7 @@ function RenderTransactionsList({ instance }: BlockRenderProps) {
   const cfg = TxListConfig.parse(instance.config ?? {});
   const { transactions, loading } = useCashflowData();
   const router = useRouter();
+  const fmt = useFormatRubles();
   const [editing, setEditing] = useState<CashflowTx | null>(null);
   const [editingNew, setEditingNew] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
@@ -431,7 +436,7 @@ function RenderTransactionsList({ instance }: BlockRenderProps) {
                     }`}
                   >
                     {t.type === 'income' ? '+' : '−'}
-                    {formatRubles(t.amount)}
+                    {fmt(t.amount)}
                   </td>
                   <td className="px-2">
                     <div className="flex justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">

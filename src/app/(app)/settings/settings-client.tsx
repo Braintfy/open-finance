@@ -17,9 +17,11 @@ import {
   Eye,
   EyeOff,
   Save,
+  Coins,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { useFormatSettings } from '@/lib/format-settings';
 
 type NavItem = {
   key: string;
@@ -182,6 +184,8 @@ export function SettingsClient({
           боковой панели.
         </AlertDescription>
       </Alert>
+
+      <FormatSection />
     </div>
   );
 }
@@ -231,5 +235,47 @@ function NavRow({
         )}
       </div>
     </button>
+  );
+}
+
+function FormatSection() {
+  const { settings, update } = useFormatSettings();
+
+  return (
+    <section>
+      <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+        Формат отображения
+      </div>
+      <div className="divide-y divide-border/60 overflow-hidden rounded-lg border bg-card">
+        <button
+          type="button"
+          onClick={() => update({ showKopecks: !settings.showKopecks })}
+          className="flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-muted/40"
+        >
+          <Coins className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-medium">Показывать копейки</div>
+            <div className="truncate text-[11px] text-muted-foreground">
+              Дробная часть сумм: 1 234,56 ₽ вместо 1 235 ₽
+            </div>
+          </div>
+          <div className="shrink-0">
+            <div
+              className={
+                'relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ' +
+                (settings.showKopecks ? 'bg-primary' : 'bg-muted')
+              }
+            >
+              <span
+                className={
+                  'inline-block h-4 w-4 rounded-full bg-white shadow-sm transition-transform ' +
+                  (settings.showKopecks ? 'translate-x-[18px]' : 'translate-x-0.5')
+                }
+              />
+            </div>
+          </div>
+        </button>
+      </div>
+    </section>
   );
 }

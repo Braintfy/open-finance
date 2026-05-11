@@ -5,7 +5,7 @@
 import { Calculator, Sigma } from 'lucide-react';
 import type { BlockDef, BlockRenderProps } from '../types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { formatRubles } from '@/lib/utils';
+import { useFormatRubles } from '@/lib/format-settings';
 import { useBlockDensity } from '@/components/blocks/block-size';
 import {
   useBlockDependencyResult,
@@ -18,6 +18,7 @@ import {
 
 function RenderComputedSum({ instance }: BlockRenderProps) {
   const density = useBlockDensity();
+  const fmt = useFormatRubles();
   const { value, sourceValues, missing } = useBlockDependencyResult(instance.dependencies);
   const accent = instance.appearance?.accentColor;
   const title = instance.appearance?.title ?? 'Агрегация';
@@ -45,7 +46,7 @@ function RenderComputedSum({ instance }: BlockRenderProps) {
           className="truncate text-center text-sm font-semibold tabular-nums tracking-tight"
           style={accent ? { color: accent } : undefined}
         >
-          {value !== null ? formatRubles(value) : '—'}
+          {value !== null ? fmt(value) : '—'}
         </div>
       </Card>
     );
@@ -62,9 +63,9 @@ function RenderComputedSum({ instance }: BlockRenderProps) {
         <div
           className="mt-0.5 truncate text-base font-semibold tabular-nums tracking-tight"
           style={accent ? { color: accent } : undefined}
-          title={value !== null ? formatRubles(value) : undefined}
+          title={value !== null ? fmt(value) : undefined}
         >
-          {value !== null ? formatRubles(value) : '—'}
+          {value !== null ? fmt(value) : '—'}
         </div>
       </Card>
     );
@@ -91,7 +92,7 @@ function RenderComputedSum({ instance }: BlockRenderProps) {
               className={`truncate ${density === 'lg' ? 'text-2xl' : 'text-xl'} font-semibold tabular-nums tracking-tight`}
               style={accent ? { color: accent } : undefined}
             >
-              {value !== null ? formatRubles(value) : '—'}
+              {value !== null ? fmt(value) : '—'}
             </div>
             <div className="text-xs text-muted-foreground">
               {aggregationLabel[aggregation]} из {sourceValues.length}{' '}

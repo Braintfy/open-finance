@@ -176,3 +176,4 @@ venv/
 .history/
 .ionide/
 .fingerprint/
+.gstack/

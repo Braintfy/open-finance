@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.9.2] - 2026-05-11
+
+### Fixed
+- **Mindmap overlay не отображается** — root cause: компонент `null` на первом рендере (пустой `edges` state) → SVG не монтируется → `recalc()` вызывается на `null` svg. Исправлено: guard по `rawEdges.length`, удален `svgRef` из `recalc`, добавлен `setTimeout(200ms)` для RGL layout
+- **Графики показывают копейки вместо рублей** — `groupTransactions()` теперь делит на 100 (`income/100`, `expense/100`, `balance/100`). Y-axis и tooltip показывают корректные рубли
+
+### Added
+- **Опция копейки** — `src/lib/format-settings.tsx` — `FormatSettingsProvider` + `useFormatRubles()` хук. Настройка `showKopecks` в localStorage. При включении: `1 234,56 ₽`, при выключении: `1 235 ₽`
+- **Toggle в /settings** — секция «Формат отображения» с переключателем «Показывать копейки». Работает мгновенно без перезагрузки страницы
+
+### Changed
+- **Все блоки переведены на `useFormatRubles()`** — `cashflow.tsx` (StatCard, TopCategories, TransactionsList), `computed.tsx`, `stat-custom.tsx`, `custom-data.tsx`, `chart-cashflow.tsx` (tooltip). Все суммы учитывают глобальную настройку копеек
+
 ## [0.9.1] - 2026-05-11
 
 ### Fixed

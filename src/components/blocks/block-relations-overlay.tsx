@@ -33,10 +33,9 @@ type NodePos = {
 
 export function BlockRelationsOverlay({ blocks, containerRef, highlighted }: Props) {
   const svgRef = useRef<SVGSVGElement | null>(null);
-  const [edges, setEdges] = useState<
-    Array<Edge & { x1: number; y1: number; x2: number; y2: number }>
-  >([]);
-  const [nodes, setNodes] = useState<NodePos[]>([]);
+  const [tick, setTick] = useState(0);
+  const edgesRef = useRef<Array<Edge & { x1: number; y1: number; x2: number; y2: number }>>([]);
+  const nodesRef = useRef<NodePos[]>([]);
 
   // Извлекаем граф зависимостей из блоков
   const rawEdges = useMemo<Edge[]>(() => {
@@ -83,9 +82,9 @@ export function BlockRelationsOverlay({ blocks, containerRef, highlighted }: Pro
   useEffect(() => {
     function recalc() {
       const container = containerRef.current;
-      const svg = svgRef.current;
-      if (!container || !svg) return;
+      if (!container) return;
       const containerRect = container.getBoundingClientRect();
+      if (containerRect.width === 0 || containerRect.height === 0) return;
 
       // Edges
       const nextEdges: Array<Edge & { x1: number; y1: number; x2: number; y2: number }> = [];
@@ -102,7 +101,6 @@ export function BlockRelationsOverlay({ blocks, containerRef, highlighted }: Pro
         const y2 = toRect.top - containerRect.top;
         nextEdges.push({ ...edge, x1, y1, x2, y2 });
       }
-      setEdges(nextEdges);
 
       // Nodes — все блоки участвующие в связях
       const nextNodes: NodePos[] = [];
@@ -123,16 +121,21 @@ export function BlockRelationsOverlay({ blocks, containerRef, highlighted }: Pro
           externalPages: extPages,
         });
       }
-      setNodes(nextNodes);
+
+      edgesRef.current = nextEdges;
+      nodesRef.current = nextNodes;
+      setTick((t) => t + 1);
     }
 
-    recalc();
+    // Задержка для RGL — блоки появляются через ~100ms после mount
+    const initialTimer = setTimeout(recalc, 200);
     const ro = new ResizeObserver(recalc);
     if (containerRef.current) ro.observe(containerRef.current);
     window.addEventListener('resize', recalc);
     window.addEventListener('scroll', recalc, true);
-    const interval = setInterval(recalc, 400);
+    const interval = setInterval(recalc, 500);
     return () => {
+      clearTimeout(initialTimer);
       ro.disconnect();
       window.removeEventListener('resize', recalc);
       window.removeEventListener('scroll', recalc, true);
@@ -140,7 +143,12 @@ export function BlockRelationsOverlay({ blocks, containerRef, highlighted }: Pro
     };
   }, [rawEdges, participatingIds, externalMap, blocks, containerRef]);
 
-  if (edges.length === 0 && nodes.length === 0) return null;
+  // Используем refs для данных, tick для trigger re-render
+  void tick;
+  const edges = edgesRef.current;
+  const nodes = nodesRef.current;
+
+  if (rawEdges.length === 0) return null;
 
   // FIX: CSS-переменные НЕ работают в SVG-атрибутах — только inline hex.
   const STROKE_COLOR = highlighted ? '#4f46e5' : '#6366f1';

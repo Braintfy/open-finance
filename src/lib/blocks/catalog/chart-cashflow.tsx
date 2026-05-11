@@ -5,6 +5,7 @@
 import { useMemo } from 'react';
 import { z } from 'zod';
 import { BarChart3 } from 'lucide-react';
+import { useFormatSettings, formatRublesWithSettings } from '@/lib/format-settings';
 import {
   AreaChart,
   Area,
@@ -73,9 +74,9 @@ function groupTransactions(txs: CashflowTx[], groupBy: Cfg['groupBy']): DataPoin
     const shortLabel = formatLabel(label, groupBy);
     return {
       label: shortLabel,
-      income: Math.round(income),
-      expense: Math.round(expense),
-      balance: Math.round(runningBalance),
+      income: Math.round(income / 100),
+      expense: Math.round(expense / 100),
+      balance: Math.round(runningBalance / 100),
     };
   });
 }
@@ -98,7 +99,7 @@ function formatLabel(raw: string, groupBy: Cfg['groupBy']): string {
 function formatYAxis(v: number): string {
   const abs = Math.abs(v);
   if (abs >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}М`;
-  if (abs >= 1_000) return `${(v / 1_000).toFixed(0)}к`;
+  if (abs >= 1_000) return `${(v / 1_000).toFixed(1)}к`;
   return String(v);
 }
 
@@ -108,6 +109,7 @@ const BALANCE_COLOR = '#3b82f6';
 
 function ChartRender({ instance }: BlockRenderProps) {
   const density = useBlockDensity();
+  const { settings: fmtSettings } = useFormatSettings();
   const { transactions, loading } = useCashflowData();
   const cfg: Cfg = { ...ChartConfig.parse({}), ...(instance.config as Partial<Cfg>) };
 
@@ -177,7 +179,8 @@ function ChartRender({ instance }: BlockRenderProps) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     formatter: (value: any) => {
       const num = typeof value === 'number' ? value : Number(value ?? 0);
-      return [`${num.toLocaleString('ru-RU')} ₽`];
+      // num уже в рублях; formatRublesWithSettings ожидает копейки → ×100
+      return [formatRublesWithSettings(num * 100, fmtSettings.showKopecks)];
     },
   };
 
