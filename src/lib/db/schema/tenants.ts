@@ -29,6 +29,37 @@ export type TenantSettings = {
   aiModel?: string;
   aiTokenLimit?: number; // дневной лимит
   aiSystemPrompt?: string; // кастомный system prompt для всех AI вызовов tenant'а
+  /**
+   * Конфигурация внешнего OpenAI-совместимого провайдера.
+   * ВНИМАНИЕ: apiKey хранится в JSONB plain-text. Доступ только super_admin.
+   * В production переносить в Vault/Doppler.
+   */
+  aiExternal?: {
+    enabled: boolean;
+    provider: 'openai' | 'anthropic' | 'openrouter' | 'vsegpt' | 'custom';
+    /** Например: https://api.openai.com/v1 — должен заканчиваться на /v1 */
+    baseUrl: string;
+    /** sk-... — для OpenAI / OpenRouter / VSEGPT / Anthropic / etc */
+    apiKey: string;
+    /** Дефолтная модель: gpt-4o-mini, claude-3-5-sonnet, etc */
+    defaultModel: string;
+    /** Через прокси (см. aiProxy) маршрутизировать вызовы? */
+    useProxy?: boolean;
+  };
+  /**
+   * Конфигурация HTTP/SOCKS5 прокси для обхода блокировок.
+   * Используется для запросов к внешним AI API из РФ.
+   */
+  aiProxy?: {
+    enabled: boolean;
+    /** http://user:pass@host:port или socks5://user:pass@host:port */
+    url: string;
+    type: 'http' | 'https' | 'socks5';
+    /** Логин (опционально, может быть в url) */
+    username?: string;
+    /** Пароль (опционально) */
+    password?: string;
+  };
   notifications?: {
     telegram?: boolean;
     email?: boolean;

@@ -11,10 +11,46 @@ export type OllamaModel = {
   modified_at: string;
   details?: {
     family?: string;
+    families?: string[];
     parameter_size?: string;
     quantization_level?: string;
+    format?: string;
   };
 };
+
+/**
+ * Эвристика: модель способна вести chat (поддерживает /api/chat)?
+ * Исключает embedding/clip/reranker модели.
+ *
+ * Embedding модели в Ollama не поддерживают /api/chat и возвращают 400.
+ * Типичные признаки:
+ *  - family: bert | nomic-bert | mxbai | clip
+ *  - имя содержит: embed | embedding | bge- | gte- | e5- | all-minilm | rerank
+ */
+const EMBEDDING_NAME_PATTERNS = [
+  /embed/i,
+  /embedding/i,
+  /^bge[-:]/i,
+  /^gte[-:]/i,
+  /^e5[-:]/i,
+  /all-minilm/i,
+  /rerank/i,
+  /^clip/i,
+  /sentence-transformer/i,
+];
+
+const EMBEDDING_FAMILIES = new Set(['bert', 'nomic-bert', 'mxbai', 'clip', 'jina-bert']);
+
+export function isChatCapableModel(m: { name: string; details?: OllamaModel['details'] }): boolean {
+  const family = m.details?.family?.toLowerCase();
+  const families = (m.details?.families ?? []).map((f) => f.toLowerCase());
+
+  if (family && EMBEDDING_FAMILIES.has(family)) return false;
+  if (families.some((f) => EMBEDDING_FAMILIES.has(f))) return false;
+  if (EMBEDDING_NAME_PATTERNS.some((re) => re.test(m.name))) return false;
+
+  return true;
+}
 
 export async function isOllamaAvailable(): Promise<boolean> {
   try {

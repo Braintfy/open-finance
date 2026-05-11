@@ -44,10 +44,40 @@ type CatalogModel = {
   family: string;
   size: string;
   ramRequired: string;
+  category:
+    | 'chat-tiny'
+    | 'chat-light'
+    | 'chat-medium'
+    | 'chat-heavy'
+    | 'code'
+    | 'vision'
+    | 'embedding';
   description: string;
   goodFor: string[];
   recommended?: boolean;
+  vision?: boolean;
+  toolCalling?: boolean;
 };
+
+const CATEGORY_LABELS: Record<CatalogModel['category'], string> = {
+  'chat-tiny': 'Ультра-лёгкие (для слабых машин)',
+  'chat-light': 'Лёгкие (быстрые)',
+  'chat-medium': 'Средние (баланс)',
+  'chat-heavy': 'Тяжёлые (макс. качество)',
+  code: 'Для кода',
+  vision: 'С распознаванием изображений',
+  embedding: 'Embeddings (RAG)',
+};
+
+const CATEGORY_ORDER: CatalogModel['category'][] = [
+  'chat-tiny',
+  'chat-light',
+  'chat-medium',
+  'chat-heavy',
+  'vision',
+  'code',
+  'embedding',
+];
 
 type ApiResponse = {
   ok: boolean;
@@ -87,6 +117,9 @@ export default function LocalModelsPage() {
   const [showInfo, setShowInfo] = useState<{ name: string; info: Record<string, unknown> } | null>(
     null
   );
+  const [hfInput, setHfInput] = useState('');
+  const [hfPreview, setHfPreview] = useState<{ ollamaTag: string; user: string; repo: string; quantization?: string } | null>(null);
+  const [hfError, setHfError] = useState<string | null>(null);
 
   async function refresh() {
     setLoading(true);
@@ -184,6 +217,29 @@ export default function LocalModelsPage() {
     const res = await fetch(`/api/admin/ai/local-models/${encodeURIComponent(name)}/show`);
     const info = await res.json();
     setShowInfo({ name, info });
+  }
+
+  async function parseHf() {
+    setHfError(null);
+    setHfPreview(null);
+    if (!hfInput.trim()) return;
+    try {
+      const res = await fetch('/api/admin/ai/local-models/hf-parse', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input: hfInput.trim() }),
+      });
+      const data = (await res.json()) as
+        | { ok: true; ollamaTag: string; user: string; repo: string; quantization?: string }
+        | { ok: false; error: string };
+      if (!data.ok) {
+        setHfError(data.error);
+        return;
+      }
+      setHfPreview({ ollamaTag: data.ollamaTag, user: data.user, repo: data.repo, quantization: data.quantization });
+    } catch (e) {
+      setHfError(e instanceof Error ? e.message : 'Ошибка проверки');
+    }
   }
 
   const installedSet = new Set((data?.installed ?? []).map((m) => m.name));
@@ -314,82 +370,190 @@ ollama pull qwen2.5:7b`}
       </section>
 
       {/* Каталог */}
+      {/* Загрузка с HuggingFace */}
       <section>
-        <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          Рекомендованные модели
+        <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          <Download className="h-3 w-3" />
+          Загрузить с HuggingFace
         </div>
-        <div className="grid gap-2 md:grid-cols-2">
-          {data?.catalog.map((c) => {
-            const isInstalled = installedSet.has(c.id);
-            const progress = pulling[c.id];
-            return (
-              <Card key={c.id} className={c.recommended ? 'border-primary/40' : ''}>
-                <CardHeader className="pb-2">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <CardTitle className="flex items-center gap-2 text-sm">
-                        <span className="truncate">{c.displayName}</span>
-                        {c.recommended && (
-                          <span className="inline-flex h-4 items-center rounded-full bg-primary/10 px-1.5 text-[10px] font-medium text-primary">
-                            рекомендуется
-                          </span>
-                        )}
-                      </CardTitle>
-                      <p className="mt-0.5 text-[11px] text-muted-foreground">
-                        {c.family} · {c.size} · RAM ~{c.ramRequired}
-                      </p>
+        <Card>
+          <CardContent className="space-y-2 pt-4">
+            <p className="text-[11px] text-muted-foreground">
+              Вставьте ссылку с{' '}
+              <a
+                href="https://huggingface.co/models?library=gguf&sort=trending"
+                target="_blank"
+                rel="noreferrer"
+                className="text-primary hover:underline"
+              >
+                huggingface.co
+              </a>{' '}
+              (только GGUF-репозитории). Пример:{' '}
+              <code className="rounded bg-muted px-1 text-[10px]">
+                bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M
+              </code>
+            </p>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={hfInput}
+                onChange={(e) => {
+                  setHfInput(e.target.value);
+                  setHfPreview(null);
+                  setHfError(null);
+                }}
+                onKeyDown={async (e) => {
+                  if (e.key === 'Enter') await parseHf();
+                }}
+                placeholder="huggingface.co/user/repo:Q4_K_M или user/repo"
+                className="flex-1 rounded-md border bg-background px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
+                disabled={!data?.ollamaAvailable}
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={parseHf}
+                disabled={!hfInput.trim() || !data?.ollamaAvailable}
+              >
+                Проверить
+              </Button>
+            </div>
+            {hfError && (
+              <Alert variant="warning">
+                <AlertCircle />
+                <AlertDescription className="text-xs">{hfError}</AlertDescription>
+              </Alert>
+            )}
+            {hfPreview && (
+              <div className="space-y-2 rounded-md border bg-muted/30 p-3">
+                <div className="text-xs">
+                  <div className="text-muted-foreground">Будет загружено как Ollama tag:</div>
+                  <code className="font-mono text-sm">{hfPreview.ollamaTag}</code>
+                </div>
+                <div className="flex gap-3 text-[11px] text-muted-foreground">
+                  <span>Автор: {hfPreview.user}</span>
+                  <span>Репо: {hfPreview.repo}</span>
+                  {hfPreview.quantization && <span>Квантизация: {hfPreview.quantization}</span>}
+                </div>
+                {pulling[hfPreview.ollamaTag] ? (
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[11px]">
+                      <span>{pulling[hfPreview.ollamaTag].status}</span>
+                      {pulling[hfPreview.ollamaTag].percent !== undefined && (
+                        <span>{pulling[hfPreview.ollamaTag].percent}%</span>
+                      )}
+                    </div>
+                    <div className="h-1 overflow-hidden rounded-full bg-muted">
+                      <div
+                        className="h-full bg-primary transition-all"
+                        style={{ width: `${pulling[hfPreview.ollamaTag].percent ?? 0}%` }}
+                      />
                     </div>
                   </div>
-                </CardHeader>
-                <CardContent className="space-y-2 pt-0">
-                  <p className="text-xs">{c.description}</p>
-                  <div className="flex flex-wrap gap-1">
-                    {c.goodFor.map((g) => (
-                      <span
-                        key={g}
-                        className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
-                      >
-                        {g}
-                      </span>
-                    ))}
-                  </div>
-                  {progress ? (
-                    <div className="space-y-1">
-                      <div className="flex justify-between text-[11px]">
-                        <span>{progress.status}</span>
-                        {progress.percent !== undefined && <span>{progress.percent}%</span>}
-                      </div>
-                      <div className="h-1 overflow-hidden rounded-full bg-muted">
-                        <div
-                          className="h-full bg-primary transition-all"
-                          style={{ width: `${progress.percent ?? 0}%` }}
-                        />
-                      </div>
-                    </div>
-                  ) : isInstalled ? (
-                    <Button variant="outline" size="sm" disabled className="w-full">
-                      <Check /> Установлено
-                    </Button>
-                  ) : (
-                    <Button
-                      size="sm"
-                      onClick={() => pull(c.id)}
-                      className="w-full"
-                      disabled={!data?.ollamaAvailable}
-                    >
-                      <Download /> Загрузить
-                    </Button>
-                  )}
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
+                ) : (
+                  <Button size="sm" onClick={() => pull(hfPreview.ollamaTag)}>
+                    <Download /> Скачать модель
+                  </Button>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
       </section>
+
+      {/* Каталог рекомендованных — сгруппированный */}
+      {CATEGORY_ORDER.map((cat) => {
+        const models = data?.catalog.filter((c) => c.category === cat) ?? [];
+        if (models.length === 0) return null;
+        return (
+          <section key={cat}>
+            <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              {CATEGORY_LABELS[cat]} ({models.length})
+            </div>
+            <div className="grid gap-2 md:grid-cols-2">
+              {models.map((c) => {
+                const isInstalled = installedSet.has(c.id);
+                const progress = pulling[c.id];
+                return (
+                  <Card key={c.id} className={c.recommended ? 'border-primary/40' : ''}>
+                    <CardHeader className="pb-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <CardTitle className="flex flex-wrap items-center gap-1.5 text-sm">
+                            <span className="truncate">{c.displayName}</span>
+                            {c.recommended && (
+                              <span className="inline-flex h-4 items-center rounded-full bg-primary/10 px-1.5 text-[10px] font-medium text-primary">
+                                ★ рекомендуется
+                              </span>
+                            )}
+                            {c.vision && (
+                              <span className="inline-flex h-4 items-center rounded-full bg-amber-100 px-1.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950 dark:text-amber-400">
+                                vision
+                              </span>
+                            )}
+                            {c.toolCalling && (
+                              <span className="inline-flex h-4 items-center rounded-full bg-emerald-100 px-1.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400">
+                                tools
+                              </span>
+                            )}
+                          </CardTitle>
+                          <p className="mt-0.5 text-[11px] text-muted-foreground">
+                            {c.family} · {c.size} · RAM ~{c.ramRequired}
+                          </p>
+                        </div>
+                      </div>
+                    </CardHeader>
+                    <CardContent className="space-y-2 pt-0">
+                      <p className="text-xs">{c.description}</p>
+                      <div className="flex flex-wrap gap-1">
+                        {c.goodFor.map((g) => (
+                          <span
+                            key={g}
+                            className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                          >
+                            {g}
+                          </span>
+                        ))}
+                      </div>
+                      {progress ? (
+                        <div className="space-y-1">
+                          <div className="flex justify-between text-[11px]">
+                            <span>{progress.status}</span>
+                            {progress.percent !== undefined && <span>{progress.percent}%</span>}
+                          </div>
+                          <div className="h-1 overflow-hidden rounded-full bg-muted">
+                            <div
+                              className="h-full bg-primary transition-all"
+                              style={{ width: `${progress.percent ?? 0}%` }}
+                            />
+                          </div>
+                        </div>
+                      ) : isInstalled ? (
+                        <Button variant="outline" size="sm" disabled className="w-full">
+                          <Check /> Установлено
+                        </Button>
+                      ) : (
+                        <Button
+                          size="sm"
+                          onClick={() => pull(c.id)}
+                          className="w-full"
+                          disabled={!data?.ollamaAvailable}
+                        >
+                          <Download /> Загрузить
+                        </Button>
+                      )}
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </div>
+          </section>
+        );
+      })}
 
       <Alert>
         <AlertDescription className="text-xs">
-          Модель не из списка:{' '}
+          Любая модель из ollama.com:{' '}
           <code className="rounded bg-muted px-1 text-[11px]">ollama pull имя_модели</code> в
           терминале, затем «Обновить».
         </AlertDescription>

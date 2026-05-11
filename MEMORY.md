@@ -54,12 +54,22 @@
 - `/Users/firay/open-finance/` — локальная версия (personal use, старый код)
 - `/Users/firay/NALOG/` — алгоритмы налогов для миграции в `modules/taxes/`
 
-## Текущий статус (v0.9.10)
-- Фаза: **AI Micro-Agent + Block-Grid Architecture**
-- Готово: auth, cashflow CRUD, Block-Grid (drag/resize/persist), Block Relationships (reactive store, computed blocks, dependencies, cycle detection), Cmd+K Command Palette, Chart block (Recharts), mindmap overlay, cross-page pins, custom data block, sheet block (Excel-формулы), **AI Micro-Agent** (модалка + блок + block-capabilities + streaming + token counter + stop button + model fallback)
-- Block catalog: `stat.income`, `stat.expense`, `stat.balance`, `stat.custom`, `top-categories`, `transactions`, `sheet`, `navigate.card`, `computed.sum`, `custom.data`, `chart.cashflow`, **`ai.micro-agent`**
-- AI: `/api/ai/chat` endpoint (Ollama NDJSON streaming), system prompt builder, block capabilities descriptor, vision/voice, auto model fallback
-- Следующий шаг: OpenAI/Claude provider, Model selector UI, Whisper transcription, Cmd+K AI action, create_block on apply
+## Текущий статус (v0.9.11)
+- Фаза: **AI Micro-Agent + External Providers + VPN/Diagnostics**
+- Готово: auth, cashflow CRUD, Block-Grid (drag/resize/persist), Block Relationships, Cmd+K Command Palette, Chart block, mindmap overlay, cross-page pins, custom data block, sheet block (Excel-формулы), **AI Micro-Agent** (модалка + блок + block-capabilities + streaming + token counter + stop + chat-capable filter), **AI Providers Hub** (OpenAI/Claude/OpenRouter/VseGPT external + HTTP-proxy через undici + diagnostics)
+- Block catalog: `stat.income`, `stat.expense`, `stat.balance`, `stat.custom`, `top-categories`, `transactions`, `sheet`, `navigate.card`, `computed.sum`, `custom.data`, `chart.cashflow`, `ai.micro-agent`
+- AI runtime:
+  - `/api/ai/chat` — NDJSON streaming, auto-routes Ollama vs External (по `tenant.settings.aiExternal.enabled`)
+  - **Local (Ollama):** chat-capable filter, fallback на установленную chat-модель, не embedding
+  - **External:** `streamOpenAICompat` (OpenAI-compat /v1/chat/completions с SSE), proxy через undici ProxyAgent
+  - **HF pull:** `parseHuggingFaceUrl` → `hf.co/user/repo:Q4_K_M`
+- Admin pages:
+  - `/admin/ai/local-models` — каталог по 7 категориям + HuggingFace input + установленные/в памяти + детали
+  - `/admin/ai/providers` — диагностика + внешний API (5 пресетов) + прокси (HTTP/HTTPS) + test connection
+  - `/admin/ai/system-prompt` — общий system prompt для tenant'а
+- Tenant settings JSONB: `aiProvider`, `aiModel`, `aiSystemPrompt`, `aiExternal{provider,baseUrl,apiKey,defaultModel,useProxy}`, `aiProxy{url,type,username,password}`
+- Каталог моделей: 19 моделей в категориях (chat-tiny / chat-light / chat-medium / chat-heavy / vision / code / embedding)
+- Следующий шаг: AES-256-GCM шифрование секретов, Whisper transcription, Cmd+K AI action, create_block on apply, RAG memory
 
 ## Команды
 ```bash

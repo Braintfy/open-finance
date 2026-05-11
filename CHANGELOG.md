@@ -1,5 +1,58 @@
 # Changelog
 
+## [0.9.11] - 2026-05-11
+
+### Fixed (CRITICAL)
+- **`Ollama error 400: nomic-embed-text does not support chat`** — Root cause: `resolveModel()` брал первую установленную модель как fallback, не проверяя что она chat-capable. Если установлен только `nomic-embed-text` — он попадал в fallback и /api/chat возвращал 400.
+- **Решение:** `isChatCapableModel()` (`src/lib/ai/providers/ollama.ts`) — фильтр по family (bert/nomic-bert/mxbai/clip) и regexp по имени (embed/embedding/bge-/gte-/e5-/all-minilm/rerank/clip/sentence-transformer). Применяется и к точному совпадению, и к base-name match, и к fallback.
+- Понятная ошибка когда установлены только embedding-модели: «Установлены только embedding-модели (X). Установите chat-модель: ollama pull qwen2.5:1.5b»
+
+### Added
+- **Расширенный каталог моделей (RECOMMENDED_MODELS)** — было 6 моделей, стало 19 в 7 категориях:
+  - **Ультра-лёгкие** (1-2 GB RAM): `qwen2.5:0.5b`, `qwen2.5:1.5b`, `llama3.2:1b`
+  - **Лёгкие** (3-4 GB): `qwen2.5:3b` ★, `llama3.2:3b`, `phi3.5:3.8b`, `gemma2:2b`
+  - **Средние** (6-8 GB): `qwen2.5:7b` ★, `llama3.1:8b`, `mistral:7b`, `gemma2:9b`
+  - **Тяжёлые** (16+ GB): `qwen2.5:14b`, `qwen2.5:32b`
+  - **Vision**: `llama3.2-vision:11b`, `qwen2.5vl:7b` ★
+  - **Code**: `qwen2.5-coder:1.5b`, `qwen2.5-coder:7b`
+  - **Embedding**: `nomic-embed-text` ★, `mxbai-embed-large`
+- **Бейджи в UI:** ★ рекомендуется / vision / tools (function calling)
+- **Загрузка моделей с HuggingFace** — `parseHuggingFaceUrl()` (`src/lib/ai/providers/ollama-catalog.ts`):
+  - Поддержка форматов: `https://huggingface.co/user/repo`, `huggingface.co/user/repo:Q4_K_M`, `hf.co/user/repo`, `user/repo:Q4_K_M`
+  - Конвертирует в Ollama tag: `hf.co/user/repo:Q4_K_M`
+  - API endpoint `/api/admin/ai/local-models/hf-parse` для preview
+  - UI поле в `/admin/ai/local-models`: вставка ссылки → preview → кнопка Скачать (использует существующий streaming pull)
+- **Внешние AI провайдеры** (OpenAI / Claude / OpenRouter / VseGPT / Custom):
+  - Tenant settings extension: `aiExternal: { enabled, provider, baseUrl, apiKey, defaultModel, useProxy }`
+  - `streamOpenAICompat()` (`src/lib/ai/providers/openai-compat.ts`) — streaming через OpenAI-совместимый endpoint, поддержка vision (multimodal messages), proxy через undici dispatcher
+  - `testExternalConnection()` — проверка `/v1/models`, возвращает count + sample
+  - `/api/ai/chat` теперь автоматически роутит на external API когда `aiExternal.enabled`, иначе на Ollama
+- **VPN / Прокси** для обхода блокировок зарубежных AI:
+  - Tenant settings extension: `aiProxy: { enabled, url, type: http|https|socks5, username, password }`
+  - `createProxyDispatcher()` (`src/lib/ai/providers/proxy.ts`) — undici ProxyAgent через dynamic import (опциональная зависимость)
+  - SOCKS5 пока заглушен (нужен `Socks5ProxyAgent` или socks-proxy-agent), HTTP/HTTPS работает
+  - `getExternalIp()` через ipinfo.io для проверки что прокси работает
+- **Диагностика подключений** (`/api/admin/ai/diagnostics`):
+  - Ollama: статус + список chat/embedding моделей
+  - External API: ping + список доступных моделей
+  - Proxy: внешний IP + страна/город + via direct/proxy
+- **Страница `/admin/ai/providers`** — единый UI:
+  - Блок диагностики (CheckCircle/XCircle с деталями)
+  - Настройка внешнего провайдера: выбор preset (OpenAI/Claude/OpenRouter/VseGPT/Custom) + Base URL + API key (показ/скрыть) + Default model + ссылки на signup
+  - Настройка прокси: тип (HTTP/HTTPS/SOCKS5 disabled) + URL + auth
+  - Test connection кнопки для каждой секции (без сохранения)
+  - Маскировка секретов: API key/password в БД хранятся как есть, на клиент идут как `abcd••••wxyz`. При PUT — если приходит маска, оставляем старое значение.
+
+### Changed
+- `RECOMMENDED_MODELS`: добавлено поле `category` (chat-tiny/chat-light/chat-medium/chat-heavy/code/vision/embedding) + `vision` + `toolCalling`
+- `/admin/ai/local-models`: каталог сгруппирован по категориям (CATEGORY_ORDER), новая секция HuggingFace
+- `OllamaModel` type: добавлены `details.families[]` и `details.format`
+- `TenantSettings`: расширен полями `aiExternal` и `aiProxy`
+- `/admin` навигация: добавлен линк «Внешние API + VPN + диагностика», убран dead-link `/admin/vpn`
+
+### Security Notes
+- API ключи и пароли прокси хранятся в `tenants.settings` JSONB **в открытом виде** (для MVP). Доступ только для admin/super_admin через RLS. В UI секреты маскируются. **TODO в production:** AES-256-GCM шифрование с master key из env, или Vault/Doppler.
+
 ## [0.9.10] - 2026-05-11
 
 ### Added

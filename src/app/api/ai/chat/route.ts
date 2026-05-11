@@ -10,7 +10,8 @@ import { db } from '@/lib/db/client';
 import { tenants } from '@/lib/db/schema/tenants';
 import { eq } from 'drizzle-orm';
 import { env } from '@/lib/env';
-import { listInstalledModels } from '@/lib/ai/providers/ollama';
+import { listInstalledModels, isChatCapableModel } from '@/lib/ai/providers/ollama';
+import { streamOpenAICompat } from '@/lib/ai/providers/openai-compat';
 import type { SuggestedAction } from '@/lib/ai/micro-agent/types';
 
 export const runtime = 'nodejs';
@@ -50,15 +51,25 @@ async function resolveModel(requested: string): Promise<{ model: string; fallbac
     const installed = await listInstalledModels();
     if (installed.length === 0) {
       throw new Error(
-        `Нет установленных моделей Ollama. Установите: ollama pull qwen2.5:0.5b`,
+        `Нет установленных моделей Ollama. Установите: ollama pull qwen2.5:1.5b`,
       );
     }
-    // Точное совпадение (с :tag) или по имени без :tag
-    const found = installed.find(
-      (m) => m.name === requested || m.name.split(':')[0] === requested.split(':')[0],
-    );
-    if (found) return { model: found.name, fallback: false };
-    return { model: installed[0].name, fallback: true };
+    // Точное совпадение (с :tag) или по имени без :tag, и только chat-capable
+    const exact = installed.find((m) => m.name === requested);
+    if (exact && isChatCapableModel(exact)) return { model: exact.name, fallback: false };
+
+    const byBase = installed.find((m) => m.name.split(':')[0] === requested.split(':')[0]);
+    if (byBase && isChatCapableModel(byBase)) return { model: byBase.name, fallback: false };
+
+    // Fallback: первая chat-capable установленная модель (НЕ embedding!)
+    const chatModels = installed.filter(isChatCapableModel);
+    if (chatModels.length === 0) {
+      const installedNames = installed.map((m) => m.name).join(', ');
+      throw new Error(
+        `Установлены только embedding-модели (${installedNames}). Установите chat-модель: ollama pull qwen2.5:1.5b`,
+      );
+    }
+    return { model: chatModels[0].name, fallback: true };
   } catch (e) {
     if (e instanceof Error && (e.message.includes('ECONNREFUSED') || e.message.includes('fetch failed'))) {
       throw new Error(`Не удалось подключиться к Ollama (${OLLAMA_BASE}). Запустите: ollama serve`);
@@ -120,9 +131,10 @@ export async function POST(req: Request) {
 
   const { messages, blockContext, quickAction, model, blockPrompt } = body.data;
 
-  // Получить tenant settings для system prompt
+  // Получить tenant settings для system prompt + AI config
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, session.tenantId)).limit(1);
-  const globalSystemPrompt = getSystemPrompt(tenant?.settings ?? null);
+  const tenantSettings = tenant?.settings ?? null;
+  const globalSystemPrompt = getSystemPrompt(tenantSettings);
 
   // Собрать полный system prompt
   const systemPrompt = buildMicroAgentSystemPrompt({
@@ -132,7 +144,82 @@ export async function POST(req: Request) {
     blockPrompt: blockPrompt ?? undefined,
   });
 
-  // Разрешить модель (fallback если запрошенная не установлена)
+  const externalConfig = tenantSettings?.aiExternal;
+  const proxyConfig = tenantSettings?.aiProxy;
+  const useExternal = externalConfig?.enabled && externalConfig.apiKey && externalConfig.baseUrl;
+
+  // Пробросить abort от клиента (кнопка "Остановить")
+  const upstreamController = new AbortController();
+  req.signal.addEventListener('abort', () => upstreamController.abort());
+
+  // ─────────────── External provider (OpenAI-compat) ───────────────
+  if (useExternal) {
+    const externalModel = model || externalConfig.defaultModel || 'gpt-4o-mini';
+    const stream = new ReadableStream({
+      async start(controller) {
+        try {
+          sse(controller, {
+            type: 'start',
+            model: externalModel,
+            fallback: false,
+            provider: externalConfig.provider,
+          });
+          const startedAt = Date.now();
+          let fullContent = '';
+          let tokenCount = 0;
+          for await (const chunk of streamOpenAICompat({
+            config: externalConfig,
+            proxy: proxyConfig,
+            messages: [{ role: 'system', content: systemPrompt }, ...messages],
+            model: externalModel,
+            signal: upstreamController.signal,
+          })) {
+            if (chunk.delta) {
+              fullContent += chunk.delta;
+              tokenCount += 1;
+              sse(controller, { type: 'token', delta: chunk.delta, total: tokenCount });
+            }
+            if (chunk.done) {
+              const durationSec = (Date.now() - startedAt) / 1000;
+              const totalTokens = chunk.usage?.totalTokens ?? tokenCount;
+              sse(controller, {
+                type: 'done',
+                content: fullContent,
+                suggestedAction: parseAction(fullContent),
+                model: externalModel,
+                provider: externalConfig.provider,
+                totalTokens,
+                durationSec,
+                tokensPerSec: durationSec > 0 ? totalTokens / durationSec : 0,
+              });
+            }
+          }
+          controller.close();
+        } catch (e) {
+          if (e instanceof Error && e.name === 'AbortError') {
+            sse(controller, { type: 'aborted' });
+            controller.close();
+            return;
+          }
+          sse(controller, {
+            type: 'error',
+            error: e instanceof Error ? e.message : 'External provider error',
+          });
+          controller.close();
+        }
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        'Content-Type': 'application/x-ndjson',
+        'Cache-Control': 'no-cache, no-transform',
+        'X-Accel-Buffering': 'no',
+      },
+    });
+  }
+
+  // ─────────────── Ollama (локальная модель) ───────────────
   let resolvedModel: string;
   let usedFallback = false;
   try {
@@ -153,15 +240,10 @@ export async function POST(req: Request) {
     })),
   ];
 
-  // Пробросить abort от клиента (кнопка "Остановить")
-  const upstreamController = new AbortController();
-  req.signal.addEventListener('abort', () => upstreamController.abort());
-
   const stream = new ReadableStream({
     async start(controller) {
       try {
-        // Начала выдачи — сообщить клиенту какую модель используем
-        sse(controller, { type: 'start', model: resolvedModel, fallback: usedFallback });
+        sse(controller, { type: 'start', model: resolvedModel, fallback: usedFallback, provider: 'ollama' });
 
         const ollamaRes = await fetch(`${OLLAMA_BASE}/api/chat`, {
           method: 'POST',
@@ -219,7 +301,6 @@ export async function POST(req: Request) {
                 sse(controller, { type: 'token', delta: piece, total: totalTokens });
               }
               if (chunk.done) {
-                // Ollama в финальном chunk возвращает eval_count = точный счётчик токенов
                 const evalCount = chunk.eval_count ?? totalTokens;
                 const evalDurationSec = chunk.eval_duration ? chunk.eval_duration / 1e9 : 0;
                 const suggestedAction = parseAction(fullContent);
@@ -228,6 +309,7 @@ export async function POST(req: Request) {
                   content: fullContent,
                   suggestedAction,
                   model: resolvedModel,
+                  provider: 'ollama',
                   totalTokens: evalCount,
                   durationSec: evalDurationSec,
                   tokensPerSec: evalDurationSec > 0 ? evalCount / evalDurationSec : 0,
