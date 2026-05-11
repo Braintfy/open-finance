@@ -23,6 +23,8 @@ import { BlockSettingsDialog } from './block-settings-dialog';
 import { BlockSizeProvider } from './block-size';
 import { BlockValuesProvider } from '@/lib/blocks/values';
 import { BlockRelationsOverlay } from './block-relations-overlay';
+import { MicroAgentDialog } from '@/components/micro-agent/micro-agent-dialog';
+import type { BlockContext, SuggestedAction } from '@/lib/ai/micro-agent/types';
 
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
@@ -66,6 +68,7 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
   const [showAdd, setShowAdd] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [settingsId, setSettingsId] = useState<string | null>(null);
+  const [aiBlockId, setAiBlockId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   /** Mindmap-overlay: связи между блоками. Выкл/Вкл через кнопку. */
   const [showRelations, setShowRelations] = useState(false);
@@ -355,6 +358,7 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
                 hasRelations={participatingIds.has(b.id)}
                 onRemove={() => onRemoveBlock(b.id)}
                 onOpenSettings={() => setSettingsId(b.id)}
+                onOpenAi={() => setAiBlockId(b.id)}
               >
                 <BlockSizeProvider minContent={def.minContentSize}>
                   <Render
@@ -463,6 +467,26 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
           onChange={(patch) => updateBlock(settingsBlock.id, patch)}
         />
       )}
+
+      {/* AI Micro-Agent Dialog */}
+      <MicroAgentDialog
+        open={aiBlockId !== null}
+        onOpenChange={(o) => { if (!o) setAiBlockId(null); }}
+        blockContext={aiBlockId ? {
+          blockId: aiBlockId,
+          blockType: blocks.find((b) => b.id === aiBlockId)?.type,
+          blockTitle: blocks.find((b) => b.id === aiBlockId)?.appearance?.title ?? getBlockDef(blocks.find((b) => b.id === aiBlockId)?.type ?? '')?.displayName,
+          blockData: blocks.find((b) => b.id === aiBlockId)?.config as Record<string, unknown> | undefined,
+          pageKey,
+        } satisfies BlockContext : undefined}
+        onApply={(action: SuggestedAction) => {
+          if (!aiBlockId) return;
+          if (action.type === 'update_block') {
+            onConfigChange(aiBlockId, action.payload);
+          }
+          // create_block could be handled here in the future
+        }}
+      />
 
       <AlertDialog open={showResetConfirm} onOpenChange={setShowResetConfirm}>
         <AlertDialogContent>

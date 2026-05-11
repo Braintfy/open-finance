@@ -2,7 +2,7 @@
 // Notion-style: контролы появляются при hover (с задержкой ~250мс), в edit mode — видны всегда.
 'use client';
 
-import { GripVertical, X, Settings2, Network } from 'lucide-react';
+import { GripVertical, X, Settings2, Network, Sparkles } from 'lucide-react';
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
 import type { BlockAppearance, BlockInstance } from '@/lib/blocks/types';
@@ -20,6 +20,7 @@ export function BlockChrome({
   hasRelations,
   onRemove,
   onOpenSettings,
+  onOpenAi,
 }: {
   children: ReactNode;
   editMode: boolean;
@@ -32,6 +33,8 @@ export function BlockChrome({
   hasRelations?: boolean;
   onRemove?: () => void;
   onOpenSettings?: () => void;
+  /** Открыть AI микроагент в контексте этого блока */
+  onOpenAi?: () => void;
 }) {
   const [hovered, setHovered] = useState(false);
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -106,6 +109,17 @@ export function BlockChrome({
           (showControls ? 'opacity-100' : 'pointer-events-none opacity-0')
         }
       >
+        {onOpenAi && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 rounded-full bg-background/95 shadow-sm ring-1 ring-border hover:bg-accent text-primary"
+            onClick={onOpenAi}
+            aria-label="AI Микроагент"
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+          </Button>
+        )}
         {onOpenSettings && (
           <Button
             variant="ghost"

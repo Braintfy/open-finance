@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.9.8] - 2026-05-11
+
+### Added
+- **AI Micro-Agent модуль** — универсальный AI-помощник для быстрого создания и заполнения блоков из разнородных данных
+  - **API endpoint** `/api/ai/chat` — POST, принимает messages + blockContext + images (vision), вызывает Ollama `/api/chat`
+  - **MicroAgentDialog** (`src/components/micro-agent/micro-agent-dialog.tsx`) — модалка с полем ввода, quick action табы (Суммировать, По ячейкам, Рассчитать, Извлечь, Категоризировать), загрузка изображений, голосовой ввод (Web Speech API), превью результата с Apply/Retry
+  - **Блок `ai.micro-agent`** (`src/lib/blocks/catalog/ai-micro-agent.tsx`) — standalone блок-тип в каталоге, добавляется на любую страницу; внутри — input + quick actions + результат AI
+  - **Кнопка ✨ в block-chrome** — вызывает MicroAgentDialog в контексте любого блока (тип, данные, страница)
+  - **Prompt builder** (`src/lib/ai/micro-agent/prompt.ts`) — собирает system prompt: глобальный + микроагент-инструкция + block context + quick action
+  - **Типы** (`src/lib/ai/micro-agent/types.ts`) — BlockContext, QuickAction, MicroAgentRequest/Response, SuggestedAction (update_block/create_block/text_only)
+  - **Web Speech API** — встроенный микрофон для голосового ввода (🎙️), транскрипция в реальном времени
+  - **Vision support** — загрузка изображений (base64), передаётся в Ollama для vision-моделей (qwen3-vl, gemma3, llava)
+  - **Preview & Apply** — AI предлагает structured JSON → пользователь просматривает → Применить (мутация config блока) или Переделать
+
 ## [0.9.7] - 2026-05-11
 
 ### Added
