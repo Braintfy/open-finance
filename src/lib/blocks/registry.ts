@@ -12,6 +12,7 @@ import { StatCustomBlock } from './catalog/stat-custom';
 import { NavigateCardBlock } from './catalog/navigate-card';
 import { ComputedSumBlock } from './catalog/computed';
 import { CustomDataBlock } from './catalog/custom-data';
+import { ExcelCellBlock } from './catalog/excel-cell';
 import { CashflowChartBlock } from './catalog/chart-cashflow';
 import { AiMicroAgentBlock } from './catalog/ai-micro-agent';
 
@@ -26,6 +27,7 @@ const ALL_BLOCKS: BlockDef[] = [
   NavigateCardBlock,
   ComputedSumBlock,
   CustomDataBlock,
+  ExcelCellBlock,
   CashflowChartBlock,
   AiMicroAgentBlock,
 ];

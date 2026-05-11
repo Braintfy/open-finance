@@ -104,6 +104,7 @@ export function BlockSettingsDialog({
           {tab === 'links' && def.supportsDependencies && (
             <BlockReferencePicker
               value={instance.dependencies}
+              config={instance.config}
               selfBlockId={instance.id}
               allBlocks={allBlocks}
               blockLabels={blockLabels}

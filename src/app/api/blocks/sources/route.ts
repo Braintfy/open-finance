@@ -43,6 +43,7 @@ const TYPE_LABELS: Record<string, { label: string; category: string }> = {
   'stat.balance': { label: 'Баланс', category: 'KPI' },
   'stat.custom': { label: 'Кастомный KPI', category: 'KPI' },
   sheet: { label: 'Таблица', category: 'Таблицы' },
+  'excel.cell': { label: 'Excel-ячейка', category: 'Таблицы' },
   'custom.data': { label: 'Данные', category: 'Данные' },
   'computed.sum': { label: 'Вычисление', category: 'Вычисления' },
   'cashflow.top-categories': { label: 'Топ категорий', category: 'Кэшфлоу' },
@@ -112,7 +113,24 @@ async function aggregateCashflow(args: {
 
 function numericCells(cells: unknown): number[] {
   if (!Array.isArray(cells)) return [];
-  return cells.flatMap((row) => Array.isArray(row) ? row : []).map((v) => Number.parseFloat(String(v))).filter(Number.isFinite);
+  return cells.flatMap((row) => Array.isArray(row) ? row : []).map((v) => parseSheetNumber(String(v))).filter((v): v is number => v !== null);
+}
+
+function parseSheetNumber(value: string): number | null {
+  const normalized = value.trim().replace(/\s/g, '').replace(',', '.');
+  if (!normalized) return null;
+  const parsed = Number.parseFloat(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function colLabel(i: number): string {
+  let s = '';
+  let n = i;
+  while (n >= 0) {
+    s = String.fromCharCode(65 + (n % 26)) + s;
+    n = Math.floor(n / 26) - 1;
+  }
+  return s;
 }
 
 async function fieldsForBlock(block: BlockInstance, tenantId: string, monthlySummary: Awaited<ReturnType<typeof getCashflowSummary>>): Promise<SourceField[]> {
@@ -164,10 +182,29 @@ async function fieldsForBlock(block: BlockInstance, tenantId: string, monthlySum
   if (block.type === 'sheet') {
     const nums = numericCells(block.config?.cells);
     const sum = nums.reduce((acc, v) => acc + v, 0);
+    const cells = Array.isArray(block.config?.cells) ? block.config.cells : [];
+    const cellFields = cells.flatMap((row, r) =>
+      Array.isArray(row)
+        ? row.map((raw, c) => ({
+            name: `${colLabel(c)}${r + 1}`,
+            label: `${colLabel(c)}${r + 1}`,
+            value: parseSheetNumber(String(raw)),
+          })).filter((field) => field.value !== null)
+        : []
+    );
     return [
       { name: 'value', label: 'Сумма', value: sum },
       { name: 'sum', label: 'Сумма', value: sum },
       { name: 'count', label: 'Числовые ячейки', value: nums.length },
+      ...cellFields,
+    ];
+  }
+  if (block.type === 'excel.cell') {
+    const raw = typeof block.config?.value === 'string' ? block.config.value : '';
+    const value = parseSheetNumber(raw);
+    return [
+      { name: 'value', label: 'Значение', value },
+      { name: 'raw', label: 'Формула/текст', value: raw },
     ];
   }
   return [

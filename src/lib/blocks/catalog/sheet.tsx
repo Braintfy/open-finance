@@ -9,6 +9,7 @@ import type { BlockDef, BlockRenderProps, BlockSettingsFormProps } from '../type
 import { Card, CardContent } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
+import { Switch } from '@/components/ui/switch';
 import {
   Dialog,
   DialogContent,
@@ -18,6 +19,7 @@ import {
 } from '@/components/ui/dialog';
 import { useBlockValuePublisher, BlockValuesContext, useAvailableBlockSources } from '../values';
 import { useBlockDensity } from '@/components/blocks/block-size';
+import { useFormatSettings, formatRublesWithSettings } from '@/lib/format-settings';
 import FormulaParser, { MAX_ROW, MAX_COLUMN } from 'fast-formula-parser';
 
 // ============================================================================
@@ -73,6 +75,7 @@ const SheetConfig = z.object({
   showHeader: z.boolean().default(true),
   /** Показывать formula bar */
   showFormulaBar: z.boolean().default(true),
+  showKopecks: z.boolean().nullable().default(null),
   /** Ссылки на внешние блоки: имя переменной → значение (или null) */
   blockRefs: z.record(z.string(), z.union([z.string(), z.number(), z.null()])).optional(),
 });
@@ -147,6 +150,14 @@ function colLabel(i: number): string {
   return s;
 }
 
+function colIndex(label: string): number {
+  let n = 0;
+  for (let i = 0; i < label.length; i++) {
+    n = n * 26 + (label.charCodeAt(i) - 64);
+  }
+  return n - 1;
+}
+
 function cellAddress(row: number, col: number): string {
   return `${colLabel(col)}${row + 1}`;
 }
@@ -155,6 +166,60 @@ function makeHeaderId(): string {
   return typeof crypto !== 'undefined' && 'randomUUID' in crypto
     ? crypto.randomUUID().slice(0, 8)
     : `h_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function parseSheetNumber(value: string): number | null {
+  const normalized = value.trim().replace(/\s/g, '').replace(',', '.');
+  if (!normalized) return null;
+  const parsed = Number.parseFloat(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatPlainNumber(value: number): string {
+  return new Intl.NumberFormat('ru-RU', {
+    maximumFractionDigits: Number.isInteger(value) ? 0 : 2,
+  }).format(value);
+}
+
+function formatKopecksValue(value: number, showKopecks: boolean): string {
+  return formatRublesWithSettings(value, showKopecks).replace(/\s?₽$/, '');
+}
+
+function formatComputedValue(value: number | string, money: boolean, showKopecks: boolean): string {
+  if (typeof value !== 'number') return String(value);
+  return money ? formatKopecksValue(value, showKopecks) : formatPlainNumber(value);
+}
+
+type CellComputation = {
+  display: string;
+  value: number | string;
+  money: boolean;
+};
+
+function formulaReferencesMoneyCells(raw: string, moneyCells: Set<string>): boolean {
+  const ranges = /([A-Z]+)(\d+):([A-Z]+)(\d+)/g;
+  let range: RegExpExecArray | null;
+  while ((range = ranges.exec(raw)) !== null) {
+    const c1 = colIndex(range[1]);
+    const r1 = Number(range[2]) - 1;
+    const c2 = colIndex(range[3]);
+    const r2 = Number(range[4]) - 1;
+    const minR = Math.min(r1, r2);
+    const maxR = Math.max(r1, r2);
+    const minC = Math.min(c1, c2);
+    const maxC = Math.max(c1, c2);
+    for (let r = minR; r <= maxR; r++) {
+      for (let c = minC; c <= maxC; c++) {
+        if (moneyCells.has(cellAddress(r, c))) return true;
+      }
+    }
+  }
+  const refs = /\b([A-Z]+)(\d+)\b/g;
+  let ref: RegExpExecArray | null;
+  while ((ref = refs.exec(raw)) !== null) {
+    if (moneyCells.has(`${ref[1]}${ref[2]}`)) return true;
+  }
+  return false;
 }
 
 // ============================================================================
@@ -219,8 +284,8 @@ function evaluateFormula(
           evaluated.set(addr, result);
           return typeof result === 'number' ? result : parseFloat(String(result)) || 0;
         }
-        const num = parseFloat(rawValue);
-        return Number.isFinite(num) ? num : 0;
+        const num = parseSheetNumber(rawValue);
+        return num ?? 0;
       },
       onRange: (ref: { from: { row: number; col: number }; to: { row: number; col: number } }) => {
         const maxRow = ref.to.row >= maxRowConst ? cells.length : ref.to.row;
@@ -245,8 +310,8 @@ function evaluateFormula(
                 innerArr.push(typeof result === 'number' ? result : parseFloat(String(result)) || 0);
               }
             } else {
-              const num = parseFloat(rawValue);
-              innerArr.push(Number.isFinite(num) ? num : 0);
+              const num = parseSheetNumber(rawValue);
+              innerArr.push(num ?? 0);
             }
           }
           arr.push(innerArr);
@@ -278,12 +343,16 @@ function computeCell(
   cells: string[][],
   evaluated: Map<string, number | string>,
   blockValues: Record<string, number | string | null>,
-): string {
-  if (!raw.startsWith('=')) return raw;
+  showKopecks: boolean,
+  moneyCells: Set<string>,
+): CellComputation {
+  if (!raw.startsWith('=')) {
+    const n = parseSheetNumber(raw);
+    return { display: raw, value: n ?? raw, money: false };
+  }
   const result = evaluateFormula(raw.slice(1), cells, evaluated, blockValues);
-  return typeof result === 'number'
-    ? (Number.isInteger(result) ? result.toString() : result.toFixed(2))
-    : String(result);
+  const money = raw.includes('@') || formulaReferencesMoneyCells(raw, moneyCells);
+  return { display: formatComputedValue(result, money, showKopecks), value: result, money };
 }
 
 // ============================================================================
@@ -293,6 +362,8 @@ function computeCell(
 function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
   const cfg = SheetConfig.parse(instance.config ?? {});
   const density = useBlockDensity();
+  const { settings: globalFormatSettings } = useFormatSettings();
+  const showKopecks = cfg.showKopecks ?? globalFormatSettings.showKopecks;
   const [cells, setCells] = useState<string[][]>(() =>
     ensureShape(cfg.cells, cfg.rows, cfg.cols)
   );
@@ -439,6 +510,7 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
   // Вычисляем все ячейки
   const evaluatedCells = useMemo(() => {
     const evaluated = new Map<string, number | string>();
+    const moneyCells = new Set<string>();
     const result: string[][] = [];
     for (let r = 0; r < cells.length; r++) {
       const row: string[] = [];
@@ -448,43 +520,42 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
         if (evaluated.has(addr)) {
           const cached = evaluated.get(addr)!;
           row.push(typeof cached === 'number'
-            ? (Number.isInteger(cached) ? cached.toString() : cached.toFixed(2))
+            ? formatComputedValue(cached, moneyCells.has(addr), showKopecks)
             : String(cached));
         } else {
-          const computed = computeCell(raw, cells, evaluated, blockValues);
-          evaluated.set(addr, raw.startsWith('=')
-            ? (parseFloat(computed) || computed)
-            : (parseFloat(raw) || raw));
-          row.push(computed);
+          const computed = computeCell(raw, cells, evaluated, blockValues, showKopecks, moneyCells);
+          evaluated.set(addr, computed.value);
+          if (computed.money) moneyCells.add(addr);
+          row.push(computed.display);
         }
       }
       result.push(row);
     }
-    return { result, evaluated };
-  }, [cells, blockValues]);
+    return { result, evaluated, moneyCells };
+  }, [cells, blockValues, showKopecks]);
 
   // Вычисляем header cells (используем общий evaluated cache из основной таблицы)
   const evaluatedHeaders = useMemo(() => {
     return headerCells.map((hc) => {
       if (!hc.value.startsWith('=')) return { ...hc, computed: hc.value };
-      const computed = computeCell(hc.value, cells, evaluatedCells.evaluated, blockValues);
-      return { ...hc, computed };
+      const computed = computeCell(hc.value, cells, evaluatedCells.evaluated, blockValues, showKopecks, evaluatedCells.moneyCells);
+      return { ...hc, computed: computed.display };
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [headerCells, cells, blockValues, evaluatedCells.evaluated]);
+  }, [headerCells, cells, blockValues, evaluatedCells.evaluated, evaluatedCells.moneyCells, showKopecks]);
 
   // Публикуем значения для других блоков
   const publishOutput = useMemo(() => {
+    const output: Record<string, number | string | null> = {};
     const numericCells: number[] = [];
-    cells.forEach((row) => {
-      row.forEach((raw) => {
-        const n = parseFloat(raw);
-        if (Number.isFinite(n)) numericCells.push(n);
-      });
+    evaluatedCells.evaluated.forEach((value, addr) => {
+      output[addr] = value;
+      const n = typeof value === 'number' ? value : parseSheetNumber(String(value));
+      if (n !== null) numericCells.push(n);
     });
     const sum = numericCells.reduce((s, n) => s + n, 0);
-    return { value: sum, sum, count: numericCells.length, label: title };
-  }, [cells, title]);
+    return { value: sum, sum, count: numericCells.length, label: title, ...output };
+  }, [evaluatedCells.evaluated, title]);
   useBlockValuePublisher(instance.id, publishOutput);
 
   // Синхронизация при внешнем изменении размеров
@@ -1347,6 +1418,33 @@ function SheetSettings({ config, onChange }: BlockSettingsFormProps) {
             />
           </button>
         </div>
+        <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
+          <div className="min-w-0">
+            <div className="text-xs font-medium">Показывать копейки</div>
+            <div className="text-[11px] text-muted-foreground">
+              {cfg.showKopecks === null
+                ? 'Используется глобальная настройка'
+                : cfg.showKopecks
+                  ? 'Включено (1 234,56)'
+                  : 'Выключено (1 235)'}
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5">
+            {cfg.showKopecks !== null && (
+              <button
+                type="button"
+                onClick={() => set('showKopecks', null)}
+                className="text-[10px] text-muted-foreground hover:text-foreground"
+              >
+                Сбросить
+              </button>
+            )}
+            <Switch
+              checked={cfg.showKopecks ?? false}
+              onCheckedChange={(v) => set('showKopecks', v)}
+            />
+          </div>
+        </div>
       </div>
 
       {/* Info */}
@@ -1396,6 +1494,7 @@ export const SheetBlock: BlockDef = {
     ],
     showHeader: true,
     showFormulaBar: true,
+    showKopecks: null,
   }),
   SettingsForm: SheetSettings,
   Render: RenderSheet,
