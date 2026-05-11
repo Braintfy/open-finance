@@ -213,6 +213,6 @@ export function useAvailableBlockSources(): Array<{ blockId: string; fields: str
   if (!api) return [];
   return Array.from(api.get().values.entries()).map(([blockId, output]) => ({
     blockId,
-    fields: Object.keys(output),
+    fields: Object.keys(output).filter((field) => !field.startsWith('__')),
   }));
 }

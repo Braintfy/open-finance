@@ -87,6 +87,7 @@ type BlockSourceField = {
   name: string;
   label: string;
   value: number | string | null;
+  format?: 'money' | 'number' | 'text';
 };
 
 type BlockSourceBlock = {
@@ -183,6 +184,45 @@ function formatPlainNumber(value: number): string {
 
 function formatKopecksValue(value: number, showKopecks: boolean): string {
   return formatRublesWithSettings(value, showKopecks).replace(/\s?₽$/, '');
+}
+
+function sourceFieldLabel(field: string): string {
+  if (field === 'value') return 'Значение';
+  if (field === 'count') return 'Количество';
+  if (field === 'sum') return 'Сумма';
+  return field;
+}
+
+function moneyFieldSet(blockId: string, values: Record<string, number | string | null>): Set<string> {
+  const raw = values[`${blockId}.__money`];
+  return new Set(String(raw ?? '').split(',').map((field) => field.trim()).filter(Boolean));
+}
+
+function mergeLiveFields(
+  block: BlockSourceBlock,
+  liveFields: string[] | undefined,
+  liveValues: Record<string, number | string | null>,
+): BlockSourceBlock {
+  if (!liveFields) return block;
+  const moneyFields = moneyFieldSet(block.blockId, liveValues);
+  const byName = new Map(block.fields.map((field) => [field.name, field]));
+  liveFields.forEach((name) => {
+    const key = name === 'value' ? block.blockId : `${block.blockId}.${name}`;
+    const current = byName.get(name);
+    byName.set(name, {
+      name,
+      label: current?.label ?? sourceFieldLabel(name),
+      value: liveValues[key] ?? current?.value ?? null,
+      format: moneyFields.has(name) ? 'money' : current?.format,
+    });
+  });
+  return { ...block, fields: Array.from(byName.values()) };
+}
+
+function previewSourceValue(field: BlockSourceField): string {
+  if (field.value === null || field.value === undefined) return '—';
+  if (field.format === 'money' && typeof field.value === 'number') return formatKopecksValue(field.value, true);
+  return String(field.value).slice(0, 16);
 }
 
 function formatComputedValue(value: number | string, money: boolean, showKopecks: boolean): string {
@@ -471,6 +511,7 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
   }, [blockPickerOpen]);
 
   const blockSourcePages = useMemo<BlockSourcePage[]>(() => {
+    const liveById = new Map(availableBlocks.map((block) => [block.blockId, block.fields]));
     const liveBlocks: BlockSourceBlock[] = availableBlocks.map((b) => ({
       blockId: b.blockId,
       pageKey: 'current',
@@ -481,13 +522,16 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
       label: String(liveValues[`${b.blockId}.label`] ?? `Блок ${b.blockId.slice(0, 8)}`),
       fields: b.fields.map((field) => ({
         name: field,
-        label: field === 'value' ? 'Значение' : field === 'count' ? 'Количество' : field,
+        label: sourceFieldLabel(field),
         value: liveValues[field === 'value' ? b.blockId : `${b.blockId}.${field}`] ?? null,
+        format: moneyFieldSet(b.blockId, liveValues).has(field) ? 'money' as const : undefined,
       })),
     }));
     const pages = sourcePages.map((page) => ({
       ...page,
-      blocks: page.blocks.filter((block) => block.blockId !== instance.id),
+      blocks: page.blocks
+        .filter((block) => block.blockId !== instance.id)
+        .map((block) => mergeLiveFields(block, liveById.get(block.blockId), liveValues)),
     }));
     const hasLivePage = liveBlocks.length > 0;
     return hasLivePage
@@ -573,7 +617,7 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
       if (n !== null) numericCells.push(n);
     });
     const sum = numericCells.reduce((s, n) => s + n, 0);
-    return { value: sum, sum, count: numericCells.length, label: title, ...output };
+    return { value: sum, sum, count: numericCells.length, label: title, __money: Array.from(evaluatedCells.moneyCells).join(','), ...output };
   }, [evaluatedCells.evaluated, title]);
   useBlockValuePublisher(instance.id, publishOutput);
 
@@ -1112,7 +1156,7 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
               }
               title="Вставить значение из другого блока"
             >
-              @Блок
+              @связать
             </button>
             <DialogContent
               className="w-[min(94vw,640px)] max-w-none gap-0 overflow-hidden p-0"
@@ -1126,9 +1170,9 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
               }}
             >
               <DialogHeader className="border-b border-border/60 px-4 py-3">
-                <DialogTitle className="text-sm">Вставить значение блока</DialogTitle>
+                <DialogTitle className="text-sm">Связать ячейку с источником</DialogTitle>
                 <DialogDescription className="text-[11px]">
-                  Выберите блок и поле для формулы
+                  Выберите блок, поле или ячейку — ссылка будет добавлена в формулу
                 </DialogDescription>
               </DialogHeader>
               <div className="grid min-h-[320px] grid-cols-[180px_minmax(0,1fr)]">
@@ -1179,16 +1223,14 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
                               key={`${block.pageKey}:${block.blockId}`}
                               className="border-b border-border/30 px-3 py-2 transition last:border-b-0 hover:bg-accent/30"
                             >
-                              <div className="flex items-center gap-2">
-                                <div className="min-w-0 flex-1">
+                              <div className="space-y-1.5">
+                                <div className="min-w-0">
                                   <div className="truncate text-xs font-medium text-foreground">{block.label}</div>
                                   <div className="text-[10px] text-muted-foreground">{block.category} · {block.typeLabel}</div>
                                 </div>
-                                <div className="flex shrink-0 gap-1">
-                                  {block.fields.filter((f) => f.name !== 'label').map((field) => {
-                                    const preview = field.value !== null && field.value !== undefined
-                                      ? String(field.value).slice(0, 16)
-                                      : '—';
+                                <div className="flex flex-wrap gap-1">
+                                  {block.fields.filter((f) => f.name !== 'label' && f.name !== 'raw').map((field) => {
+                                    const preview = previewSourceValue(field);
                                     return (
                                       <button
                                         key={field.name}

@@ -25,6 +25,7 @@ type SourceField = {
   name: string;
   label: string;
   value: number | string | null;
+  format?: 'money' | 'number' | 'text';
 };
 
 type SourceBlock = {
@@ -102,10 +103,50 @@ function formulaReferencesMoney(raw: string, moneyRefs?: Record<string, boolean>
 }
 
 function sourceFieldIsMoney(block: SourceBlock, field: SourceField): boolean {
+  if (field.format) return field.format === 'money';
   if (refIsPlainNumber(`${block.blockId}.${field.name}`)) return false;
   if (block.category === 'Таблицы') return false;
   if (['KPI', 'Кэшфлоу', 'Данные', 'Вычисления'].includes(block.category)) return true;
   return field.name === 'value';
+}
+
+function sourceFieldLabel(field: string): string {
+  if (field === 'value') return 'Значение';
+  if (field === 'count') return 'Количество';
+  if (field === 'sum') return 'Сумма';
+  return field;
+}
+
+function moneyFieldSet(blockId: string, values: Record<string, number | string | null>): Set<string> {
+  const raw = values[`${blockId}.__money`];
+  return new Set(String(raw ?? '').split(',').map((field) => field.trim()).filter(Boolean));
+}
+
+function mergeLiveFields(
+  block: SourceBlock,
+  liveFields: string[] | undefined,
+  liveValues: Record<string, number | string | null>,
+): SourceBlock {
+  if (!liveFields) return block;
+  const moneyFields = moneyFieldSet(block.blockId, liveValues);
+  const byName = new Map(block.fields.map((field) => [field.name, field]));
+  liveFields.forEach((name) => {
+    const key = name === 'value' ? block.blockId : `${block.blockId}.${name}`;
+    const current = byName.get(name);
+    byName.set(name, {
+      name,
+      label: current?.label ?? sourceFieldLabel(name),
+      value: liveValues[key] ?? current?.value ?? null,
+      format: moneyFields.has(name) ? 'money' : current?.format,
+    });
+  });
+  return { ...block, fields: Array.from(byName.values()) };
+}
+
+function previewSourceValue(field: SourceField): string {
+  if (field.value === null || field.value === undefined) return '—';
+  if (field.format === 'money' && typeof field.value === 'number') return formatKopecksValue(field.value, true);
+  return String(field.value).slice(0, 16);
 }
 
 function useAllBlockValues(): Record<string, number | string | null> {
@@ -276,6 +317,7 @@ function RenderExcelCell({ instance, onConfigChange }: BlockRenderProps) {
   }, [blockPickerOpen]);
 
   const blockSourcePages = useMemo<SourcePage[]>(() => {
+    const liveById = new Map(availableBlocks.map((block) => [block.blockId, block.fields]));
     const liveBlocks: SourceBlock[] = availableBlocks
       .filter((b) => b.blockId !== instance.id)
       .map((b) => ({
@@ -287,13 +329,16 @@ function RenderExcelCell({ instance, onConfigChange }: BlockRenderProps) {
         label: String(liveValues[`${b.blockId}.label`] ?? `Блок ${b.blockId.slice(0, 8)}`),
         fields: b.fields.map((field) => ({
           name: field,
-          label: field === 'value' ? 'Значение' : field === 'count' ? 'Количество' : field,
+          label: sourceFieldLabel(field),
           value: liveValues[field === 'value' ? b.blockId : `${b.blockId}.${field}`] ?? null,
+          format: moneyFieldSet(b.blockId, liveValues).has(field) ? 'money' as const : undefined,
         })),
       }));
     const pages = sourcePages.map((page) => ({
       ...page,
-      blocks: page.blocks.filter((block) => block.blockId !== instance.id),
+      blocks: page.blocks
+        .filter((block) => block.blockId !== instance.id)
+        .map((block) => mergeLiveFields(block, liveById.get(block.blockId), liveValues)),
     }));
     return liveBlocks.length > 0
       ? [{ pageKey: 'current', pageLabel: 'Текущая страница', blocks: liveBlocks }, ...pages]
@@ -461,7 +506,7 @@ function RenderExcelCell({ instance, onConfigChange }: BlockRenderProps) {
               }}
               className="h-6 shrink-0 rounded bg-amber-50 px-2 text-[11px] font-semibold text-amber-700 transition hover:bg-amber-100 dark:bg-amber-950 dark:text-amber-400"
             >
-              @Блок
+              @связать
             </button>
             <DialogContent
               className="w-[min(94vw,640px)] max-w-none gap-0 overflow-hidden p-0"
@@ -473,8 +518,8 @@ function RenderExcelCell({ instance, onConfigChange }: BlockRenderProps) {
               }}
             >
               <DialogHeader className="border-b border-border/60 px-4 py-3">
-                <DialogTitle className="text-sm">Вставить значение блока</DialogTitle>
-                <DialogDescription className="text-[11px]">Выберите блок или ячейку таблицы</DialogDescription>
+                <DialogTitle className="text-sm">Связать ячейку с источником</DialogTitle>
+                <DialogDescription className="text-[11px]">Выберите блок, поле или ячейку таблицы</DialogDescription>
               </DialogHeader>
               <div className="grid min-h-[320px] grid-cols-[180px_minmax(0,1fr)]">
                 <aside className="border-r border-border/60 bg-muted/20">
@@ -513,14 +558,14 @@ function RenderExcelCell({ instance, onConfigChange }: BlockRenderProps) {
                         </div>
                         {page.blocks.map((block) => (
                           <div key={`${block.pageKey}:${block.blockId}`} className="border-b border-border/30 px-3 py-2 transition last:border-b-0 hover:bg-accent/30">
-                            <div className="flex items-center gap-2">
-                              <div className="min-w-0 flex-1">
+                            <div className="space-y-1.5">
+                              <div className="min-w-0">
                                 <div className="truncate text-xs font-medium text-foreground">{block.label}</div>
                                 <div className="text-[10px] text-muted-foreground">{block.category} · {block.typeLabel}</div>
                               </div>
-                              <div className="flex max-w-[260px] shrink-0 flex-wrap justify-end gap-1">
+                              <div className="flex flex-wrap gap-1">
                                 {block.fields.filter((f) => f.name !== 'label' && f.name !== 'raw').map((field) => {
-                                  const preview = field.value !== null && field.value !== undefined ? String(field.value).slice(0, 16) : '—';
+                                  const preview = previewSourceValue(field);
                                   return (
                                     <button
                                       key={field.name}
@@ -554,6 +599,7 @@ function RenderExcelCell({ instance, onConfigChange }: BlockRenderProps) {
 function ExcelCellSettings({ config, onChange }: BlockSettingsFormProps) {
   const parsed = parseConfig(config);
   const availableBlocks = useAvailableBlockSources();
+  const liveValues = useAllBlockValues();
   const [linkPickerOpen, setLinkPickerOpen] = useState(false);
   const [sourcePages, setSourcePages] = useState<SourcePage[]>([]);
   const [sourceLoading, setSourceLoading] = useState(false);
@@ -585,23 +631,29 @@ function ExcelCellSettings({ config, onChange }: BlockSettingsFormProps) {
   }, [linkPickerOpen]);
 
   const blockSourcePages = useMemo<SourcePage[]>(() => {
+    const liveById = new Map(availableBlocks.map((block) => [block.blockId, block.fields]));
     const liveBlocks: SourceBlock[] = availableBlocks.map((b) => ({
       blockId: b.blockId,
       pageKey: 'current',
       pageLabel: 'Текущая страница',
       typeLabel: 'Live block',
       category: 'Текущая страница',
-      label: `Блок ${b.blockId.slice(0, 8)}`,
+      label: String(liveValues[`${b.blockId}.label`] ?? `Блок ${b.blockId.slice(0, 8)}`),
       fields: b.fields.map((field) => ({
         name: field,
-        label: field === 'value' ? 'Значение' : field === 'count' ? 'Количество' : field,
-        value: null,
+        label: sourceFieldLabel(field),
+        value: liveValues[field === 'value' ? b.blockId : `${b.blockId}.${field}`] ?? null,
+        format: moneyFieldSet(b.blockId, liveValues).has(field) ? 'money' as const : undefined,
       })),
     }));
+    const pages = sourcePages.map((page) => ({
+      ...page,
+      blocks: page.blocks.map((block) => mergeLiveFields(block, liveById.get(block.blockId), liveValues)),
+    }));
     return liveBlocks.length > 0
-      ? [{ pageKey: 'current', pageLabel: 'Текущая страница', blocks: liveBlocks }, ...sourcePages]
-      : sourcePages;
-  }, [availableBlocks, sourcePages]);
+      ? [{ pageKey: 'current', pageLabel: 'Текущая страница', blocks: liveBlocks }, ...pages]
+      : pages;
+  }, [availableBlocks, liveValues, sourcePages]);
 
   const sourceGroups = useMemo(() => {
     const total = blockSourcePages.reduce((acc, page) => acc + page.blocks.length, 0);
@@ -707,14 +759,14 @@ function ExcelCellSettings({ config, onChange }: BlockSettingsFormProps) {
                         </div>
                         {page.blocks.map((block) => (
                           <div key={`${block.pageKey}:${block.blockId}`} className="border-b border-border/30 px-3 py-2 transition last:border-b-0 hover:bg-accent/30">
-                            <div className="flex items-center gap-2">
-                              <div className="min-w-0 flex-1">
+                            <div className="space-y-1.5">
+                              <div className="min-w-0">
                                 <div className="truncate text-xs font-medium text-foreground">{block.label}</div>
                                 <div className="text-[10px] text-muted-foreground">{block.category} · {block.typeLabel}</div>
                               </div>
-                              <div className="flex max-w-[260px] shrink-0 flex-wrap justify-end gap-1">
+                              <div className="flex flex-wrap gap-1">
                                 {block.fields.filter((f) => f.name !== 'label' && f.name !== 'raw').map((field) => {
-                                  const preview = field.value !== null && field.value !== undefined ? String(field.value).slice(0, 16) : '—';
+                                  const preview = previewSourceValue(field);
                                   return (
                                     <button
                                       key={field.name}
@@ -745,7 +797,7 @@ function ExcelCellSettings({ config, onChange }: BlockSettingsFormProps) {
       <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
         <div>
           <div className="text-xs font-medium">Строка формул</div>
-          <div className="text-[11px] text-muted-foreground">Показывает @Блок picker при редактировании формулы</div>
+          <div className="text-[11px] text-muted-foreground">Показывает @связать picker при редактировании формулы</div>
         </div>
         <Switch checked={parsed.showFormulaBar} onCheckedChange={(v) => set('showFormulaBar', v)} />
       </div>

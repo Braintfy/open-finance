@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.21] - 2026-05-12
+
+### Changed
+- **Sources modal: categories** — category pages now merge live `BlockValuesContext` fields into saved `/api/blocks/sources` data, so the `Кэшфлоу` tab shows the same current Sheet cells as `Текущая страница`.
+- **Naming: @связать** — visible `@Блок` labels were renamed to `@связать` across Sheet and Excel Cell linking UI.
+- **Sources modal UI** — source rows now stack title and field pills vertically to prevent category/title overlap with values.
+
+### Fixed
+- **Sheet sources API: formulas** — `/api/blocks/sources` now evaluates Sheet formula cells and includes computed linked values like `C4 = 894 777,77` in page categories, not only in live current-page data.
+- **Sheet money cells metadata** — Sheet publishes `__money` metadata and source fields carry `format: money`, so linked monetary cells keep kopeck display semantics when selected in `excel.cell`.
+- **Sheet formulas: decimal comma** — simple formula evaluation in sources API normalizes comma decimals before math evaluation.
+
 ## [0.9.20] - 2026-05-12
 
 ### Fixed
@@ -22,7 +34,7 @@
 ## [0.9.18] - 2026-05-12
 
 ### Added
-- **Excel Cell block** — добавлен новый минимальный блок `excel.cell`: редактируемое название, одна Excel-like ячейка с текстом/числами/формулами, `@Блок` picker и публикация `value/raw/label`.
+- **Excel Cell block** — добавлен новый минимальный блок `excel.cell`: редактируемое название, одна Excel-like ячейка с текстом/числами/формулами, `@связать` picker и публикация `value/raw/label`.
 - **Sheet cell references** — `Sheet` теперь публикует отдельные числовые ячейки (`A1`, `B2`, ...) в `BlockValuesContext` и `/api/blocks/sources`, чтобы другие блоки могли ссылаться на конкретную ячейку.
 
 ### Changed
@@ -35,7 +47,7 @@
 ## [0.9.17] - 2026-05-12
 
 ### Changed
-- **Sheet: @Блок picker** — модалка компактнее (640px), sidebar показывает только страницы с блоками (без пустых категорий), блоки в плоском списке с кнопками полей inline, поле `label` скрыто для краткости.
+- **Sheet: @связать picker** — модалка компактнее (640px), sidebar показывает только страницы с блоками (без пустых категорий), блоки в плоском списке с кнопками полей inline, поле `label` скрыто для краткости.
 - **Sheet: header editing UX** — Escape сбрасывает editingHeaderId и caretPos.
 
 ### Added
@@ -44,10 +56,10 @@
 ## [0.9.16] - 2026-05-12
 
 ### Changed
-- **Sheet: @Блок picker UI** — модалка расширена до двухпанельного интерфейса: слева фильтры по страницам и категориям, справа список блоков с полями и превью значений.
+- **Sheet: @связать picker UI** — модалка расширена до двухпанельного интерфейса: слева фильтры по страницам и категориям, справа список блоков с полями и превью значений.
 
 ### Fixed
-- **Sheet: @Блок field insertion** — выбор поля теперь атомарно записывает формулу в активную ячейку/header и сохраняет `blockRefs` одним config patch, устраняя гонку `editValue`/`saveConfig`.
+- **Sheet: @связать field insertion** — выбор поля теперь атомарно записывает формулу в активную ячейку/header и сохраняет `blockRefs` одним config patch, устраняя гонку `editValue`/`saveConfig`.
 - **Sheet: inline cell blur race** — inline-инпут ячейки теперь учитывает `openingBlockPickerRef/blockPickerOpen`, поэтому клик по полю в Dialog не вызывает преждевременный `commitEdit()`.
 
 ## [0.9.15] - 2026-05-11
@@ -60,7 +72,7 @@
 - **Sheet: MAX_ROW/MAX_COLUMN** — добавлен robust fallback (`?? 1048576` / `?? 16384`) если named exports недоступны; сравнение через `>=` вместо `===`
 
 ### Added
-- **Sheet: @block live references** — кнопка `@Блок` открывает модалку (Dialog) со списком блоков текущей и сохранённых страниц через `/api/blocks/sources`; каждый блок показывает поля `value`, `count`, `label` и превью значений. При клике по полю вставляется `@page:blockId.field` в формулу и значение кэшируется в `config.blockRefs`.
+- **Sheet: @block live references** — кнопка `@связать` открывает модалку (Dialog) со списком блоков текущей и сохранённых страниц через `/api/blocks/sources`; каждый блок показывает поля `value`, `count`, `label` и превью значений. При клике по полю вставляется `@page:blockId.field` в формулу и значение кэшируется в `config.blockRefs`.
 - **Sheet: reactive block values hook** — `useAllBlockValues()` подписывается на `BlockValuesContext` и возвращает все живые значения (`blockId` → `output.value`, `blockId.field` → `output.field`).
 - **Blocks sources API** — добавлен `GET /api/blocks/sources` с tenant/user scoping, каталогизацией блоков по страницам/типам и серверным расчётом `value/count` для cashflow KPI и custom KPI.
 
