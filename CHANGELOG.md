@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.9.6] - 2026-05-11
+
+### Added
+- **Sheet block полный Excel-функционал** — `src/lib/blocks/catalog/sheet.tsx` переписан с нуля:
+  - **Формулы** — полная поддержка Excel-формул через `fast-formula-parser`: `=SUM(A1:A10)`, `=AVERAGE(B:B)`, `=A1+B2*3`, `=MAX(A:A)`, `=IF(...)` и все стандартные функции
+  - **Header-строка** — ряд кастомных ячеек сверху (название блока, итоги, формулы). Каждая ячейка может содержать формулу. Inline-edit label + value, кнопка удаления при hover, кнопка «+» для добавления
+  - **Настраиваемые размеры ячеек** — drag-resize колонок (перетащить правую границу заголовка) и строк (перетащить нижнюю границу номера строки). Персист в config
+  - **Formula bar** — строка формул сверху показывает адрес активной ячейки (A1, B3...) + raw формулу. Inline-edit с автосохранением
+  - **Active cell selection** — клик на ячейку выделяет её (ring-2), Enter/Tab навигация, Escape отмена
+  - **Block references** — синтаксис `=@income` в формулах подставляет значение из связанного блока через `blockRefs` config
+  - **Circular reference protection** — рекурсивный evaluator с visiting set предотвращает бесконечные циклы
+  - **Публикация значений** — блок публикует sum/count всех числовых ячеек через `useBlockValuePublisher` для связей с другими блоками
+  - **Adaptive density** — xs (иконка+название), sm (название+размер), md/lg (полная таблица)
+- **`fast-formula-parser`** — новая зависимость (v1.0.19) для вычисления Excel-формул
+- **Type declarations** — `src/lib/blocks/fast-formula-parser.d.ts` для типизации библиотеки
+
+### Changed
+- **Sheet block** — `minSize` увеличен до 3×3 (было 2×2), `minContentSize` до 240×160px (было 200×120)
+- **Sheet block** — `supportsDependencies: true` — теперь поддерживает таб «Связи» в Settings dialog
+- **SheetSettings** — расширена: toggle header-строки, toggle formula bar, инструкция по формулам
+
 ## [0.9.5] - 2026-05-11
 
 ### Added
