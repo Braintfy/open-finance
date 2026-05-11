@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.9.1] - 2026-05-11
+
+### Fixed
+- **Mindmap overlay видимость** — линии связей теперь видны по умолчанию (opacity 0.5 → было 0.35), цвет `#6366f1` (indigo), stroke 2px вместо 1.8. Bezier-кривые идут от bottom-center → top-center блоков (было center→center) для лучшей читаемости
+- **Node dots** — на краях блоков появляются кружки-узлы (4-5px) где подключаются связи
+- **Треугольник внешних связей** — рядом с кружком узла, если блок имеет cross-page зависимости, рисуется треугольник-индикатор с числом; при hover — popup со списком связей (страница, блок)
+
+### Changed
+- **Шрифты KPI блоков уменьшены** — md: `text-2xl`→`text-xl`, lg: `text-3xl`→`text-2xl`; sm: `text-lg`→`text-base` с `text-xs`→`text-[11px]` для labels — содержимое лучше умещается без обрезания
+- **Card padding уменьшен** — `CardHeader`/`CardContent`/`CardFooter` теперь `p-3` вместо `p-4`; header `pb-2`→`pb-1.5`
+- **Density thresholds подняты** — `smMaxW: 160→180`, `smMaxH: 80→90`, `smMaxArea: 22k→25k` — блоки раньше переключаются на компактный вариант при уменьшении
+- Затронуты: `cashflow.tsx`, `computed.tsx`, `stat-custom.tsx`, `block-size.tsx`, `card.tsx`, `block-relations-overlay.tsx`
+
 ## [0.9.0] - 2026-05-11
 
 ### Added

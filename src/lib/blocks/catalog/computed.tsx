@@ -54,13 +54,13 @@ function RenderComputedSum({ instance }: BlockRenderProps) {
   // SM — заголовок + результат
   if (density === 'sm') {
     return (
-      <Card className="flex h-full flex-col justify-center p-3">
-        <div className="flex items-center gap-1.5">
+      <Card className="flex h-full flex-col justify-center p-2.5">
+        <div className="flex items-center gap-1">
           <Sigma className="h-3.5 w-3.5 shrink-0" style={accent ? { color: accent } : undefined} />
-          <span className="truncate text-xs font-medium text-muted-foreground">{title}</span>
+          <span className="truncate text-[11px] font-medium text-muted-foreground">{title}</span>
         </div>
         <div
-          className="mt-0.5 truncate text-lg font-semibold tabular-nums tracking-tight"
+          className="mt-0.5 truncate text-base font-semibold tabular-nums tracking-tight"
           style={accent ? { color: accent } : undefined}
           title={value !== null ? formatRubles(value) : undefined}
         >
@@ -73,8 +73,8 @@ function RenderComputedSum({ instance }: BlockRenderProps) {
   // MD/LG — полный вид с пояснениями
   return (
     <Card className="flex h-full flex-col">
-      <CardHeader className="pb-2">
-        <CardTitle className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
+      <CardHeader className="pb-1.5">
+        <CardTitle className="flex items-center gap-1.5 text-[13px] font-medium text-muted-foreground">
           <Sigma className="h-4 w-4" style={accent ? { color: accent } : undefined} />
           <span className="line-clamp-1">{title}</span>
         </CardTitle>
@@ -88,7 +88,7 @@ function RenderComputedSum({ instance }: BlockRenderProps) {
         ) : (
           <>
             <div
-              className={`truncate ${density === 'lg' ? 'text-3xl' : 'text-2xl'} font-semibold tabular-nums tracking-tight`}
+              className={`truncate ${density === 'lg' ? 'text-2xl' : 'text-xl'} font-semibold tabular-nums tracking-tight`}
               style={accent ? { color: accent } : undefined}
             >
               {value !== null ? formatRubles(value) : '—'}

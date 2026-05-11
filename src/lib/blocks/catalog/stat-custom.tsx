@@ -131,16 +131,16 @@ function RenderStatCustom({ instance }: BlockRenderProps) {
 
   if (density === 'sm') {
     return (
-      <Card className="flex h-full flex-col justify-center p-3">
-        <div className="flex items-center gap-1.5">
+      <Card className="flex h-full flex-col justify-center p-2.5">
+        <div className="flex items-center gap-1">
           <Icon
             className="h-3.5 w-3.5 shrink-0"
             style={accentColor ? { color: accentColor } : undefined}
           />
-          <span className="truncate text-xs font-medium text-muted-foreground">{title}</span>
+          <span className="truncate text-[11px] font-medium text-muted-foreground">{title}</span>
         </div>
         <div
-          className="mt-0.5 truncate text-lg font-semibold tabular-nums"
+          className="mt-0.5 truncate text-base font-semibold tabular-nums tracking-tight"
           style={accentColor ? { color: accentColor } : undefined}
           title={loading ? undefined : `${sign}${display}`}
         >
@@ -152,8 +152,8 @@ function RenderStatCustom({ instance }: BlockRenderProps) {
 
   return (
     <Card className="flex h-full flex-col">
-      <CardHeader className="pb-2">
-        <CardTitle className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
+      <CardHeader className="pb-1.5">
+        <CardTitle className="flex items-center gap-1.5 text-[13px] font-medium text-muted-foreground">
           <Icon
             className="h-4 w-4"
             style={accentColor ? { color: accentColor } : undefined}
@@ -163,7 +163,7 @@ function RenderStatCustom({ instance }: BlockRenderProps) {
       </CardHeader>
       <CardContent className="flex flex-1 flex-col justify-center">
         <div
-          className={`truncate ${density === 'lg' ? 'text-3xl' : 'text-2xl'} font-semibold tabular-nums tracking-tight`}
+          className={`truncate ${density === 'lg' ? 'text-2xl' : 'text-xl'} font-semibold tabular-nums tracking-tight`}
           style={accentColor ? { color: accentColor } : undefined}
         >
           {loading ? '—' : `${sign}${display}`}

@@ -74,13 +74,13 @@ function StatCard({
   // SM — иконка + число, полный формат с truncate при переполнении
   if (density === 'sm') {
     return (
-      <Card className="flex h-full flex-col justify-center p-3">
-        <div className="flex items-center gap-1.5">
+      <Card className="flex h-full flex-col justify-center p-2.5">
+        <div className="flex items-center gap-1">
           {icon}
-          <span className="truncate text-xs font-medium text-muted-foreground">{label}</span>
+          <span className="truncate text-[11px] font-medium text-muted-foreground">{label}</span>
         </div>
         <div
-          className="mt-0.5 truncate text-lg font-semibold tabular-nums tracking-tight"
+          className="mt-0.5 truncate text-base font-semibold tabular-nums tracking-tight"
           style={accent ? { color: accent } : undefined}
           title={`${sign}${formatRubles(Math.abs(value))}`}
         >
@@ -91,18 +91,18 @@ function StatCard({
     );
   }
 
-  // MD/LG — полный вариант с увеличенными шрифтами для заполнения пространства
+  // MD/LG — полный вариант
   return (
     <Card className="flex h-full flex-col">
-      <CardHeader className="pb-2">
-        <CardTitle className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
+      <CardHeader className="pb-1.5">
+        <CardTitle className="flex items-center gap-1.5 text-[13px] font-medium text-muted-foreground">
           {icon}
           <span className="line-clamp-1">{label}</span>
         </CardTitle>
       </CardHeader>
       <CardContent className="flex flex-1 items-center">
         <div
-          className={`${density === 'lg' ? 'text-3xl' : big ? 'text-2xl' : 'text-2xl'} truncate font-semibold tabular-nums tracking-tight`}
+          className={`${density === 'lg' ? 'text-2xl' : 'text-xl'} truncate font-semibold tabular-nums tracking-tight`}
           style={accent ? { color: accent } : undefined}
         >
           {sign}

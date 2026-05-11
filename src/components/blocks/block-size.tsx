@@ -41,11 +41,11 @@ const DENSITY_THRESHOLDS = {
   xsMaxW: 130,
   xsMaxH: 70,
   xsMaxArea: 9_000,
-  // sm: реально маленькие блоки
-  smMaxW: 160,
-  smMaxH: 80,
-  smMaxArea: 22_000,
-  // md: базовый вариант (тут ПОЛНЫЙ формат сумм)
+  // sm: маленькие блоки — компактные шрифты, меньше padding
+  smMaxW: 180,
+  smMaxH: 90,
+  smMaxArea: 25_000,
+  // md: базовый вариант (полный формат сумм)
   mdMaxArea: 200_000,
 };
 
