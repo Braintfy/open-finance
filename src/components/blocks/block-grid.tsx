@@ -83,6 +83,19 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
     () => blocks.some((b) => b.dependencies && b.dependencies.sources.length > 0),
     [blocks]
   );
+  /** Set ID блоков, участвующих в связях (source или target) — для микро-иконки */
+  const participatingIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const b of blocks) {
+      if (b.dependencies && b.dependencies.sources.length > 0) {
+        set.add(b.id);
+        for (const src of b.dependencies.sources) {
+          set.add(src.blockId);
+        }
+      }
+    }
+    return set;
+  }, [blocks]);
   /** Map blockId → label для BlockReferencePicker в settings dialog */
   const blockLabels = useMemo(() => {
     const m: Record<string, string> = {};
@@ -339,6 +352,7 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
                 appearance={b.appearance}
                 block={b}
                 currentPageKey={pageKey}
+                hasRelations={participatingIds.has(b.id)}
                 onRemove={() => onRemoveBlock(b.id)}
                 onOpenSettings={() => setSettingsId(b.id)}
               >

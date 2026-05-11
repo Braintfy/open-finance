@@ -1,317 +1,242 @@
 // PURPOSE: SVG-overlay показывающий связи между блоками (mindmap-стиль).
-// Видимый по умолчанию с мягкой прозрачностью; toggle делает акцентным.
-// Узлы (кружки) + линии + лейблы агрегации + треугольник внешних связей.
+// Скрыт по умолчанию; toggle «Связи» делает видимым.
+// Smart edge detection: линии идут от ближайших сторон блоков (top/right/bottom/left).
 'use client';
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { BlockInstance } from '@/lib/blocks/types';
-import { getBlockDef } from '@/lib/blocks/registry';
 
 type Props = {
   blocks: BlockInstance[];
   /** Контейнер grid'а — для позиционирования SVG поверх него и вычисления координат */
   containerRef: React.RefObject<HTMLDivElement | null>;
-  /** Подсветить связи (toggle button). По умолчанию — мягко видно. */
+  /** Показать связи (toggle button). Если false — ничего не рендерится. */
   highlighted: boolean;
 };
 
-type Edge = {
-  fromId: string;
-  toId: string;
-  label?: string;
+type AnchorSide = 'top' | 'right' | 'bottom' | 'left';
+
+type AnchorPoint = { x: number; y: number; side: AnchorSide };
+
+type Edge = { fromId: string; toId: string; label?: string };
+
+type PositionedEdge = Edge & {
+  x1: number; y1: number; x2: number; y2: number;
+  fromSide: AnchorSide; toSide: AnchorSide;
 };
 
-type NodePos = {
-  id: string;
-  cx: number;
-  cy: number;
-  label: string;
-  /** Количество внешних (cross-page) связей */
-  externalCount: number;
-  externalPages: string[];
-};
+/* ── helpers ── */
+
+function getBlockAnchors(
+  rect: DOMRect,
+  containerRect: DOMRect
+): Record<AnchorSide, AnchorPoint> {
+  const l = rect.left - containerRect.left;
+  const t = rect.top - containerRect.top;
+  const r = l + rect.width;
+  const b = t + rect.height;
+  const cx = l + rect.width / 2;
+  const cy = t + rect.height / 2;
+  return {
+    top:    { x: cx, y: t, side: 'top' },
+    right:  { x: r,  y: cy, side: 'right' },
+    bottom: { x: cx, y: b, side: 'bottom' },
+    left:   { x: l,  y: cy, side: 'left' },
+  };
+}
+
+function getBestAnchors(
+  fromRect: DOMRect,
+  toRect: DOMRect,
+  containerRect: DOMRect
+): { from: AnchorPoint; to: AnchorPoint } {
+  const fa = getBlockAnchors(fromRect, containerRect);
+  const ta = getBlockAnchors(toRect, containerRect);
+
+  const dx = (toRect.left + toRect.width / 2) - (fromRect.left + fromRect.width / 2);
+  const dy = (toRect.top + toRect.height / 2) - (fromRect.top + fromRect.height / 2);
+  const angle = Math.atan2(dy, dx) * (180 / Math.PI); // -180..180
+
+  let fs: AnchorSide;
+  let ts: AnchorSide;
+
+  if (angle >= -45 && angle < 45) {
+    fs = 'right'; ts = 'left';
+  } else if (angle >= 45 && angle < 135) {
+    fs = 'bottom'; ts = 'top';
+  } else if (angle >= -135 && angle < -45) {
+    fs = 'top'; ts = 'bottom';
+  } else {
+    fs = 'left'; ts = 'right';
+  }
+
+  return { from: fa[fs], to: ta[ts] };
+}
+
+function buildPath(e: PositionedEdge): string {
+  const dist = Math.hypot(e.x2 - e.x1, e.y2 - e.y1);
+  const offset = Math.max(30, dist * 0.35);
+  let cx1 = e.x1, cy1 = e.y1, cx2 = e.x2, cy2 = e.y2;
+
+  switch (e.fromSide) {
+    case 'right':  cx1 = e.x1 + offset; break;
+    case 'left':   cx1 = e.x1 - offset; break;
+    case 'bottom': cy1 = e.y1 + offset; break;
+    case 'top':    cy1 = e.y1 - offset; break;
+  }
+  switch (e.toSide) {
+    case 'right':  cx2 = e.x2 + offset; break;
+    case 'left':   cx2 = e.x2 - offset; break;
+    case 'bottom': cy2 = e.y2 + offset; break;
+    case 'top':    cy2 = e.y2 - offset; break;
+  }
+
+  return `M ${e.x1} ${e.y1} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${e.x2} ${e.y2}`;
+}
+
+/* ── component ── */
+
+const STROKE = '#6366f1';
+const NODE_FILL = '#4f46e5';
 
 export function BlockRelationsOverlay({ blocks, containerRef, highlighted }: Props) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [tick, setTick] = useState(0);
-  const edgesRef = useRef<Array<Edge & { x1: number; y1: number; x2: number; y2: number }>>([]);
-  const nodesRef = useRef<NodePos[]>([]);
+  const edgesRef = useRef<PositionedEdge[]>([]);
 
-  // Извлекаем граф зависимостей из блоков
   const rawEdges = useMemo<Edge[]>(() => {
     const list: Edge[] = [];
     for (const b of blocks) {
       const deps = b.dependencies;
       if (!deps || deps.sources.length === 0) continue;
       for (const src of deps.sources) {
-        list.push({
-          fromId: src.blockId,
-          toId: b.id,
-          label: deps.aggregation,
-        });
+        list.push({ fromId: src.blockId, toId: b.id, label: deps.aggregation });
       }
     }
     return list;
   }, [blocks]);
 
-  // Блоки, участвующие в связях
-  const participatingIds = useMemo(() => {
-    const set = new Set<string>();
-    for (const e of rawEdges) {
-      set.add(e.fromId);
-      set.add(e.toId);
-    }
-    return set;
-  }, [rawEdges]);
-
-  // Внешние связи (cross-page)
-  const externalMap = useMemo(() => {
-    const map = new Map<string, string[]>();
-    for (const b of blocks) {
-      if (!b.dependencies) continue;
-      const extPages: string[] = [];
-      for (const src of b.dependencies.sources) {
-        if (src.pageKey) extPages.push(src.pageKey);
-      }
-      if (extPages.length > 0) map.set(b.id, extPages);
-    }
-    return map;
-  }, [blocks]);
-
-  // Пересчитываем координаты при resize / scroll / изменении layout
+  // Пересчитываем координаты только когда overlay видим
   useEffect(() => {
+    if (!highlighted || rawEdges.length === 0) return;
+
     function recalc() {
       const container = containerRef.current;
       if (!container) return;
-      const containerRect = container.getBoundingClientRect();
-      if (containerRect.width === 0 || containerRect.height === 0) return;
+      const cr = container.getBoundingClientRect();
+      if (cr.width === 0 || cr.height === 0) return;
 
-      // Edges
-      const nextEdges: Array<Edge & { x1: number; y1: number; x2: number; y2: number }> = [];
+      const next: PositionedEdge[] = [];
       for (const edge of rawEdges) {
         const fromEl = container.querySelector<HTMLElement>(`[data-block-id="${edge.fromId}"]`);
         const toEl = container.querySelector<HTMLElement>(`[data-block-id="${edge.toId}"]`);
         if (!fromEl || !toEl) continue;
-        const fromRect = fromEl.getBoundingClientRect();
-        const toRect = toEl.getBoundingClientRect();
-        // Используем точку на краю блока (bottom-center → top-center)
-        const x1 = fromRect.left + fromRect.width / 2 - containerRect.left;
-        const y1 = fromRect.bottom - containerRect.top;
-        const x2 = toRect.left + toRect.width / 2 - containerRect.left;
-        const y2 = toRect.top - containerRect.top;
-        nextEdges.push({ ...edge, x1, y1, x2, y2 });
-      }
-
-      // Nodes — все блоки участвующие в связях
-      const nextNodes: NodePos[] = [];
-      for (const id of participatingIds) {
-        const el = container.querySelector<HTMLElement>(`[data-block-id="${id}"]`);
-        if (!el) continue;
-        const rect = el.getBoundingClientRect();
-        const block = blocks.find((b) => b.id === id);
-        const def = block ? getBlockDef(block.type) : undefined;
-        const label = block?.appearance?.title ?? def?.displayName ?? id.slice(0, 8);
-        const extPages = externalMap.get(id) ?? [];
-        nextNodes.push({
-          id,
-          cx: rect.left + rect.width / 2 - containerRect.left,
-          cy: rect.bottom - containerRect.top,
-          label,
-          externalCount: extPages.length,
-          externalPages: extPages,
+        const { from: fa, to: ta } = getBestAnchors(
+          fromEl.getBoundingClientRect(),
+          toEl.getBoundingClientRect(),
+          cr
+        );
+        next.push({
+          ...edge,
+          x1: fa.x, y1: fa.y, x2: ta.x, y2: ta.y,
+          fromSide: fa.side, toSide: ta.side,
         });
       }
-
-      edgesRef.current = nextEdges;
-      nodesRef.current = nextNodes;
+      edgesRef.current = next;
       setTick((t) => t + 1);
     }
 
-    // Задержка для RGL — блоки появляются через ~100ms после mount
-    const initialTimer = setTimeout(recalc, 200);
+    const timer = setTimeout(recalc, 200);
     const ro = new ResizeObserver(recalc);
     if (containerRef.current) ro.observe(containerRef.current);
     window.addEventListener('resize', recalc);
     window.addEventListener('scroll', recalc, true);
-    const interval = setInterval(recalc, 500);
+    const interval = setInterval(recalc, 600);
     return () => {
-      clearTimeout(initialTimer);
+      clearTimeout(timer);
       ro.disconnect();
       window.removeEventListener('resize', recalc);
       window.removeEventListener('scroll', recalc, true);
       clearInterval(interval);
     };
-  }, [rawEdges, participatingIds, externalMap, blocks, containerRef]);
+  }, [rawEdges, blocks, containerRef, highlighted]);
 
-  // Используем refs для данных, tick для trigger re-render
   void tick;
   const edges = edgesRef.current;
-  const nodes = nodesRef.current;
 
-  if (rawEdges.length === 0) return null;
-
-  // FIX: CSS-переменные НЕ работают в SVG-атрибутах — только inline hex.
-  const STROKE_COLOR = highlighted ? '#4f46e5' : '#6366f1';
-  const strokeOpacity = highlighted ? 0.85 : 0.5;
-  const strokeWidth = highlighted ? 2.5 : 2;
-  const NODE_FILL = highlighted ? '#4f46e5' : '#6366f1';
-  const nodeRadius = highlighted ? 5 : 4;
+  // Полностью скрыт когда toggle выключен или связей нет
+  if (!highlighted || rawEdges.length === 0) return null;
 
   return (
-    <>
-      <svg
-        ref={svgRef}
-        className="pointer-events-none absolute inset-0 z-10 h-full w-full"
-        style={{ overflow: 'visible' }}
-        aria-hidden="true"
-      >
-        <defs>
-          <marker
-            id={`rel-arrow-${highlighted ? 'hl' : 'dim'}`}
-            viewBox="0 0 10 10"
-            refX="9"
-            refY="5"
-            markerWidth="6"
-            markerHeight="6"
-            orient="auto-start-reverse"
-          >
-            <path d="M 0 1 L 10 5 L 0 9 z" fill={STROKE_COLOR} fillOpacity={strokeOpacity} />
-          </marker>
-        </defs>
+    <svg
+      ref={svgRef}
+      className="pointer-events-none absolute inset-0 z-10 h-full w-full"
+      style={{ overflow: 'visible' }}
+      aria-hidden="true"
+    >
+      <defs>
+        <marker
+          id="rel-arrow"
+          viewBox="0 0 10 10"
+          refX="9"
+          refY="5"
+          markerWidth="6"
+          markerHeight="6"
+          orient="auto-start-reverse"
+        >
+          <path d="M 0 1 L 10 5 L 0 9 z" fill={STROKE} fillOpacity={0.75} />
+        </marker>
+      </defs>
 
-        {/* Edges — bezier curves */}
-        {edges.map((edge, i) => {
-          const dy = edge.y2 - edge.y1;
-          const cpOffset = Math.max(30, Math.abs(dy) * 0.4);
-          const path = `M ${edge.x1} ${edge.y1} C ${edge.x1} ${edge.y1 + cpOffset}, ${edge.x2} ${edge.y2 - cpOffset}, ${edge.x2} ${edge.y2}`;
-          const midX = (edge.x1 + edge.x2) / 2;
-          const midY = (edge.y1 + edge.y2) / 2;
-          return (
-            <g key={`e-${edge.fromId}-${edge.toId}-${i}`}>
-              <path
-                d={path}
-                fill="none"
-                stroke={STROKE_COLOR}
-                strokeWidth={strokeWidth}
-                strokeOpacity={strokeOpacity}
-                markerEnd={`url(#rel-arrow-${highlighted ? 'hl' : 'dim'})`}
-                className="transition-all duration-300"
-              />
-              {highlighted && edge.label && (
-                <g className="transition-opacity duration-300">
-                  <rect
-                    x={midX - 24}
-                    y={midY - 9}
-                    width="48"
-                    height="18"
-                    rx="9"
-                    fill="white"
-                    stroke={STROKE_COLOR}
-                    strokeWidth={1}
-                    strokeOpacity={0.6}
-                  />
-                  <text
-                    x={midX}
-                    y={midY + 4}
-                    textAnchor="middle"
-                    fill={STROKE_COLOR}
-                    style={{ fontSize: 10, fontWeight: 600 }}
-                  >
-                    {edge.label}
-                  </text>
-                </g>
-              )}
-            </g>
-          );
-        })}
-
-        {/* Nodes — dot circles at block edges */}
-        {nodes.map((n) => (
-          <g key={`n-${n.id}`}>
-            <circle
-              cx={n.cx}
-              cy={n.cy}
-              r={nodeRadius}
-              fill={NODE_FILL}
-              fillOpacity={strokeOpacity}
-              stroke="white"
-              strokeWidth={1.5}
+      {edges.map((edge, i) => {
+        const path = buildPath(edge);
+        const midX = (edge.x1 + edge.x2) / 2;
+        const midY = (edge.y1 + edge.y2) / 2;
+        return (
+          <g key={`e-${edge.fromId}-${edge.toId}-${i}`}>
+            {/* Bezier curve */}
+            <path
+              d={path}
+              fill="none"
+              stroke={STROKE}
+              strokeWidth={2}
+              strokeOpacity={0.65}
+              markerEnd="url(#rel-arrow)"
               className="transition-all duration-300"
             />
+            {/* Dot at source anchor */}
+            <circle
+              cx={edge.x1} cy={edge.y1} r={4}
+              fill={NODE_FILL} fillOpacity={0.85}
+              stroke="white" strokeWidth={1.5}
+            />
+            {/* Dot at target anchor */}
+            <circle
+              cx={edge.x2} cy={edge.y2} r={4}
+              fill={NODE_FILL} fillOpacity={0.85}
+              stroke="white" strokeWidth={1.5}
+            />
+            {/* Aggregation label pill */}
+            {edge.label && (
+              <g>
+                <rect
+                  x={midX - 24} y={midY - 9}
+                  width="48" height="18" rx="9"
+                  fill="white"
+                  stroke={STROKE} strokeWidth={1} strokeOpacity={0.45}
+                />
+                <text
+                  x={midX} y={midY + 4}
+                  textAnchor="middle" fill={STROKE}
+                  style={{ fontSize: 10, fontWeight: 600 }}
+                >
+                  {edge.label}
+                </text>
+              </g>
+            )}
           </g>
-        ))}
-      </svg>
-
-      {/* HTML-based external link triangles (need pointer-events for hover) */}
-      {nodes
-        .filter((n) => n.externalCount > 0)
-        .map((n) => (
-          <ExternalLinkIndicator key={`ext-${n.id}`} node={n} highlighted={highlighted} />
-        ))}
-    </>
-  );
-}
-
-function ExternalLinkIndicator({
-  node,
-  highlighted,
-}: {
-  node: NodePos;
-  highlighted: boolean;
-}) {
-  const [hover, setHover] = useState(false);
-  const color = highlighted ? '#4f46e5' : '#6366f1';
-  const opacity = highlighted ? 0.9 : 0.6;
-
-  const style: CSSProperties = {
-    position: 'absolute',
-    left: node.cx + 8,
-    top: node.cy - 6,
-    zIndex: 20,
-  };
-
-  return (
-    <div style={style}>
-      <div
-        className="relative cursor-pointer"
-        onMouseEnter={() => setHover(true)}
-        onMouseLeave={() => setHover(false)}
-      >
-        {/* Triangle indicator */}
-        <svg width="14" height="12" viewBox="0 0 14 12" style={{ opacity }}>
-          <path d="M 7 0 L 14 12 L 0 12 Z" fill={color} />
-          <text
-            x="7"
-            y="10"
-            textAnchor="middle"
-            fill="white"
-            style={{ fontSize: 7, fontWeight: 700 }}
-          >
-            {node.externalCount}
-          </text>
-        </svg>
-
-        {/* Hover tooltip */}
-        {hover && (
-          <div className="absolute left-4 top-0 z-50 min-w-[140px] rounded-md border border-border/60 bg-background p-2 shadow-lg">
-            <div className="mb-1 text-[10px] font-semibold text-foreground">
-              Внешние связи
-            </div>
-            <div className="text-[10px] text-muted-foreground">
-              Блок: <span className="font-medium text-foreground">{node.label}</span>
-            </div>
-            <div className="mt-1 space-y-0.5">
-              {node.externalPages.map((page, i) => (
-                <div key={i} className="flex items-center gap-1 text-[10px]">
-                  <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ backgroundColor: color }} />
-                  <span className="text-muted-foreground">Страница:</span>
-                  <span className="font-medium text-foreground">{page}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
+        );
+      })}
+    </svg>
   );
 }

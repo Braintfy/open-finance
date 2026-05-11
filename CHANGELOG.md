@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.9.3] - 2026-05-11
+
+### Changed
+- **Mindmap overlay полностью скрыт** — если toggle «Связи» выключен, SVG не рендерится вообще (было: полупрозрачные линии видны всегда). Ресурсы recalc не тратятся когда overlay скрыт
+- **Smart edge detection** — линии связей идут от ближайших сторон блоков (top/right/bottom/left), а не только bottom→top. Алгоритм на основе угла между центрами блоков. Bezier control points расходятся в направлении стороны привязки
+- **Dot-узлы на якорях** — кружки рисуются на каждом конце связи (source + target) вместо общих per-block dots
+
+### Added
+- **Micro-icon связей** — полупрозрачная иконка Network (opacity 0.2, 12px) в левом нижнем углу блоков, участвующих в связях (source или target). При hover на блок opacity растёт до 0.35. Не мешает содержимому
+
+### Removed
+- **ExternalLinkIndicator** — треугольники внешних связей убраны из overlay (cross-page индикация уже реализована через `CrossPagePin` в `block-chrome.tsx`)
+
 ## [0.9.2] - 2026-05-11
 
 ### Fixed

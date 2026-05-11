@@ -2,7 +2,7 @@
 // Notion-style: контролы появляются при hover (с задержкой ~250мс), в edit mode — видны всегда.
 'use client';
 
-import { GripVertical, X, Settings2 } from 'lucide-react';
+import { GripVertical, X, Settings2, Network } from 'lucide-react';
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
 import type { BlockAppearance, BlockInstance } from '@/lib/blocks/types';
@@ -17,6 +17,7 @@ export function BlockChrome({
   appearance,
   block,
   currentPageKey,
+  hasRelations,
   onRemove,
   onOpenSettings,
 }: {
@@ -27,6 +28,8 @@ export function BlockChrome({
   block?: BlockInstance;
   /** Ключ текущей страницы — для определения cross-page связей */
   currentPageKey?: string;
+  /** Блок участвует в связях (source или target) — показать микро-иконку */
+  hasRelations?: boolean;
   onRemove?: () => void;
   onOpenSettings?: () => void;
 }) {
@@ -126,6 +129,16 @@ export function BlockChrome({
           </Button>
         )}
       </div>
+
+      {/* Micro-icon: блок участвует в связях */}
+      {hasRelations && (
+        <div
+          className="absolute bottom-1 left-1 z-10 flex h-4 w-4 items-center justify-center rounded-sm opacity-20 transition-opacity group-hover/block:opacity-35"
+          title="Блок связан с другими"
+        >
+          <Network className="h-3 w-3 text-indigo-500" />
+        </div>
+      )}
 
       {/* Само содержимое блока. В edit mode — рамка + приглушённость + блокировка кликов */}
       <div
