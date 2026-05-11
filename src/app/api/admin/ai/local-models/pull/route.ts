@@ -25,12 +25,13 @@ export async function POST(req: Request) {
   const upstream = await fetch(`${env.OLLAMA_BASE_URL}/api/pull`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: body.name, stream: true }),
+    body: JSON.stringify({ model: body.name, name: body.name, stream: true }),
   });
 
   if (!upstream.ok || !upstream.body) {
+    const text = await upstream.text().catch(() => '');
     return NextResponse.json(
-      { ok: false, error: `Ollama API ${upstream.status}` },
+      { ok: false, error: `Ollama API ${upstream.status}${text ? `: ${text}` : ''}` },
       { status: 502 }
     );
   }

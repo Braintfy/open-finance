@@ -1,6 +1,7 @@
 // PURPOSE: Менеджер локальных AI-моделей (Ollama) — как LM Studio, compact Linear-style
 'use client';
 
+import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import {
   Download,
@@ -11,6 +12,7 @@ import {
   Info,
   Power,
   MemoryStick,
+  Globe2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -113,7 +115,7 @@ export default function LocalModelsPage() {
   const [data, setData] = useState<ApiResponse | null>(null);
   const [running, setRunning] = useState<RunningModel[]>([]);
   const [loading, setLoading] = useState(true);
-  const [pulling, setPulling] = useState<Record<string, { status: string; percent?: number }>>({});
+  const [pulling, setPulling] = useState<Record<string, { status: string; percent?: number; error?: boolean }>>({});
   const [showInfo, setShowInfo] = useState<{ name: string; info: Record<string, unknown> } | null>(
     null
   );
@@ -154,10 +156,25 @@ export default function LocalModelsPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: modelId }),
       });
-      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        const json = await res.json().catch(() => null) as { error?: string } | null;
+        throw new Error(json?.error ?? `HTTP ${res.status}`);
+      }
+      if (!res.body) throw new Error('Пустой ответ от сервера загрузки');
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = '';
+      const handleLine = (line: string) => {
+        if (!line.trim()) return;
+        const ev = JSON.parse(line) as { status?: string; total?: number; completed?: number; error?: string };
+        if (ev.error) throw new Error(ev.error);
+        const percent =
+          ev.total && ev.completed ? Math.round((ev.completed / ev.total) * 100) : undefined;
+        setPulling((p) => ({
+          ...p,
+          [modelId]: { status: ev.status ?? '', percent },
+        }));
+      };
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -165,20 +182,14 @@ export default function LocalModelsPage() {
         const lines = buf.split('\n');
         buf = lines.pop() ?? '';
         for (const line of lines) {
-          if (!line.trim()) continue;
           try {
-            const ev = JSON.parse(line) as { status?: string; total?: number; completed?: number };
-            const percent =
-              ev.total && ev.completed ? Math.round((ev.completed / ev.total) * 100) : undefined;
-            setPulling((p) => ({
-              ...p,
-              [modelId]: { status: ev.status ?? '', percent },
-            }));
-          } catch {
-            // ignore
+            handleLine(line);
+          } catch (e) {
+            throw new Error(e instanceof Error ? e.message : 'Ошибка чтения прогресса Ollama');
           }
         }
       }
+      if (buf.trim()) handleLine(buf);
       setPulling((p) => {
         const copy = { ...p };
         delete copy[modelId];
@@ -188,7 +199,7 @@ export default function LocalModelsPage() {
     } catch (e) {
       setPulling((p) => ({
         ...p,
-        [modelId]: { status: e instanceof Error ? e.message : 'Ошибка' },
+        [modelId]: { status: e instanceof Error ? e.message : 'Ошибка загрузки', error: true },
       }));
       setTimeout(() => {
         setPulling((p) => {
@@ -196,7 +207,7 @@ export default function LocalModelsPage() {
           delete copy[modelId];
           return copy;
         });
-      }, 3000);
+      }, 8000);
     }
   }
 
@@ -254,9 +265,16 @@ export default function LocalModelsPage() {
             Ollama — установка, выгрузка из памяти, детали модели
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={refresh} disabled={loading}>
-          <RefreshCw className={loading ? 'animate-spin' : ''} /> Обновить
-        </Button>
+        <div className="flex gap-2">
+          <Button asChild variant="outline" size="sm">
+            <Link href="/admin/ai/providers">
+              <Globe2 /> Внешние API + VPN
+            </Link>
+          </Button>
+          <Button variant="outline" size="sm" onClick={refresh} disabled={loading}>
+            <RefreshCw className={loading ? 'animate-spin' : ''} /> Обновить
+          </Button>
+        </div>
       </div>
 
       {data && !data.ollamaAvailable && (
@@ -437,7 +455,7 @@ ollama pull qwen2.5:7b`}
                 </div>
                 {pulling[hfPreview.ollamaTag] ? (
                   <div className="space-y-1">
-                    <div className="flex justify-between text-[11px]">
+                    <div className={pulling[hfPreview.ollamaTag].error ? 'flex justify-between text-[11px] text-red-600' : 'flex justify-between text-[11px]'}>
                       <span>{pulling[hfPreview.ollamaTag].status}</span>
                       {pulling[hfPreview.ollamaTag].percent !== undefined && (
                         <span>{pulling[hfPreview.ollamaTag].percent}%</span>
@@ -517,7 +535,7 @@ ollama pull qwen2.5:7b`}
                       </div>
                       {progress ? (
                         <div className="space-y-1">
-                          <div className="flex justify-between text-[11px]">
+                          <div className={progress.error ? 'flex justify-between text-[11px] text-red-600' : 'flex justify-between text-[11px]'}>
                             <span>{progress.status}</span>
                             {progress.percent !== undefined && <span>{progress.percent}%</span>}
                           </div>

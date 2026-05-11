@@ -12,6 +12,7 @@ import {
   Users,
   Wrench,
   Sparkles,
+  Globe2,
 } from 'lucide-react';
 import { auth } from '@/lib/auth';
 import { LogoutButton } from '@/components/logout-button';
@@ -57,6 +58,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const adminNavAll: NavItem[] = [
     { key: 'admin', href: '/admin', label: 'Панель', icon: Shield },
     { key: 'admin-ai-models', href: '/admin/ai/local-models', label: 'AI модели', icon: Cpu },
+    { key: 'admin-ai-providers', href: '/admin/ai/providers', label: 'Внешние API + VPN', icon: Globe2 },
     { key: 'admin-ai-prompt', href: '/admin/ai/system-prompt', label: 'AI prompt', icon: Sparkles },
     { key: 'admin-users', href: '/admin/users', label: 'Пользователи', icon: Users },
     { key: 'admin-settings', href: '/admin/settings', label: 'Настройки платформы', icon: Wrench },

@@ -311,8 +311,15 @@ export function parseHuggingFaceUrl(input: string): {
     };
   }
 
-  // Ollama требует GGUF — обычно это репозитории с "GGUF" в имени
-  // но не блокируем (Ollama сам ругнётся если не GGUF)
+  const isGgufRepo = /gguf/i.test(repo) || /\.gguf(?:$|[?#:])/i.test(trimmed);
+  if (!isGgufRepo) {
+    return {
+      ok: false,
+      error:
+        `Репозиторий ${user}/${repo} не похож на GGUF-модель. Ollama не скачивает обычные HuggingFace safetensors-репозитории напрямую. Найдите GGUF-версию модели, например repo с "-GGUF" и квантизацией ":Q4_K_M", или используйте модель из каталога Ollama.`,
+    };
+  }
+
   const tag = quantization ? `hf.co/${user}/${repo}:${quantization}` : `hf.co/${user}/${repo}`;
   return { ok: true, ollamaTag: tag, user, repo, quantization };
 }

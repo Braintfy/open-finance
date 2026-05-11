@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.13] - 2026-05-11
+
+### Fixed
+- **HuggingFace model pull UX** — `parseHuggingFaceUrl()` теперь блокирует обычные safetensors-репозитории без `GGUF` и показывает понятную причину вместо неработающей кнопки скачивания.
+- **Ollama pull errors** — `/api/admin/ai/local-models/pull` отправляет `model` в `/api/pull`, прокидывает тело ошибки Ollama, а UI показывает streaming `error` события красным статусом.
+- **AI Providers navigation** — пункт `Внешние API + VPN` добавлен в левое админ-меню, настройки видимости `/settings` и как быстрый переход на странице локальных моделей.
+
 ## [0.9.12] - 2026-05-11
 
 ### Fixed
