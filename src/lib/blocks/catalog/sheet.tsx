@@ -103,6 +103,13 @@ type BlockSourcePage = {
   blocks: BlockSourceBlock[];
 };
 
+type BlockSourceGroup = {
+  id: string;
+  label: string;
+  description: string;
+  count: number;
+};
+
 // ============================================================================
 // Helpers
 // ============================================================================
@@ -304,6 +311,7 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
   /** Inline picker для @block mentions */
   const [blockPickerOpen, setBlockPickerOpen] = useState(false);
   const [blockSearch, setBlockSearch] = useState('');
+  const [selectedSourceGroup, setSelectedSourceGroup] = useState('all');
   const [sourcePages, setSourcePages] = useState<BlockSourcePage[]>([]);
   const [sourceLoading, setSourceLoading] = useState(false);
   const [colWidths, setColWidths] = useState<number[]>(
@@ -398,12 +406,39 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
       : pages;
   }, [availableBlocks, liveValues, sourcePages, instance.id]);
 
+  const sourceGroups = useMemo<BlockSourceGroup[]>(() => {
+    const total = blockSourcePages.reduce((acc, page) => acc + page.blocks.length, 0);
+    const categoryCounts = new Map<string, number>();
+    blockSourcePages.forEach((page) => {
+      page.blocks.forEach((block) => {
+        categoryCounts.set(block.category, (categoryCounts.get(block.category) ?? 0) + 1);
+      });
+    });
+    return [
+      { id: 'all', label: 'Все блоки', description: 'Все страницы и категории', count: total },
+      ...blockSourcePages.map((page) => ({
+        id: `page:${page.pageKey}`,
+        label: page.pageLabel,
+        description: 'Страница',
+        count: page.blocks.length,
+      })),
+      ...Array.from(categoryCounts.entries()).map(([category, count]) => ({
+        id: `category:${category}`,
+        label: category,
+        description: 'Категория',
+        count,
+      })),
+    ];
+  }, [blockSourcePages]);
+
   const filteredSourcePages = useMemo(() => {
     const q = blockSearch.trim().toLowerCase();
     return blockSourcePages
       .map((page) => ({
         ...page,
         blocks: page.blocks.filter((block) => {
+          if (selectedSourceGroup.startsWith('page:') && selectedSourceGroup.slice(5) !== page.pageKey) return false;
+          if (selectedSourceGroup.startsWith('category:') && selectedSourceGroup.slice(9) !== block.category) return false;
           if (!q) return true;
           return [page.pageLabel, block.category, block.typeLabel, block.label, block.blockId]
             .join(' ')
@@ -412,7 +447,7 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
         }),
       }))
       .filter((page) => page.blocks.length > 0);
-  }, [blockSearch, blockSourcePages]);
+  }, [blockSearch, blockSourcePages, selectedSourceGroup]);
 
   // Вычисляем все ячейки
   const evaluatedCells = useMemo(() => {
@@ -537,6 +572,54 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
     setTimeout(() => {
       input?.focus();
       const newPos = pos + text.length;
+      input?.setSelectionRange(newPos, newPos);
+    }, 0);
+  }
+
+  function insertBlockField(block: BlockSourceBlock, field: BlockSourceField) {
+    const ref =
+      block.pageKey === 'current'
+        ? field.name === 'value'
+          ? block.blockId
+          : `${block.blockId}.${field.name}`
+        : `${block.pageKey}:${block.blockId}.${field.name}`;
+    const token = `@${ref}`;
+    const input = editInputRef.current;
+    let base = editValue;
+    let pos = caretPos ?? input?.selectionStart ?? base.length;
+    if (!base.startsWith('=')) {
+      base = `=${base}`;
+      pos += 1;
+    }
+    pos = Math.max(1, Math.min(pos, base.length));
+    const nextValue = base.slice(0, pos) + token + base.slice(pos);
+    const newPos = pos + token.length;
+    const nextRefs = { ...(cfg.blockRefs ?? {}), [ref]: field.value };
+
+    setEditValue(nextValue);
+    setFormulaMode(true);
+    setEditing(true);
+    setCaretPos(newPos);
+
+    if (editingHeaderId) {
+      const nextHeaders = headerCells.map((hc) => (hc.id === editingHeaderId ? { ...hc, value: nextValue } : hc));
+      setHeaderCells(nextHeaders);
+      saveConfig({ headerCells: nextHeaders, blockRefs: nextRefs });
+    } else if (activeCell) {
+      const nextCells = cells.map((row, ri) =>
+        ri === activeCell.r ? row.map((cell, ci) => (ci === activeCell.c ? nextValue : cell)) : row
+      );
+      setCells(nextCells);
+      saveConfig({ cells: nextCells, blockRefs: nextRefs });
+    } else {
+      saveConfig({ blockRefs: nextRefs });
+    }
+
+    setBlockPickerOpen(false);
+    setBlockSearch('');
+    openingBlockPickerRef.current = false;
+    setTimeout(() => {
+      input?.focus();
       input?.setSelectionRange(newPos, newPos);
     }, 0);
   }
@@ -953,7 +1036,7 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
               @Блок
             </button>
             <DialogContent
-              className="max-w-sm gap-3 p-4"
+              className="w-[min(94vw,920px)] max-w-none gap-0 overflow-hidden p-0"
               onOpenAutoFocus={(e) => {
                 e.preventDefault();
               }}
@@ -963,83 +1046,108 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
                 editInputRef.current?.focus();
               }}
             >
-              <DialogHeader className="space-y-1">
+              <DialogHeader className="border-b border-border/60 px-5 py-4">
                 <DialogTitle className="text-sm">Вставить значение блока</DialogTitle>
                 <DialogDescription className="text-[11px]">
-                  Выберите блок и поле для вставки в формулу
+                  Выберите страницу, категорию, блок и конкретное поле для формулы
                 </DialogDescription>
               </DialogHeader>
-              <Input
-                placeholder="Поиск блоков..."
-                value={blockSearch}
-                onChange={(e) => setBlockSearch(e.target.value)}
-                className="h-7 text-xs"
-              />
-              <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
-                {sourceLoading ? (
-                  <p className="py-4 text-center text-xs text-muted-foreground">Загружаю блоки…</p>
-                ) : filteredSourcePages.length === 0 ? (
-                  <p className="py-4 text-center text-xs text-muted-foreground">
-                    Нет доступных блоков. Добавьте блоки на страницах или измените поиск.
-                  </p>
-                ) : (
-                  filteredSourcePages.map((page) => (
-                    <div key={page.pageKey} className="space-y-1.5">
-                      <div className="sticky top-0 z-10 bg-background/95 py-1 text-[11px] font-semibold text-muted-foreground">
-                        {page.pageLabel}
-                      </div>
-                      {page.blocks.map((block) => (
-                        <div key={`${block.pageKey}:${block.blockId}`} className="rounded-md border border-border/40 bg-muted/20 p-2">
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="min-w-0">
-                              <div className="truncate text-xs font-medium text-foreground">{block.label}</div>
-                              <div className="text-[10px] text-muted-foreground">
-                                {block.category} · {block.typeLabel}
+              <div className="grid min-h-[420px] grid-cols-[240px_minmax(0,1fr)]">
+                <aside className="border-r border-border/60 bg-muted/20 p-3">
+                  <Input
+                    placeholder="Поиск блоков..."
+                    value={blockSearch}
+                    onChange={(e) => setBlockSearch(e.target.value)}
+                    className="h-8 text-xs"
+                  />
+                  <div className="mt-3 space-y-1">
+                    {sourceGroups.map((group) => (
+                      <button
+                        key={group.id}
+                        type="button"
+                        onClick={() => setSelectedSourceGroup(group.id)}
+                        className={
+                          'flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-2 text-left transition ' +
+                          (selectedSourceGroup === group.id
+                            ? 'bg-background text-foreground shadow-sm ring-1 ring-border/70'
+                            : 'text-muted-foreground hover:bg-background/60 hover:text-foreground')
+                        }
+                      >
+                        <span className="min-w-0">
+                          <span className="block truncate text-xs font-medium">{group.label}</span>
+                          <span className="block truncate text-[10px]">{group.description}</span>
+                        </span>
+                        <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] tabular-nums">
+                          {group.count}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </aside>
+                <div className="max-h-[520px] overflow-y-auto p-4">
+                  {sourceLoading ? (
+                    <p className="py-12 text-center text-xs text-muted-foreground">Загружаю блоки…</p>
+                  ) : filteredSourcePages.length === 0 ? (
+                    <p className="py-12 text-center text-xs text-muted-foreground">
+                      Нет доступных блоков. Добавьте блоки на страницах или измените поиск.
+                    </p>
+                  ) : (
+                    <div className="space-y-4">
+                      {filteredSourcePages.map((page) => (
+                        <section key={page.pageKey} className="space-y-2">
+                          <div className="sticky top-0 z-10 flex items-center justify-between bg-background/95 py-1 backdrop-blur">
+                            <div className="text-xs font-semibold text-foreground">{page.pageLabel}</div>
+                            <div className="text-[10px] text-muted-foreground">{page.blocks.length} блоков</div>
+                          </div>
+                          <div className="grid gap-2">
+                            {page.blocks.map((block) => (
+                              <div
+                                key={`${block.pageKey}:${block.blockId}`}
+                                className="rounded-lg border border-border/60 bg-card p-3 shadow-sm transition hover:border-primary/40"
+                              >
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <div className="truncate text-sm font-medium text-foreground">{block.label}</div>
+                                    <div className="mt-0.5 text-[11px] text-muted-foreground">
+                                      {block.category} · {block.typeLabel}
+                                    </div>
+                                  </div>
+                                  <div className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                                    {block.fields.length} поля
+                                  </div>
+                                </div>
+                                <div className="mt-3 grid gap-1.5 sm:grid-cols-2">
+                                  {block.fields.map((field) => {
+                                    const preview = field.value !== null && field.value !== undefined
+                                      ? String(field.value).slice(0, 28)
+                                      : 'нет значения';
+                                    return (
+                                      <button
+                                        key={field.name}
+                                        type="button"
+                                        className="flex min-h-9 items-center justify-between gap-2 rounded-md bg-muted/30 px-2.5 py-1.5 text-left ring-1 ring-border/50 transition hover:bg-primary/10 hover:ring-primary/40"
+                                        onClick={() => insertBlockField(block, field)}
+                                        title={`${field.label} = ${preview}`}
+                                      >
+                                        <span className="min-w-0">
+                                          <span className="block truncate text-xs font-medium text-primary">{field.label}</span>
+                                          <span className="block truncate text-[10px] text-muted-foreground">{field.name}</span>
+                                        </span>
+                                        <span className="max-w-[180px] truncate text-right text-[11px] tabular-nums text-foreground">
+                                          {preview}
+                                        </span>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
                               </div>
-                            </div>
+                            ))}
                           </div>
-                          <div className="mt-1.5 flex flex-wrap gap-1">
-                            {block.fields.map((field) => {
-                              const ref =
-                                block.pageKey === 'current'
-                                  ? field.name === 'value'
-                                    ? block.blockId
-                                    : `${block.blockId}.${field.name}`
-                                  : `${block.pageKey}:${block.blockId}.${field.name}`;
-                              const preview = field.value !== null && field.value !== undefined
-                                ? ` ${String(field.value).slice(0, 18)}`
-                                : '';
-                              return (
-                                <button
-                                  key={field.name}
-                                  type="button"
-                                  className="inline-flex items-center gap-1 rounded bg-background px-1.5 py-0.5 text-[11px] ring-1 ring-border/60 transition hover:bg-accent hover:ring-border"
-                                  onClick={() => {
-                                    const prefix = editValue.startsWith('=') ? '' : '=';
-                                    insertTextAtCursor(prefix + '@' + ref);
-                                    if (field.value !== null && field.value !== undefined) {
-                                      const nextRefs = { ...(cfg.blockRefs ?? {}), [ref]: field.value };
-                                      queueMicrotask(() => saveConfig({ blockRefs: nextRefs }));
-                                    }
-                                    setFormulaMode(true);
-                                    setBlockPickerOpen(false);
-                                    setBlockSearch('');
-                                  }}
-                                  title={`${field.label}${preview ? ' = ' + preview : ''}`}
-                                >
-                                  <span className="font-medium text-primary">{field.label}</span>
-                                  {preview && (
-                                    <span className="text-muted-foreground">{preview}</span>
-                                  )}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </div>
+                        </section>
                       ))}
                     </div>
-                  ))
-                )}
+                  )}
+                </div>
               </div>
             </DialogContent>
           </Dialog>
@@ -1117,6 +1225,7 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
                           onSelect={handleEditSelect}
                           onBlur={(e) => {
                             const related = e.relatedTarget as HTMLElement | null;
+                            if (openingBlockPickerRef.current || blockPickerOpen) return;
                             if ((formulaMode || editingHeaderId) && related && sheetRef.current?.contains(related)) return;
                             commitEdit();
                           }}

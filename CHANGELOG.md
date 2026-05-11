@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.9.16] - 2026-05-12
+
+### Changed
+- **Sheet: @Блок picker UI** — модалка расширена до двухпанельного интерфейса: слева фильтры по страницам и категориям, справа список блоков с полями и превью значений.
+
+### Fixed
+- **Sheet: @Блок field insertion** — выбор поля теперь атомарно записывает формулу в активную ячейку/header и сохраняет `blockRefs` одним config patch, устраняя гонку `editValue`/`saveConfig`.
+- **Sheet: inline cell blur race** — inline-инпут ячейки теперь учитывает `openingBlockPickerRef/blockPickerOpen`, поэтому клик по полю в Dialog не вызывает преждевременный `commitEdit()`.
+
 ## [0.9.15] - 2026-05-11
 
 ### Fixed
