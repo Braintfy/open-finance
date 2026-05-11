@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.8.9] - 2026-05-11
+
+### Fixed — CRITICAL: блоки не сохранялись в БД (save всегда писал [])
+- **Root cause**: `sanitizeBlocks()` в `saveLayout`/`loadLayout` (`src/lib/blocks/queries.ts`) фильтровала блоки по серверному REGISTRY. Но REGISTRY **пуст на сервере** — все файлы каталога блоков (`src/lib/blocks/catalog/*.tsx`) имеют `'use client'`, и Next.js не резолвит их экспорты в server-side бандле API routes
+- **Симптомы**: при любом сохранении (PUT `/api/blocks/layout/[pageKey]`) в БД писался `blocks: []`; на перезагрузке страницы все блоки сбрасывались на дефолтные (если row удалён) или на пустые (если row с `[]` уже есть)
+- **Fix**: убран вызов `sanitizeBlocks` из `saveLayout` и `loadLayout`. Валидация уже выполняется:
+  - На **save**: Zod-схема в API route проверяет структуру `BlockInstance[]`
+  - На **render**: клиентский `BlockGrid` пропускает неизвестные типы через `getBlockDef(b.type)` → `null` → не рендерится
+- **Файл**: `src/lib/blocks/queries.ts` — минимальный 3-строчный diff
+
 ## [0.8.8] - 2026-05-11
 
 ### Fixed — CRITICAL: блоки исчезали после настройки

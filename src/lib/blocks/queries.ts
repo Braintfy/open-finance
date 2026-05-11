@@ -3,7 +3,7 @@ import { and, eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { blockLayouts } from '@/lib/db/schema/block-layouts';
 import type { BlockInstance } from './types';
-import { sanitizeBlocks, getDefaultLayout } from './registry';
+import { getDefaultLayout } from './registry';
 
 export async function loadLayout(args: {
   tenantId: string;
@@ -31,7 +31,7 @@ export async function loadLayout(args: {
   }
 
   return {
-    blocks: sanitizeBlocks(row.blocks ?? []),
+    blocks: (row.blocks ?? []) as BlockInstance[],
     hiddenSections: row.hiddenSections ?? [],
   };
 }
@@ -59,20 +59,19 @@ export async function saveLayout(args: {
   blocks: BlockInstance[];
   hiddenSections?: string[];
 }): Promise<void> {
-  const cleaned = sanitizeBlocks(args.blocks);
   await db
     .insert(blockLayouts)
     .values({
       tenantId: args.tenantId,
       userId: args.userId,
       pageKey: args.pageKey,
-      blocks: cleaned,
+      blocks: args.blocks,
       hiddenSections: args.hiddenSections ?? [],
     })
     .onConflictDoUpdate({
       target: [blockLayouts.tenantId, blockLayouts.userId, blockLayouts.pageKey],
       set: {
-        blocks: cleaned,
+        blocks: args.blocks,
         hiddenSections: args.hiddenSections ?? [],
         updatedAt: new Date(),
       },
