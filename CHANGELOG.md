@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.7] - 2026-05-11
+
+### Added
+- **Click-to-insert формулы** — при вводе `=` кликать по ячейкам для вставки ссылок (A1, B3...) в позицию курсора, как в Excel. Работает в formula bar и inline-edit
+- **Touch/mobile formula helpers** — кнопка 📍 для активации pick-cell mode на тачскринах; панель быстрых операторов (`+ - * / ( ) , :`) и функций (`SUM AVG MAX MIN COUNT`) с вставкой в позицию курсора
+- **Formula mode индикатор** — `fx` badge в formula bar при активном режиме формулы
+- **Visual cursor** — `cursor-cell` на ячейках в formula mode + tooltip с адресом для вставки
+
+### Fixed
+- **setState-in-setState баг** — `block-grid.tsx:291 updateBlock` → `setBlocks` вызывался из `setCells` updater в sheet-блоке. Root cause: `saveConfig()` внутри `setCells(() => { saveConfig(); })`. Исправлено через `queueMicrotask()` для всех save-вызовов (`updateCell`, `startColResize`, `startRowResize`)
+- **onBlur при formula pick** — formula bar и inline-input не теряют фокус при клике по ячейке таблицы в режиме формулы
+
 ## [0.9.6] - 2026-05-11
 
 ### Added

@@ -220,6 +220,12 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
   const [activeCell, setActiveCell] = useState<{ r: number; c: number } | null>(null);
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState('');
+  /** true когда editValue начинается с '=' и пользователь может кликнуть по ячейке для вставки ссылки */
+  const [formulaMode, setFormulaMode] = useState(false);
+  /** Курсор (caret position) в поле ввода для вставки ссылок */
+  const [caretPos, setCaretPos] = useState<number | null>(null);
+  /** Touch-режим: явно активировать pick-cell на мобильных */
+  const [touchPickMode, setTouchPickMode] = useState(false);
   const [colWidths, setColWidths] = useState<number[]>(
     () => cfg.colWidths ?? Array(cfg.cols).fill(DEFAULT_COL_WIDTH)
   );
@@ -325,27 +331,63 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
   }, [cfg, onConfigChange]);
 
   function updateCell(r: number, c: number, value: string) {
+    let saved: string[][] | null = null;
     setCells((prev) => {
       const next = prev.map((row, ri) =>
         ri === r ? row.map((cell, ci) => (ci === c ? value : cell)) : row
       );
-      saveConfig({ cells: next });
+      saved = next;
       return next;
     });
+    // Defer config save to avoid setState-in-setState (block-grid updateBlock bug)
+    queueMicrotask(() => { if (saved) saveConfig({ cells: saved }); });
   }
 
   function handleCellClick(r: number, c: number) {
+    // В режиме формулы: клик по другой ячейке вставляет ссылку
+    if ((formulaMode || touchPickMode) && activeCell && !(activeCell.r === r && activeCell.c === c)) {
+      insertCellRef(r, c);
+      return;
+    }
     if (activeCell?.r === r && activeCell?.c === c && editing) return;
     setActiveCell({ r, c });
     setEditing(true);
-    setEditValue(cells[r][c]);
+    const raw = cells[r]?.[c] ?? '';
+    setEditValue(raw);
+    setFormulaMode(raw.startsWith('='));
+    setTouchPickMode(false);
     setTimeout(() => editInputRef.current?.focus(), 0);
+  }
+
+  /** Вставляет ссылку на ячейку (например A3) в текущую позицию курсора в formula bar */
+  function insertCellRef(r: number, c: number) {
+    const ref = cellAddress(r, c);
+    const input = editInputRef.current;
+    if (!input) {
+      setEditValue((prev) => prev + ref);
+      return;
+    }
+    const pos = caretPos ?? input.selectionStart ?? editValue.length;
+    const before = editValue.slice(0, pos);
+    const after = editValue.slice(pos);
+    const newValue = before + ref + after;
+    setEditValue(newValue);
+    setCaretPos(pos + ref.length);
+    // Восстанавливаем фокус и позицию курсора
+    setTimeout(() => {
+      input.focus();
+      const newPos = pos + ref.length;
+      input.setSelectionRange(newPos, newPos);
+    }, 0);
   }
 
   function commitEdit() {
     if (activeCell && editing) {
       updateCell(activeCell.r, activeCell.c, editValue);
       setEditing(false);
+      setFormulaMode(false);
+      setTouchPickMode(false);
+      setCaretPos(null);
     }
   }
 
@@ -353,20 +395,40 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
     if (!activeCell) return;
     if (e.key === 'Enter') {
       commitEdit();
-      setActiveCell((prev) => prev ? { r: Math.min(prev.r + 1, cfg.rows - 1), c: prev.c } : null);
+      const nextR = Math.min(activeCell.r + 1, cfg.rows - 1);
+      setActiveCell({ r: nextR, c: activeCell.c });
       setEditing(true);
-      setEditValue(cells[Math.min(activeCell.r + 1, cfg.rows - 1)]?.[activeCell.c] ?? '');
+      const raw = cells[nextR]?.[activeCell.c] ?? '';
+      setEditValue(raw);
+      setFormulaMode(raw.startsWith('='));
     } else if (e.key === 'Tab') {
       e.preventDefault();
       commitEdit();
       const nextC = e.shiftKey ? Math.max(0, activeCell.c - 1) : Math.min(activeCell.c + 1, cfg.cols - 1);
       setActiveCell({ r: activeCell.r, c: nextC });
       setEditing(true);
-      setEditValue(cells[activeCell.r]?.[nextC] ?? '');
+      const raw = cells[activeCell.r]?.[nextC] ?? '';
+      setEditValue(raw);
+      setFormulaMode(raw.startsWith('='));
     } else if (e.key === 'Escape') {
       setEditing(false);
+      setFormulaMode(false);
+      setTouchPickMode(false);
       setEditValue(cells[activeCell.r]?.[activeCell.c] ?? '');
     }
+  }
+
+  /** Отслеживаем изменения editValue для автоматического formula mode */
+  function handleEditChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const val = e.target.value;
+    setEditValue(val);
+    setFormulaMode(val.startsWith('='));
+    setCaretPos(e.target.selectionStart);
+  }
+
+  /** Запоминаем позицию курсора при клике/перемещении в input */
+  function handleEditSelect(e: React.SyntheticEvent<HTMLInputElement>) {
+    setCaretPos((e.target as HTMLInputElement).selectionStart);
   }
 
   // Column resize handlers
@@ -387,11 +449,9 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
     const onUp = () => {
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
-      setColWidths((current) => {
-        saveConfig({ colWidths: current });
-        return current;
-      });
       resizingCol.current = null;
+      // Defer to avoid setState-in-setState
+      setColWidths((current) => { queueMicrotask(() => saveConfig({ colWidths: current })); return current; });
     };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
@@ -415,11 +475,9 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
     const onUp = () => {
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
-      setRowHeights((current) => {
-        saveConfig({ rowHeights: current });
-        return current;
-      });
       resizingRow.current = null;
+      // Defer to avoid setState-in-setState
+      setRowHeights((current) => { queueMicrotask(() => saveConfig({ rowHeights: current })); return current; });
     };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
@@ -528,7 +586,7 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
 
       {/* Formula bar */}
       {cfg.showFormulaBar && activeCell && (
-        <div className="flex items-center gap-1.5 border-b border-border/40 bg-muted/20 px-2 py-1">
+        <div className="flex items-center gap-1 border-b border-border/40 bg-muted/20 px-2 py-1">
           <span className="flex h-5 min-w-[36px] items-center justify-center rounded bg-muted px-1 text-[10px] font-semibold text-muted-foreground">
             {cellAddress(activeCell.r, activeCell.c)}
           </span>
@@ -537,13 +595,100 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
             ref={editInputRef}
             className="h-5 flex-1 border-0 bg-transparent p-0 text-xs outline-none focus:ring-0"
             value={editValue}
-            onChange={(e) => setEditValue(e.target.value)}
-            onBlur={commitEdit}
+            onChange={handleEditChange}
+            onSelect={handleEditSelect}
+            onBlur={(e) => {
+              // Не commit если клик на ячейку таблицы (formulaMode pick)
+              const related = e.relatedTarget as HTMLElement | null;
+              if (formulaMode && related?.closest('table')) return;
+              commitEdit();
+            }}
             onKeyDown={handleKeyDown}
-            placeholder="Введите значение или формулу (=SUM(A1:A5))"
+            placeholder={formulaMode ? 'Кликните по ячейке для вставки ссылки' : 'Введите значение или формулу (=SUM(A1:A5))'}
           />
-          {cells[activeCell.r]?.[activeCell.c]?.startsWith('=') && (
-            <span className="text-[10px] text-blue-500">fx</span>
+          {/* Formula mode indicator */}
+          {formulaMode && (
+            <span className="flex h-5 items-center rounded bg-blue-100 px-1.5 text-[10px] font-semibold text-blue-600 dark:bg-blue-950 dark:text-blue-400">
+              fx
+            </span>
+          )}
+          {/* Mobile: кнопка для активации pick-cell mode */}
+          <button
+            type="button"
+            onClick={() => {
+              if (!editValue.startsWith('=')) {
+                setEditValue('=' + editValue);
+                setFormulaMode(true);
+              }
+              setTouchPickMode((v) => !v);
+              editInputRef.current?.focus();
+            }}
+            className={
+              'flex h-5 items-center rounded px-1.5 text-[10px] transition ' +
+              (touchPickMode
+                ? 'bg-primary text-primary-foreground'
+                : 'bg-muted text-muted-foreground hover:bg-muted/80')
+            }
+            title={touchPickMode ? 'Выключить выбор ячеек' : 'Выбрать ячейку для ссылки (для тачскрина)'}
+          >
+            📍
+          </button>
+        </div>
+      )}
+
+      {/* Mobile formula helpers — показываем при формуле */}
+      {cfg.showFormulaBar && activeCell && (formulaMode || touchPickMode) && (
+        <div className="flex items-center gap-1 overflow-x-auto border-b border-border/30 bg-muted/10 px-2 py-0.5">
+          <span className="shrink-0 text-[10px] text-muted-foreground">Вставить:</span>
+          {['+', '-', '*', '/', '(', ')', ',', ':'].map((op) => (
+            <button
+              key={op}
+              type="button"
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-muted text-[11px] font-mono transition hover:bg-muted/80"
+              onClick={() => {
+                const input = editInputRef.current;
+                const pos = caretPos ?? input?.selectionStart ?? editValue.length;
+                const newValue = editValue.slice(0, pos) + op + editValue.slice(pos);
+                setEditValue(newValue);
+                setCaretPos(pos + 1);
+                setTimeout(() => {
+                  input?.focus();
+                  input?.setSelectionRange(pos + 1, pos + 1);
+                }, 0);
+              }}
+            >
+              {op}
+            </button>
+          ))}
+          <div className="mx-1 h-3 w-px bg-border/50" />
+          {['SUM', 'AVG', 'MAX', 'MIN', 'COUNT'].map((fn) => (
+            <button
+              key={fn}
+              type="button"
+              className="flex h-5 shrink-0 items-center rounded bg-blue-50 px-1.5 text-[10px] font-semibold text-blue-600 transition hover:bg-blue-100 dark:bg-blue-950 dark:text-blue-400 dark:hover:bg-blue-900"
+              onClick={() => {
+                const fnText = fn === 'AVG' ? 'AVERAGE(' : `${fn}(`;
+                const input = editInputRef.current;
+                const pos = caretPos ?? input?.selectionStart ?? editValue.length;
+                let newValue = editValue;
+                if (!editValue.startsWith('=')) newValue = '=' + newValue;
+                const insertPos = !editValue.startsWith('=') ? pos + 1 : pos;
+                newValue = newValue.slice(0, insertPos) + fnText + newValue.slice(insertPos);
+                setEditValue(newValue);
+                setFormulaMode(true);
+                const newPos = insertPos + fnText.length;
+                setCaretPos(newPos);
+                setTimeout(() => {
+                  input?.focus();
+                  input?.setSelectionRange(newPos, newPos);
+                }, 0);
+              }}
+            >
+              {fn}
+            </button>
+          ))}
+          {touchPickMode && (
+            <span className="ml-auto shrink-0 text-[10px] text-primary">← тапните ячейку</span>
           )}
         </div>
       )}
@@ -611,8 +756,13 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
                           ref={editInputRef}
                           className="h-full w-full border-0 bg-background px-1.5 text-xs outline-none"
                           value={editValue}
-                          onChange={(e) => setEditValue(e.target.value)}
-                          onBlur={commitEdit}
+                          onChange={handleEditChange}
+                          onSelect={handleEditSelect}
+                          onBlur={(e) => {
+                            const related = e.relatedTarget as HTMLElement | null;
+                            if (formulaMode && related?.closest('table')) return;
+                            commitEdit();
+                          }}
                           onKeyDown={handleKeyDown}
                           autoFocus
                         />
@@ -620,9 +770,14 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
                         <div
                           className={
                             'flex h-full items-center truncate px-1.5 tabular-nums ' +
-                            (isFormula ? 'text-blue-700 dark:text-blue-400' : '')
+                            (isFormula ? 'text-blue-700 dark:text-blue-400' : '') +
+                            ((formulaMode || touchPickMode) && !isActive ? ' cursor-cell' : '')
                           }
-                          title={isFormula ? `Формула: ${rawValue}` : undefined}
+                          title={
+                            (formulaMode || touchPickMode) && !isActive
+                              ? `Кликните чтобы вставить ${cellAddress(r, c)}`
+                              : isFormula ? `Формула: ${rawValue}` : undefined
+                          }
                         >
                           {displayValue}
                         </div>
