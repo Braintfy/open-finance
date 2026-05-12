@@ -12,7 +12,7 @@ const PAGE_LABELS: Record<string, { label: string; href: string }> = {
   cashflow: { label: 'Денежный поток', href: '/cashflow' },
   dashboard: { label: 'Дашборд', href: '/dashboard' },
   taxes: { label: 'Налоги', href: '/taxes' },
-  inbox: { label: 'Inbox', href: '/inbox' },
+  inbox: { label: 'Входящие', href: '/inbox' },
   deadlines: { label: 'Дедлайны', href: '/deadlines' },
 };
 

@@ -51,7 +51,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   const mainNavAll: NavItem[] = [
     { key: 'dashboard', href: '/dashboard', label: 'Дашборд', icon: LayoutDashboard, protected: true },
-    { key: 'inbox', href: '/inbox', label: 'Inbox', icon: Inbox },
+    { key: 'inbox', href: '/inbox', label: 'Входящие', icon: Inbox },
     { key: 'cashflow', href: '/cashflow', label: 'Денежный поток', icon: Wallet },
     { key: 'boards', href: '/boards', label: 'Мои доски', icon: LayoutGrid },
     { key: 'deadlines', href: '/deadlines', label: 'Дедлайны', icon: Calendar },

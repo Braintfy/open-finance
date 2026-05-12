@@ -7,6 +7,7 @@ import { blockLayouts } from '@/lib/db/schema/block-layouts';
 import { transactions } from '@/lib/db/schema/transactions';
 import { loadLayout } from '@/lib/blocks/queries';
 import { getCashflowSummary } from '@/lib/cashflow/queries';
+import { listInboxChannels, listInboxMessages } from '@/lib/inbox/queries';
 import type { BlockInstance } from '@/lib/blocks/types';
 import FormulaParser, { MAX_COLUMN, MAX_ROW } from 'fast-formula-parser';
 
@@ -28,12 +29,12 @@ type SourceBlock = {
   fields: SourceField[];
 };
 
-const DEFAULT_PAGE_KEYS = ['dashboard', 'cashflow'];
+const DEFAULT_PAGE_KEYS = ['dashboard', 'cashflow', 'inbox'];
 
 const PAGE_LABELS: Record<string, string> = {
   dashboard: 'Главная',
   cashflow: 'Кэшфлоу',
-  inbox: 'Inbox',
+  inbox: 'Входящие',
   deadlines: 'Дедлайны',
   taxes: 'Налоги',
   settings: 'Настройки',
@@ -48,6 +49,7 @@ const TYPE_LABELS: Record<string, { label: string; category: string }> = {
   'excel.cell': { label: 'Excel-ячейка', category: 'Таблицы' },
   'custom.data': { label: 'Данные', category: 'Данные' },
   'computed.sum': { label: 'Вычисление', category: 'Вычисления' },
+  'inbox.channel-feed': { label: 'Каналы входящих', category: 'Входящие' },
   'cashflow.top-categories': { label: 'Топ категорий', category: 'Кэшфлоу' },
   'cashflow.transactions': { label: 'Операции', category: 'Кэшфлоу' },
   'cashflow.chart': { label: 'График', category: 'Графики' },
@@ -371,6 +373,21 @@ async function fieldsForBlock(block: BlockInstance, tenantId: string, monthlySum
     return [
       { name: 'value', label: 'Значение', value },
       { name: 'raw', label: 'Формула/текст', value: raw },
+    ];
+  }
+  if (block.type === 'inbox.channel-feed') {
+    const [channels, latest] = await Promise.all([
+      listInboxChannels(tenantId, block.id),
+      listInboxMessages({ tenantId, blockId: block.id, limit: 1 }),
+    ]);
+    const total = channels.reduce((sum, channel) => sum + channel.totalCount, 0);
+    const message = latest[0];
+    return [
+      { name: 'value', label: 'Всего сообщений', value: total, format: 'number' },
+      { name: 'count', label: 'Всего сообщений', value: total, format: 'number' },
+      { name: 'latestSubject', label: 'Последняя тема', value: message?.subject ?? null, format: 'text' },
+      { name: 'latestSender', label: 'Последний отправитель', value: message?.senderName ?? message?.senderAddress ?? null, format: 'text' },
+      { name: 'latestPreview', label: 'Последнее превью', value: message?.preview ?? null, format: 'text' },
     ];
   }
   return [

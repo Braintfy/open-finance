@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.10.1] - 2026-05-13
+
+### Added
+- **Входящие** — новая страница `/inbox` на BlockGrid с дефолтным блоком `inbox.channel-feed`.
+- **Inbox Channel Feed block** — read-only блок каналов коммуникаций: счетчики почты/Telegram, список сообщений и просмотр тела письма.
+- **Inbox DB schema** — `inbox_channels` и `inbox_messages` с tenant scoping, `created_by`, дедупликацией сообщений и SQL init-файлом.
+- **Email IMAP MVP** — настройки email-канала, проверка подключения, синхронизация последних 25 писем, базовый MIME parse без новых npm-зависимостей.
+- **Inbox settings** — секция «Каналы входящих» в `/settings`: почта через IMAP и placeholder Telegram.
+- **AI tool** — read-only `query_inbox_messages` для tenant-scoped доступа AI-агентов к сообщениям.
+
+### Changed
+- **Навигация** — пользовательский раздел `Inbox` переименован в «Входящие» в sidebar, Cmd+K, settings, dashboard-карточке и cross-page labels.
+- **Secrets** — пароль почтового канала шифруется AES-256-GCM через `INBOX_SECRET_KEY` с dev-only fallback.
+- **Inbox block settings** — подключение каналов перенесено из `/settings` в модалку настроек конкретного блока; каналы теперь scoped per block через `config.blockId`.
+- **Inbox layout** — дефолтная страница `/inbox` теперь стартует с двумя средними блоками `6×12`, расположенными в две колонки.
+- **Inbox tabs** — chips «Почта» и «Telegram» показываются только если соответствующий канал подключён в текущем блоке.
+- **Inbox email help** — в настройках блока добавлена модалка «Инструкция» с параметрами Beget, Gmail, Яндекс, Mail.ru/VK WorkMail и VPS/self-hosted mail.
+- **Inbox IMAP STARTTLS** — выключенный SSL/TLS теперь использует STARTTLS перед логином; это покрывает Beget `imap.beget.com:143`, если `993` зависает на TLS greeting.
+- **Inbox Beget fallback** — при timeout на `imap.beget.com:993` тест/синхронизация автоматически повторяют подключение через `143 + STARTTLS`.
+
 ## [0.10.0] - 2026-05-12
 
 ### Added

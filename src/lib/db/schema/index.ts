@@ -7,3 +7,4 @@ export * from './block-layouts';
 export * from './deadlines';
 export * from './ai';
 export * from './boards';
+export * from './inbox';

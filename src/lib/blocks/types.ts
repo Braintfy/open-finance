@@ -108,6 +108,7 @@ export type BlockDef = {
 export type BlockSettingsFormProps = {
   config: Record<string, unknown>;
   onChange: (config: Record<string, unknown>) => void;
+  instance?: BlockInstance;
 };
 
 export type BlockRenderProps = {

@@ -43,8 +43,8 @@ const MAIN_NAV: NavItem[] = [
   },
   {
     key: 'inbox',
-    label: 'Inbox',
-    description: 'Чеки, счета, документы',
+    label: 'Входящие',
+    description: 'Почта, Telegram и документы',
     icon: Inbox,
   },
   {

@@ -54,10 +54,10 @@
 - `/Users/firay/open-finance/` — локальная версия (personal use, старый код)
 - `/Users/firay/NALOG/` — алгоритмы налогов для миграции в `modules/taxes/`
 
-## Текущий статус (v0.9.23)
-- Фаза: **AI Micro-Agent + External Providers + VPN/Diagnostics**
-- Готово: auth, cashflow CRUD, Block-Grid (drag/resize/persist + stable 3s hover resize-corner + unified relation icons), Block Relationships (обновлённый список связей + выбор field/cell), Cmd+K Command Palette, Chart block, mindmap overlay, cross-page pins, custom data block, sheet block (Excel-формулы + `@связать` picker + compact 3×5 default + computed Sheet cells в sources API + корректное различение копеек/обычных ячеек), excel.cell block (`@связать` в настройках + compact 3×2 default + adaptive sm render + `moneyRefs`), **AI Micro-Agent** (модалка + блок + block-capabilities + streaming + token counter + stop + chat-capable filter), **AI Providers Hub** (OpenAI/Claude/OpenRouter/VseGPT external + HTTP-proxy через undici + diagnostics)
-- Block catalog: `stat.income`, `stat.expense`, `stat.balance`, `stat.custom`, `top-categories`, `transactions`, `sheet`, `excel.cell`, `navigate.card`, `computed.sum`, `custom.data`, `chart.cashflow`, `ai.micro-agent`
+## Текущий статус (v0.10.1)
+- Фаза: **Inbox Channels MVP + AI Micro-Agent + External Providers + VPN/Diagnostics**
+- Готово: auth, cashflow CRUD, Block-Grid (drag/resize/persist + stable 3s hover resize-corner + unified relation icons), Block Relationships (обновлённый список связей + выбор field/cell), Cmd+K Command Palette, Chart block, mindmap overlay, cross-page pins, custom data block, sheet block (Excel-формулы + `@связать` picker + compact 3×5 default + computed Sheet cells в sources API + корректное различение копеек/обычных ячеек), excel.cell block (`@связать` в настройках + compact 3×2 default + adaptive sm render + `moneyRefs`), **AI Micro-Agent** (модалка + блок + block-capabilities + streaming + token counter + stop + chat-capable filter), **AI Providers Hub** (OpenAI/Claude/OpenRouter/VseGPT external + HTTP-proxy через undici + diagnostics), **Входящие** (`/inbox`, два дефолтных `inbox.channel-feed` блока 6×12, IMAP email test/sync в настройках конкретного блока, encrypted channel secret, STARTTLS + auto-retry для Beget 143 при timeout на 993, Telegram placeholder, help-модалка по провайдерам)
+- Block catalog: `stat.income`, `stat.expense`, `stat.balance`, `stat.custom`, `top-categories`, `transactions`, `sheet`, `excel.cell`, `navigate.card`, `computed.sum`, `custom.data`, `chart.cashflow`, `ai.micro-agent`, `inbox.channel-feed`
 - AI runtime:
   - `/api/ai/chat` — NDJSON streaming, auto-routes Ollama vs External (по `tenant.settings.aiExternal.enabled`)
   - **Local (Ollama):** chat-capable filter, fallback на установленную chat-модель, не embedding
@@ -69,7 +69,7 @@
   - `/admin/ai/system-prompt` — общий system prompt для tenant'а
 - Tenant settings JSONB: `aiProvider`, `aiModel`, `aiSystemPrompt`, `aiExternal{provider,baseUrl,apiKey,defaultModel,useProxy}`, `aiProxy{url,type,username,password}`
 - Каталог моделей: 19 моделей в категориях (chat-tiny / chat-light / chat-medium / chat-heavy / vision / code / embedding)
-- Следующий шаг: AES-256-GCM шифрование секретов, Whisper transcription, Cmd+K AI action, create_block on apply, RAG memory
+- Следующий шаг: применить inbox schema в dev DB, протестировать реальные IMAP-провайдеры, Telegram Bot API канал, Whisper transcription, Cmd+K AI action, create_block on apply, RAG memory
 
 ## Команды
 ```bash

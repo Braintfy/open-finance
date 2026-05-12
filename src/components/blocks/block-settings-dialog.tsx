@@ -60,7 +60,7 @@ export function BlockSettingsDialog({
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-3xl">
         <DialogHeader>
           <DialogTitle>Настройки блока</DialogTitle>
           <DialogDescription>
@@ -97,6 +97,7 @@ export function BlockSettingsDialog({
           {tab === 'params' && def.SettingsForm && (
             <def.SettingsForm
               config={instance.config ?? {}}
+              instance={instance}
               onChange={(config) => onChange({ config })}
             />
           )}

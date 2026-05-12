@@ -15,6 +15,7 @@ import { CustomDataBlock } from './catalog/custom-data';
 import { ExcelCellBlock } from './catalog/excel-cell';
 import { CashflowChartBlock } from './catalog/chart-cashflow';
 import { AiMicroAgentBlock } from './catalog/ai-micro-agent';
+import { InboxChannelFeedBlock } from './catalog/inbox-channel-feed';
 
 const ALL_BLOCKS: BlockDef[] = [
   StatIncomeBlock,
@@ -30,6 +31,7 @@ const ALL_BLOCKS: BlockDef[] = [
   ExcelCellBlock,
   CashflowChartBlock,
   AiMicroAgentBlock,
+  InboxChannelFeedBlock,
 ];
 
 const REGISTRY = new Map<string, BlockDef>(ALL_BLOCKS.map((b) => [b.type, b]));
@@ -80,9 +82,9 @@ export const DEFAULT_LAYOUTS: Record<string, PageLayout> = {
         h: 2,
         config: {
           href: '/inbox',
-          title: 'Inbox',
+          title: 'Входящие',
           description: 'Чеки, счета, договоры — AI разберёт',
-          comingSoon: true,
+          comingSoon: false,
         },
         appearance: { icon: 'Receipt' },
       },
@@ -135,6 +137,30 @@ export const DEFAULT_LAYOUTS: Record<string, PageLayout> = {
         y: 6,
         w: 12,
         h: 6,
+      },
+    ],
+    hiddenSections: [],
+  },
+  inbox: {
+    pageKey: 'inbox',
+    blocks: [
+      {
+        id: 'default-inbox-feed-left',
+        type: 'inbox.channel-feed',
+        x: 0,
+        y: 0,
+        w: 6,
+        h: 12,
+        config: { title: 'Входящие' },
+      },
+      {
+        id: 'default-inbox-feed-right',
+        type: 'inbox.channel-feed',
+        x: 6,
+        y: 0,
+        w: 6,
+        h: 12,
+        config: { title: 'Входящие' },
       },
     ],
     hiddenSections: [],

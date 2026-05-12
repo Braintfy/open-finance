@@ -65,6 +65,10 @@ const envSchema = z.object({
   SMTP_FROM: z.string().optional(),
   APP_URL: z.string().url().optional().or(z.literal('')),
 
+  // Inbox integrations
+  // AES-256-GCM key for connected channel secrets. In development a fallback is used.
+  INBOX_SECRET_KEY: z.string().optional().or(z.literal('')),
+
   // Feature flags
   FEATURE_OPEN_REGISTRATION: z
     .string()
@@ -120,6 +124,7 @@ export const env = envSchema.parse({
   SMTP_PASSWORD: process.env.SMTP_PASSWORD,
   SMTP_FROM: process.env.SMTP_FROM,
   APP_URL: process.env.APP_URL,
+  INBOX_SECRET_KEY: process.env.INBOX_SECRET_KEY,
   FEATURE_OPEN_REGISTRATION: process.env.FEATURE_OPEN_REGISTRATION,
   FEATURE_ONBOARDING_WIZARD: process.env.FEATURE_ONBOARDING_WIZARD,
   FEATURE_BILLING_MOCK: process.env.FEATURE_BILLING_MOCK,

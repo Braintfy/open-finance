@@ -81,10 +81,10 @@ export function CommandPalette() {
     },
     {
       id: 'nav-inbox',
-      label: 'Inbox',
+      label: 'Входящие',
       icon: Inbox,
       group: 'Навигация',
-      keywords: 'inbox входящие чеки документы',
+      keywords: 'inbox входящие почта телеграм чеки документы',
       onSelect: () => go('/inbox'),
     },
     {
