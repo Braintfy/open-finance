@@ -5,9 +5,11 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { BlockInstance } from '@/lib/blocks/types';
+import { collectBlockRelationEdges } from '@/lib/blocks/relations';
 
 type Props = {
   blocks: BlockInstance[];
+  currentPageKey?: string;
   /** Контейнер grid'а — для позиционирования SVG поверх него и вычисления координат */
   containerRef: React.RefObject<HTMLDivElement | null>;
   /** Показать связи (toggle button). Если false — ничего не рендерится. */
@@ -99,22 +101,15 @@ function buildPath(e: PositionedEdge): string {
 const STROKE = '#6366f1';
 const NODE_FILL = '#4f46e5';
 
-export function BlockRelationsOverlay({ blocks, containerRef, highlighted }: Props) {
+export function BlockRelationsOverlay({ blocks, currentPageKey, containerRef, highlighted }: Props) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [tick, setTick] = useState(0);
   const edgesRef = useRef<PositionedEdge[]>([]);
 
-  const rawEdges = useMemo<Edge[]>(() => {
-    const list: Edge[] = [];
-    for (const b of blocks) {
-      const deps = b.dependencies;
-      if (!deps || deps.sources.length === 0) continue;
-      for (const src of deps.sources) {
-        list.push({ fromId: src.blockId, toId: b.id, label: deps.aggregation });
-      }
-    }
-    return list;
-  }, [blocks]);
+  const rawEdges = useMemo<Edge[]>(
+    () => collectBlockRelationEdges(blocks, currentPageKey).map(({ fromId, toId, label }) => ({ fromId, toId, label })),
+    [blocks, currentPageKey]
+  );
 
   // Пересчитываем координаты только когда overlay видим
   useEffect(() => {

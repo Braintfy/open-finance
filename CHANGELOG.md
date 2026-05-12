@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.9.23] - 2026-05-12
+
+### Changed
+- **Block resize UX** — hover resize-corner delay reduced from 5s to 3s and moved to grid-item CSS hover to prevent flicker when pointing at the handle.
+- **Excel Cell adaptation** — `excel.cell` now uses a compact `sm` render with smaller padding/text and a softer `150×70` min-content threshold.
+
+### Fixed
+- **Resize corner flicker** — resize handle no longer disappears when the pointer moves from block content onto the bottom-right resize corner.
+- **Excel Cell false TooSmallOverlay** — normal compact cell sizes no longer show “Мало места” while preserving protection for truly tiny blocks.
+
+## [0.9.22] - 2026-05-12
+
+### Changed
+- **Block defaults: Excel Cell** — `excel.cell` keeps compact `3×2` default size with readable `220×80` min-content threshold.
+- **Block defaults: Sheet** — new Excel table blocks now start as compact `3 cols × 5 rows` with `5×5` grid size and `=SUM(A1:A5)` header total.
+- **Block resize UX** — resize handle is hidden by default and appears after 5 seconds of hover, while edit mode still shows resize immediately.
+
+### Fixed
+- **Relations icon coverage** — relation indicators and overlay now use shared relation detection for `dependencies`, `config.blockRefs`, and `@...` formulas, so linked Sheet/Excel Cell blocks show the icon consistently.
+
 ## [0.9.21] - 2026-05-12
 
 ### Changed

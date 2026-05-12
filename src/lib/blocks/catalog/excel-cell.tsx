@@ -425,19 +425,21 @@ function RenderExcelCell({ instance, onConfigChange }: BlockRenderProps) {
     );
   }
 
+  const compact = density === 'sm';
+
   return (
-    <Card className="flex h-full flex-col p-3">
+    <Card className={compact ? 'flex h-full flex-col p-2' : 'flex h-full flex-col p-3'}>
       <div className="flex items-center gap-1.5">
-        <Calculator className="h-4 w-4 shrink-0 text-muted-foreground" style={accent ? { color: accent } : undefined} />
+        <Calculator className={compact ? 'h-3.5 w-3.5 shrink-0 text-muted-foreground' : 'h-4 w-4 shrink-0 text-muted-foreground'} style={accent ? { color: accent } : undefined} />
         <Input
           value={title}
           onChange={(e) => save({ title: e.target.value })}
-          className="h-7 min-w-0 border-0 bg-transparent px-0 text-sm font-medium text-muted-foreground shadow-none focus-visible:ring-0"
+          className={compact ? 'h-6 min-w-0 border-0 bg-transparent px-0 text-xs font-medium text-muted-foreground shadow-none focus-visible:ring-0' : 'h-7 min-w-0 border-0 bg-transparent px-0 text-sm font-medium text-muted-foreground shadow-none focus-visible:ring-0'}
           placeholder="Название"
         />
       </div>
 
-      <div className="mt-2 flex flex-1 items-center">
+      <div className={compact ? 'mt-1 flex flex-1 items-center' : 'mt-2 flex flex-1 items-center'}>
         {editing ? (
           <Input
             ref={inputRef}
@@ -455,7 +457,7 @@ function RenderExcelCell({ instance, onConfigChange }: BlockRenderProps) {
               if (e.key === 'Enter') commit();
               if (e.key === 'Escape') cancel();
             }}
-            className="h-10 border-0 bg-muted/30 px-2 text-2xl font-semibold tabular-nums shadow-none focus-visible:bg-background"
+            className={compact ? 'h-8 border-0 bg-muted/30 px-2 text-xl font-semibold tabular-nums shadow-none focus-visible:bg-background' : 'h-10 border-0 bg-muted/30 px-2 text-2xl font-semibold tabular-nums shadow-none focus-visible:bg-background'}
             autoFocus
           />
         ) : (
@@ -466,7 +468,7 @@ function RenderExcelCell({ instance, onConfigChange }: BlockRenderProps) {
               setDraft(config.value);
               setTimeout(() => inputRef.current?.focus(), 0);
             }}
-            className="w-full truncate rounded-md px-1 py-1 text-left text-3xl font-semibold tabular-nums transition hover:bg-accent/30"
+            className={compact ? 'w-full truncate rounded-md px-1 py-0.5 text-left text-xl font-semibold tabular-nums transition hover:bg-accent/30' : 'w-full truncate rounded-md px-1 py-1 text-left text-3xl font-semibold tabular-nums transition hover:bg-accent/30'}
             style={accent ? { color: accent } : undefined}
             title={config.value.startsWith('=') ? `Формула: ${config.value}` : undefined}
           >
@@ -476,9 +478,9 @@ function RenderExcelCell({ instance, onConfigChange }: BlockRenderProps) {
       </div>
 
       {config.showFormulaBar && editing && (
-        <div className="mt-2 flex items-center gap-1 border-t border-border/40 pt-2">
-          <FunctionSquare className="h-3.5 w-3.5 text-muted-foreground" />
-          <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">{draft}</span>
+        <div className={compact ? 'mt-1 flex items-center gap-1 border-t border-border/40 pt-1' : 'mt-2 flex items-center gap-1 border-t border-border/40 pt-2'}>
+          <FunctionSquare className={compact ? 'h-3 w-3 text-muted-foreground' : 'h-3.5 w-3.5 text-muted-foreground'} />
+          <span className={compact ? 'min-w-0 flex-1 truncate text-[10px] text-muted-foreground' : 'min-w-0 flex-1 truncate text-[11px] text-muted-foreground'}>{draft}</span>
           <Dialog
             open={blockPickerOpen}
             onOpenChange={(open) => {
@@ -504,7 +506,7 @@ function RenderExcelCell({ instance, onConfigChange }: BlockRenderProps) {
                 openingBlockPickerRef.current = true;
                 setBlockPickerOpen(true);
               }}
-              className="h-6 shrink-0 rounded bg-amber-50 px-2 text-[11px] font-semibold text-amber-700 transition hover:bg-amber-100 dark:bg-amber-950 dark:text-amber-400"
+              className={compact ? 'h-5 shrink-0 rounded bg-amber-50 px-1.5 text-[10px] font-semibold text-amber-700 transition hover:bg-amber-100 dark:bg-amber-950 dark:text-amber-400' : 'h-6 shrink-0 rounded bg-amber-50 px-2 text-[11px] font-semibold text-amber-700 transition hover:bg-amber-100 dark:bg-amber-950 dark:text-amber-400'}
             >
               @связать
             </button>
@@ -833,7 +835,7 @@ export const ExcelCellBlock: BlockDef = {
   icon: Calculator,
   defaultSize: { w: 3, h: 2 },
   minSize: { w: 1, h: 1 },
-  minContentSize: { w: 100, h: 60 },
+  minContentSize: { w: 150, h: 70 },
   pages: ['*'],
   supportsDependencies: true,
   configSchema: ConfigSchema,

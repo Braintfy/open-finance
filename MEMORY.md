@@ -54,9 +54,9 @@
 - `/Users/firay/open-finance/` — локальная версия (personal use, старый код)
 - `/Users/firay/NALOG/` — алгоритмы налогов для миграции в `modules/taxes/`
 
-## Текущий статус (v0.9.21)
+## Текущий статус (v0.9.23)
 - Фаза: **AI Micro-Agent + External Providers + VPN/Diagnostics**
-- Готово: auth, cashflow CRUD, Block-Grid (drag/resize/persist), Block Relationships (обновлённый список связей + выбор field/cell), Cmd+K Command Palette, Chart block, mindmap overlay, cross-page pins, custom data block, sheet block (Excel-формулы + `@связать` picker + computed Sheet cells в sources API + корректное различение копеек/обычных ячеек), excel.cell block (`@связать` в настройках + `moneyRefs`), **AI Micro-Agent** (модалка + блок + block-capabilities + streaming + token counter + stop + chat-capable filter), **AI Providers Hub** (OpenAI/Claude/OpenRouter/VseGPT external + HTTP-proxy через undici + diagnostics)
+- Готово: auth, cashflow CRUD, Block-Grid (drag/resize/persist + stable 3s hover resize-corner + unified relation icons), Block Relationships (обновлённый список связей + выбор field/cell), Cmd+K Command Palette, Chart block, mindmap overlay, cross-page pins, custom data block, sheet block (Excel-формулы + `@связать` picker + compact 3×5 default + computed Sheet cells в sources API + корректное различение копеек/обычных ячеек), excel.cell block (`@связать` в настройках + compact 3×2 default + adaptive sm render + `moneyRefs`), **AI Micro-Agent** (модалка + блок + block-capabilities + streaming + token counter + stop + chat-capable filter), **AI Providers Hub** (OpenAI/Claude/OpenRouter/VseGPT external + HTTP-proxy через undici + diagnostics)
 - Block catalog: `stat.income`, `stat.expense`, `stat.balance`, `stat.custom`, `top-categories`, `transactions`, `sheet`, `excel.cell`, `navigate.card`, `computed.sum`, `custom.data`, `chart.cashflow`, `ai.micro-agent`
 - AI runtime:
   - `/api/ai/chat` — NDJSON streaming, auto-routes Ollama vs External (по `tenant.settings.aiExternal.enabled`)

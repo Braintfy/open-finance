@@ -25,6 +25,7 @@ import { BlockValuesProvider } from '@/lib/blocks/values';
 import { BlockRelationsOverlay } from './block-relations-overlay';
 import { MicroAgentDialog } from '@/components/micro-agent/micro-agent-dialog';
 import type { BlockContext, SuggestedAction } from '@/lib/ai/micro-agent/types';
+import { collectBlockRelationEdges, collectBlockRelationIds } from '@/lib/blocks/relations';
 
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
@@ -297,22 +298,13 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
   const explicitClearRef = useRef<boolean>(false);
   /** Есть ли хотя бы одна связь между блоками — для показа toggle кнопки */
   const hasRelations = useMemo(
-    () => blocks.some((b) => b.dependencies && b.dependencies.sources.length > 0),
-    [blocks]
+    () => collectBlockRelationEdges(blocks, pageKey).length > 0,
+    [blocks, pageKey]
   );
   /** Set ID блоков, участвующих в связях (source или target) — для микро-иконки */
   const participatingIds = useMemo(() => {
-    const set = new Set<string>();
-    for (const b of blocks) {
-      if (b.dependencies && b.dependencies.sources.length > 0) {
-        set.add(b.id);
-        for (const src of b.dependencies.sources) {
-          set.add(src.blockId);
-        }
-      }
-    }
-    return set;
-  }, [blocks]);
+    return collectBlockRelationIds(blocks, pageKey);
+  }, [blocks, pageKey]);
   /** Map blockId → label для BlockReferencePicker в settings dialog */
   const blockLabels = useMemo(() => {
     const m: Record<string, string> = {};
@@ -610,7 +602,7 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
         cols={COLS}
         rowHeight={40}
         isDraggable={true}
-        isResizable={editMode}
+        isResizable={true}
         onLayoutChange={onLayoutChange}
         draggableHandle=".block-drag-handle"
         margin={[10, 10]}
@@ -621,7 +613,7 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
           if (!def) return null;
           const Render = def.Render;
           return (
-            <div key={b.id} data-block-id={b.id}>
+            <div key={b.id} data-block-id={b.id} className={editMode ? 'block-edit-mode' : undefined}>
               <BlockChrome
                 editMode={editMode}
                 appearance={b.appearance}
@@ -646,6 +638,7 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
       </ResponsiveGridLayout>
       <BlockRelationsOverlay
         blocks={blocks}
+        currentPageKey={pageKey}
         containerRef={gridContainerRef}
         highlighted={showRelations}
       />
