@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import {
   LayoutDashboard,
+  LayoutGrid,
   Inbox,
   Wallet,
   Calendar,
@@ -17,6 +18,7 @@ import { auth } from '@/lib/auth';
 import { LogoutButton } from '@/components/logout-button';
 import { CommandPalette } from '@/components/command-palette';
 import { loadLayout } from '@/lib/blocks/queries';
+import { listPinnedBoards } from '@/lib/boards/queries';
 
 type NavItem = {
   key: string;
@@ -51,6 +53,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     { key: 'dashboard', href: '/dashboard', label: 'Дашборд', icon: LayoutDashboard, protected: true },
     { key: 'inbox', href: '/inbox', label: 'Inbox', icon: Inbox },
     { key: 'cashflow', href: '/cashflow', label: 'Денежный поток', icon: Wallet },
+    { key: 'boards', href: '/boards', label: 'Мои доски', icon: LayoutGrid },
     { key: 'deadlines', href: '/deadlines', label: 'Дедлайны', icon: Calendar },
     { key: 'settings', href: '/settings', label: 'Настройки', icon: Settings, protected: true },
   ];
@@ -65,6 +68,19 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const mainNav = mainNavAll.filter((i) => i.protected || !hidden.has(i.key));
   const adminNav = adminNavAll.filter((i) => !hidden.has(i.key));
 
+  // Pinned boards for sidebar
+  let pinnedBoards: Array<{ id: string; name: string }> = [];
+  if (session.tenantId && session.userId) {
+    try {
+      pinnedBoards = await listPinnedBoards({
+        tenantId: session.tenantId,
+        userId: session.userId,
+      });
+    } catch {
+      // ignore
+    }
+  }
+
   return (
     <div className="flex min-h-screen bg-muted/30">
       <aside className="w-56 shrink-0 border-r border-border/60 bg-background px-2 py-3">
@@ -76,6 +92,19 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           {mainNav.map(({ key: _k, protected: _p, ...rest }) => (
             <NavLink key={rest.href} {...rest} />
           ))}
+          {pinnedBoards.length > 0 && (
+            <>
+              {pinnedBoards.map((b) => (
+                <Link
+                  key={b.id}
+                  href={`/boards/${b.id}`}
+                  className="flex items-center gap-2 rounded-md px-2 py-1.5 pl-7 text-[13px] text-foreground/70 transition-colors hover:bg-accent hover:text-foreground"
+                >
+                  <span className="truncate">{b.name}</span>
+                </Link>
+              ))}
+            </>
+          )}
           {isAdmin && (
             <>
               <div className="px-2 pb-1 pt-4 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">

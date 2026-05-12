@@ -10,6 +10,7 @@ import {
   Calendar,
   Inbox,
   LayoutDashboard,
+  LayoutGrid,
   Moon,
   Plus,
   Search,
@@ -85,6 +86,14 @@ export function CommandPalette() {
       group: 'Навигация',
       keywords: 'inbox входящие чеки документы',
       onSelect: () => go('/inbox'),
+    },
+    {
+      id: 'nav-boards',
+      label: 'Мои доски',
+      icon: LayoutGrid,
+      group: 'Навигация',
+      keywords: 'boards доски проекты workspace',
+      onSelect: () => go('/boards'),
     },
     {
       id: 'nav-deadlines',

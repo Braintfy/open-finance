@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.10.0] - 2026-05-12
+
+### Added
+- **Мои доски** — новый раздел в sidebar: персональные рабочие пространства с BlockGrid (`/boards`, `/boards/[boardId]`)
+- **DB schema `boards`** — таблица для метаданных досок (`src/lib/db/schema/boards.ts`, SQL: `drizzle/init/03-boards.sql`)
+- **API** — `GET/POST /api/boards`, `GET/PUT/DELETE /api/boards/[boardId]` с Zod-валидацией и tenant/user фильтрацией
+- **Tab-bar UI** — переключение между досками, inline rename (двойной клик), context menu (переименовать/закрепить/удалить)
+- **Pin to sidebar** — запиненные доски отображаются как вложенные ссылки под «Мои доски»
+- **Command Palette** — навигация к доскам через Cmd+K
+- **Settings** — «Мои доски» добавлена в управление видимостью разделов
+- **Cross-page связи** — доски автоматически видны в `@связать` picker через `/api/blocks/sources`
+- **DropdownMenu** — новый shadcn/ui компонент (`src/components/ui/dropdown-menu.tsx`)
+- **AlertDialog** — подтверждение удаления доски с описанием
+
 ## [0.9.23] - 2026-05-12
 
 ### Changed

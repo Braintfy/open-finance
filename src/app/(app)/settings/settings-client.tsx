@@ -5,6 +5,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   LayoutDashboard,
+  LayoutGrid,
   Inbox,
   Wallet,
   Calendar,
@@ -51,6 +52,12 @@ const MAIN_NAV: NavItem[] = [
     label: 'Денежный поток',
     description: 'Доходы, расходы, импорт выписок',
     icon: Wallet,
+  },
+  {
+    key: 'boards',
+    label: 'Мои доски',
+    description: 'Персональные рабочие пространства',
+    icon: LayoutGrid,
   },
   {
     key: 'deadlines',

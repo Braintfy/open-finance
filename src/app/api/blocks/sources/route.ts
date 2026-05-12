@@ -56,7 +56,9 @@ const TYPE_LABELS: Record<string, { label: string; category: string }> = {
 };
 
 function pageLabel(pageKey: string): string {
-  return PAGE_LABELS[pageKey] ?? pageKey;
+  if (PAGE_LABELS[pageKey]) return PAGE_LABELS[pageKey];
+  if (pageKey.startsWith('board-')) return 'Доска';
+  return pageKey;
 }
 
 function typeMeta(type: string): { label: string; category: string } {
