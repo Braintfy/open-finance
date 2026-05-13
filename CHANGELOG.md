@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.10.2] - 2026-05-13
+
+### Changed
+- **Project memory** — `MEMORY.md` переписан как актуальный AI handoff-контекст по BlockGrid, Boards, Inbox, AI Micro-Agent и MemPalace.
+- **MemPalace context** — обновлён `~/.mempalace/identity.txt` и добавлен актуальный источник `current-context.md` для wing `open-finance`.
+
 ## [0.10.1] - 2026-05-13
 
 ### Added
