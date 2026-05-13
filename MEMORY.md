@@ -1,17 +1,25 @@
 # MEMORY.md — Open Finance
 
-> Прочитай этот файл первым в новой AI-сессии. Он должен дать полный рабочий контекст без повторного reverse-engineering.
+> Актуальный handoff проекта. Читается вторым шагом bootstrap'а (после `START.md`). Должен давать полный рабочий контекст без reverse-engineering.
 
-## Быстрый старт для AI-агента
-1. Прочитать `MEMORY.md` → `CHANGELOG.md` → релевантные части `PLAN.md`.
-2. Найти handoff-память в Windsurf memory database по тегам `context_summary`, `session_handoff`, текущей версии.
-3. В MemPalace использовать крыло проекта:
-   ```bash
-   mempalace wake-up --wing open-finance
-   mempalace search "нужный контекст" --wing open-finance
-   ```
-4. Перед работой с библиотеками использовать Context7.
-5. После изменений запускать `pnpm build`, обновлять `CHANGELOG.md`, но **не делать git commit/push автоматически**.
+## Быстрый старт для AI-агента (bootstrap, ~6–8K токенов суммарно)
+1. **`START.md`** — карта проекта, жёсткие правила, маршрутизация задач (~1.5K токенов).
+2. **`MEMORY.md`** (этот файл) — текущее состояние, ключевые файлы, грабли (~5K токенов).
+3. `git -C /Users/firay/open-finance/open-finance log --oneline -20` — последние коммиты.
+
+После этих 3 шагов можно работать. Дальше — **только релевантное конкретной задаче** по таблице из `START.md`.
+
+## Что НЕ загружать по умолчанию
+- `CHANGELOG.md` (1199 строк) — только при вопросах про историю; иначе хватает `git log`.
+- `PLAN.md` (1420 строк) — только при стратегических вопросах; читать через `Read offset+limit` нужный раздел, не файл целиком.
+- `mempalace wake-up --wing open-finance` — индекс содержит и устаревшие версии проекта (Tauri-only, Prisma, Python sidecar). Использовать `mempalace search "конкретный вопрос" --wing open-finance` точечно для исторических вопросов.
+- `docs/*` — каждый файл подгружается только когда задача его касается (см. таблицу маршрутизации в `START.md`).
+
+## Перед работой с библиотеками
+Context7: `mcp0_resolve-library-id` → `mcp0_query-docs`, не более 3 вызовов.
+
+## После изменений
+`pnpm build`, обновить `MEMORY.md` (если меняются ключевые файлы/инварианты/грабли) и `CHANGELOG.md`. **Никогда** не делать `git add/commit/push` самому — давать команды пользователю.
 
 ## Идентичность проекта
 **Open Finance** — AI-первая модульная финансовая платформа для предпринимателей РФ.
@@ -177,14 +185,15 @@ Open Finance = настраиваемый Lego-конструктор интер
 - Не использовать системные `alert/confirm/prompt`; только Dialog/AlertDialog.
 - Empty states всегда с CTA.
 
-## Файлы, которые AI должен знать
-- `MEMORY.md` — этот компактный handoff.
-- `CHANGELOG.md` — актуальная история изменений; текущая версия `0.10.2` после обновления памяти.
-- `PLAN.md` — стратегическая карта продукта и этапы.
-- `CLAUDE.md` — полные правила проекта.
-- `AGENTS.md` — универсальные правила для AI-агентов.
-- `docs/SECURITY.md` — безопасность, секреты, 152-ФЗ.
-- `docs/ARCHITECTURE.md`, `docs/AI_TOOLS.md`, `docs/BILLING.md`, `docs/LOCAL_AI.md` — тематическая документация.
+## Файлы, которые AI должен знать (но не грузить все сразу)
+- `START.md` — bootstrap новой сессии, карта, роутинг по типу задачи. **Читается первым.**
+- `MEMORY.md` — этот компактный handoff. **Читается вторым.**
+- `CHANGELOG.md` — история изменений; текущая версия `0.10.3`. Грузить по запросу.
+- `PLAN.md` — стратегическая карта продукта и этапы. Грузить разделами через offset+limit.
+- `CLAUDE.md` — полные правила проекта (всегда применяется через workspace rules).
+- `AGENTS.md` — универсальные правила для AI-агентов (всегда применяется).
+- `docs/SECURITY.md` — безопасность, секреты, 152-ФЗ. **Обязательно** при работе с секретами/сетью/биллингом.
+- `docs/ARCHITECTURE.md`, `docs/AI_TOOLS.md`, `docs/BILLING.md`, `docs/LOCAL_AI.md`, `docs/MODULES.md`, `docs/EMAIL_BEGET.md`, `docs/VPN_FOR_AI.md`, `docs/DESKTOP_STRATEGY.md`, `docs/LICENSING.md`, `docs/ONBOARDING.md` — тематическая документация по запросу.
 - `FEED.md` — коммуникационный стиль Telegram-канала; часть статуса может быть старой.
 
 ## Что проверять перед завершением задачи
@@ -210,9 +219,10 @@ docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev 
 ```
 
 ## Текущий статус на 2026-05-13
-- **Версия:** `0.10.2` в `CHANGELOG.md`; `package.json` всё ещё `0.5.0` и не является источником статуса фич.
+- **Версия:** `0.10.3` в `CHANGELOG.md`; `package.json` всё ещё `0.5.0` и не является источником статуса фич.
 - **Фаза:** Inbox Channels MVP + AI Micro-Agent + External Providers/VPN/Diagnostics + Boards.
 - **Build:** предыдущие handoff-памяти сообщают, что `pnpm build` проходил; после новых изменений запускать снова.
+- **Контекстные файлы:** `0.10.3` ввёл `START.md` и переход на ленивую загрузку контекста — `CHANGELOG.md`/`PLAN.md` больше не грузятся целиком по умолчанию.
 - **Ближайшие TODO:** применить `04-inbox.sql` в dev DB, протестировать реальные IMAP-провайдеры, добавить Telegram Bot API канал, Whisper transcription, Cmd+K AI action, полноценный RAG memory/orchestrator.
 
 ## Грабли, которые нельзя повторять

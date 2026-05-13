@@ -4,19 +4,26 @@
 **Open Finance** — AI-первая модульная финансовая платформа: SaaS + Local-First (Tauri).
 Главный референс: Notion + Linear + Claude Code по UX, Copilot Money по AI.
 
-**Перед любой задачей:**
-1. Читать `MEMORY.md` (компактный контекст)
-2. Читать `CHANGELOG.md` (что изменено недавно)
-3. **Искать в memory database** (`context_summary` + `session_handoff` + версия) — обзоры архитектуры от прошлых сессий
-4. Читать релевантные части `PLAN.md` (детальная карта)
-5. Если задача про библиотеку — обязательно `mcp0_query-docs` через Context7
+**Bootstrap новой сессии (триггер пользователя — «загрузи контекст Open Finance»):**
+1. Прочитать `START.md` (~1.5K токенов) — карта проекта и роутинг по задачам.
+2. Прочитать `MEMORY.md` (~5K токенов) — актуальный handoff.
+3. `git log --oneline -20` — последние изменения.
+
+**Не загружать по умолчанию:**
+- `CHANGELOG.md` (1199 строк) — читать только при вопросе про историю релизов; иначе `git log`.
+- `PLAN.md` (1420 строк) — читать только при вопросе про стратегию; и только нужный раздел через `Read offset+limit`.
+- `mempalace wake-up --wing open-finance` — индекс содержит устаревшие версии (Tauri-only/Prisma/Python); использовать `mempalace search "конкретный вопрос" --wing open-finance` точечно.
+
+**Дальнейшее чтение — по типу задачи**, см. таблицу маршрутизации в `START.md` (новый блок → файлы блоков; AI-чат → providers; Inbox → IMAP; и т.д.). Цель — никогда не грузить «всё подряд», только релевантное.
+
+**Если задача про библиотеку (Next 15, Drizzle, shadcn, pgvector, Tauri 2)** — `mcp0_resolve-library-id` → `mcp0_query-docs` через Context7, не более 3 вызовов.
 
 **В конце каждой значимой сессии (ОБЯЗАТЕЛЬНО):**
-- Создавать/обновлять **context summary memory** (теги: `context_summary`, `session_handoff`, текущая версия)
-- Описывать: что сделано, ключевые файлы, грабли (root cause багов), TODO для следующей сессии
-- Обновлять `CHANGELOG.md` с детальным описанием изменений
-- Цель: следующая сессия не должна делать reverse-engineering — должна за 30 секунд понять состояние системы из memory
-- См. memory `Правило: Session Handoff Summary` для полного шаблона
+- Обновить `MEMORY.md`, если изменились ключевые файлы/инварианты/грабли.
+- Обновить `CHANGELOG.md` с детальным описанием изменений.
+- Если затронут bootstrap или ключевые инварианты — обновить `START.md`.
+- Синхронизировать `~/.mempalace/sources/open-finance/current-context-v*.md` (внешний AI-handoff).
+- Цель: следующая сессия за 30 секунд понимает состояние системы из `START.md` + `MEMORY.md`, без reverse-engineering.
 
 ---
 
@@ -137,14 +144,18 @@ export const createTransactionTool = {
 
 ---
 
-## Документация
+## Документация (читать по запросу задачи, не на старте)
 
+- `START.md` — bootstrap новой сессии, карта проекта, роутинг по задачам
+- `MEMORY.md` — компактный handoff с текущим состоянием
 - `docs/MODULES.md` — как добавить модуль
 - `docs/AI_TOOLS.md` — реестр всех AI-инструментов
 - `docs/BILLING.md` — реализация биллинга (Т-Касса/CloudPayments)
 - `docs/LICENSING.md` — лицензирование Tauri-версии
-- `docs/SECURITY.md` — обязательное чтение, правила секретов
+- `docs/SECURITY.md` — обязательное чтение при работе с секретами/сетью/биллингом
 - `docs/ARCHITECTURE.md` — карта архитектуры
+- `docs/EMAIL_BEGET.md` — IMAP-настройки для inbox
+- `docs/LOCAL_AI.md`, `docs/VPN_FOR_AI.md` — локальный AI и доступ к внешним провайдерам
 
 ---
 

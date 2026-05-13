@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.10.3] - 2026-05-13
+
+### Added
+- **`START.md`** — компактный bootstrap-файл (~1.5K токенов): идентичность, жёсткие правила, стек, структура `src/`, маршрутизация «по типу задачи → какие файлы читать», команды, ключевые грабли. Единственный файл, который AI читает первым в новой сессии по триггеру «загрузи контекст Open Finance».
+
+### Changed
+- **Bootstrap-процесс** — `CLAUDE.md`, `MEMORY.md` и `AGENTS.md` переведены с тяжёлой обязательной загрузки `MEMORY.md` + `CHANGELOG.md` (1199 строк) + `PLAN.md` (1420 строк) на ленивую загрузку: `START.md` + `MEMORY.md` + `git log -20`. Стартовый контекст ужат с ~70K до ~6–8K токенов без потери качества.
+- **`CHANGELOG.md` / `PLAN.md` по запросу** — оба файла больше не грузятся целиком по умолчанию; читаются только при вопросах про историю/стратегию, и только нужный кусок через `Read offset+limit`.
+- **MemPalace** — `mempalace wake-up --wing open-finance` исключён из bootstrap (индекс содержит и устаревшие версии проекта: Tauri-only, Prisma, Python sidecar — даёт misleading контекст). `mempalace search "..."` теперь используется только точечно для исторических вопросов.
+- **`~/.mempalace/identity.txt`** — обновлён под новый bootstrap-процесс с явным «не делать `wake-up` для open-finance на старте».
+- **`~/.mempalace/sources/open-finance/current-context-v0.10.3.md`** — обновлён внешний AI-handoff (для ChatGPT/Gemini без доступа к репо), включает встроенную bootstrap-инструкцию и таблицу маршрутизации задач. Старая `v0.10.2`, дубль `current-context.md` и копия в корне `~/.mempalace/` удалены.
+- **MemPalace индекс** — починен после застрявшей миграции ChromaDB; `mempalace status` снова работает (5288 drawers всего, 696 в `open-finance`). Wing переиндексирован поверх свежих `START.md`/`MEMORY.md`/`CHANGELOG.md`.
+
+### Removed
+- **`/Users/firay/open-finance/CLAUDE.md`** — устаревший дубликат правил от старого Prisma/SQLite/Python-проекта, который грузился во все сессии через `always_applied_workspace_rules` и противоречил актуальному project-level `CLAUDE.md`.
+
 ## [0.10.2] - 2026-05-13
 
 ### Changed

@@ -17,15 +17,25 @@
 - **Desktop:** Tauri 2.0 (Phase 2)
 - **Mobile:** React Native + Expo (Phase 3)
 
+## Bootstrap новой сессии (триггер — «загрузи контекст Open Finance»)
+1. `START.md` — карта проекта, роутинг по типу задачи (~1.5K токенов).
+2. `MEMORY.md` — текущее состояние, ключевые файлы, грабли (~5K токенов).
+3. `git -C /Users/firay/open-finance/open-finance log --oneline -20` — свежие коммиты.
+
+Дальше — только релевантное конкретной задаче. **НЕ грузить** `CHANGELOG.md` и `PLAN.md` целиком по умолчанию (1199 + 1420 строк); они нужны только при вопросах про историю/стратегию, и только нужный кусок через `Read offset+limit`.
+
+`mempalace wake-up --wing open-finance` — **не использовать** для стартового контекста (индекс содержит и устаревшие версии). `mempalace search "..." --wing open-finance` — точечно для исторических вопросов.
+
 ## Critical Rules
 
 ### MUST
-- ✅ Перед изменениями читать `MEMORY.md` → `CHANGELOG.md` → `PLAN.md`
+- ✅ В новой сессии: `START.md` → `MEMORY.md` → `git log -20`. Дальше — по типу задачи.
 - ✅ Использовать `pnpm` (не npm/yarn)
 - ✅ Comment-headers `// PURPOSE: ...` в каждом новом файле
 - ✅ Все AI-мутации через **Tools Layer** (`src/lib/ai/tools/`)
 - ✅ `tenant_id` в каждом запросе к БД
 - ✅ Использовать Context7 при работе с библиотеками
+- ✅ После изменений: `pnpm build`, обновить `MEMORY.md` (если меняются ключевые файлы) и `CHANGELOG.md`
 
 ### MUST NOT
 - ❌ Никогда не делать `git add/commit/push` — давать команды пользователю
@@ -95,6 +105,7 @@ export const myTool = {
 
 ## When in doubt
 1. Спросить у пользователя — лучше уточнить
-2. Прочитать `PLAN.md` — там детальное обоснование архитектуры
+2. Прочитать **нужный раздел** `PLAN.md` через `Read offset+limit` (не файл целиком — 1420 строк)
 3. Использовать Context7 (`mcp0_query-docs`) для актуальной документации
 4. Прочитать `docs/SECURITY.md` если работа касается секретов / сети / биллинга
+5. Историю проекта искать через `git log` или `mempalace search "..." --wing open-finance` (точечно), не через чтение `CHANGELOG.md` целиком
