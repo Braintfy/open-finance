@@ -19,6 +19,9 @@
 - **Inbox email help** — в настройках блока добавлена модалка «Инструкция» с параметрами Beget, Gmail, Яндекс, Mail.ru/VK WorkMail и VPS/self-hosted mail.
 - **Inbox IMAP STARTTLS** — выключенный SSL/TLS теперь использует STARTTLS перед логином; это покрывает Beget `imap.beget.com:143`, если `993` зависает на TLS greeting.
 - **Inbox Beget fallback** — при timeout на `imap.beget.com:993` тест/синхронизация автоматически повторяют подключение через `143 + STARTTLS`.
+- **Inbox title editing** — блок `inbox.channel-feed` теперь уважает универсальное название из вкладки «Внешний вид».
+- **Inbox MIME decode** — исправлено отображение кириллических тем писем (`=?UTF-8?Q?...?=`, quoted-printable, windows-1251/koi8-r fallback) и переносы длинных текстов.
+- **Inbox sync reliability** — IMAP FETCH теперь забирает письма по одному, чтобы байтовые literal-length с кириллицей не сбивали парсинг следующих сообщений; повторная синхронизация обновляет уже сохранённые письма и исправляет старые битые заголовки.
 
 ## [0.10.0] - 2026-05-12
 

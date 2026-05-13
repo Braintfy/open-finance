@@ -18,7 +18,7 @@ export async function POST(
     const result = await syncInboxChannel({
       tenantId: session.tenantId,
       channelId,
-      limit: 25,
+      limit: 50,
     });
     return NextResponse.json({ ok: true, ...result });
   } catch (e) {

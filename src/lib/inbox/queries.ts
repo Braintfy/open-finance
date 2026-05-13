@@ -111,7 +111,7 @@ export async function syncInboxChannel(args: {
       mailbox: config.mailbox || 'INBOX',
       password: decryptSecret(channel.secret),
     },
-    args.limit ?? 25,
+    args.limit ?? 50,
   );
   const inserted = await insertInboxMessages({
     tenantId: args.tenantId,
@@ -189,22 +189,43 @@ async function insertInboxMessages(args: {
 }): Promise<number> {
   let inserted = 0;
   for (const message of args.messages) {
+    const [existing] = await db
+      .select({ id: inboxMessages.id })
+      .from(inboxMessages)
+      .where(
+        and(
+          eq(inboxMessages.tenantId, args.tenantId),
+          eq(inboxMessages.channelId, args.channelId),
+          eq(inboxMessages.externalId, message.externalId),
+        ),
+      )
+      .limit(1);
+
+    const values = {
+      senderName: message.senderName ?? null,
+      senderAddress: message.senderAddress ?? null,
+      subject: message.subject ?? null,
+      preview: message.preview ?? null,
+      body: message.body ?? null,
+      receivedAt: message.receivedAt,
+      metadata: message.metadata ?? {},
+    };
+
+    if (existing) {
+      await db
+        .update(inboxMessages)
+        .set(values)
+        .where(and(eq(inboxMessages.id, existing.id), eq(inboxMessages.tenantId, args.tenantId)));
+      continue;
+    }
+
     const result = await db
       .insert(inboxMessages)
       .values({
         tenantId: args.tenantId,
         channelId: args.channelId,
         externalId: message.externalId,
-        senderName: message.senderName ?? null,
-        senderAddress: message.senderAddress ?? null,
-        subject: message.subject ?? null,
-        preview: message.preview ?? null,
-        body: message.body ?? null,
-        receivedAt: message.receivedAt,
-        metadata: message.metadata ?? {},
-      })
-      .onConflictDoNothing({
-        target: [inboxMessages.channelId, inboxMessages.externalId],
+        ...values,
       })
       .returning({ id: inboxMessages.id });
     if (result.length > 0) inserted += 1;

@@ -35,6 +35,7 @@ function RenderInboxChannelFeed({ instance }: BlockRenderProps) {
   const [loading, setLoading] = useState(true);
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const cfg = Config.parse(instance.config ?? {});
+  const title = instance.appearance?.title ?? cfg.title;
 
   const load = useCallback(async () => {
     const params = new URLSearchParams({ blockId: instance.id });
@@ -90,7 +91,7 @@ function RenderInboxChannelFeed({ instance }: BlockRenderProps) {
     return (
       <Card className="flex h-full items-center justify-between gap-2 p-3">
         <div className="min-w-0">
-          <div className="truncate text-sm font-semibold">{cfg.title}</div>
+          <div className="truncate text-sm font-semibold">{title}</div>
           <div className="text-[11px] text-muted-foreground">{counts.total} сообщений</div>
         </div>
         <Inbox className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -102,7 +103,7 @@ function RenderInboxChannelFeed({ instance }: BlockRenderProps) {
     <Card className="flex h-full min-h-0 flex-col overflow-hidden">
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border/60 px-3 py-2">
         <div className="min-w-0">
-          <div className="truncate text-sm font-semibold tracking-tight">{cfg.title}</div>
+          <div className="truncate text-sm font-semibold tracking-tight">{title}</div>
           <div className="text-[11px] text-muted-foreground">
             {loading ? 'Загрузка каналов…' : `${counts.total} сообщений из подключенных каналов`}
           </div>
@@ -185,7 +186,7 @@ function RenderInboxChannelFeed({ instance }: BlockRenderProps) {
                       <div className="text-[11px] font-semibold text-muted-foreground">
                         {selected.senderName || selected.senderAddress || 'Без отправителя'}
                       </div>
-                      <h3 className="mt-1 text-base font-semibold tracking-tight">
+                      <h3 className="mt-1 break-words text-base font-semibold tracking-tight">
                         {selected.subject || 'Без темы'}
                       </h3>
                       <div className="mt-1 text-xs text-muted-foreground">
@@ -195,7 +196,7 @@ function RenderInboxChannelFeed({ instance }: BlockRenderProps) {
                     <Mail className="h-4 w-4 shrink-0 text-muted-foreground" />
                   </div>
                 </div>
-                <div className="whitespace-pre-wrap rounded-md bg-muted/35 p-3 text-sm leading-6 text-foreground/85">
+                <div className="whitespace-pre-wrap break-words rounded-md bg-muted/35 p-3 text-sm leading-6 text-foreground/85">
                   {selected.body || selected.preview || 'Тело сообщения пустое.'}
                 </div>
               </div>
@@ -415,7 +416,7 @@ function InboxChannelSettings({ config, onChange, instance }: BlockSettingsFormP
           </div>
 
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            <Field label="Название">
+            <Field label="Название канала">
               <Input value={form.label} onChange={(e) => patchForm({ label: e.target.value })} />
             </Field>
             <Field label="Mailbox">

@@ -1,4 +1,5 @@
 // PURPOSE: Small MIME parser for IMAP-fetched email messages without external dependencies.
+import { TextDecoder } from 'util';
 
 type ParsedHeaders = Record<string, string>;
 
@@ -53,7 +54,7 @@ function extractBodyText(body: string, contentType: string, transferEncoding: st
     if (plain) return parsePartBody(plain);
     if (html) return stripHtml(parsePartBody(html));
   }
-  const decoded = decodeTransfer(body, transferEncoding);
+  const decoded = decodeTransfer(body, transferEncoding, getCharset(contentType));
   return contentType.toLowerCase().includes('text/html') ? stripHtml(decoded) : cleanupText(decoded);
 }
 
@@ -62,45 +63,94 @@ function parsePartBody(part: string): string {
   const splitAt = normalized.indexOf('\n\n');
   if (splitAt < 0) return cleanupText(normalized);
   const headers = parseHeaders(normalized.slice(0, splitAt));
-  return decodeTransfer(normalized.slice(splitAt + 2), headers['content-transfer-encoding'] ?? '');
+  return decodeTransfer(
+    normalized.slice(splitAt + 2),
+    headers['content-transfer-encoding'] ?? '',
+    getCharset(headers['content-type'] ?? ''),
+  );
 }
 
-function decodeTransfer(value: string, encoding: string): string {
+function decodeTransfer(value: string, encoding: string, charset = 'utf-8'): string {
   const enc = encoding.toLowerCase();
   if (enc.includes('base64')) {
     try {
-      return cleanupText(Buffer.from(value.replace(/\s/g, ''), 'base64').toString('utf8'));
+      return cleanupText(decodeBytes(Buffer.from(value.replace(/\s/g, ''), 'base64'), charset));
     } catch {
       return cleanupText(value);
     }
   }
   if (enc.includes('quoted-printable')) {
-    return cleanupText(decodeQuotedPrintable(value));
+    return cleanupText(decodeBytes(decodeQuotedPrintable(value), charset));
   }
-  return cleanupText(value);
+  return cleanupText(repairMojibake(value));
 }
 
-function decodeQuotedPrintable(value: string): string {
-  const softBreaks = value.replace(/=\n/g, '');
-  return softBreaks.replace(/=([0-9A-F]{2})/gi, (_, hex: string) =>
-    String.fromCharCode(Number.parseInt(hex, 16)),
-  );
+function decodeQuotedPrintable(value: string): Buffer {
+  const softBreaks = value.replace(/=(?:\r\n|\n|\r)/g, '');
+  const chunks: number[] = [];
+  for (let i = 0; i < softBreaks.length; i += 1) {
+    const char = softBreaks[i];
+    const hex = softBreaks.slice(i + 1, i + 3);
+    if (char === '=' && /^[0-9A-F]{2}$/i.test(hex)) {
+      chunks.push(Number.parseInt(hex, 16));
+      i += 2;
+      continue;
+    }
+    chunks.push(...Buffer.from(char, 'utf8'));
+  }
+  return Buffer.from(chunks);
 }
 
 function decodeHeader(value: string): string {
-  return value.replace(/=\?([^?]+)\?([bqBQ])\?([^?]+)\?=/g, (_m, charset: string, enc: string, data: string) => {
-    const normalizedCharset = charset.toLowerCase();
-    if (!normalizedCharset.includes('utf') && !normalizedCharset.includes('windows-1251')) {
-      return data;
+  const decoded = value.replace(/=\?([^?]+)\?([bqBQ])\?([^?]+)\?=/g, (_m, charset: string, enc: string, data: string) =>
+    decodeEncodedWord(charset, enc, data),
+  );
+  return repairMojibake(decoded);
+}
+
+function decodeEncodedWord(charset: string, encoding: string, data: string): string {
+  try {
+    const bytes =
+      encoding.toLowerCase() === 'b'
+        ? Buffer.from(data, 'base64')
+        : decodeQuotedPrintable(data.replace(/_/g, ' '));
+    return decodeBytes(bytes, charset);
+  } catch {
+    return data;
+  }
+}
+
+function decodeBytes(bytes: Buffer, charset: string): string {
+  const normalized = charset.toLowerCase().replace(/_/g, '-');
+  try {
+    if (normalized.includes('1251') || normalized.includes('windows-1251') || normalized.includes('cp1251')) {
+      return new TextDecoder('windows-1251').decode(bytes);
     }
-    if (enc.toLowerCase() === 'b') {
-      return Buffer.from(data, 'base64').toString(normalizedCharset.includes('1251') ? 'latin1' : 'utf8');
+    if (normalized.includes('koi8-r')) {
+      return new TextDecoder('koi8-r').decode(bytes);
     }
-    const qp = data.replace(/_/g, ' ').replace(/=([0-9A-F]{2})/gi, (_: string, hex: string) =>
-      String.fromCharCode(Number.parseInt(hex, 16)),
-    );
-    return qp;
-  });
+    return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+  } catch {
+    return bytes.toString('utf8');
+  }
+}
+
+function getCharset(contentType: string): string {
+  return /charset="?([^";\s]+)"?/i.exec(contentType)?.[1] ?? 'utf-8';
+}
+
+function repairMojibake(value: string): string {
+  if (!/[ÐÑ][\u0080-\u00BF]/.test(value) && !/[ÐÑ]/.test(value)) return value;
+  try {
+    const repaired = Buffer.from(value, 'latin1').toString('utf8');
+    return countReplacementChars(repaired) <= countReplacementChars(value) ? repaired : value;
+  } catch {
+    return value;
+  }
+}
+
+function countReplacementChars(value: string): number {
+  return (value.match(/\uFFFD/g) ?? []).length;
 }
 
 function parseAddress(value: string): { name: string | null; address: string | null } {

@@ -155,8 +155,12 @@ class ImapClient {
   }
 
   async fetchMessages(uids: number[]): Promise<Array<{ uid: number; raw: string }>> {
-    const response = await this.command(`UID FETCH ${uids.join(',')} (UID BODY.PEEK[])`, 90_000);
-    return parseFetchResponse(response);
+    const messages: Array<{ uid: number; raw: string }> = [];
+    for (const uid of uids) {
+      const response = await this.command(`UID FETCH ${uid} (UID BODY.PEEK[])`, 90_000);
+      messages.push(...parseFetchResponse(response));
+    }
+    return messages;
   }
 
   async logout(): Promise<void> {
@@ -223,11 +227,17 @@ function parseFetchResponse(response: string): Array<{ uid: number; raw: string 
       continue;
     }
     const start = headerEnd + 1;
-    const raw = response.slice(start, start + length);
+    const endByTrailer = findFetchLiteralEnd(response, start);
+    const raw = response.slice(start, endByTrailer ?? start + length);
     messages.push({ uid, raw });
-    cursor = start + length;
+    cursor = endByTrailer ?? start + length;
   }
   return messages;
+}
+
+function findFetchLiteralEnd(response: string, start: number): number | null {
+  const tail = response.slice(start).search(/\r?\n\)\r?\nA\d{4} (?:OK|NO|BAD)/);
+  return tail >= 0 ? start + tail : null;
 }
 
 function quote(value: string): string {
