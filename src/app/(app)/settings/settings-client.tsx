@@ -19,6 +19,7 @@ import {
   EyeOff,
   Save,
   Coins,
+  Calculator,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -52,6 +53,12 @@ const MAIN_NAV: NavItem[] = [
     label: 'Денежный поток',
     description: 'Доходы, расходы, импорт выписок',
     icon: Wallet,
+  },
+  {
+    key: 'unit-economics',
+    label: 'Юнит-экономика',
+    description: 'Калькуляторы Ozon и Яндекс Маркет',
+    icon: Calculator,
   },
   {
     key: 'boards',

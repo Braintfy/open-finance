@@ -285,11 +285,16 @@ function RenderExcelCell({ instance, onConfigChange }: BlockRenderProps) {
   }, [config.moneyRefs, sourcePages]);
 
   const computed = useMemo(() => evaluateValue(config.value, blockValues, showKopecks, moneyRefs), [config.value, blockValues, showKopecks, moneyRefs]);
+  const computedIsMoney = useMemo(
+    () => config.value.startsWith('=') && formulaReferencesMoney(config.value, moneyRefs),
+    [config.value, moneyRefs],
+  );
 
   useBlockValuePublisher(instance.id, {
     value: typeof computed.value === 'number' ? computed.value : null,
     raw: config.value,
     label: title,
+    __money: computedIsMoney ? 'value' : '',
   });
 
   useEffect(() => {

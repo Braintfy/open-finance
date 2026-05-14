@@ -16,6 +16,9 @@ import { ExcelCellBlock } from './catalog/excel-cell';
 import { CashflowChartBlock } from './catalog/chart-cashflow';
 import { AiMicroAgentBlock } from './catalog/ai-micro-agent';
 import { InboxChannelFeedBlock } from './catalog/inbox-channel-feed';
+import { UnitOzonCalculatorBlock } from './catalog/unit-ozon-calculator';
+import { UnitOzonMultiTableBlock } from './catalog/unit-ozon-multi-table';
+import { UnitYandexCalculatorBlock } from './catalog/unit-yandex-calculator';
 
 const ALL_BLOCKS: BlockDef[] = [
   StatIncomeBlock,
@@ -32,6 +35,9 @@ const ALL_BLOCKS: BlockDef[] = [
   CashflowChartBlock,
   AiMicroAgentBlock,
   InboxChannelFeedBlock,
+  UnitOzonCalculatorBlock,
+  UnitOzonMultiTableBlock,
+  UnitYandexCalculatorBlock,
 ];
 
 const REGISTRY = new Map<string, BlockDef>(ALL_BLOCKS.map((b) => [b.type, b]));
@@ -161,6 +167,48 @@ export const DEFAULT_LAYOUTS: Record<string, PageLayout> = {
         w: 6,
         h: 12,
         config: { title: 'Входящие' },
+      },
+    ],
+    hiddenSections: [],
+  },
+  'unit-economics-ozon': {
+    pageKey: 'unit-economics-ozon',
+    blocks: [
+      {
+        id: 'default-unit-ozon-calc',
+        type: 'unit.ozon-calculator',
+        x: 0,
+        y: 0,
+        w: 12,
+        h: 9,
+      },
+    ],
+    hiddenSections: [],
+  },
+  'unit-economics-ozon-multi': {
+    pageKey: 'unit-economics-ozon-multi',
+    blocks: [
+      {
+        id: 'default-unit-ozon-multi',
+        type: 'unit.ozon-multi-table',
+        x: 0,
+        y: 0,
+        w: 12,
+        h: 12,
+      },
+    ],
+    hiddenSections: [],
+  },
+  'unit-economics-yandex': {
+    pageKey: 'unit-economics-yandex',
+    blocks: [
+      {
+        id: 'default-unit-yandex-calc',
+        type: 'unit.yandex-calculator',
+        x: 0,
+        y: 0,
+        w: 12,
+        h: 9,
       },
     ],
     hiddenSections: [],

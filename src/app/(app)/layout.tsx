@@ -13,6 +13,7 @@ import {
   Users,
   Wrench,
   Sparkles,
+  Calculator,
 } from 'lucide-react';
 import { auth } from '@/lib/auth';
 import { LogoutButton } from '@/components/logout-button';
@@ -53,6 +54,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     { key: 'dashboard', href: '/dashboard', label: 'Дашборд', icon: LayoutDashboard, protected: true },
     { key: 'inbox', href: '/inbox', label: 'Входящие', icon: Inbox },
     { key: 'cashflow', href: '/cashflow', label: 'Денежный поток', icon: Wallet },
+    { key: 'unit-economics', href: '/unit-economics', label: 'Юнит-экономика', icon: Calculator },
     { key: 'boards', href: '/boards', label: 'Мои доски', icon: LayoutGrid },
     { key: 'deadlines', href: '/deadlines', label: 'Дедлайны', icon: Calendar },
     { key: 'settings', href: '/settings', label: 'Настройки', icon: Settings, protected: true },

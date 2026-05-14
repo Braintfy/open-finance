@@ -54,7 +54,11 @@ function RenderComputedSum({ instance }: BlockRenderProps) {
   const aggregation = instance.dependencies?.aggregation ?? 'sum';
 
   // Сами публикуем результат — другие computed-блоки могут использовать нас как источник
-  useBlockValuePublisher(instance.id, { value: value ?? 0, label: title });
+  useBlockValuePublisher(instance.id, {
+    value: value ?? 0,
+    label: title,
+    __money: moneyAggregation ? 'value' : '',
+  });
 
   const aggregationLabel: Record<string, string> = {
     sum: 'Сумма',

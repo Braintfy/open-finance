@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.11.0] - 2026-05-14
+
+### Added
+- **Раздел «Юнит-экономика»** `/unit-economics` — три вкладки (Ozon, Ozon мульти-артикул, Яндекс Маркет) на BlockGrid; каждая вкладка имеет свой `pageKey` и сохраняет layout отдельно. Новый sidebar-пункт, видимость в `/settings`, Cmd+K action.
+- **Pure-TS calculation engines** — `src/lib/unit-economics/{ozon,yandex}/calculate.ts` без зависимостей от React/DB; версионированные тарифные пакеты (`ozon_2026_04_07`, `yandex_2026_04_01`). Ozon: автокомиссия по цене (≤100→14%, 101–300→20%), FBO/FBS логистика по объёму, нелокальный кластер +25%, скидка >50 заказов FBO −15%, доставка ПВЗ с лимитом и учётом выкупа, возвраты, реклама/выкуп, налоги (УСН Доходы/Доходы−Расходы/ОСНО/НДС/Без), оборачиваемость, P&L. Yandex: customerPrice от соинвеста, объём ceil(LWH/1000), модели FBY/FBS/DBS/Express, спецтарифы (витрина 5%, подписка 9%/16%), Fixed tariff при price≤300 и volume≤5, last/middle mile, fulfillment, хранение, налоги, P&L.
+- **Drizzle schemas** — `unit_products` (товары с tenant_id, marketplace, цена/себестоимость в копейках, метаданные импорта), `unit_calculations` (сохранённые inputs/bindings/results + `tariff_version`), `unit_imports` (история XLSX-импортов с warnings). Manual SQL: `drizzle/init/05-unit-economics.sql`.
+- **Tenant-scoped queries и API** — `/api/unit-economics/products` (GET/POST с upsert по `(tenant_id, marketplace, article)`), `/api/unit-economics/calculations` (GET/POST), `/api/unit-economics/import/ozon-prices` (POST multipart с `commit=false|true`).
+- **XLSX-импорт Ozon** — `src/lib/unit-economics/import/ozon-price-template.ts`. Стратегия: основной парсер `xlsx` (SheetJS) с `cellStyles:false` чтобы обходить «битые» border-стили в шаблоне Ozon; fallback — низкоуровневый ZIP+XML парсер (sharedStrings + sheet xml). Маппинг колонок по заголовкам, не по индексам. Фильтр служебных строк-меток («Нередактируемое», «Обязательное» и пр.).
+- **Linkable cells (UnitCellBindingDialog)** — `src/components/unit-economics/unit-cell-binding-dialog.tsx` + `linkable-number-cell.tsx`. Клик по chain-icon открывает модалку источников из текущей страницы (live `BlockValuesContext`) и других страниц через `/api/blocks/sources`. Режимы `manual` ↔ `block_ref` с money-флагом и fallback. Активная ссылка визуально показывает источник, пропадание источника → жёлтый warning state.
+- **Блоки**: `unit.ozon-calculator` (single, FBO/FBS, метрики и P&L), `unit.ozon-multi-table` (sticky глобальные параметры, sticky колонки `#`/`Артикул`/`Название`, ввод параметров и результаты, итоги, дублирование/удаление/сброс привязок строки, импорт XLSX), `unit.yandex-calculator` (FBY/FBS/DBS/Express, спецтарифы, налоги, P&L). Все блоки публикуют aggregate outputs через `useBlockValuePublisher` (с `__money` для денежных полей), чтобы быть доступны как источники в других блоках.
+- **Расширение `/api/blocks/sources`** — добавлены page labels (`unit-economics-*`), type labels (`unit.*`) и `fieldsForBlock` для unit-блоков (`price`, `stock`, `rowsCount`, `stockTotal`).
+- **Smoke-тесты** — `scripts/test-unit-economics.ts` (запуск `pnpm tsx scripts/test-unit-economics.ts [path-to-xlsx]`): 19 проверок калькуляционных движков (автокомиссия, маржа/ROI, налоги УСН, спецтариф Яндекс, Fixed tariff) и XLSX-парсера на реальном файле.
+
+### Changed
+- **`src/lib/blocks/registry.ts`** — добавлены три unit-блока в `ALL_BLOCKS` и три новых `DEFAULT_LAYOUTS` (`unit-economics-ozon`, `unit-economics-ozon-multi`, `unit-economics-yandex`).
+- **Sidebar / Settings / Cmd+K** — иконка `Calculator`, пункт «Юнит-экономика» во всех трёх местах.
+
+## [0.10.4] - 2026-05-13
+
+### Fixed
+- **Sheet money formatting через @связать** — Sheet (Excel-блок) при связывании ячейки с источником через `@связать` теперь сохраняет money-флаг в `config.moneyRefs` (как `excel.cell`), а не полагается только на эвристику по имени поля. Решает баг, где значение из KPI-блока (рубли в копейках) выводилось как обычное число `2 613 726 900` вместо `26 137 269 ₽`. То же исправление применено в server-side `/api/blocks/sources` для evaluateSheetCells.
+- **Публикация money-метаданных в KPI-блоках** — `stat.income`, `stat.expense`, `stat.balance`, `stat.custom` (для всех metric кроме `count`), `custom.data` (когда format=`rubles`), `computed.sum` (когда хотя бы один источник money) и `excel.cell` (когда формула содержит money refs) теперь публикуют поле `__money` в reactive store. Это даёт live-preview в `@связать` picker правильное money-форматирование для current-page блоков.
+
+### Changed
+- **Sheet — свобода размера** — убран `minContentSize` и `minSize` уменьшен до `{1, 1}`. Раньше блок при размере меньше 360×220px показывал overlay «Мало места» и становился полупрозрачным/неинтерактивным. Теперь пользователь может ужать блок до любого размера, таблица скроллится по обеим осям внутри блока. Для очень крошечных размеров (≤130×70) остаётся xs-fallback с иконкой+названием.
+- **Sheet header / formula bar** — добавлен `shrink-0` и `overflow-x-auto` для строки заголовков и formula bar, чтобы они не растягивали блок и не блокировали уменьшение. CardContent с таблицей получил `min-h-0 min-w-0` для корректного flex-shrink.
+
 ## [0.10.3] - 2026-05-13
 
 ### Added

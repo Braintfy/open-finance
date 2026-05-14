@@ -100,13 +100,14 @@ Open Finance = настраиваемый Lego-конструктор интер
 - **Не использовать `sanitizeBlocks` на сервере**: catalog/client exports могут быть пустыми в server bundle.
 
 ### Текущий каталог блоков
-`stat.income`, `stat.expense`, `stat.balance`, `stat.custom`, `cashflow.top-categories`, `cashflow.transactions`, `sheet`, `excel.cell`, `navigate.card`, `computed.sum`, `custom.data`, `chart.cashflow`, `ai.micro-agent`, `inbox.channel-feed`.
+`stat.income`, `stat.expense`, `stat.balance`, `stat.custom`, `cashflow.top-categories`, `cashflow.transactions`, `sheet`, `excel.cell`, `navigate.card`, `computed.sum`, `custom.data`, `chart.cashflow`, `ai.micro-agent`, `inbox.channel-feed`, `unit.ozon-calculator`, `unit.ozon-multi-table`, `unit.yandex-calculator`.
 
 ## Реализованные страницы и модули
 - **Dashboard `/dashboard`** — BlockGrid с KPI и navigation cards.
 - **Cashflow `/cashflow`** — CRUD/import транзакций, KPI, top categories, transactions, chart.
 - **Inbox `/inbox`** — BlockGrid с двумя дефолтными блоками `inbox.channel-feed` размером `6×12`.
 - **Boards `/boards`, `/boards/[boardId]`** — персональные доски на BlockGrid, `pageKey = board-{boardId}`.
+- **Unit Economics `/unit-economics`** — три вкладки (`unit-economics-ozon`, `unit-economics-ozon-multi`, `unit-economics-yandex`), каждый таб = свой `pageKey` с самостоятельным BlockGrid layout.
 - **Settings `/settings`** — visibility toggles, форматирование, настройки разделов.
 - **Admin AI pages** — local models, external providers/proxy/diagnostics, system prompt.
 
@@ -120,11 +121,13 @@ Open Finance = настраиваемый Lego-конструктор интер
 - Запиненные доски отображаются в sidebar; доски видны в `@связать` через `/api/blocks/sources`.
 
 ## Sheet / Excel Cell / связи
-- `sheet` — мини-таблица с формулами, `@связать`, computed cells в sources API, `__money` metadata для денежных ячеек.
+- `sheet` — мини-таблица с формулами, `@связать`, computed cells в sources API, `__money` metadata для денежных ячеек. Без `minContentSize` — таблица скроллится внутри блока любого размера (`minSize: 1×1`).
 - `excel.cell` — компактная одиночная Excel-like ячейка `3×2`, формулы и `moneyRefs`.
+- **Money detection через `moneyRefs`**: оба `sheet` и `excel.cell` сохраняют `Record<string, boolean>` в config при `@связать` (через `sourceFieldIsMoney`). `formulaReferencesMoneyRefs(raw, moneyRefs)` сначала проверяет сохранённые флаги, потом fallback на эвристику по имени поля. То же используется server-side в `/api/blocks/sources/evaluateSheetCells`.
+- **Публикация `__money`**: KPI-блоки (`stat.*`, `computed.sum`, `custom.data` с format=rubles, `excel.cell` с money формулой) публикуют `__money: 'value'` (или `'value,sum'`) через `useBlockValuePublisher`, чтобы live preview в `@связать` picker правильно форматировал копейки. Sheet публикует `__money` со списком money-ячеек (адресов).
 - `/api/blocks/sources` server-side считает Sheet formulas, включая linked cells, чтобы вкладки страниц совпадали с live current-page values.
 - `useAvailableBlockSources()` скрывает служебные поля вроде `__money`.
-- Формат денег нельзя выводить из факта `@`; нужен explicit `format: money` / `moneyRefs`, иначе обычные ячейки будут ошибочно делиться на копейки.
+- Формат денег нельзя выводить из факта `@`; нужен explicit `format: money` (server) / сохранённый `moneyRefs` (client), иначе обычные ячейки будут ошибочно делиться на копейки.
 
 ## AI Micro-Agent и AI runtime
 ### Ключевые файлы
@@ -170,6 +173,33 @@ Open Finance = настраиваемый Lego-конструктор интер
 - Telegram channel пока placeholder.
 - Подключение каналов живёт в настройках конкретного `inbox.channel-feed` блока, не в общей settings-секции.
 
+## Unit Economics (MVP, v0.11.0)
+### Ключевые файлы
+- `src/lib/unit-economics/types.ts` — `Marketplace`, `OzonMode`, `YandexMode`, `TaxMode`, `OzonInputs/Results`, `YandexInputs/Results`, `UnitCellBinding`, утилиты (`clamp`, `safeNumber`, `round2`, `rublesToKopecks`).
+- `src/lib/unit-economics/ozon/{tariffs-2026-04-07,calculate}.ts` — версионированный тарифный пак (`OZON_TARIFF_VERSION = ozon_2026_04_07`) и pure-TS engine.
+- `src/lib/unit-economics/yandex/{tariffs-2026-04-01,calculate}.ts` — версионированный тарифный пак (`YANDEX_TARIFF_VERSION = yandex_2026_04_01`) и pure-TS engine.
+- `src/lib/unit-economics/bindings.ts` — `isBindingActive`, `bindingScopedKey`, `resolveBindingValue` (kopecks→rubles по флагу `money`), `bindingHasValue`.
+- `src/lib/unit-economics/use-live-block-values.ts` — `useAllBlockValuesFlat` (live из `BlockValuesContext`), `useRemoteBlockSources` (`/api/blocks/sources`).
+- `src/lib/unit-economics/import/ozon-price-template.ts` — XLSX-парсер с SheetJS + fallback ZIP/XML.
+- `src/lib/unit-economics/queries.ts` — tenant-scoped CRUD `unit_products`/`unit_calculations`/`unit_imports`, `bulkUpsertUnitProducts`.
+- `src/lib/db/schema/unit-economics.ts` — Drizzle-таблицы (деньги в копейках `integer`).
+- `drizzle/init/05-unit-economics.sql` — manual SQL.
+- `src/app/api/unit-economics/{products,calculations,import/ozon-prices}/route.ts` — API.
+- `src/lib/blocks/catalog/{unit-ozon-calculator,unit-ozon-multi-table,unit-yandex-calculator}.tsx` — блоки.
+- `src/components/unit-economics/{unit-cell-binding-dialog,linkable-number-cell}.tsx` — UI привязок.
+- `src/app/(app)/unit-economics/{page,unit-economics-client}.tsx` — server + client страница.
+- `scripts/test-unit-economics.ts` — smoke tests (запуск: `pnpm tsx scripts/test-unit-economics.ts [path-to-xlsx]`).
+
+### Инварианты
+- **Версионирование тарифов:** сохранённые `unit_calculations.tariff_version` ссылаются на конкретный pack (`ozon_2026_04_07`, `yandex_2026_04_01`); при добавлении нового pack — не перезаписывать старые расчёты.
+- **Деньги:** в БД хранить в копейках (`integer`), в `inputs/results` JSONB — рубли с `money: true` пометкой при необходимости. UI форматирует через существующие helpers.
+- **Linkable cells:** money-флаг обязателен для денежных привязок, иначе будет повторение бага «деление/не деление на 100». Fallback хранится при пропадании источника, показывается warning state.
+- **XLSX-импорт Ozon:** маппинг колонок по заголовкам, не индексам. SheetJS читать с `cellStyles: false`. Fallback ZIP/XML парсер обходит «битый» stylesheet от Ozon. Фильтровать служебные строки-метки.
+- **Tenant isolation:** все API под `auth()`, все DB-запросы фильтруются по `tenant_id`. `unit_products` upsert по `(tenant_id, marketplace, article)`.
+- **Aggregate outputs:** все unit-блоки публикуют `rowsCount`, `avgMargin`, `avgRoi`, `totalProfitMonth`, `totalStockValue`, `totalMoneyInGoods` через `useBlockValuePublisher` с `__money` для денежных полей.
+- **`/api/blocks/sources`:** `unit-economics-*` page labels и `unit.*` type labels добавлены в `DEFAULT_PAGE_KEYS`/`PAGE_LABELS`/`TYPE_LABELS`. `fieldsForBlock` возвращает publishable поля.
+- **Yoolip credentials:** не хранить в git/плане. Только email + факт наличия тестового доступа в плане; пароль — вне репозитория.
+
 ## RAG memory / AI Orchestrator
 - Schema уже есть: `src/lib/db/schema/ai.ts` (`memory_chunks`, `ai_usage`, `ai_audit_log`, `ai_agents`).
 - `src/lib/ai/orchestrator.ts` пока scaffold/TODO для Этапа 4.
@@ -188,7 +218,7 @@ Open Finance = настраиваемый Lego-конструктор интер
 ## Файлы, которые AI должен знать (но не грузить все сразу)
 - `START.md` — bootstrap новой сессии, карта, роутинг по типу задачи. **Читается первым.**
 - `MEMORY.md` — этот компактный handoff. **Читается вторым.**
-- `CHANGELOG.md` — история изменений; текущая версия `0.10.3`. Грузить по запросу.
+- `CHANGELOG.md` — история изменений; текущая версия `0.10.4`. Грузить по запросу.
 - `PLAN.md` — стратегическая карта продукта и этапы. Грузить разделами через offset+limit.
 - `CLAUDE.md` — полные правила проекта (всегда применяется через workspace rules).
 - `AGENTS.md` — универсальные правила для AI-агентов (всегда применяется).
@@ -216,14 +246,21 @@ Manual SQL для новых модулей:
 ```bash
 docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev < drizzle/init/03-boards.sql
 docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev < drizzle/init/04-inbox.sql
+docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev < drizzle/init/05-unit-economics.sql
 ```
 
-## Текущий статус на 2026-05-13
-- **Версия:** `0.10.3` в `CHANGELOG.md`; `package.json` всё ещё `0.5.0` и не является источником статуса фич.
-- **Фаза:** Inbox Channels MVP + AI Micro-Agent + External Providers/VPN/Diagnostics + Boards.
-- **Build:** предыдущие handoff-памяти сообщают, что `pnpm build` проходил; после новых изменений запускать снова.
+## Текущий статус на 2026-05-14
+- **Версия:** `0.11.0` в `CHANGELOG.md`; `package.json` всё ещё `0.5.0` и не является источником статуса фич.
+- **Фаза:** Unit Economics MVP (Ozon FBO/FBS, Ozon мульти-артикул, Яндекс Маркет) поверх Inbox Channels MVP + AI Micro-Agent + External Providers/VPN/Diagnostics + Boards.
+- **Build:** `pnpm typecheck` и `pnpm build` проходят; smoke-тесты `pnpm tsx scripts/test-unit-economics.ts` зелёные (19 проверок + XLSX-парсер на реальном файле).
 - **Контекстные файлы:** `0.10.3` ввёл `START.md` и переход на ленивую загрузку контекста — `CHANGELOG.md`/`PLAN.md` больше не грузятся целиком по умолчанию.
-- **Ближайшие TODO:** применить `04-inbox.sql` в dev DB, протестировать реальные IMAP-провайдеры, добавить Telegram Bot API канал, Whisper transcription, Cmd+K AI action, полноценный RAG memory/orchestrator.
+- **Ближайшие TODO:**
+  - применить `05-unit-economics.sql` в dev DB (manual SQL command выше);
+  - применить `04-inbox.sql` в dev DB;
+  - подключить сохранение `unit_calculations` из блоков (сейчас только инфраструктура и API готовы);
+  - добавить экспорт CSV/XLSX и share/permalink для калькуляторов;
+  - покрыть UI плотными e2e-тестами через webapp-testing skill;
+  - продолжить: Telegram Bot канал, Whisper transcription, RAG/orchestrator, Cmd+K AI action.
 
 ## Грабли, которые нельзя повторять
 - `sanitizeBlocks` на сервере может выкинуть блоки из-за client-only catalog.
@@ -231,6 +268,12 @@ docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev 
 - Sheet sources нельзя строить только из raw saved cells: формулы и linked cells должны считаться/merge-иться.
 - Служебные поля (`__money`) нужны для metadata, но не должны показываться selectable source.
 - `formatRublesWithSettings` принимает копейки; не форматировать обычные Sheet cells как деньги без metadata.
+- **Money detection в формулах** — нельзя полагаться только на эвристику `refIsPlainNumber` по имени поля. При `@связать` нужно сохранять `moneyRefs[ref] = sourceFieldIsMoney(...)` в config (как в `excel.cell` и `sheet`). Иначе ссылка на KPI будет показывать `2 613 726 900` вместо `26 137 269 ₽`.
+- **`__money` metadata в KPI-блоках** — любой блок, публикующий рублёвое значение через `useBlockValuePublisher`, должен публиковать `__money: 'value'` (или список полей). Без этого live preview в `@связать` picker и `mergeLiveFields` не пометят source как money.
+- **`minContentSize` блокирует ресайз** — если блок умеет сам скроллиться (`overflow-auto` внутри), не задавайте `minContentSize`. Иначе пользователь не сможет уменьшить блок и получит overlay «Мало места».
 - Ollama fallback не должен выбирать embedding-only модели.
 - `useSearchParams` в Next.js 15 должен быть под `<Suspense>`.
 - `bcryptjs` нельзя импортировать в код, который может попасть в middleware/edge runtime.
+- **XLSX от Ozon** — `openpyxl` (Python) и SheetJS с `cellStyles: true` падают на «битом» border-стиле в шаблонах Ozon. Использовать SheetJS с `cellStyles: false` плюс fallback на ручной ZIP/XML парсинг (`node:zlib` + sharedStrings + sheet xml). Маппинг колонок строго по заголовкам, не по индексам.
+- **`tsx` через pnpm в sandbox** — `pnpm tsx` поднимает локальный IPC сервер и падает с `EPERM listen` под жёстким sandbox. Запускать smoke-тесты через Shell с `required_permissions: ["all"]`.
+- **Версионирование тарифов unit-economics** — никогда не редактировать существующий tariff pack inplace (`ozon_2026_04_07.ts`); добавлять новый `ozon_2026_05_xx.ts`. Сохранённые `unit_calculations.tariff_version` должны точно совпадать с константой текущего pack.

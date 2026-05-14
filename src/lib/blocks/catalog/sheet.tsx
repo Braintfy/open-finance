@@ -78,6 +78,12 @@ const SheetConfig = z.object({
   showKopecks: z.boolean().nullable().default(null),
   /** Ссылки на внешние блоки: имя переменной → значение (или null) */
   blockRefs: z.record(z.string(), z.union([z.string(), z.number(), z.null()])).optional(),
+  /**
+   * Money-флаги для @-ссылок: ключ совпадает с blockRefs, значение = true если поле денежное.
+   * Сохраняется при выборе поля через @связать, чтобы рендер ячеек надёжно знал,
+   * нужно ли форматировать результат как рубли (а не использовать хрупкую эвристику по имени поля).
+   */
+  moneyRefs: z.record(z.string(), z.boolean()).optional(),
 });
 
 type SheetCfg = z.infer<typeof SheetConfig>;
@@ -241,10 +247,23 @@ function refIsPlainNumber(ref: string): boolean {
   return /^[A-Z]+\d+$/.test(field) || ['count', 'raw', 'label'].includes(field);
 }
 
-function formulaReferencesMoneyRefs(raw: string): boolean {
+function sourceFieldIsMoney(block: BlockSourceBlock, field: BlockSourceField): boolean {
+  if (field.format) return field.format === 'money';
+  if (refIsPlainNumber(`${block.blockId}.${field.name}`)) return false;
+  if (block.category === 'Таблицы') return false;
+  if (['KPI', 'Кэшфлоу', 'Данные', 'Вычисления'].includes(block.category)) return true;
+  return field.name === 'value';
+}
+
+function formulaReferencesMoneyRefs(raw: string, moneyRefs?: Record<string, boolean>): boolean {
   const refs = raw.matchAll(/@([A-Za-z0-9_.:-]+)/g);
   for (const match of refs) {
-    if (!refIsPlainNumber(match[1])) return true;
+    const ref = match[1];
+    if (moneyRefs && ref in moneyRefs) {
+      if (moneyRefs[ref]) return true;
+      continue;
+    }
+    if (!refIsPlainNumber(ref)) return true;
   }
   return false;
 }
@@ -404,13 +423,14 @@ function computeCell(
   blockValues: Record<string, number | string | null>,
   showKopecks: boolean,
   moneyCells: Set<string>,
+  moneyRefs?: Record<string, boolean>,
 ): CellComputation {
   if (!raw.startsWith('=')) {
     const n = parseSheetNumber(raw);
     return { display: raw, value: n ?? raw, money: false };
   }
   const result = evaluateFormula(raw.slice(1), cells, evaluated, blockValues);
-  const money = formulaReferencesMoneyRefs(raw) || formulaReferencesMoneyCells(raw, moneyCells);
+  const money = formulaReferencesMoneyRefs(raw, moneyRefs) || formulaReferencesMoneyCells(raw, moneyCells);
   return { display: formatComputedValue(result, money, showKopecks), value: result, money };
 }
 
@@ -586,7 +606,7 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
             ? formatComputedValue(cached, moneyCells.has(addr), showKopecks)
             : String(cached));
         } else {
-          const computed = computeCell(raw, cells, evaluated, blockValues, showKopecks, moneyCells);
+          const computed = computeCell(raw, cells, evaluated, blockValues, showKopecks, moneyCells, cfg.moneyRefs);
           evaluated.set(addr, computed.value);
           if (computed.money) moneyCells.add(addr);
           row.push(computed.display);
@@ -595,17 +615,17 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
       result.push(row);
     }
     return { result, evaluated, moneyCells };
-  }, [cells, blockValues, showKopecks]);
+  }, [cells, blockValues, showKopecks, cfg.moneyRefs]);
 
   // Вычисляем header cells (используем общий evaluated cache из основной таблицы)
   const evaluatedHeaders = useMemo(() => {
     return headerCells.map((hc) => {
       if (!hc.value.startsWith('=')) return { ...hc, computed: hc.value };
-      const computed = computeCell(hc.value, cells, evaluatedCells.evaluated, blockValues, showKopecks, evaluatedCells.moneyCells);
+      const computed = computeCell(hc.value, cells, evaluatedCells.evaluated, blockValues, showKopecks, evaluatedCells.moneyCells, cfg.moneyRefs);
       return { ...hc, computed: computed.display };
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [headerCells, cells, blockValues, evaluatedCells.evaluated, evaluatedCells.moneyCells, showKopecks]);
+  }, [headerCells, cells, blockValues, evaluatedCells.evaluated, evaluatedCells.moneyCells, showKopecks, cfg.moneyRefs]);
 
   // Публикуем значения для других блоков
   const publishOutput = useMemo(() => {
@@ -716,6 +736,7 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
     const nextValue = base.slice(0, pos) + token + base.slice(pos);
     const newPos = pos + token.length;
     const nextRefs = { ...(cfg.blockRefs ?? {}), [ref]: field.value };
+    const nextMoneyRefs = { ...(cfg.moneyRefs ?? {}), [ref]: sourceFieldIsMoney(block, field) };
 
     setEditValue(nextValue);
     setFormulaMode(true);
@@ -725,15 +746,15 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
     if (editingHeaderId) {
       const nextHeaders = headerCells.map((hc) => (hc.id === editingHeaderId ? { ...hc, value: nextValue } : hc));
       setHeaderCells(nextHeaders);
-      saveConfig({ headerCells: nextHeaders, blockRefs: nextRefs });
+      saveConfig({ headerCells: nextHeaders, blockRefs: nextRefs, moneyRefs: nextMoneyRefs });
     } else if (activeCell) {
       const nextCells = cells.map((row, ri) =>
         ri === activeCell.r ? row.map((cell, ci) => (ci === activeCell.c ? nextValue : cell)) : row
       );
       setCells(nextCells);
-      saveConfig({ cells: nextCells, blockRefs: nextRefs });
+      saveConfig({ cells: nextCells, blockRefs: nextRefs, moneyRefs: nextMoneyRefs });
     } else {
-      saveConfig({ blockRefs: nextRefs });
+      saveConfig({ blockRefs: nextRefs, moneyRefs: nextMoneyRefs });
     }
 
     setBlockPickerOpen(false);
@@ -915,7 +936,9 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
     color: 'var(--muted-foreground, #71717a)',
   };
 
-  // XS density — just show title + count
+  // Sheet всегда рендерит полную таблицу — пользователь контролирует размер,
+  // содержимое скроллится внутри. На крошечных блоках (≤130×70) показываем
+  // иконку + название как fallback, чтобы не занимать всё пространство сетки.
   if (density === 'xs') {
     return (
       <Card className="flex h-full items-center justify-center p-1">
@@ -927,27 +950,12 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
     );
   }
 
-  // SM density — title + summary
-  if (density === 'sm') {
-    return (
-      <Card className="flex h-full flex-col justify-center p-2">
-        <div className="flex items-center gap-1">
-          <Table2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          <span className="truncate text-[11px] font-medium text-muted-foreground">{title}</span>
-        </div>
-        <div className="mt-0.5 text-xs tabular-nums" style={accent ? { color: accent } : undefined}>
-          {cfg.rows}×{cfg.cols} ячеек
-        </div>
-      </Card>
-    );
-  }
-
-  // MD/LG — full spreadsheet
+  // SM/MD/LG — полная таблица со скроллом
   return (
     <Card ref={sheetRef} className="flex h-full flex-col overflow-hidden">
       {/* Header summary row */}
       {cfg.showHeader && (
-        <div className="flex items-center gap-0 border-b border-border/50 bg-muted/30">
+        <div className="flex shrink-0 items-center gap-0 overflow-x-auto border-b border-border/50 bg-muted/30">
           {evaluatedHeaders.map((hc) => (
             <div
               key={hc.id}
@@ -1015,7 +1023,7 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
 
       {/* Formula bar */}
       {cfg.showFormulaBar && (activeCell || editingHeaderId) && (
-        <div className="flex items-center gap-1 border-b border-border/40 bg-muted/20 px-2 py-1">
+        <div className="flex shrink-0 items-center gap-1 border-b border-border/40 bg-muted/20 px-2 py-1">
           <span className="flex h-5 min-w-[36px] items-center justify-center rounded bg-muted px-1 text-[10px] font-semibold text-muted-foreground">
             {editingHeaderId
               ? (headerCells.find((h) => h.id === editingHeaderId)?.label || 'Header')
@@ -1070,7 +1078,7 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
 
       {/* Mobile formula helpers — показываем при формуле */}
       {cfg.showFormulaBar && (activeCell || editingHeaderId) && (formulaMode || touchPickMode) && (
-        <div className="flex items-center gap-1 overflow-x-auto border-b border-border/30 bg-muted/10 px-2 py-0.5">
+        <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-border/30 bg-muted/10 px-2 py-0.5">
           <span className="shrink-0 text-[10px] text-muted-foreground">Вставить:</span>
           {['+', '-', '*', '/', '(', ')', ',', ':'].map((op) => (
             <button
@@ -1263,7 +1271,7 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
       )}
 
       {/* Spreadsheet grid */}
-      <CardContent className="flex-1 overflow-auto p-0">
+      <CardContent className="min-h-0 min-w-0 flex-1 overflow-auto p-0">
         <table className="border-collapse text-xs" style={{ tableLayout: 'fixed' }}>
           <colgroup>
             <col style={{ width: 32 }} />
@@ -1537,8 +1545,8 @@ export const SheetBlock: BlockDef = {
   category: 'tables',
   icon: Table2,
   defaultSize: { w: 5, h: 5 },
-  minSize: { w: 3, h: 3 },
-  minContentSize: { w: 360, h: 220 },
+  minSize: { w: 1, h: 1 },
+  // Без minContentSize — таблица сама умеет скроллиться, не блокируем уменьшение блока
   pages: ['*'],
   supportsDependencies: true,
   configSchema: SheetConfig,

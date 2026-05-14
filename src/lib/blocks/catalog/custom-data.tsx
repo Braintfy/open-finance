@@ -91,6 +91,13 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
     sum: total,
     count: config.rows.length,
     label: title,
+    // money только если формат рублёвый. value money, только если publishMode != 'count'
+    __money:
+      config.format === 'rubles'
+        ? config.publishMode === 'count'
+          ? 'sum'
+          : 'value,sum'
+        : '',
   });
 
   function addRow() {

@@ -80,6 +80,14 @@ export function CommandPalette() {
       onSelect: () => go('/cashflow'),
     },
     {
+      id: 'nav-unit-economics',
+      label: 'Юнит-экономика',
+      icon: Calculator,
+      group: 'Навигация',
+      keywords: 'юнит unit ozon озон яндекс маркет калькулятор маржа roi',
+      onSelect: () => go('/unit-economics'),
+    },
+    {
       id: 'nav-inbox',
       label: 'Входящие',
       icon: Inbox,

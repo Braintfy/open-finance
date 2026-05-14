@@ -29,7 +29,14 @@ type SourceBlock = {
   fields: SourceField[];
 };
 
-const DEFAULT_PAGE_KEYS = ['dashboard', 'cashflow', 'inbox'];
+const DEFAULT_PAGE_KEYS = [
+  'dashboard',
+  'cashflow',
+  'inbox',
+  'unit-economics-ozon',
+  'unit-economics-ozon-multi',
+  'unit-economics-yandex',
+];
 
 const PAGE_LABELS: Record<string, string> = {
   dashboard: 'Главная',
@@ -38,6 +45,9 @@ const PAGE_LABELS: Record<string, string> = {
   deadlines: 'Дедлайны',
   taxes: 'Налоги',
   settings: 'Настройки',
+  'unit-economics-ozon': 'Юнит-экономика · Ozon',
+  'unit-economics-ozon-multi': 'Юнит-экономика · Ozon мульти',
+  'unit-economics-yandex': 'Юнит-экономика · Яндекс',
 };
 
 const TYPE_LABELS: Record<string, { label: string; category: string }> = {
@@ -55,6 +65,9 @@ const TYPE_LABELS: Record<string, { label: string; category: string }> = {
   'cashflow.chart': { label: 'График', category: 'Графики' },
   'navigate.card': { label: 'Навигация', category: 'Навигация' },
   'ai.micro-agent': { label: 'AI агент', category: 'AI' },
+  'unit.ozon-calculator': { label: 'Ozon · калькулятор', category: 'Юнит-экономика' },
+  'unit.ozon-multi-table': { label: 'Ozon · юнит-таблица', category: 'Юнит-экономика' },
+  'unit.yandex-calculator': { label: 'Яндекс · калькулятор', category: 'Юнит-экономика' },
 };
 
 function pageLabel(pageKey: string): string {
@@ -168,10 +181,15 @@ function refIsPlainNumber(ref: string): boolean {
   return /^[A-Z]+\d+$/.test(field) || ['count', 'raw', 'label'].includes(field);
 }
 
-function formulaReferencesMoneyRefs(raw: string): boolean {
+function formulaReferencesMoneyRefs(raw: string, moneyRefs?: Record<string, boolean>): boolean {
   const refs = raw.matchAll(/@([A-Za-z0-9_.:-]+)/g);
   for (const match of refs) {
-    if (!refIsPlainNumber(match[1])) return true;
+    const ref = match[1];
+    if (moneyRefs && ref in moneyRefs) {
+      if (moneyRefs[ref]) return true;
+      continue;
+    }
+    if (!refIsPlainNumber(ref)) return true;
   }
   return false;
 }
@@ -282,6 +300,9 @@ function evaluateSheetCells(block: BlockInstance): { values: Map<string, number 
   const blockRefs = typeof block.config?.blockRefs === 'object' && block.config.blockRefs !== null
     ? block.config.blockRefs as Record<string, string | number | null>
     : {};
+  const moneyRefs = typeof block.config?.moneyRefs === 'object' && block.config.moneyRefs !== null
+    ? block.config.moneyRefs as Record<string, boolean>
+    : undefined;
   const values = new Map<string, number | string>();
   const moneyCells = new Set<string>();
   for (let r = 0; r < cells.length; r++) {
@@ -292,7 +313,7 @@ function evaluateSheetCells(block: BlockInstance): { values: Map<string, number 
       if (raw.startsWith('=')) {
         const value = evaluateSheetFormula(raw.slice(1), cells, values, blockRefs);
         values.set(addr, value);
-        if (formulaReferencesMoneyRefs(raw) || formulaReferencesMoneyCells(raw, moneyCells)) moneyCells.add(addr);
+        if (formulaReferencesMoneyRefs(raw, moneyRefs) || formulaReferencesMoneyCells(raw, moneyCells)) moneyCells.add(addr);
       } else {
         const parsed = parseSheetNumber(raw);
         if (parsed !== null) values.set(addr, parsed);
@@ -373,6 +394,28 @@ async function fieldsForBlock(block: BlockInstance, tenantId: string, monthlySum
     return [
       { name: 'value', label: 'Значение', value },
       { name: 'raw', label: 'Формула/текст', value: raw },
+    ];
+  }
+  if (block.type === 'unit.ozon-calculator' || block.type === 'unit.yandex-calculator') {
+    const inputs = (block.config?.inputs ?? {}) as Record<string, unknown>;
+    const price = Number(inputs.price ?? inputs.sellerPrice ?? 0);
+    const stock = Number(inputs.stock ?? 0);
+    return [
+      { name: 'value', label: 'Цена', value: Math.round(price * 100), format: 'money' },
+      { name: 'price', label: 'Цена', value: Math.round(price * 100), format: 'money' },
+      { name: 'stock', label: 'Остаток', value: stock, format: 'number' },
+    ];
+  }
+  if (block.type === 'unit.ozon-multi-table') {
+    const rows = Array.isArray(block.config?.rows) ? (block.config.rows as Array<Record<string, unknown>>) : [];
+    const stockTotal = rows.reduce((acc, row) => {
+      const inputs = (row.inputs ?? {}) as Record<string, unknown>;
+      return acc + Number(inputs.stock ?? 0);
+    }, 0);
+    return [
+      { name: 'value', label: 'Товаров', value: rows.length, format: 'number' },
+      { name: 'rowsCount', label: 'Товаров', value: rows.length, format: 'number' },
+      { name: 'stockTotal', label: 'Сумма остатков', value: stockTotal, format: 'number' },
     ];
   }
   if (block.type === 'inbox.channel-feed') {

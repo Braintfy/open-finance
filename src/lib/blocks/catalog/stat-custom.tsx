@@ -101,6 +101,8 @@ function RenderStatCustom({ instance }: BlockRenderProps) {
     value: value ?? 0,
     count,
     label: title,
+    // count метрика — не деньги; income/expense/balance — копейки
+    __money: cfg.metric === 'count' ? '' : 'value',
   });
 
   const { settings: globalSettings } = useFormatSettings();

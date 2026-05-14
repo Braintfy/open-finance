@@ -144,6 +144,7 @@ function RenderIncome({ instance }: BlockRenderProps) {
     value,
     count: loading ? 0 : summary.incomeCount,
     label: instance.appearance?.title ?? 'Доходы за месяц',
+    __money: 'value',
   });
   return (
     <StatCard
@@ -166,6 +167,7 @@ function RenderExpense({ instance }: BlockRenderProps) {
     value,
     count: loading ? 0 : summary.expenseCount,
     label: instance.appearance?.title ?? 'Расходы за месяц',
+    __money: 'value',
   });
   return (
     <StatCard
@@ -188,6 +190,7 @@ function RenderBalance({ instance }: BlockRenderProps) {
     value,
     count: loading ? 0 : summary.incomeCount + summary.expenseCount,
     label: instance.appearance?.title ?? 'Баланс',
+    __money: 'value',
   });
   return (
     <StatCard
