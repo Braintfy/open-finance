@@ -33,6 +33,7 @@ export const YANDEX_DEFAULT_INPUTS: YandexInputs = {
   taxMode: 'usn_income',
   taxRatePct: 6,
   taxDeductExpenses: false,
+  vatPct: 0,
   salesPerMonth: 0,
   batchSize: 0,
   stock: 0,
@@ -97,8 +98,10 @@ export function calculateYandex(rawInputs: Partial<YandexInputs>): YandexResults
   const cogs = round2(safeNumber(inputs.cost));
   const overhead = round2(safeNumber(inputs.overheadPerUnit));
 
+  const vat = round2((customerPrice * clamp(safeNumber(inputs.vatPct), 0, 100)) / 100);
+
   const expensesBeforeTax =
-    commission + acquiring + lastMile + middleMile + fulfillment + storage + ads + cogs + overhead;
+    commission + acquiring + lastMile + middleMile + fulfillment + storage + ads + cogs + overhead + vat;
 
   const tax = round2(
     calcTax(
@@ -129,6 +132,7 @@ export function calculateYandex(rawInputs: Partial<YandexInputs>): YandexResults
     fulfillment,
     storage,
     ads,
+    vat,
     tax,
     cogs,
     overhead,

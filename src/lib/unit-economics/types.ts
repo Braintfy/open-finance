@@ -89,10 +89,17 @@ export type OzonInputs = {
   drrPct: number;
   // Налог
   taxMode: TaxMode;
-  /** Ставка УСН/НДС, % (для usn_income=6, usn_income_minus=15, nds=20 и т.д.) */
+  /** Ставка УСН/налога на прибыль, % (для usn_income=6, usn_income_minus=15 и т.д.) */
   taxRatePct: number;
   /** Можно ли вычесть себестоимость и расходы (для УСН Д-Р) */
   taxDeductExpenses: boolean;
+  /**
+   * Глобальная ставка НДС, %. Считается отдельной строкой расхода
+   * (vat = buyerPrice * vatPct/100) и НЕ зависит от taxMode. Если 0 —
+   * НДС не учитывается. Для taxMode='nds'/'osno' рекомендуется задавать
+   * 5/7/20 здесь, а taxRatePct оставлять для налога на прибыль.
+   */
+  vatPct: number;
   // Оборачиваемость и партия
   /** Продаж в месяц */
   salesPerMonth: number;
@@ -119,7 +126,9 @@ export type OzonResults = {
   returns: number;
   /** Реклама на одну продажу (с учётом выкупа), ₽ */
   ads: number;
-  /** Налог, ₽ */
+  /** НДС на одну продажу, ₽ */
+  vat: number;
+  /** Налог (УСН/налог на прибыль), ₽ */
   tax: number;
   /** Себестоимость единицы, ₽ */
   cogs: number;
@@ -184,6 +193,8 @@ export type YandexInputs = {
   taxMode: TaxMode;
   taxRatePct: number;
   taxDeductExpenses: boolean;
+  /** Глобальная ставка НДС, %. Аналогично OzonInputs.vatPct. */
+  vatPct: number;
   /** Продаж в месяц */
   salesPerMonth: number;
   /** Партия */
@@ -202,6 +213,7 @@ export type YandexResults = {
   fulfillment: number;
   storage: number;
   ads: number;
+  vat: number;
   tax: number;
   cogs: number;
   overhead: number;

@@ -19,6 +19,7 @@ import { InboxChannelFeedBlock } from './catalog/inbox-channel-feed';
 import { UnitOzonCalculatorBlock } from './catalog/unit-ozon-calculator';
 import { UnitOzonMultiTableBlock } from './catalog/unit-ozon-multi-table';
 import { UnitYandexCalculatorBlock } from './catalog/unit-yandex-calculator';
+import { UnitMyStoreTableBlock } from './catalog/unit-my-store-table';
 
 const ALL_BLOCKS: BlockDef[] = [
   StatIncomeBlock,
@@ -38,6 +39,7 @@ const ALL_BLOCKS: BlockDef[] = [
   UnitOzonCalculatorBlock,
   UnitOzonMultiTableBlock,
   UnitYandexCalculatorBlock,
+  UnitMyStoreTableBlock,
 ];
 
 const REGISTRY = new Map<string, BlockDef>(ALL_BLOCKS.map((b) => [b.type, b]));
@@ -209,6 +211,20 @@ export const DEFAULT_LAYOUTS: Record<string, PageLayout> = {
         y: 0,
         w: 12,
         h: 9,
+      },
+    ],
+    hiddenSections: [],
+  },
+  'unit-economics-my-store': {
+    pageKey: 'unit-economics-my-store',
+    blocks: [
+      {
+        id: 'default-unit-my-store',
+        type: 'unit.my-store-table',
+        x: 0,
+        y: 0,
+        w: 12,
+        h: 12,
       },
     ],
     hiddenSections: [],

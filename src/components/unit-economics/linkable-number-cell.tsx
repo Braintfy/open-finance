@@ -67,11 +67,17 @@ export function LinkableNumberCell({
   const linkedValue = isLinked ? resolveBindingValue(binding, liveValues) : null;
   const displayValue = isLinked && linkedValue !== null ? linkedValue : value;
 
+  const inputValue = isLinked
+    ? linkedValue === null
+      ? '—'
+      : formatValue(linkedValue)
+    : formatValue(value);
+
   return (
     <div
       className={cn(
         'group relative flex h-full items-stretch overflow-hidden rounded border border-transparent text-[12px] transition-colors',
-        isLinked ? 'bg-amber-50/40 dark:bg-amber-950/30' : 'bg-background',
+        isLinked ? 'bg-amber-50/60 dark:bg-amber-950/30' : 'bg-transparent',
         'focus-within:border-primary/60 hover:border-border/70',
         className,
       )}
@@ -84,36 +90,31 @@ export function LinkableNumberCell({
           : `Введите ${fieldLabel}${unit ? ', ' + unit : ''}`
       }
     >
-      {isLinked ? (
-        <button
-          type="button"
-          onClick={() => setPickerOpen(true)}
-          className={cn(
-            'flex-1 truncate px-1.5 tabular-nums outline-none transition-colors',
-            align === 'right' ? 'text-right' : 'text-left',
-            linkedValue === null && 'text-amber-700 dark:text-amber-400',
-          )}
-        >
-          {linkedValue === null ? '—' : formatValue(linkedValue)}
-        </button>
-      ) : (
-        <input
-          type="text"
-          inputMode="decimal"
-          value={formatValue(value)}
-          onChange={(e) => {
-            let next = parseInput(e.target.value);
-            if (typeof min === 'number') next = Math.max(min, next);
-            if (typeof max === 'number') next = Math.min(max, next);
-            void step;
-            onValueChange(next);
-          }}
-          className={cn(
-            'h-full flex-1 min-w-0 border-0 bg-transparent px-1.5 tabular-nums outline-none placeholder:text-muted-foreground/60',
-            align === 'right' ? 'text-right' : 'text-left',
-          )}
-        />
-      )}
+      <input
+        type="text"
+        inputMode={isLinked ? undefined : 'decimal'}
+        readOnly={isLinked}
+        tabIndex={isLinked ? -1 : 0}
+        onClick={isLinked ? () => setPickerOpen(true) : undefined}
+        value={inputValue}
+        onChange={
+          isLinked
+            ? undefined
+            : (e) => {
+                let next = parseInput(e.target.value);
+                if (typeof min === 'number') next = Math.max(min, next);
+                if (typeof max === 'number') next = Math.min(max, next);
+                void step;
+                onValueChange(next);
+              }
+        }
+        className={cn(
+          'h-full flex-1 min-w-0 border-0 bg-transparent px-1.5 tabular-nums outline-none placeholder:text-muted-foreground/60',
+          align === 'right' ? 'text-right' : 'text-left',
+          isLinked && 'cursor-pointer select-none',
+          isLinked && linkedValue === null && 'text-amber-700 dark:text-amber-400',
+        )}
+      />
       <button
         type="button"
         onClick={() => setPickerOpen(true)}

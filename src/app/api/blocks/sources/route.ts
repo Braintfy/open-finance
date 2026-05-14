@@ -36,6 +36,7 @@ const DEFAULT_PAGE_KEYS = [
   'unit-economics-ozon',
   'unit-economics-ozon-multi',
   'unit-economics-yandex',
+  'unit-economics-my-store',
 ];
 
 const PAGE_LABELS: Record<string, string> = {
@@ -48,6 +49,7 @@ const PAGE_LABELS: Record<string, string> = {
   'unit-economics-ozon': 'Юнит-экономика · Ozon',
   'unit-economics-ozon-multi': 'Юнит-экономика · Ozon мульти',
   'unit-economics-yandex': 'Юнит-экономика · Яндекс',
+  'unit-economics-my-store': 'Юнит-экономика · Мой магазин',
 };
 
 const TYPE_LABELS: Record<string, { label: string; category: string }> = {
@@ -68,6 +70,7 @@ const TYPE_LABELS: Record<string, { label: string; category: string }> = {
   'unit.ozon-calculator': { label: 'Ozon · калькулятор', category: 'Юнит-экономика' },
   'unit.ozon-multi-table': { label: 'Ozon · юнит-таблица', category: 'Юнит-экономика' },
   'unit.yandex-calculator': { label: 'Яндекс · калькулятор', category: 'Юнит-экономика' },
+  'unit.my-store-table': { label: 'Мой магазин · таблица', category: 'Юнит-экономика' },
 };
 
 function pageLabel(pageKey: string): string {
@@ -411,6 +414,18 @@ async function fieldsForBlock(block: BlockInstance, tenantId: string, monthlySum
     const stockTotal = rows.reduce((acc, row) => {
       const inputs = (row.inputs ?? {}) as Record<string, unknown>;
       return acc + Number(inputs.stock ?? 0);
+    }, 0);
+    return [
+      { name: 'value', label: 'Товаров', value: rows.length, format: 'number' },
+      { name: 'rowsCount', label: 'Товаров', value: rows.length, format: 'number' },
+      { name: 'stockTotal', label: 'Сумма остатков', value: stockTotal, format: 'number' },
+    ];
+  }
+  if (block.type === 'unit.my-store-table') {
+    const rows = Array.isArray(block.config?.rows) ? (block.config.rows as Array<Record<string, unknown>>) : [];
+    const stockTotal = rows.reduce((acc, row) => {
+      const values = (row.values ?? {}) as Record<string, unknown>;
+      return acc + Number(values.stock ?? 0);
     }, 0);
     return [
       { name: 'value', label: 'Товаров', value: rows.length, format: 'number' },

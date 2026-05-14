@@ -34,6 +34,7 @@ export const OZON_DEFAULT_INPUTS: OzonInputs = {
   taxMode: 'usn_income',
   taxRatePct: 6,
   taxDeductExpenses: false,
+  vatPct: 0,
   salesPerMonth: 0,
   batchSize: 0,
   stock: 0,
@@ -112,7 +113,10 @@ export function calculateOzon(rawInputs: Partial<OzonInputs>): OzonResults {
   const cogs = round2(safeNumber(inputs.cost) + safeNumber(inputs.crossDockingCost));
   const overhead = round2(safeNumber(inputs.overheadPerUnit));
 
-  const expensesBeforeTax = commission + acquiring + logistics + deliveryPvz + returns + ads + cogs + overhead;
+  const vat = round2((buyerPrice * clamp(safeNumber(inputs.vatPct), 0, 100)) / 100);
+
+  const expensesBeforeTax =
+    commission + acquiring + logistics + deliveryPvz + returns + ads + cogs + overhead + vat;
   const tax = round2(
     calcTax(buyerPrice, expensesBeforeTax, inputs.taxMode, inputs.taxRatePct, inputs.taxDeductExpenses),
   );
@@ -136,6 +140,7 @@ export function calculateOzon(rawInputs: Partial<OzonInputs>): OzonResults {
     deliveryPvz,
     returns,
     ads,
+    vat,
     tax,
     cogs,
     overhead,

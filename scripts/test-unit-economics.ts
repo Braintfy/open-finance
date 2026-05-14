@@ -5,6 +5,7 @@ import path from 'node:path';
 import { calculateOzon } from '../src/lib/unit-economics/ozon/calculate';
 import { calculateYandex } from '../src/lib/unit-economics/yandex/calculate';
 import { parseOzonPriceTemplate } from '../src/lib/unit-economics/import/ozon-price-template';
+import { evalRowFormulas, evalSingleFormula } from '../src/lib/unit-economics/store-formula';
 
 let failed = 0;
 let passed = 0;
@@ -182,6 +183,70 @@ console.log('\n# Yandex: Fixed tariff (price<=300, volume<=5)');
   });
   expect(r.fulfillment === 25, `Fixed fulfillment = 25 (volume=1, price=200)`, `actual=${r.fulfillment}`);
   expect(r.middleMile === 0, 'middleMile = 0 при Fixed');
+}
+
+console.log('\n# Ozon: глобальный НДС (vatPct)');
+{
+  const noVat = calculateOzon({
+    mode: 'fbo', price: 1000, discountPct: 0, cost: 200, volumeL: 1, isLocalCluster: true,
+    commissionMode: 'manual', commissionPct: 15, acquiringPct: 0, deliveryPvzPct: 0, deliveryPvzCap: 0,
+    buyoutPct: 100, returnProcessing: 0, drrPct: 0,
+    taxMode: 'none', taxRatePct: 0, vatPct: 0,
+    salesPerMonth: 0, batchSize: 0, stock: 0, overheadPerUnit: 0,
+  });
+  const withVat = calculateOzon({
+    mode: 'fbo', price: 1000, discountPct: 0, cost: 200, volumeL: 1, isLocalCluster: true,
+    commissionMode: 'manual', commissionPct: 15, acquiringPct: 0, deliveryPvzPct: 0, deliveryPvzCap: 0,
+    buyoutPct: 100, returnProcessing: 0, drrPct: 0,
+    taxMode: 'none', taxRatePct: 0, vatPct: 20,
+    salesPerMonth: 0, batchSize: 0, stock: 0, overheadPerUnit: 0,
+  });
+  near(noVat.vat, 0, 0.01, 'vatPct=0 → vat=0');
+  near(withVat.vat, 200, 0.01, 'vatPct=20 → vat = 20% от 1000 = 200');
+  near(withVat.profitPerUnit, noVat.profitPerUnit - 200, 0.01, 'profit с НДС меньше на 200');
+}
+
+console.log('\n# Yandex: глобальный НДС (vatPct)');
+{
+  const r = calculateYandex({
+    mode: 'fby', sellerPrice: 1000, coinvestPct: 0,
+    cost: 200, lengthCm: 10, widthCm: 10, heightCm: 10, weightKg: 0.5,
+    commissionPct: 7, acquiringPct: 0, specialTariff: 'none',
+    fbsFastShipDiscountPct: 0, buyoutPct: 100, storagePerUnit: 0,
+    drrPct: 0, overheadPerUnit: 0,
+    taxMode: 'none', taxRatePct: 0, vatPct: 10,
+    salesPerMonth: 0, batchSize: 0, stock: 0,
+  });
+  near(r.vat, 100, 0.01, 'Yandex vatPct=10 → vat = 10% от 1000 = 100');
+}
+
+console.log('\n# Store formula: маржа и циклы');
+{
+  const result = evalRowFormulas(
+    { cost: 100, packaging: 10, delivery: 5, priceRetail: 200, salesPerMonth: 50 },
+    {
+      marginRetail: '=priceRetail - cost - packaging - delivery',
+      revenueMonth: '=priceRetail * salesPerMonth',
+      profitMonth: '=marginRetail * salesPerMonth',
+    },
+  );
+  expect(result.marginRetail === 85, `marginRetail = 200 - 100 - 10 - 5 = 85`, `actual=${result.marginRetail}`);
+  expect(result.revenueMonth === 10000, `revenueMonth = 200*50 = 10000`, `actual=${result.revenueMonth}`);
+  expect(result.profitMonth === 4250, `profitMonth = marginRetail * salesPerMonth = 85*50 = 4250`, `actual=${result.profitMonth}`);
+}
+{
+  const result = evalRowFormulas(
+    { a: 1 },
+    {
+      x: '=y + 1',
+      y: '=x + 1',
+    },
+  );
+  expect(result.x === '#CYCLE' && result.y === '#CYCLE', 'Цикл x↔y → #CYCLE для обоих');
+}
+{
+  const v = evalSingleFormula('=cost * 1.2', { cost: 100 });
+  near(typeof v === 'number' ? v : NaN, 120, 0.01, 'evalSingleFormula: cost * 1.2');
 }
 
 console.log('\n# XLSX парсер');

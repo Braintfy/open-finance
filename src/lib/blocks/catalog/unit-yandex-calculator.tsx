@@ -71,6 +71,7 @@ const SECTIONS: Array<{
     title: 'Реклама и оборачиваемость',
     fields: [
       { key: 'drrPct', label: 'ДРР', unit: '%' },
+      { key: 'vatPct', label: 'НДС', unit: '%', max: 100 },
       { key: 'overheadPerUnit', label: 'Прочие', unit: '₽', money: true },
       { key: 'salesPerMonth', label: 'Продаж/мес', unit: 'шт' },
       { key: 'batchSize', label: 'Партия', unit: 'шт' },
@@ -89,6 +90,7 @@ const PNL_LINES: Array<{ key: keyof ReturnType<typeof calculateYandex>; label: s
   { key: 'fulfillment', label: 'Фулфилмент', sign: '-' },
   { key: 'storage', label: 'Хранение', sign: '-' },
   { key: 'ads', label: 'Реклама', sign: '-' },
+  { key: 'vat', label: 'НДС', sign: '-' },
   { key: 'tax', label: 'Налог', sign: '-' },
   { key: 'cogs', label: 'Себестоимость', sign: '-' },
   { key: 'overhead', label: 'Прочие расходы', sign: '-' },
@@ -164,6 +166,14 @@ function RenderYandexCalculator({ instance, onConfigChange }: BlockRenderProps) 
             onChange={(e) => persist({ title: e.target.value })}
             className="h-7 w-72 border-0 bg-transparent px-0 text-sm font-semibold tracking-tight shadow-none focus-visible:ring-0"
           />
+          <span className="inline-flex items-center rounded border border-purple-500/40 bg-purple-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-purple-600 dark:text-purple-300">
+            {inputs.mode}
+          </span>
+          {Number(inputs.vatPct ?? 0) > 0 && (
+            <span className="inline-flex items-center rounded border border-border/60 bg-background px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+              НДС {Number(inputs.vatPct)}%
+            </span>
+          )}
           <span className="text-[10px] text-muted-foreground">v{YANDEX_TARIFF_VERSION}</span>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">

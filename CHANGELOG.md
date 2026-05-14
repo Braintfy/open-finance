@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.11.1] - 2026-05-14
+
+### Added
+- **Юнит-экономика — глобальный НДС (`vatPct`)** в Ozon (multi-table + single) и Yandex (single). Считается отдельной строкой расхода `vat = buyerPrice * vatPct/100` (в Yandex от `customerPrice`); налог УСН/ОСНО (`tax`) остался отдельной строкой. По умолчанию `vatPct=0` — обратная совместимость со старыми расчётами.
+- **Чип режима** в заголовке Ozon multi-table и обоих single-калькуляторов: `FBO`/`FBS` (синий/зелёный) для Ozon, `FBY/FBS/DBS/Express` (фиолетовый) для Yandex; рядом — чип `НДС N%` если задан.
+- **Result-колонка «НДС»** в Ozon мульти-таблице и P&L-строка «НДС» в обоих single-калькуляторах.
+- **Вкладка «Мой магазин» (`unit-economics-my-store`)** в `/unit-economics` после Яндекс Маркет, со своим `pageKey` и BlockGrid layout. Иконка `Store` (Lucide).
+- **Блок `unit.my-store-table`** — кастомизируемая таблица товаров: sticky `#`/Артикул/Название и итоги (как в Ozon мульти), но колонки полностью CRUD-редактируемые. Колонка имеет `id`, `label`, `type` (`number | percent | money | text | formula`), `unit`, `width`, `formula`, `positive`, `hidden`. UI: триггер `Settings2` на header (появляется при hover), модалка редактирования (Dialog), кнопка «+ Колонка», скрыть/удалить. В числовых ячейках — `LinkableNumberCell` (привязки + manual). Дефолтный seed колонок: `cost / packaging / delivery / priceRetail / priceWholesale / marginRetail (formula) / marginWholesale (formula) / salesPerMonth / stock / revenueMonth (formula) / profitMonth (formula)`.
+- **`src/lib/unit-economics/store-formula.ts`** — лёгкий evaluator для блока «Мой магазин». `evalSingleFormula(formula, scope)` и `evalRowFormulas(manualValues, formulas)` — fast-formula-parser + защита от циклов (visiting-set, цикл → `'#CYCLE'`). Идентификаторы заменяются по убыванию длины ключа (`priceRetail` не путается с `price`). Доступны id колонок и глобальные переменные `vatPct`, `taxRatePct`.
+- **3 новых смоук-теста** в `scripts/test-unit-economics.ts`: VAT в Ozon, VAT в Yandex, формулы и циклы в Store. Итого 28 PASS.
+
+### Fixed
+- **Sticky-колонки Ozon мульти-таблицы** не сливаются со скроллящимся содержимым: z-index sticky body cells `10 → 20`, sticky header cells `30 → 35`, контейнер totals row `→ z-[25]`. Inline `background: var(--background)` заменён на класс `bg-card` (плотный токен). На последней sticky-колонке («Название товара») добавлена тень-разделитель `boxShadow: '1px 0 0 0 var(--border)'`. Hover-фон строки распространяется на sticky-cells через `[&:hover_[data-sticky]]:bg-accent/10`. Тот же набор фиксов в новом блоке «Мой магазин».
+- **`LinkableNumberCell` без сдвига** между manual ↔ linked: убрано различие `<input>` vs `<button>`, теперь всегда `<input>`. В linked состоянии — `readOnly`, `tabIndex=-1`, `onClick` → picker, `cursor-pointer`. Меняются только цвет фона (amber-50/60), цвет иконки и пометка `text-muted` при недоступном источнике. Размер ячейки больше не «прыгает».
+
+### Changed
+- **`OzonInputs/OzonResults`** — добавлены поля `vatPct` (input) и `vat` (output). `OZON_DEFAULT_INPUTS.vatPct = 0`.
+- **`YandexInputs/YandexResults`** — то же.
+- **`/api/blocks/sources`** — page label `unit-economics-my-store: 'Юнит-экономика · Мой магазин'`, type label `unit.my-store-table`, `fieldsForBlock` отдаёт `rowsCount` и `stockTotal`.
+
+### Notes
+- БД-схема не менялась, миграции не нужны.
+- Парсер `СЕБЕС озон.xlsx` не реализован — оставлен на отдельный заход (по запросу пользователя).
+
 ## [0.11.0] - 2026-05-14
 
 ### Added

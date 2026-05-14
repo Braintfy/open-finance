@@ -73,6 +73,7 @@ const SECTIONS: Array<{
     fields: [
       { key: 'drrPct', label: 'ДРР', unit: '%' },
       { key: 'taxRatePct', label: 'Налог', unit: '%', max: 100 },
+      { key: 'vatPct', label: 'НДС', unit: '%', max: 100 },
       { key: 'overheadPerUnit', label: 'Прочие расходы', unit: '₽', money: true },
     ],
   },
@@ -94,6 +95,7 @@ const PNL_LINES: Array<{ key: keyof ReturnType<typeof calculateOzon>; label: str
   { key: 'deliveryPvz', label: 'Доставка ПВЗ', sign: '-' },
   { key: 'returns', label: 'Возвраты', sign: '-' },
   { key: 'ads', label: 'Реклама', sign: '-' },
+  { key: 'vat', label: 'НДС', sign: '-' },
   { key: 'tax', label: 'Налог', sign: '-' },
   { key: 'cogs', label: 'Себестоимость', sign: '-' },
   { key: 'overhead', label: 'Прочие расходы', sign: '-' },
@@ -170,6 +172,21 @@ function RenderOzonCalculator({ instance, onConfigChange }: BlockRenderProps) {
             onChange={(e) => persist({ title: e.target.value })}
             className="h-7 w-72 border-0 bg-transparent px-0 text-sm font-semibold tracking-tight shadow-none focus-visible:ring-0"
           />
+          <span
+            className={
+              'inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ' +
+              (inputs.mode === 'fbo'
+                ? 'border-blue-500/40 bg-blue-500/10 text-blue-600 dark:text-blue-300'
+                : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300')
+            }
+          >
+            {inputs.mode}
+          </span>
+          {Number(inputs.vatPct ?? 0) > 0 && (
+            <span className="inline-flex items-center rounded border border-border/60 bg-background px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+              НДС {Number(inputs.vatPct)}%
+            </span>
+          )}
           <span className="text-[10px] text-muted-foreground">v{OZON_TARIFF_VERSION}</span>
         </div>
         <div className="flex items-center gap-2 text-[11px] text-muted-foreground">

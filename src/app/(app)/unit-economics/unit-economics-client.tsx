@@ -3,12 +3,12 @@
 'use client';
 
 import { useState } from 'react';
-import { Calculator, Table as TableIcon, Layers } from 'lucide-react';
+import { Calculator, Table as TableIcon, Layers, Store } from 'lucide-react';
 import { BlockGrid } from '@/components/blocks/block-grid';
 import type { BlockInstance } from '@/lib/blocks/types';
 import { cn } from '@/lib/utils';
 
-type TabKey = 'ozon' | 'ozon-multi' | 'yandex';
+type TabKey = 'ozon' | 'ozon-multi' | 'yandex' | 'my-store';
 
 const TABS: Array<{
   key: TabKey;
@@ -38,6 +38,13 @@ const TABS: Array<{
     icon: Layers,
     pageKey: 'unit-economics-yandex',
   },
+  {
+    key: 'my-store',
+    label: 'Мой магазин',
+    description: 'Своя таблица: формулы, привязки, колонки',
+    icon: Store,
+    pageKey: 'unit-economics-my-store',
+  },
 ];
 
 export function UnitEconomicsClient({
@@ -45,17 +52,20 @@ export function UnitEconomicsClient({
   ozonBlocks,
   multiBlocks,
   yandexBlocks,
+  myStoreBlocks,
 }: {
   tenantId: string;
   ozonBlocks: BlockInstance[];
   multiBlocks: BlockInstance[];
   yandexBlocks: BlockInstance[];
+  myStoreBlocks: BlockInstance[];
 }) {
   const [active, setActive] = useState<TabKey>('ozon-multi');
   const blocksByTab: Record<TabKey, BlockInstance[]> = {
     ozon: ozonBlocks,
     'ozon-multi': multiBlocks,
     yandex: yandexBlocks,
+    'my-store': myStoreBlocks,
   };
   const activeTab = TABS.find((t) => t.key === active)!;
 

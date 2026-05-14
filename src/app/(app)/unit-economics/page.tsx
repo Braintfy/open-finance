@@ -10,7 +10,7 @@ export default async function UnitEconomicsPage() {
   if (!session?.userId) redirect('/login');
   if (!session.tenantId) redirect('/onboarding');
 
-  const [ozonLayout, multiLayout, yandexLayout] = await Promise.all([
+  const [ozonLayout, multiLayout, yandexLayout, myStoreLayout] = await Promise.all([
     loadLayout({
       tenantId: session.tenantId,
       userId: session.userId,
@@ -26,6 +26,11 @@ export default async function UnitEconomicsPage() {
       userId: session.userId,
       pageKey: 'unit-economics-yandex',
     }),
+    loadLayout({
+      tenantId: session.tenantId,
+      userId: session.userId,
+      pageKey: 'unit-economics-my-store',
+    }),
   ]);
 
   return (
@@ -34,6 +39,7 @@ export default async function UnitEconomicsPage() {
       ozonBlocks={ozonLayout.blocks}
       multiBlocks={multiLayout.blocks}
       yandexBlocks={yandexLayout.blocks}
+      myStoreBlocks={myStoreLayout.blocks}
     />
   );
 }
