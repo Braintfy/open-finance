@@ -143,14 +143,76 @@ console.log('\n# Ozon: налоги (УСН Доходы vs Доходы-Рас�
     buyoutPct: 100, returnProcessing: 0, drrPct: 0,
     taxMode: 'usn_income', taxRatePct: 6, salesPerMonth: 0, batchSize: 0, stock: 0, overheadPerUnit: 0,
   });
+  // УСН Д-Р: с документально подтверждёнными расходами 5000₽/мес и 50 продаж =
+  // 100₽ на единицу. Налог = 15% × max(0, 1000 - 100) = 135₽.
   const usnDR = calculateOzon({
     mode: 'fbo', price: 1000, discountPct: 0, cost: 200, volumeL: 1, isLocalCluster: true,
     commissionMode: 'manual', commissionPct: 15, acquiringPct: 0, deliveryPvzPct: 0, deliveryPvzCap: 0,
-    buyoutPct: 100, returnProcessing: 0, drrPct: 0, taxDeductExpenses: true,
-    taxMode: 'usn_income_minus', taxRatePct: 15, salesPerMonth: 0, batchSize: 0, stock: 0, overheadPerUnit: 0,
+    buyoutPct: 100, returnProcessing: 0, drrPct: 0,
+    documentedExpensesMonth: 5000,
+    taxMode: 'usn_income_minus', taxRatePct: 15, salesPerMonth: 50, batchSize: 0, stock: 0, overheadPerUnit: 0,
   });
   near(usnIncome.tax, 60, 0.1, 'УСН Доходы 6% от 1000 = 60');
-  expect(usnDR.tax >= 0 && usnDR.tax < 200, 'УСН Д-Р: tax вычитает расходы (меньше чем при ОСНО на полную цену)');
+  near(usnDR.tax, 135, 0.5, 'УСН Д-Р: 15% × max(0, 1000 - documentedPerUnit) = 135');
+}
+
+console.log('\n# Ozon: соинвест баллами Ozon снижает расходы');
+{
+  const noCoinvest = calculateOzon({
+    mode: 'fbo', price: 1000, discountPct: 0, cost: 200, volumeL: 1, isLocalCluster: true,
+    commissionMode: 'manual', commissionPct: 10, acquiringPct: 0, deliveryPvzPct: 0, deliveryPvzCap: 0,
+    buyoutPct: 100, returnProcessing: 0, drrPct: 0, coInvestPct: 0,
+    taxMode: 'none', taxRatePct: 0, salesPerMonth: 0, batchSize: 0, stock: 0, overheadPerUnit: 0,
+  });
+  const withCoinvest = calculateOzon({
+    mode: 'fbo', price: 1000, discountPct: 0, cost: 200, volumeL: 1, isLocalCluster: true,
+    commissionMode: 'manual', commissionPct: 10, acquiringPct: 0, deliveryPvzPct: 0, deliveryPvzCap: 0,
+    buyoutPct: 100, returnProcessing: 0, drrPct: 0, coInvestPct: 10,
+    taxMode: 'none', taxRatePct: 0, salesPerMonth: 0, batchSize: 0, stock: 0, overheadPerUnit: 0,
+  });
+  expect(withCoinvest.coInvestSavings > 0, 'coInvestSavings > 0 при coInvestPct > 0');
+  expect(
+    withCoinvest.profitPerUnit > noCoinvest.profitPerUnit,
+    'Соинвест увеличивает прибыль (расходы меньше)',
+  );
+}
+
+console.log('\n# Ozon: multi-cluster логистика — weighted-sum');
+{
+  // FBS, single-cluster Москва (local) → multiplier=1.0
+  const moscowOnly = calculateOzon({
+    mode: 'fbs', price: 1000, discountPct: 0, cost: 200, volumeL: 1, isLocalCluster: true,
+    commissionMode: 'manual', commissionPct: 0, acquiringPct: 0, deliveryPvzPct: 0, deliveryPvzCap: 0,
+    buyoutPct: 100, returnProcessing: 0, drrPct: 0,
+    fbsClusters: [{ key: 'moscow_region', sharePct: 100 }],
+    taxMode: 'none', taxRatePct: 0, salesPerMonth: 0, batchSize: 0, stock: 0, overheadPerUnit: 0,
+  });
+  // FBS, single-cluster Дальний Восток (non-local) → multiplier=1.25
+  const farEastOnly = calculateOzon({
+    mode: 'fbs', price: 1000, discountPct: 0, cost: 200, volumeL: 1, isLocalCluster: true,
+    commissionMode: 'manual', commissionPct: 0, acquiringPct: 0, deliveryPvzPct: 0, deliveryPvzCap: 0,
+    buyoutPct: 100, returnProcessing: 0, drrPct: 0,
+    fbsClusters: [{ key: 'far_east', sharePct: 100 }],
+    taxMode: 'none', taxRatePct: 0, salesPerMonth: 0, batchSize: 0, stock: 0, overheadPerUnit: 0,
+  });
+  // 50/50 split → среднее
+  const split = calculateOzon({
+    mode: 'fbs', price: 1000, discountPct: 0, cost: 200, volumeL: 1, isLocalCluster: true,
+    commissionMode: 'manual', commissionPct: 0, acquiringPct: 0, deliveryPvzPct: 0, deliveryPvzCap: 0,
+    buyoutPct: 100, returnProcessing: 0, drrPct: 0,
+    fbsClusters: [
+      { key: 'moscow_region', sharePct: 50 },
+      { key: 'far_east', sharePct: 50 },
+    ],
+    taxMode: 'none', taxRatePct: 0, salesPerMonth: 0, batchSize: 0, stock: 0, overheadPerUnit: 0,
+  });
+  expect(farEastOnly.logistics > moscowOnly.logistics, 'Дальний Восток (non-local) дороже Москвы');
+  near(
+    split.logistics,
+    (moscowOnly.logistics + farEastOnly.logistics) / 2,
+    0.5,
+    '50/50 Москва+ДВ ≈ среднее',
+  );
 }
 
 console.log('\n# Yandex: customerPrice + спецтариф');

@@ -215,8 +215,7 @@ function RenderYandexCalculator({ instance, onConfigChange }: BlockRenderProps) 
             options={[
               { value: 'usn_income', label: 'УСН Доходы' },
               { value: 'usn_income_minus', label: 'УСН Д-Р' },
-              { value: 'osno', label: 'ОСНО' },
-              { value: 'nds', label: 'Только НДС' },
+              { value: 'osno', label: 'ОСНО (НДС)' },
               { value: 'none', label: 'Без налога' },
             ]}
             onChange={(v) => setInput('taxMode', v)}

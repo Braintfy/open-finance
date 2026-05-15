@@ -5,8 +5,12 @@ export type Marketplace = 'ozon' | 'yandex';
 
 export type OzonMode = 'fbo' | 'fbs';
 
-/** Точка сдачи отгрузки FBS в Ozon. */
-export type OzonFbsDropoffPoint = 'sorting_center' | 'pickup_point' | 'ozon_warehouse';
+/**
+ * Точка сдачи отгрузки FBS в Ozon (соответствует референсу — 2 опции).
+ * - sorting_center — Сортировочный центр Ozon.
+ * - pickup_point — ПВЗ / ППЗ.
+ */
+export type OzonFbsDropoffPoint = 'sorting_center' | 'pickup_point';
 
 /**
  * Скорость отгрузки FBS:
@@ -17,24 +21,32 @@ export type OzonFbsDropoffPoint = 'sorting_center' | 'pickup_point' | 'ozon_ware
  */
 export type OzonFbsShipmentSpeed = 'fast' | 'standard' | 'slow';
 
-/** Слаг склада отгрузки FBS. 'other' — неизвестный/прочий (нелокальный по умолчанию). */
-export type OzonFbsWarehouse =
-  | 'almaty'
-  | 'moscow'
-  | 'spb'
-  | 'ekaterinburg'
-  | 'kazan'
-  | 'novosibirsk'
-  | 'rostov'
-  | 'krasnodar'
-  | 'other';
+/**
+ * Один кластер FBS с долей в общей структуре отгрузок (sum = 100).
+ * `key` — слаг кластера из `FBS_CLUSTERS` (см. tariffs).
+ */
+export type OzonFbsClusterShare = {
+  key: string;
+  /** Доля заказов через этот кластер, % (0..100). */
+  sharePct: number;
+};
+
+/**
+ * @deprecated Старый single-warehouse тип. Сохранён для миграции.
+ * Новые расчёты используют `OzonInputs.fbsClusters: OzonFbsClusterShare[]`.
+ */
+export type OzonFbsWarehouse = string;
+
 export type YandexMode = 'fby' | 'fbs' | 'dbs' | 'express';
 
+/**
+ * Налоговый режим (соответствует референсу — 4 опции).
+ * Старый режим `'nds'` (Только НДС) удалён — мигрируется в `osno`.
+ */
 export type TaxMode =
   | 'usn_income' // УСН Доходы (6%)
   | 'usn_income_minus' // УСН Доходы минус расходы (15%)
   | 'osno' // ОСНО (НДС 20% + налог на прибыль)
-  | 'nds' // Только НДС (5/7/20%)
   | 'none'; // Без налога
 
 /**
@@ -90,11 +102,20 @@ export type OzonInputs = {
   /** Скидка >50 заказов FBO за 7 дней (только для FBO) */
   highVolumeDiscount: boolean;
   // FBS-специфика (используются только при mode='fbs')
-  /** Точка сдачи отгрузки FBS (sorting_center / pickup_point / ozon_warehouse). */
+  /** Точка сдачи отгрузки FBS (СЦ / ПВЗ-ППЗ). */
   fbsDropoffPoint?: OzonFbsDropoffPoint;
   /** Скорость отгрузки FBS. 'fast' даёт +FBS_FAST_SHIPMENT_COMMISSION_BUMP_PCT к комиссии. */
   fbsShipmentSpeed?: OzonFbsShipmentSpeed;
-  /** Слаг склада отгрузки FBS. Может определять isLocalCluster по умолчанию. */
+  /**
+   * Кластеры FBS с долями (sum = 100). Логистика считается как
+   * weighted-sum по локальности каждого кластера (см. calculateOzon).
+   * Если массив пуст — fallback к single-cluster через isLocalCluster.
+   */
+  fbsClusters?: OzonFbsClusterShare[];
+  /**
+   * @deprecated Используется только при миграции старого конфига. Новые UI
+   * пишут в `fbsClusters`. Не использовать в новом коде.
+   */
   fbsWarehouse?: OzonFbsWarehouse;
   // Комиссия
   /** Тип ставки: 'auto' — по правилам Ozon (≤100/101–300/иначе ручная), 'manual' — задано вручную */
@@ -110,25 +131,40 @@ export type OzonInputs = {
   deliveryPvzPct: number;
   /** Лимит доставки до ПВЗ, ₽ (по умолчанию 25₽) */
   deliveryPvzCap: number;
-  // Выкуп / возвраты
-  /** Процент выкупа (1..100). 90 значит 90% покупателей выкупают. */
+  // Выкуп / возвраты / отмены
+  /**
+   * @deprecated Хранится для backward compat. Новые расчёты выводят buyoutPct
+   * как `100 - returnsPct - cancelPct`. Если в конфиге нет returnsPct/cancelPct —
+   * legacy-buyoutPct используется напрямую.
+   */
   buyoutPct: number;
+  /** Процент возвратов после выкупа (от заказов), %. Default 5. */
+  returnsPct: number;
+  /** Процент отмен (товар не дошёл до покупателя), %. Default 5. */
+  cancelPct: number;
   /** Стоимость обработки возврата, ₽ */
   returnProcessing: number;
   // Реклама
   /** ДРР — доля рекламных расходов от цены продажи, % */
   drrPct: number;
+  /** Соинвест баллами Ozon — % покрытия расходов. Default 0. */
+  coInvestPct: number;
+  /** Бесплатная приёмка партии (Ozon берёт 0 за приёмку). Default true. */
+  freeAcceptance: boolean;
   // Налог
   taxMode: TaxMode;
   /** Ставка УСН/налога на прибыль, % (для usn_income=6, usn_income_minus=15 и т.д.) */
   taxRatePct: number;
-  /** Можно ли вычесть себестоимость и расходы (для УСН Д-Р) */
-  taxDeductExpenses: boolean;
+  /**
+   * Документально подтверждённые расходы, ₽/мес. Используется для УСН Д-Р
+   * (15%) — на единицу = `documentedExpensesMonth / max(1, salesPerMonth)`.
+   * Если 0 — налог считается с buyerPrice без вычетов.
+   */
+  documentedExpensesMonth: number;
   /**
    * Глобальная ставка НДС, %. Считается отдельной строкой расхода
    * (vat = buyerPrice * vatPct/100) и НЕ зависит от taxMode. Если 0 —
-   * НДС не учитывается. Для taxMode='nds'/'osno' рекомендуется задавать
-   * 5/7/20 здесь, а taxRatePct оставлять для налога на прибыль.
+   * НДС не учитывается.
    */
   vatPct: number;
   // Оборачиваемость и партия
@@ -140,20 +176,36 @@ export type OzonInputs = {
   stock: number;
   /** Дополнительные фиксированные расходы на единицу, ₽ */
   overheadPerUnit: number;
+  /**
+   * Косвенные расходы (аренды, зарплаты, подписки), ₽/мес. Распределяются
+   * на единицу = `indirectExpensesMonth / max(1, salesPerMonth)`.
+   */
+  indirectExpensesMonth: number;
+  /** Лог. плечо от поставщика, нед. (срок доставки новой партии). */
+  supplyLeadWeeks: number;
 };
 
 export type OzonResults = {
-  /** Цена покупателя (после скидки), ₽ */
+  /** Цена покупателя (после скидки) — она же «Цена с СПП» в UI, ₽ */
   buyerPrice: number;
+  /**
+   * Алиас `buyerPrice` для UI-метрики «Цена с СПП». Дублируется специально
+   * чтобы поле явно фигурировало в результатах и могло быть привязано
+   * через биндинги (с понятной подписью).
+   */
+  priceWithSpp: number;
   /** Комиссия маркетплейса, ₽ */
   commission: number;
   /** Эквайринг, ₽ */
   acquiring: number;
-  /** Логистика (FBO/FBS), ₽ */
+  /**
+   * Логистика (FBO/FBS) на одну ВЫКУПЛЕННУЮ единицу — weighted-sum
+   * по кластерам (если задан multi-cluster), иначе single-cluster.
+   */
   logistics: number;
   /** Доставка до ПВЗ, ₽ (только FBO) */
   deliveryPvz: number;
-  /** Стоимость возвратов, ₽ */
+  /** Стоимость возвратов и отмен на одну выкупленную единицу, ₽ */
   returns: number;
   /** Реклама на одну продажу (с учётом выкупа), ₽ */
   ads: number;
@@ -163,8 +215,13 @@ export type OzonResults = {
   tax: number;
   /** Себестоимость единицы, ₽ */
   cogs: number;
-  /** Прочие расходы на единицу, ₽ */
+  /** Прочие расходы на единицу (включая косвенные распределённые), ₽ */
   overhead: number;
+  /**
+   * Соинвест баллами Ozon — компенсация части расходов, ₽ (положительная
+   * величина, вычитается из суммы расходов перед налогом).
+   */
+  coInvestSavings: number;
   /** Прибыль с одной единицы, ₽ */
   profitPerUnit: number;
   /** Маржа от цены покупателя, % */
@@ -181,6 +238,8 @@ export type OzonResults = {
   moneyInStock: number;
   /** Прибыль с партии, ₽ */
   profitPerBatch: number;
+  /** Эффективный buyoutPct, использованный в расчёте (derived из returnsPct + cancelPct), % */
+  effectiveBuyoutPct: number;
   /** Использованная версия тарифного пакета */
   tariffVersion: string;
 };

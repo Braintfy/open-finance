@@ -1,6 +1,11 @@
 // PURPOSE: Клиентский каталог блоков (Маркет блоков, browse-only).
 // Поиск, фильтр по категории и тегам. Кнопки «Создать блок» и «Купить блок»
 // видны, но disabled — пока заглушки на будущее.
+//
+// ВАЖНО: список блоков собирается ЗДЕСЬ (на клиенте) через listAllBlocks().
+// Передавать BlockDef[] из RSC через props НЕЛЬЗЯ — catalog-файлы помечены
+// `'use client'` и в Server Component их экспорты превращаются в client-reference
+// proxy с undefined-полями (b.pages.map → crash). См. MEMORY.md «Грабли».
 'use client';
 
 import { useMemo, useState } from 'react';
@@ -17,6 +22,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { listAllBlocks } from '@/lib/blocks/registry';
 
 type Source = 'builtin' | 'user' | 'paid';
 
@@ -46,12 +52,43 @@ const SOURCE_LABEL: Record<Source, string> = {
   paid: 'Платный',
 };
 
+const PAGE_LABELS: Record<string, string> = {
+  dashboard: 'Дашборд',
+  cashflow: 'Денежный поток',
+  inbox: 'Входящие',
+  'unit-economics-ozon': 'Юнит · Ozon',
+  'unit-economics-ozon-multi': 'Юнит · Ozon мульти',
+  'unit-economics-yandex': 'Юнит · Яндекс',
+  'unit-economics-my-store': 'Мой магазин',
+  '*': 'Любая страница',
+};
+
+function pageLabel(key: string): string {
+  return PAGE_LABELS[key] ?? key;
+}
+
 function getIcon(name: string): LucideIcon {
   const Icon = (icons as Record<string, LucideIcon | undefined>)[name];
   return Icon ?? Square;
 }
 
-export function MarketplaceClient({ blocks }: { blocks: MarketplaceBlock[] }) {
+export function MarketplaceClient() {
+  const blocks = useMemo<MarketplaceBlock[]>(
+    () =>
+      listAllBlocks().map((b) => ({
+        type: b.type,
+        displayName: b.displayName,
+        description: b.description,
+        category: b.category,
+        iconName: b.iconName ?? b.icon?.displayName ?? 'Square',
+        pages: (b.pages ?? []).map(pageLabel),
+        tags: b.tags ?? [],
+        source: b.source ?? 'builtin',
+        defaultSize: b.defaultSize,
+        supportsDependencies: !!b.supportsDependencies,
+      })),
+    [],
+  );
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState<'all' | MarketplaceBlock['category']>('all');
   const [activeTag, setActiveTag] = useState<string | null>(null);

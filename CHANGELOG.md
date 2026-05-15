@@ -1,5 +1,63 @@
 # Changelog
 
+## [0.13.0] - 2026-05-15
+
+Крупный апгрейд Ozon юнит-блоков до соответствия с референсом
+[синий-рассвет.рф/ozon.html](https://xn----8sbgmlah4a4aehap.xn--p1ai/) +
+два критических blocker-фикса (Маркет блоков, выбор города FBS).
+
+### Fixed
+
+- **`/marketplace` крах #2** (`Cannot read properties of undefined (reading 'map')` на `b.pages.map(pageLabel)`) — RSC-граница превращала `BlockDef` объекты из `'use client'`-каталогов в opaque client-reference proxy, у которых `pages`/`description`/`category`/`defaultSize` undefined. Точечный фикс `iconName` в 0.12.2 не покрывал остальные поля. Решение: `marketplace/page.tsx` оставлен только для auth-проверки, `MarketplaceClient` сам вызывает `listAllBlocks()` на клиенте — все поля `BlockDef` доступны нативно. `PAGE_LABELS` и `MarketplaceBlock` тип переехали в `marketplace-client.tsx`.
+- **«Не работает выбор города FBS»** — closure-trap: `handleWarehouseChange` делал два последовательных `onChange`/`setInput` с замкнутым `config.global`/`config.inputs` из одного рендера, второй вызов перезатирал смену склада из первого. Решение: новые helper'ы `updateGlobalMany(patch)` / `setInputs(patch)` собирают апдейты в один `persist`. Зафиксировано в `MEMORY.md` как универсальный паттерн.
+
+### Added
+
+- **Multi-cluster FBS** — выбор нескольких кластеров с долями (sum = 100%) вместо одного склада. Новый компонент `<ClusterSelector>` (`src/components/unit-economics/cluster-selector.tsx`) с popover-чекбоксами, % инпутами, индикатором суммы (зелёный/оранжевый), кнопкой «Нормализовать», quick-пресетами «Все РФ / Топ-5 / Топ-10 / География / Снять все». Triggern показывает компактный chip «Москва 60% · СПб 40% · +N».
+- **28 кластеров FBS** (`tariffs-2026-04-07.ts → FBS_CLUSTERS`) вместо 9: Алматы, Армения, Астана, Беларусь, Воронеж, Дальний Восток, Екатеринбург, Казань, Калининград, Краснодар, Красноярск, Кыргызстан, Махачкала, Москва+МО, Невинномысск, Новосибирск, Омск, Оренбург, Пермь, Ростов, Самара, СПб+СЗО, Саратов, Тверь, Тюмень, Узбекистан, Уфа, Ярославль. Каждый помечен `local: boolean` (для multiplier ×1.0 / ×1.25) и `region` (для пресетов).
+- **Расширенные объёмные диапазоны** — `VOLUME_BRACKETS` LUT с 43 бинами (0.2/0.4/.../1/1.25/.../15/17/20/25/.../200/400/600/800/∞ л) для FBO и FBS. Step-функции `fboLogisticsCost`/`fbsLogisticsCost` стали точнее на крупногабаритах.
+- **Новые поля Ozon-расчёта** (`OzonInputs`):
+  - `fbsClusters: Array<{ key, sharePct }>` — multi-cluster выбор.
+  - `returnsPct` (% возвратов после выкупа) и `cancelPct` (% отмен) вместо одного `buyoutPct`. `effectiveBuyoutPct` derived: `100 - returnsPct - cancelPct`. Legacy `buyoutPct` сохранён для обратной совместимости (если оба новых = 0).
+  - `coInvestPct` — соинвест баллами Ozon, % компенсации расходов. P&L строка «Соинвест» (положительная) и метрика `coInvestSavings`.
+  - `freeAcceptance` — бесплатная приёмка (toggle). Если выключена и `mode='fbs'` — фикс `+10₽/ед` к логистике.
+  - `supplyLeadWeeks` — лог. плечо (нед., для будущего расчёта оборачиваемости).
+  - `documentedExpensesMonth` — документально подтверждённые расходы ₽/мес (для УСН Д-Р вычета: `tax = rate × max(0, buyerPrice - documentedExpensesMonth/salesPerMonth)`). Заменяет boolean `taxDeductExpenses`.
+  - `indirectExpensesMonth` — косвенные расходы ₽/мес (распределяются на единицу).
+- **Метрика «Цена с СПП»** (`priceWithSpp` = `buyerPrice`, явно дублируется в результатах) и привязываемое поле в picker'е (label `Цена с СПП`).
+- **Multi-cluster логистика** в `calculateOzon` — weighted-sum по выбранным кластерам: `Σ (baseLogistics × clusterMultiplier(c) × share/totalShare)`. Если `fbsClusters` пуст — fallback к single через `isLocalCluster`. 3 новых смоук-теста подтверждают: Дальний Восток дороже Москвы, 50/50 split = среднее.
+
+### Changed
+
+- **Точки сдачи FBS — 2 опции** (вместо 3): «СЦ» (`sorting_center`), «ПВЗ/ППЗ» (`pickup_point`). Опция `'ozon_warehouse'` удалена — мигрируется в `'sorting_center'`.
+- **`OzonResults`** расширены: `priceWithSpp`, `effectiveBuyoutPct`, `coInvestSavings`. `returns` теперь учитывает обе доли потерь (`returnsPct + cancelPct`), а не один `buyoutPct`.
+- **Header-чип FBS** в обоих Ozon-блоках теперь показывает `Точка сдачи · Скорость · Кластеры (top1 X% · top2 Y% · +N)` вместо одиночного склада.
+- **Ozon одиночный калькулятор** реструктурирован: 7 секций (Товар и цена / Комиссия / Логистика FBO / Возвраты и отмены / Реклама и соинвест / Налоги / Оборачиваемость). Inline toggle'ы «Бесплатная приёмка», «>50 заказов», «Локальный» и условный input `Док. расходы` при `usn_income_minus`.
+- **Ozon multi-table GlobalParamsBar** дополнен полями: `% возвратов`, `% отмен`, `Соинвест`, `Косвенные ₽/мес`, `Бесплатная приёмка` toggle, conditional `Док. расходы`.
+
+### Removed
+
+- **Налоговый режим `'nds'` (Только НДС)** удалён из `TaxMode` enum. Старые конфиги мигрируются в `'osno'` (где НДС считается отдельной строкой через `vatPct`). UI-метка `'osno'` теперь «ОСНО (НДС)».
+- **`OzonInputs.taxDeductExpenses` (boolean)** заменён на `documentedExpensesMonth: number` (₽/мес).
+- **Старый single-warehouse выбор FBS** в обоих Ozon-блоках. Поле `fbsWarehouse` оставлено только в типе как `@deprecated` для миграции.
+
+### Migration
+
+`migrateOzonRaw()` (`src/lib/unit-economics/ozon/migrate.ts`) выполняет idempotent-миграцию любых сырых конфигов:
+- `fbsWarehouse: string` → `fbsClusters: [{ key, sharePct: 100 }]` (single → multi).
+- `taxMode: 'nds'` → `'osno'`.
+- `taxDeductExpenses: boolean` → удаляется, `documentedExpensesMonth = 0` (пользователь введёт).
+- `fbsDropoffPoint: 'ozon_warehouse'` → `'sorting_center'`.
+
+Вызывается в `parseConfig` обоих Ozon-блоков (single — на `inputs`, multi — на `global`). Старые сохранённые layout'ы открываются без потери данных.
+
+### Tests
+
+`scripts/test-unit-economics.ts`: **36 PASS / 0 FAIL** (было 32). Добавлены:
+- УСН Д-Р: `tax = 15% × max(0, 1000 - documentedPerUnit) = 135` (5000₽/мес × 50 продаж = 100₽/ед).
+- Соинвест баллами: `coInvestSavings > 0`, profit с соинвестом > без.
+- Multi-cluster: ДВ дороже Москвы, 50/50 split = среднее.
+
 ## [0.12.2] - 2026-05-15
 
 ### Fixed

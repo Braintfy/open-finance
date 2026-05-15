@@ -52,16 +52,17 @@ import type {
   TaxMode,
   OzonFbsDropoffPoint,
   OzonFbsShipmentSpeed,
-  OzonFbsWarehouse,
+  OzonFbsClusterShare,
 } from '@/lib/unit-economics/types';
 import { calculateOzon, OZON_DEFAULT_INPUTS } from '@/lib/unit-economics/ozon/calculate';
 import {
   OZON_TARIFF_VERSION,
   FBS_DROPOFF_LABELS,
   FBS_SHIPMENT_SPEED_LABELS,
-  FBS_WAREHOUSE_LABELS,
-  FBS_WAREHOUSE_LOCAL_BY_DEFAULT,
+  FBS_CLUSTER_BY_KEY,
 } from '@/lib/unit-economics/ozon/tariffs-2026-04-07';
+import { migrateOzonRaw } from '@/lib/unit-economics/ozon/migrate';
+import { ClusterSelector } from '@/components/unit-economics/cluster-selector';
 import { useBlockValuePublisher } from '@/lib/blocks/values';
 import { useFormatSettings, formatRublesWithSettings } from '@/lib/format-settings';
 import { rublesToKopecks } from '@/lib/unit-economics/types';
@@ -77,6 +78,11 @@ const RowSchema = z.object({
 
 type Row = z.infer<typeof RowSchema>;
 
+const ClusterShareSchema = z.object({
+  key: z.string(),
+  sharePct: z.number(),
+});
+
 const GlobalParamsSchema = z.object({
   mode: z.enum(['fbo', 'fbs']).default('fbo'),
   highVolumeDiscount: z.boolean().default(false),
@@ -84,18 +90,22 @@ const GlobalParamsSchema = z.object({
   acquiringPct: z.number().default(1.5),
   deliveryPvzPct: z.number().default(4),
   deliveryPvzCap: z.number().default(25),
-  taxMode: z.enum(['usn_income', 'usn_income_minus', 'osno', 'nds', 'none']).default('usn_income'),
+  taxMode: z.enum(['usn_income', 'usn_income_minus', 'osno', 'none']).default('usn_income'),
   taxRatePct: z.number().default(6),
-  taxDeductExpenses: z.boolean().default(false),
+  documentedExpensesMonth: z.number().default(0),
   vatPct: z.number().default(0),
+  // Возвраты / соинвест / приёмка
+  returnsPct: z.number().default(5),
+  cancelPct: z.number().default(5),
+  coInvestPct: z.number().default(0),
+  freeAcceptance: z.boolean().default(true),
+  // Оборачиваемость
+  supplyLeadWeeks: z.number().default(4),
+  indirectExpensesMonth: z.number().default(0),
   // FBS-only — глобальные для всех строк блока
-  fbsDropoffPoint: z
-    .enum(['sorting_center', 'pickup_point', 'ozon_warehouse'])
-    .default('sorting_center'),
+  fbsDropoffPoint: z.enum(['sorting_center', 'pickup_point']).default('sorting_center'),
   fbsShipmentSpeed: z.enum(['fast', 'standard', 'slow']).default('standard'),
-  fbsWarehouse: z
-    .enum(['almaty', 'moscow', 'spb', 'ekaterinburg', 'kazan', 'novosibirsk', 'rostov', 'krasnodar', 'other'])
-    .default('almaty'),
+  fbsClusters: z.array(ClusterShareSchema).default([]),
 });
 
 type GlobalParams = z.infer<typeof GlobalParamsSchema>;
@@ -133,7 +143,17 @@ function emptyRow(article = '', name = ''): Row {
 }
 
 function parseConfig(raw: unknown): Config {
-  const parsed = ConfigSchema.safeParse(raw ?? {});
+  // Backward-compat миграция «global» (fbsWarehouse → fbsClusters,
+  // taxMode 'nds' → 'osno', taxDeductExpenses → documentedExpensesMonth=0).
+  const rawObj = (raw ?? {}) as Record<string, unknown>;
+  const migratedRaw = {
+    ...rawObj,
+    global:
+      typeof rawObj.global === 'object' && rawObj.global !== null
+        ? migrateOzonRaw(rawObj.global as Record<string, unknown>)
+        : rawObj.global,
+  };
+  const parsed = ConfigSchema.safeParse(migratedRaw);
   if (parsed.success) return parsed.data;
   return ConfigSchema.parse({});
 }
@@ -212,13 +232,23 @@ const STICKY_NAME_LEFT = STICKY_INDEX_W + STICKY_ARTICLE_W;
 const STICKY_GROUP_W = STICKY_INDEX_W + STICKY_ARTICLE_W + STICKY_NAME_W;
 const HEADER_H = 42;
 const ROW_H = 30;
-const TAX_MODE_LABELS: Record<TaxMode | 'none', string> = {
+const TAX_MODE_LABELS: Record<TaxMode, string> = {
   usn_income: 'УСН Доходы',
   usn_income_minus: 'УСН Д-Р',
-  osno: 'ОСНО',
-  nds: 'Только НДС',
+  osno: 'ОСНО (НДС)',
   none: 'Без налога',
 };
+
+function summarizeClusters(clusters: OzonFbsClusterShare[] | undefined): string {
+  if (!clusters || clusters.length === 0) return '—';
+  const sorted = [...clusters].sort((a, b) => b.sharePct - a.sharePct);
+  const top = sorted.slice(0, 2).map((c) => {
+    const label = FBS_CLUSTER_BY_KEY[c.key]?.label ?? c.key;
+    return `${label} ${c.sharePct}%`;
+  });
+  if (sorted.length > 2) top.push(`+${sorted.length - 2}`);
+  return top.join(', ');
+}
 
 function formatNumber(value: number, format: ResultColumn['format'], showKopecks: boolean): string {
   if (!Number.isFinite(value)) return '—';
@@ -248,12 +278,18 @@ function buildInputsForRow(
   merged.deliveryPvzCap = global.deliveryPvzCap;
   merged.taxMode = global.taxMode as TaxMode;
   merged.taxRatePct = global.taxRatePct;
-  merged.taxDeductExpenses = global.taxDeductExpenses;
+  merged.documentedExpensesMonth = global.documentedExpensesMonth;
   merged.vatPct = global.vatPct;
+  merged.returnsPct = global.returnsPct;
+  merged.cancelPct = global.cancelPct;
+  merged.coInvestPct = global.coInvestPct;
+  merged.freeAcceptance = global.freeAcceptance;
+  merged.supplyLeadWeeks = global.supplyLeadWeeks;
+  merged.indirectExpensesMonth = global.indirectExpensesMonth;
   merged.commissionMode = 'manual';
   merged.fbsDropoffPoint = global.fbsDropoffPoint;
   merged.fbsShipmentSpeed = global.fbsShipmentSpeed;
-  merged.fbsWarehouse = global.fbsWarehouse;
+  merged.fbsClusters = global.fbsClusters;
 
   for (const field of ROW_INPUT_FIELDS) {
     const binding = row.bindings[field] as UnitCellBinding | undefined;
@@ -618,13 +654,13 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
           </span>
           {config.global.mode === 'fbs' && (
             <span
-              className="inline-flex max-w-[320px] items-center truncate rounded border border-border/60 bg-background px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground"
-              title={`Точка сдачи · ${FBS_DROPOFF_LABELS[config.global.fbsDropoffPoint]}, скорость · ${FBS_SHIPMENT_SPEED_LABELS[config.global.fbsShipmentSpeed]}, склад · ${FBS_WAREHOUSE_LABELS[config.global.fbsWarehouse]}`}
+              className="inline-flex max-w-[420px] items-center truncate rounded border border-border/60 bg-background px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground"
+              title={`Точка сдачи · ${FBS_DROPOFF_LABELS[config.global.fbsDropoffPoint]}, скорость · ${FBS_SHIPMENT_SPEED_LABELS[config.global.fbsShipmentSpeed]}, кластеры (${config.global.fbsClusters.length}) · ${summarizeClusters(config.global.fbsClusters)}`}
             >
               <span className="truncate">
                 {FBS_DROPOFF_LABELS[config.global.fbsDropoffPoint]} ·{' '}
                 {FBS_SHIPMENT_SPEED_LABELS[config.global.fbsShipmentSpeed]} ·{' '}
-                {FBS_WAREHOUSE_LABELS[config.global.fbsWarehouse]}
+                {summarizeClusters(config.global.fbsClusters)}
               </span>
             </span>
           )}
@@ -1154,13 +1190,6 @@ function GlobalParamsBar({
   onChange: <K extends keyof GlobalParams>(key: K, value: GlobalParams[K]) => void;
 }) {
   const isFbs = global.mode === 'fbs';
-  const handleWarehouseChange = (next: OzonFbsWarehouse) => {
-    onChange('fbsWarehouse', next);
-    // Авто-синхронизация локального кластера при смене склада. Пользователь
-    // может потом вручную перебить toggle ниже.
-    const localDefault = FBS_WAREHOUSE_LOCAL_BY_DEFAULT[next];
-    if (typeof localDefault === 'boolean') onChange('isLocalCluster', localDefault);
-  };
   return (
     <div className="flex flex-wrap items-center gap-3 border-b border-border/60 bg-muted/20 px-3 py-2 text-[11px]">
       <div className="flex items-center gap-1.5">
@@ -1197,11 +1226,15 @@ function GlobalParamsBar({
             options={Object.entries(FBS_SHIPMENT_SPEED_LABELS).map(([v, l]) => ({ value: v, label: l }))}
             onChange={(v) => onChange('fbsShipmentSpeed', v as OzonFbsShipmentSpeed)}
           />
-          <DropdownSelect
-            label="Склад FBS"
-            value={global.fbsWarehouse}
-            options={Object.entries(FBS_WAREHOUSE_LABELS).map(([v, l]) => ({ value: v, label: l }))}
-            onChange={(v) => handleWarehouseChange(v as OzonFbsWarehouse)}
+          <ClusterSelector
+            label="Кластеры FBS"
+            value={global.fbsClusters}
+            onChange={(next) => onChange('fbsClusters', next)}
+          />
+          <ToggleParam
+            label="Бесплатная приёмка"
+            value={global.freeAcceptance}
+            onChange={(v) => onChange('freeAcceptance', v)}
           />
         </>
       )}
@@ -1240,6 +1273,34 @@ function GlobalParamsBar({
         disabled={global.mode !== 'fbo'}
       />
       <NumberParam
+        label="% возвратов"
+        value={global.returnsPct}
+        unit="%"
+        step={0.5}
+        onChange={(v) => onChange('returnsPct', v)}
+      />
+      <NumberParam
+        label="% отмен"
+        value={global.cancelPct}
+        unit="%"
+        step={0.5}
+        onChange={(v) => onChange('cancelPct', v)}
+      />
+      <NumberParam
+        label="Соинвест"
+        value={global.coInvestPct}
+        unit="%"
+        step={1}
+        onChange={(v) => onChange('coInvestPct', v)}
+      />
+      <NumberParam
+        label="Косвенные"
+        value={global.indirectExpensesMonth}
+        unit="₽/мес"
+        step={1000}
+        onChange={(v) => onChange('indirectExpensesMonth', v)}
+      />
+      <NumberParam
         label="НДС"
         value={global.vatPct}
         unit="%"
@@ -1252,8 +1313,7 @@ function GlobalParamsBar({
         options={[
           { value: 'usn_income', label: 'УСН Доходы' },
           { value: 'usn_income_minus', label: 'УСН Д-Р' },
-          { value: 'osno', label: 'ОСНО' },
-          { value: 'nds', label: 'Только НДС' },
+          { value: 'osno', label: 'ОСНО (НДС)' },
           { value: 'none', label: 'Без налога' },
         ]}
         onChange={(v) => onChange('taxMode', v as GlobalParams['taxMode'])}
@@ -1268,6 +1328,15 @@ function GlobalParamsBar({
         />
         <span className="text-muted-foreground">%</span>
       </div>
+      {global.taxMode === 'usn_income_minus' && (
+        <NumberParam
+          label="Док. расходы"
+          value={global.documentedExpensesMonth}
+          unit="₽/мес"
+          step={1000}
+          onChange={(v) => onChange('documentedExpensesMonth', v)}
+        />
+      )}
     </div>
   );
 }
