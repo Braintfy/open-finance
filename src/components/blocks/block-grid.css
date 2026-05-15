@@ -44,3 +44,42 @@
 .react-grid-item.cssTransforms {
   transition-property: transform, width, height;
 }
+
+/*
+  Координатная "тетрадная" точечная сетка под блоками.
+  Шаг 24px, цвет — `--foreground` с низкой прозрачностью, чтобы автоматически
+  работать в светлой и тёмной теме.
+
+  Состояния:
+    - default — еле заметные точки (визуальный ритм без шума).
+    - data-edit="true" — режим редактирования: точки заметнее (primary).
+    - data-active="true" — активный drag/resize: точки ярче, чтобы пользователь
+      видел сетку, к которой блок будет привязан.
+*/
+.block-grid-surface {
+  position: relative;
+  background-image: radial-gradient(
+    circle at 1px 1px,
+    hsl(var(--foreground) / 0.07) 1px,
+    transparent 1.5px
+  );
+  background-size: 24px 24px;
+  background-position: 0 0;
+  /* background-image не interpolate-ится; меняем его jump'ом, fade — на opacity-overlay */
+}
+
+.block-grid-surface[data-edit='true'] {
+  background-image: radial-gradient(
+    circle at 1px 1px,
+    hsl(var(--primary) / 0.18) 1px,
+    transparent 1.5px
+  );
+}
+
+.block-grid-surface[data-active='true'] {
+  background-image: radial-gradient(
+    circle at 1px 1px,
+    hsl(var(--primary) / 0.32) 1px,
+    transparent 1.5px
+  );
+}

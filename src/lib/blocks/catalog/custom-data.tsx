@@ -1,74 +1,702 @@
-// PURPOSE: Универсальный data-блок (custom.data) — Excel-style ячейка с произвольными данными.
-// User может вручную добавлять/редактировать строки; в будущем — AI-функция автозаполнения.
-// Каждая строка имеет label + value (number/string), сам блок публикует агрегаты как output.
+// PURPOSE: Универсальный data-блок (custom.data) — multi-column таблица с привязками per cell.
+// Каждая строка имеет label + произвольный набор колонок. Каждая ячейка может быть либо
+// manual-значением, либо ссылкой на другой блок (@blockId.field) — как в excel.cell.
+// Блок публикует per-column агрегаты, чтобы их можно было @связать в формулах.
 'use client';
 
-import { useState } from 'react';
-import { Database, Plus, Trash2, Sparkles } from 'lucide-react';
+import {
+  Fragment,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import {
+  Database,
+  Plus,
+  Trash2,
+  Sparkles,
+  Link2,
+  Unlink,
+  X,
+  Hash,
+  Percent,
+  RussianRuble,
+  Type,
+  Check,
+} from 'lucide-react';
 import { z } from 'zod';
 import type { BlockDef, BlockRenderProps, BlockSettingsFormProps } from '../types';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
-import { useFormatSettings, formatRublesWithSettings } from '@/lib/format-settings';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { CurrencyInput } from '@/components/ui/currency-input';
 import { useBlockDensity } from '@/components/blocks/block-size';
-import { useBlockValuePublisher } from '../values';
+import { useFormatSettings, formatRublesWithSettings } from '@/lib/format-settings';
+import {
+  BlockValuesContext,
+  useAvailableBlockSources,
+  useBlockValuePublisher,
+} from '../values';
+import { cn } from '@/lib/utils';
 
 // ============================================================================
-// Конфиг
+// Schemas
 // ============================================================================
+
+const ColumnFormatSchema = z.enum(['rubles', 'number', 'percent', 'text']);
+type ColumnFormat = z.infer<typeof ColumnFormatSchema>;
+
+const ColumnSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  format: ColumnFormatSchema.default('rubles'),
+  width: z.number().optional(),
+  publish: z.boolean().default(true),
+});
+type Column = z.infer<typeof ColumnSchema>;
+
+const CellSchema = z.object({
+  v: z.union([z.number(), z.string(), z.null()]).default(null),
+  ref: z.string().optional(),
+  isMoney: z.boolean().optional(),
+});
+type Cell = z.infer<typeof CellSchema>;
 
 const RowSchema = z.object({
   id: z.string(),
   label: z.string(),
-  value: z.number(),
+  cells: z.record(z.string(), CellSchema).default({}),
 });
 type Row = z.infer<typeof RowSchema>;
 
-const ConfigSchema = z.object({
-  rows: z.array(RowSchema).default([]),
-  /** Что публикуется в output: 'sum' | 'avg' | 'count' | 'last' */
-  publishMode: z.enum(['sum', 'avg', 'count', 'last']).default('sum'),
-  /** Формат значений: 'rubles' (₽) | 'number' | 'percent' */
-  format: z.enum(['rubles', 'number', 'percent']).default('rubles'),
-  /** Показывать копейки (per-block override, null = использовать глобальную настройку) */
-  showKopecks: z.boolean().nullable().default(null),
-});
-type Config = z.infer<typeof ConfigSchema>;
+/**
+ * Schema принимает и старый формат (`rows[i].value`, top-level `format`),
+ * и новый. Реальная нормализация — в `parseConfig`.
+ */
+const ConfigSchema = z
+  .object({
+    columns: z.array(ColumnSchema).optional(),
+    rows: z
+      .array(
+        z
+          .object({
+            id: z.string(),
+            label: z.string().optional(),
+            cells: z.record(z.string(), CellSchema).optional(),
+            value: z.union([z.number(), z.string(), z.null()]).optional(),
+          })
+          .passthrough(),
+      )
+      .optional(),
+    publishMode: z.enum(['sum', 'avg', 'count', 'last']).optional(),
+    publishColumnId: z.string().optional(),
+    format: ColumnFormatSchema.optional(),
+    showKopecks: z.boolean().nullable().optional(),
+  })
+  .passthrough();
+
+type Config = {
+  columns: Column[];
+  rows: Row[];
+  publishMode: 'sum' | 'avg' | 'count' | 'last';
+  publishColumnId?: string;
+  showKopecks: boolean | null;
+};
+
+const DEFAULT_COLUMN_ID = 'amount';
+
+function makeId(prefix: string): string {
+  return typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `${prefix}_${Math.random().toString(36).slice(2)}_${Date.now()}`;
+}
+
+function defaultColumns(format: ColumnFormat = 'rubles'): Column[] {
+  return [
+    {
+      id: DEFAULT_COLUMN_ID,
+      label: 'Сумма',
+      format,
+      publish: true,
+    },
+  ];
+}
 
 function parseConfig(raw: unknown): Config {
   const r = ConfigSchema.safeParse(raw ?? {});
-  if (r.success) return r.data;
-  return { rows: [], publishMode: 'sum', format: 'rubles', showKopecks: null };
+  const data = r.success ? r.data : {};
+
+  // Колонки
+  let columns: Column[] = (data.columns ?? []).map((c) => {
+    const out: Column = {
+      id: c.id || makeId('col'),
+      label: c.label || 'Колонка',
+      format: c.format,
+      publish: c.publish ?? true,
+    };
+    if (typeof c.width === 'number') out.width = c.width;
+    return out;
+  });
+  if (columns.length === 0) {
+    columns = defaultColumns(data.format);
+  }
+  const primaryColumnId = columns[0]?.id ?? DEFAULT_COLUMN_ID;
+
+  // Строки + миграция legacy `value` → cells[primary]
+  const rows: Row[] = (data.rows ?? []).map((r) => {
+    const cells: Record<string, Cell> = {};
+    if (r.cells && typeof r.cells === 'object') {
+      for (const [colId, cell] of Object.entries(r.cells)) {
+        cells[colId] = {
+          v: cell?.v ?? null,
+          ref: cell?.ref,
+          isMoney: cell?.isMoney,
+        };
+      }
+    }
+    if (
+      r.value !== undefined &&
+      r.value !== null &&
+      cells[primaryColumnId] === undefined
+    ) {
+      cells[primaryColumnId] = { v: r.value };
+    }
+    return {
+      id: r.id || makeId('row'),
+      label: r.label ?? '',
+      cells,
+    };
+  });
+
+  return {
+    columns,
+    rows,
+    publishMode: data.publishMode ?? 'sum',
+    publishColumnId:
+      data.publishColumnId && columns.some((c) => c.id === data.publishColumnId)
+        ? data.publishColumnId
+        : columns.find((c) => c.publish !== false)?.id ?? primaryColumnId,
+    showKopecks: data.showKopecks === undefined ? null : data.showKopecks,
+  };
 }
 
-function formatValue(v: number, format: Config['format'], showKopecks: boolean): string {
-  if (format === 'rubles') return formatRublesWithSettings(v, showKopecks);
-  if (format === 'percent') return `${(v / 100).toFixed(1)}%`;
-  return v.toLocaleString('ru-RU');
+function serializeConfig(cfg: Config): Record<string, unknown> {
+  return {
+    columns: cfg.columns,
+    rows: cfg.rows,
+    publishMode: cfg.publishMode,
+    publishColumnId: cfg.publishColumnId,
+    showKopecks: cfg.showKopecks,
+  };
 }
 
-function computePublishValue(rows: Row[], mode: Config['publishMode']): number {
-  if (rows.length === 0) return 0;
+// ============================================================================
+// Live values (BlockValuesContext)
+// ============================================================================
+
+type LiveValues = Record<string, number | string | null>;
+
+function useAllBlockValues(): LiveValues {
+  const api = useContext(BlockValuesContext);
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (!api) return;
+    return api.subscribe(() => setTick((t) => t + 1));
+  }, [api]);
+  return useMemo(() => {
+    if (!api) return {};
+    const result: LiveValues = {};
+    for (const [blockId, output] of api.get().values.entries()) {
+      for (const [field, value] of Object.entries(output)) {
+        const key = field === 'value' ? blockId : `${blockId}.${field}`;
+        result[key] = value;
+      }
+    }
+    return result;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api, tick]);
+}
+
+function moneyFieldSet(blockId: string, values: LiveValues): Set<string> {
+  const raw = values[`${blockId}.__money`];
+  return new Set(
+    String(raw ?? '')
+      .split(',')
+      .map((field) => field.trim())
+      .filter(Boolean),
+  );
+}
+
+function resolveCellValue(
+  cell: Cell | undefined,
+  liveValues: LiveValues,
+): number | string | null {
+  if (!cell) return null;
+  if (cell.ref) {
+    const live = liveValues[cell.ref];
+    if (live !== undefined && live !== null) return live;
+    return cell.v;
+  }
+  return cell.v ?? null;
+}
+
+function toNumeric(value: number | string | null): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const cleaned = value
+      .replace(/\s/g, '')
+      .replace(/[₽рруб.]/gi, '')
+      .replace(',', '.');
+    const parsed = Number.parseFloat(cleaned);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function aggregateByMode(
+  values: number[],
+  mode: Config['publishMode'],
+): number {
+  if (values.length === 0) return 0;
   switch (mode) {
     case 'sum':
-      return rows.reduce((s, r) => s + r.value, 0);
+      return values.reduce((s, n) => s + n, 0);
     case 'avg':
-      return rows.reduce((s, r) => s + r.value, 0) / rows.length;
+      return values.reduce((s, n) => s + n, 0) / values.length;
     case 'count':
-      return rows.length;
+      return values.length;
     case 'last':
-      return rows[rows.length - 1]?.value ?? 0;
+      return values[values.length - 1];
   }
 }
 
-function makeRowId(): string {
-  return typeof crypto !== 'undefined' && 'randomUUID' in crypto
-    ? crypto.randomUUID()
-    : `r_${Math.random().toString(36).slice(2)}_${Date.now()}`;
+function formatColumnValue(
+  value: number | string | null,
+  format: ColumnFormat,
+  showKopecks: boolean,
+): string {
+  if (value === null || value === undefined || value === '') return '—';
+  if (format === 'text') return String(value);
+  const numeric = toNumeric(value);
+  if (numeric === null) return String(value);
+  if (format === 'rubles') return formatRublesWithSettings(numeric, showKopecks);
+  if (format === 'percent') {
+    return `${numeric.toLocaleString('ru-RU', { maximumFractionDigits: 2 })}%`;
+  }
+  return numeric.toLocaleString('ru-RU', {
+    maximumFractionDigits: Number.isInteger(numeric) ? 0 : 2,
+  });
+}
+
+function formatIcon(format: ColumnFormat) {
+  if (format === 'rubles') return RussianRuble;
+  if (format === 'number') return Hash;
+  if (format === 'percent') return Percent;
+  return Type;
+}
+
+function formatLabel(format: ColumnFormat): string {
+  if (format === 'rubles') return '₽ Рубли';
+  if (format === 'number') return '# Число';
+  if (format === 'percent') return '% Процент';
+  return 'T Текст';
+}
+
+// ============================================================================
+// Block source picker — компактная версия (как в excel-cell)
+// ============================================================================
+
+type SourceField = {
+  name: string;
+  label: string;
+  value: number | string | null;
+  format?: 'money' | 'number' | 'text';
+};
+
+type SourceBlock = {
+  blockId: string;
+  pageKey: string;
+  pageLabel: string;
+  typeLabel: string;
+  category: string;
+  label: string;
+  fields: SourceField[];
+};
+
+type SourcePage = {
+  pageKey: string;
+  pageLabel: string;
+  blocks: SourceBlock[];
+};
+
+function refIsPlainNumber(ref: string): boolean {
+  const lastSep = Math.max(ref.lastIndexOf(':'), -1);
+  const after = ref.slice(lastSep + 1);
+  const dot = after.lastIndexOf('.');
+  const field = dot >= 0 ? after.slice(dot + 1) : 'value';
+  return /^[A-Z]+\d+$/.test(field) || ['count', 'raw', 'label'].includes(field);
+}
+
+function sourceFieldIsMoney(block: SourceBlock, field: SourceField): boolean {
+  if (field.format) return field.format === 'money';
+  if (refIsPlainNumber(`${block.blockId}.${field.name}`)) return false;
+  if (block.category === 'Таблицы') return false;
+  if (['KPI', 'Кэшфлоу', 'Данные', 'Вычисления'].includes(block.category)) return true;
+  return field.name === 'value';
+}
+
+function sourceFieldLabel(field: string): string {
+  if (field === 'value') return 'Значение';
+  if (field === 'count') return 'Количество';
+  if (field === 'sum') return 'Сумма';
+  return field;
+}
+
+function previewSourceValue(field: SourceField, showKopecks: boolean): string {
+  if (field.value === null || field.value === undefined) return '—';
+  if (field.format === 'money' && typeof field.value === 'number') {
+    return formatRublesWithSettings(field.value, showKopecks).replace(/\s?₽$/, '') + ' ₽';
+  }
+  if (typeof field.value === 'number') {
+    return field.value.toLocaleString('ru-RU', {
+      maximumFractionDigits: Number.isInteger(field.value) ? 0 : 2,
+    });
+  }
+  return String(field.value).slice(0, 24);
+}
+
+function CellRefPickerDialog({
+  open,
+  onOpenChange,
+  selfBlockId,
+  liveValues,
+  showKopecks,
+  onPick,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  selfBlockId: string;
+  liveValues: LiveValues;
+  showKopecks: boolean;
+  onPick: (block: SourceBlock, field: SourceField) => void;
+}) {
+  const availableBlocks = useAvailableBlockSources();
+  const [sourcePages, setSourcePages] = useState<SourcePage[]>([]);
+  const [sourceLoading, setSourceLoading] = useState(false);
+  const [search, setSearch] = useState('');
+  const [selectedGroup, setSelectedGroup] = useState('all');
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setSourceLoading(true);
+    fetch('/api/blocks/sources')
+      .then((r) => r.json())
+      .then((data) => {
+        if (!cancelled && data.ok && Array.isArray(data.pages)) {
+          setSourcePages(data.pages);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setSourcePages([]);
+      })
+      .finally(() => {
+        if (!cancelled) setSourceLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  const blockSourcePages = useMemo<SourcePage[]>(() => {
+    const liveBlocks: SourceBlock[] = availableBlocks
+      .filter((b) => b.blockId !== selfBlockId)
+      .map((b) => ({
+        blockId: b.blockId,
+        pageKey: 'current',
+        pageLabel: 'Текущая страница',
+        typeLabel: 'Live block',
+        category: 'Текущая страница',
+        label: String(
+          liveValues[`${b.blockId}.label`] ?? `Блок ${b.blockId.slice(0, 8)}`,
+        ),
+        fields: b.fields.map((field) => ({
+          name: field,
+          label: b.labels?.[field] ?? sourceFieldLabel(field),
+          value:
+            liveValues[field === 'value' ? b.blockId : `${b.blockId}.${field}`] ?? null,
+          format: moneyFieldSet(b.blockId, liveValues).has(field)
+            ? ('money' as const)
+            : undefined,
+        })),
+      }));
+    const pages = sourcePages.map((page) => ({
+      ...page,
+      blocks: page.blocks
+        .filter((block) => block.blockId !== selfBlockId)
+        .map((block) => {
+          const live = availableBlocks.find((a) => a.blockId === block.blockId);
+          if (!live) return block;
+          const moneyFields = moneyFieldSet(block.blockId, liveValues);
+          const byName = new Map(block.fields.map((f) => [f.name, f]));
+          live.fields.forEach((name) => {
+            const key = name === 'value' ? block.blockId : `${block.blockId}.${name}`;
+            const current = byName.get(name);
+            byName.set(name, {
+              name,
+              label: live.labels?.[name] ?? current?.label ?? sourceFieldLabel(name),
+              value: liveValues[key] ?? current?.value ?? null,
+              format: moneyFields.has(name) ? 'money' : current?.format,
+            });
+          });
+          return { ...block, fields: Array.from(byName.values()) };
+        }),
+    }));
+    return liveBlocks.length > 0
+      ? [
+          { pageKey: 'current', pageLabel: 'Текущая страница', blocks: liveBlocks },
+          ...pages,
+        ]
+      : pages;
+  }, [availableBlocks, selfBlockId, liveValues, sourcePages]);
+
+  const sourceGroups = useMemo(() => {
+    const total = blockSourcePages.reduce((acc, p) => acc + p.blocks.length, 0);
+    return [
+      { id: 'all', label: 'Все блоки', count: total },
+      ...blockSourcePages
+        .filter((p) => p.blocks.length > 0)
+        .map((p) => ({ id: `page:${p.pageKey}`, label: p.pageLabel, count: p.blocks.length })),
+    ];
+  }, [blockSourcePages]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return blockSourcePages
+      .map((page) => ({
+        ...page,
+        blocks: page.blocks.filter((block) => {
+          if (selectedGroup.startsWith('page:') && selectedGroup.slice(5) !== page.pageKey) {
+            return false;
+          }
+          if (!q) return true;
+          return [page.pageLabel, block.category, block.typeLabel, block.label, block.blockId]
+            .join(' ')
+            .toLowerCase()
+            .includes(q);
+        }),
+      }))
+      .filter((p) => p.blocks.length > 0);
+  }, [blockSourcePages, search, selectedGroup]);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="w-[min(94vw,640px)] max-w-none gap-0 overflow-hidden p-0">
+        <DialogHeader className="border-b border-border/60 px-4 py-3">
+          <DialogTitle className="text-sm">Связать ячейку с источником</DialogTitle>
+          <DialogDescription className="text-[11px]">
+            Выберите блок и поле — значение подтянется автоматически
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid min-h-[320px] grid-cols-[180px_minmax(0,1fr)]">
+          <aside className="border-r border-border/60 bg-muted/20">
+            <div className="border-b border-border/40 px-3 py-2">
+              <Input
+                placeholder="Поиск..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="h-7 text-xs"
+              />
+            </div>
+            <div className="space-y-0.5 p-2">
+              {sourceGroups.map((g) => (
+                <button
+                  key={g.id}
+                  type="button"
+                  onClick={() => setSelectedGroup(g.id)}
+                  className={cn(
+                    'flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-xs transition',
+                    selectedGroup === g.id
+                      ? 'bg-background font-medium text-foreground shadow-sm ring-1 ring-border/70'
+                      : 'text-muted-foreground hover:bg-background/60 hover:text-foreground',
+                  )}
+                >
+                  <span className="truncate">{g.label}</span>
+                  <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
+                    {g.count}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </aside>
+          <div className="max-h-[420px] overflow-y-auto">
+            {sourceLoading ? (
+              <p className="py-12 text-center text-xs text-muted-foreground">
+                Загружаю блоки…
+              </p>
+            ) : filtered.length === 0 ? (
+              <p className="py-12 text-center text-xs text-muted-foreground">
+                Нет доступных блоков.
+              </p>
+            ) : (
+              filtered.map((page) => (
+                <section key={page.pageKey}>
+                  <div className="sticky top-0 z-10 border-b border-border/40 bg-muted/30 px-3 py-1.5">
+                    <span className="text-[11px] font-semibold text-muted-foreground">
+                      {page.pageLabel}
+                    </span>
+                  </div>
+                  {page.blocks.map((block) => (
+                    <div
+                      key={`${block.pageKey}:${block.blockId}`}
+                      className="border-b border-border/30 px-3 py-2 last:border-b-0"
+                    >
+                      <div className="space-y-1.5">
+                        <div className="min-w-0">
+                          <div className="truncate text-xs font-medium text-foreground">
+                            {block.label}
+                          </div>
+                          <div className="text-[10px] text-muted-foreground">
+                            {block.category} · {block.typeLabel}
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          {block.fields
+                            .filter((f) => f.name !== 'label' && f.name !== 'raw')
+                            .map((field) => {
+                              const preview = previewSourceValue(field, showKopecks);
+                              return (
+                                <button
+                                  key={field.name}
+                                  type="button"
+                                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] ring-1 ring-border/60 transition hover:bg-primary/10 hover:ring-primary/40"
+                                  onClick={() => onPick(block, field)}
+                                  title={`${field.label} = ${preview}`}
+                                >
+                                  <span className="font-medium text-primary">
+                                    {field.label}
+                                  </span>
+                                  <span className="text-muted-foreground">{preview}</span>
+                                </button>
+                              );
+                            })}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </section>
+              ))
+            )}
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ============================================================================
+// Cell editor (manual or linked)
+// ============================================================================
+
+function CellEditor({
+  cell,
+  column,
+  showKopecks,
+  liveValues,
+  onChange,
+}: {
+  cell: Cell | undefined;
+  column: Column;
+  showKopecks: boolean;
+  liveValues: LiveValues;
+  onChange: (next: Cell) => void;
+}) {
+  const isLinked = Boolean(cell?.ref);
+  const resolved = resolveCellValue(cell, liveValues);
+  const display = formatColumnValue(resolved, column.format, showKopecks);
+
+  if (isLinked) {
+    return (
+      <div className="group/cell flex items-center gap-1">
+        <button
+          type="button"
+          onClick={() => onChange({ v: cell?.v ?? null, ref: undefined, isMoney: undefined })}
+          className="opacity-0 transition group-hover/cell:opacity-100"
+          title="Отвязать"
+        >
+          <Unlink className="h-3 w-3 text-amber-600" />
+        </button>
+        <div
+          className="flex h-7 w-full min-w-0 items-center justify-end gap-1 rounded-md border border-amber-200 bg-amber-50/50 px-1.5 text-right text-xs tabular-nums text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200"
+          title={`@${cell?.ref}`}
+        >
+          <Link2 className="h-2.5 w-2.5 shrink-0 text-amber-600" />
+          <span className="truncate">{display}</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (column.format === 'rubles') {
+    const numericValue =
+      typeof cell?.v === 'number' ? cell.v : toNumeric(cell?.v ?? null) ?? 0;
+    return (
+      <CurrencyInput
+        value={numericValue}
+        showKopecks={showKopecks}
+        onChange={(v) => onChange({ v, ref: undefined, isMoney: undefined })}
+        className="h-7 w-full border-none bg-transparent px-1 text-right text-xs tabular-nums shadow-none focus-visible:bg-background"
+      />
+    );
+  }
+
+  if (column.format === 'number' || column.format === 'percent') {
+    const numericValue =
+      typeof cell?.v === 'number'
+        ? String(cell.v)
+        : typeof cell?.v === 'string'
+          ? cell.v
+          : '';
+    return (
+      <Input
+        type="text"
+        inputMode="decimal"
+        value={numericValue}
+        onChange={(e) => {
+          const raw = e.target.value;
+          const parsed = toNumeric(raw);
+          onChange({ v: parsed ?? raw, ref: undefined, isMoney: undefined });
+        }}
+        placeholder={column.format === 'percent' ? '0%' : '0'}
+        className="h-7 w-full border-none bg-transparent px-1 text-right text-xs tabular-nums shadow-none focus-visible:bg-background"
+      />
+    );
+  }
+
+  // text
+  return (
+    <Input
+      type="text"
+      value={typeof cell?.v === 'string' ? cell.v : cell?.v != null ? String(cell.v) : ''}
+      onChange={(e) =>
+        onChange({ v: e.target.value, ref: undefined, isMoney: undefined })
+      }
+      placeholder="—"
+      className="h-7 w-full border-none bg-transparent px-1 text-xs shadow-none focus-visible:bg-background"
+    />
+  );
 }
 
 // ============================================================================
@@ -82,46 +710,132 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
   const showKopecks = config.showKopecks ?? globalSettings.showKopecks;
   const accent = instance.appearance?.accentColor;
   const title = instance.appearance?.title ?? 'Данные';
-  const publishValue = computePublishValue(config.rows, config.publishMode);
-  const total = config.rows.reduce((s, r) => s + r.value, 0);
+  const liveValues = useAllBlockValues();
 
-  // Публикуем агрегированное значение для других блоков
+  const [pickerCell, setPickerCell] = useState<{ rowId: string; columnId: string } | null>(null);
+
+  // ── Aggregate per column ──
+  const aggregates = useMemo(() => {
+    const result: Record<string, number> = {};
+    for (const col of config.columns) {
+      if (col.format === 'text') {
+        result[col.id] = 0;
+        continue;
+      }
+      const numeric: number[] = [];
+      for (const row of config.rows) {
+        const cell = row.cells[col.id];
+        const value = resolveCellValue(cell, liveValues);
+        const n = toNumeric(value);
+        if (n !== null) numeric.push(n);
+      }
+      result[col.id] = aggregateByMode(numeric, config.publishMode);
+    }
+    return result;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config.columns, config.rows, config.publishMode, liveValues]);
+
+  const primaryColumn =
+    config.columns.find((c) => c.id === config.publishColumnId) ??
+    config.columns.find((c) => c.publish !== false) ??
+    config.columns[0];
+
+  // ── Publish ──
+  const moneyFields = config.columns
+    .filter((c) => c.publish !== false && c.format === 'rubles')
+    .map((c) => c.id);
+  const labelPairs = config.columns
+    .filter((c) => c.publish !== false)
+    .map((c) => `${c.id}=${c.label}`);
+  const moneyFlag =
+    moneyFields.length > 0
+      ? [
+          ...moneyFields,
+          ...(primaryColumn && moneyFields.includes(primaryColumn.id) ? ['value'] : []),
+        ].join(',')
+      : '';
+
   useBlockValuePublisher(instance.id, {
-    value: publishValue,
-    sum: total,
+    ...Object.fromEntries(
+      config.columns
+        .filter((c) => c.publish !== false)
+        .map((c) => [c.id, aggregates[c.id] ?? 0]),
+    ),
+    value: primaryColumn ? aggregates[primaryColumn.id] ?? 0 : 0,
     count: config.rows.length,
     label: title,
-    // money только если формат рублёвый. value money, только если publishMode != 'count'
-    __money:
-      config.format === 'rubles'
-        ? config.publishMode === 'count'
-          ? 'sum'
-          : 'value,sum'
-        : '',
+    __money: moneyFlag,
+    __labels: labelPairs.join(','),
   });
 
-  function addRow() {
-    const next: Config = {
-      ...config,
-      rows: [...config.rows, { id: makeRowId(), label: 'Новая строка', value: 0 }],
-    };
-    onConfigChange?.(next as unknown as Record<string, unknown>);
+  // ── Editing helpers ──
+  function patch(next: Partial<Config>) {
+    const merged: Config = { ...config, ...next };
+    onConfigChange?.(serializeConfig(merged));
   }
 
-  function updateRow(id: string, patch: Partial<Row>) {
-    const next: Config = {
-      ...config,
-      rows: config.rows.map((r) => (r.id === id ? { ...r, ...patch } : r)),
-    };
-    onConfigChange?.(next as unknown as Record<string, unknown>);
+  function addRow() {
+    patch({
+      rows: [
+        ...config.rows,
+        { id: makeId('row'), label: 'Новая строка', cells: {} },
+      ],
+    });
   }
 
   function removeRow(id: string) {
-    const next: Config = { ...config, rows: config.rows.filter((r) => r.id !== id) };
-    onConfigChange?.(next as unknown as Record<string, unknown>);
+    patch({ rows: config.rows.filter((r) => r.id !== id) });
   }
 
-  // XS — только итог
+  function updateRow(id: string, changes: Partial<Row>) {
+    patch({
+      rows: config.rows.map((r) => (r.id === id ? { ...r, ...changes } : r)),
+    });
+  }
+
+  function updateCell(rowId: string, columnId: string, next: Cell) {
+    patch({
+      rows: config.rows.map((r) =>
+        r.id === rowId
+          ? { ...r, cells: { ...r.cells, [columnId]: next } }
+          : r,
+      ),
+    });
+  }
+
+  function addColumn() {
+    const id = makeId('col');
+    patch({
+      columns: [
+        ...config.columns,
+        { id, label: 'Новая колонка', format: 'rubles', publish: true },
+      ],
+    });
+  }
+
+  function pickRefForCell(block: SourceBlock, field: SourceField) {
+    if (!pickerCell) return;
+    const ref =
+      block.pageKey === 'current'
+        ? field.name === 'value'
+          ? block.blockId
+          : `${block.blockId}.${field.name}`
+        : `${block.pageKey}:${block.blockId}.${field.name}`;
+    const next: Cell = {
+      v: typeof field.value === 'number' || typeof field.value === 'string' ? field.value : null,
+      ref,
+      isMoney: sourceFieldIsMoney(block, field),
+    };
+    updateCell(pickerCell.rowId, pickerCell.columnId, next);
+    setPickerCell(null);
+  }
+
+  // Aggregate display in header — use primary column
+  const headerAggregateText = primaryColumn
+    ? formatColumnValue(aggregates[primaryColumn.id] ?? 0, primaryColumn.format, showKopecks)
+    : '—';
+
+  // ── XS — только итог ──
   if (density === 'xs') {
     return (
       <Card className="flex h-full flex-col justify-center p-1">
@@ -129,84 +843,140 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
           className="truncate text-center text-sm font-semibold tabular-nums"
           style={accent ? { color: accent } : undefined}
         >
-          {formatValue(publishValue, config.format, showKopecks)}
+          {headerAggregateText}
         </div>
       </Card>
     );
   }
 
-  // SM — title + итог
+  // ── SM — title + итог ──
   if (density === 'sm') {
     return (
       <Card className="flex h-full flex-col justify-center p-2">
         <div className="flex items-center gap-1">
           <Database className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          <span className="truncate text-[11px] font-medium text-muted-foreground">{title}</span>
+          <span className="truncate text-[11px] font-medium text-muted-foreground">
+            {title}
+          </span>
         </div>
         <div
           className="mt-0.5 truncate text-lg font-semibold tabular-nums"
           style={accent ? { color: accent } : undefined}
         >
-          {formatValue(publishValue, config.format, showKopecks)}
+          {headerAggregateText}
         </div>
       </Card>
     );
   }
 
-  // MD/LG — полный вид с таблицей
+  // ── MD/LG — таблица ──
+  // grid-template-columns: label_col + value_cols + delete_col
+  const valueColTemplate = config.columns
+    .map((c) => `minmax(${c.format === 'text' ? 80 : 72}px, ${c.width ? `${c.width}px` : 'auto'})`)
+    .join(' ');
+
   return (
-    <Card className="flex h-full flex-col">
-      <CardHeader className="flex-row items-center justify-between space-y-0 pb-2">
-        <CardTitle className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
-          <Database className="h-4 w-4" style={accent ? { color: accent } : undefined} />
-          <span className="line-clamp-1">{title}</span>
-        </CardTitle>
+    <Card className="flex h-full min-h-0 flex-col">
+      <header className="flex shrink-0 items-center justify-between gap-2 px-3 pb-2 pt-3">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <Database
+            className="h-4 w-4 shrink-0 text-muted-foreground"
+            style={accent ? { color: accent } : undefined}
+          />
+          <span className="truncate text-sm font-medium text-muted-foreground">
+            {title}
+          </span>
+        </div>
         <div
           className="text-base font-semibold tabular-nums"
           style={accent ? { color: accent } : undefined}
         >
-          {formatValue(publishValue, config.format, showKopecks)}
+          {headerAggregateText}
         </div>
-      </CardHeader>
-      <CardContent className="flex flex-1 flex-col gap-1.5 overflow-y-auto pb-3 pt-1">
+      </header>
+
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-auto px-3 pb-3">
         {config.rows.length === 0 ? (
-          <div className="rounded-md border border-dashed border-border/60 bg-muted/30 p-3 text-center text-xs text-muted-foreground">
-            <Database className="mx-auto mb-1 h-4 w-4" />
-            Нет данных. Добавьте строки или используйте AI-автозаполнение.
+          <div className="flex flex-1 items-center justify-center rounded-md border border-dashed border-border/60 bg-muted/30 p-3 text-center text-xs text-muted-foreground">
+            <div>
+              <Database className="mx-auto mb-1 h-4 w-4" />
+              Нет данных. Добавьте строки или используйте AI-автозаполнение.
+            </div>
           </div>
         ) : (
-          <div className="space-y-1">
+          <div
+            className="grid items-stretch gap-x-1.5 gap-y-1"
+            style={{
+              gridTemplateColumns: `minmax(80px, 1fr) ${valueColTemplate} 16px`,
+            }}
+          >
+            {/* Header row */}
+            <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+              &nbsp;
+            </div>
+            {config.columns.map((col) => {
+              const Icon = formatIcon(col.format);
+              return (
+                <div
+                  key={`h-${col.id}`}
+                  className="flex items-center justify-end gap-1 text-[10px] uppercase tracking-wide text-muted-foreground"
+                >
+                  <Icon className="h-2.5 w-2.5" />
+                  <span className="truncate">{col.label}</span>
+                </div>
+              );
+            })}
+            <div />
+
+            {/* Rows */}
             {config.rows.map((row) => (
-              <div
-                key={row.id}
-                className="group/row flex items-center gap-1.5 rounded-md border border-border/40 bg-muted/20 px-2 py-1"
-              >
-                <Input
-                  value={row.label}
-                  onChange={(e) => updateRow(row.id, { label: e.target.value })}
-                  className="h-7 flex-1 border-none bg-transparent px-1 text-xs shadow-none focus-visible:bg-background"
-                  placeholder="Название"
-                />
-                <CurrencyInput
-                  value={row.value}
-                  showKopecks={config.format === 'rubles' ? showKopecks : false}
-                  onChange={(v) => updateRow(row.id, { value: v })}
-                  className="h-7 w-24 border-none bg-transparent px-1 text-right text-xs tabular-nums shadow-none focus-visible:bg-background"
-                />
+              <Fragment key={row.id}>
+                <div className="flex min-w-0 items-center rounded-md border border-border/40 bg-muted/20 px-2 py-1">
+                  <Input
+                    value={row.label}
+                    onChange={(e) => updateRow(row.id, { label: e.target.value })}
+                    className="h-6 w-full min-w-0 truncate border-none bg-transparent px-0 text-xs shadow-none focus-visible:bg-background"
+                    placeholder="Название"
+                  />
+                </div>
+                {config.columns.map((col) => (
+                  <div
+                    key={`${row.id}-${col.id}`}
+                    className="group/cell-wrap relative flex items-center rounded-md border border-border/40 bg-muted/20 px-1"
+                  >
+                    <CellEditor
+                      cell={row.cells[col.id]}
+                      column={col}
+                      showKopecks={showKopecks}
+                      liveValues={liveValues}
+                      onChange={(next) => updateCell(row.id, col.id, next)}
+                    />
+                    {!row.cells[col.id]?.ref && col.format !== 'text' && (
+                      <button
+                        type="button"
+                        onClick={() => setPickerCell({ rowId: row.id, columnId: col.id })}
+                        className="absolute -left-1 -top-1 z-10 hidden rounded bg-amber-100 px-1 text-[9px] font-semibold text-amber-700 ring-1 ring-amber-200 hover:bg-amber-200 group-hover/cell-wrap:inline-flex dark:bg-amber-950 dark:text-amber-300 dark:ring-amber-800"
+                        title="Связать ячейку с другим блоком"
+                      >
+                        @
+                      </button>
+                    )}
+                  </div>
+                ))}
                 <button
                   type="button"
                   onClick={() => removeRow(row.id)}
-                  className="opacity-0 transition group-hover/row:opacity-100"
+                  className="flex items-center justify-center rounded text-muted-foreground/40 transition hover:text-red-500"
                   aria-label="Удалить строку"
                 >
-                  <Trash2 className="h-3 w-3 text-red-500" />
+                  <Trash2 className="h-3 w-3" />
                 </button>
-              </div>
+              </Fragment>
             ))}
           </div>
         )}
 
-        <div className="mt-auto flex items-center gap-1 pt-1">
+        <div className="mt-auto flex items-center gap-1 pt-2">
           <Button
             variant="outline"
             size="sm"
@@ -218,6 +988,15 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
           <Button
             variant="outline"
             size="sm"
+            className="h-7 flex-1 text-xs"
+            onClick={addColumn}
+            title="Добавить колонку"
+          >
+            <Plus className="h-3 w-3" /> Колонка
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
             className="h-7 text-xs"
             disabled
             title="AI-автозаполнение из истории операций (скоро)"
@@ -225,110 +1004,211 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
             <Sparkles className="h-3 w-3" /> AI
           </Button>
         </div>
-      </CardContent>
+      </div>
+
+      <CellRefPickerDialog
+        open={pickerCell !== null}
+        onOpenChange={(o) => !o && setPickerCell(null)}
+        selfBlockId={instance.id}
+        liveValues={liveValues}
+        showKopecks={showKopecks}
+        onPick={pickRefForCell}
+      />
     </Card>
   );
 }
 
 // ============================================================================
-// SettingsForm — параметры (publishMode + format)
+// SettingsForm — управление колонками + публикацией
 // ============================================================================
 
 function CustomDataSettingsForm({ config, onChange }: BlockSettingsFormProps) {
   const parsed = parseConfig(config);
 
-  function set<K extends keyof Config>(key: K, value: Config[K]) {
-    onChange({ ...parsed, [key]: value } as unknown as Record<string, unknown>);
+  function patch(next: Partial<Config>) {
+    onChange(serializeConfig({ ...parsed, ...next }));
+  }
+
+  function updateColumn(id: string, changes: Partial<Column>) {
+    patch({
+      columns: parsed.columns.map((c) =>
+        c.id === id ? { ...c, ...changes } : c,
+      ),
+    });
+  }
+
+  function removeColumn(id: string) {
+    if (parsed.columns.length <= 1) return;
+    patch({
+      columns: parsed.columns.filter((c) => c.id !== id),
+      rows: parsed.rows.map((r) => {
+        const { [id]: _drop, ...rest } = r.cells;
+        void _drop;
+        return { ...r, cells: rest };
+      }),
+      publishColumnId:
+        parsed.publishColumnId === id
+          ? parsed.columns.find((c) => c.id !== id)?.id
+          : parsed.publishColumnId,
+    });
+  }
+
+  function addColumn() {
+    const id = makeId('col');
+    patch({
+      columns: [
+        ...parsed.columns,
+        { id, label: 'Новая колонка', format: 'rubles', publish: true },
+      ],
+    });
   }
 
   return (
-    <div className="space-y-3">
-      <div className="space-y-1.5">
-        <Label>Что публиковать как значение блока</Label>
-        <div className="flex flex-wrap gap-1">
-          {(['sum', 'avg', 'count', 'last'] as const).map((m) => (
-            <button
-              key={m}
-              type="button"
-              onClick={() => set('publishMode', m)}
-              className={
-                'h-7 rounded-md px-2.5 text-xs font-medium transition-colors ' +
-                (parsed.publishMode === m
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-muted text-muted-foreground hover:bg-accent')
-              }
+    <div className="space-y-4">
+      {/* Колонки */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <Label>Колонки</Label>
+          <Button type="button" variant="outline" size="sm" className="h-7 text-xs" onClick={addColumn}>
+            <Plus className="h-3 w-3" /> Добавить
+          </Button>
+        </div>
+        <div className="space-y-1.5">
+          {parsed.columns.map((col) => (
+            <div
+              key={col.id}
+              className="flex items-center gap-1.5 rounded-md border border-border/60 bg-muted/20 p-1.5"
             >
-              {m === 'sum' && 'Сумма'}
-              {m === 'avg' && 'Среднее'}
-              {m === 'count' && 'Количество'}
-              {m === 'last' && 'Последнее'}
-            </button>
+              <Input
+                value={col.label}
+                onChange={(e) => updateColumn(col.id, { label: e.target.value })}
+                className="h-7 flex-1 text-xs"
+                placeholder="Название колонки"
+              />
+              <div className="flex shrink-0 gap-0.5">
+                {(['rubles', 'number', 'percent', 'text'] as const).map((f) => {
+                  const Icon = formatIcon(f);
+                  const active = col.format === f;
+                  return (
+                    <button
+                      key={f}
+                      type="button"
+                      onClick={() => updateColumn(col.id, { format: f })}
+                      title={formatLabel(f)}
+                      className={cn(
+                        'flex h-7 w-7 items-center justify-center rounded transition',
+                        active
+                          ? 'bg-primary text-primary-foreground'
+                          : 'text-muted-foreground hover:bg-accent',
+                      )}
+                    >
+                      <Icon className="h-3 w-3" />
+                    </button>
+                  );
+                })}
+              </div>
+              <button
+                type="button"
+                onClick={() => updateColumn(col.id, { publish: !col.publish })}
+                title={col.publish ? 'Колонка публикуется в @связать' : 'Не публикуется'}
+                className={cn(
+                  'flex h-7 w-7 items-center justify-center rounded transition',
+                  col.publish
+                    ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200 dark:bg-emerald-950 dark:text-emerald-300'
+                    : 'text-muted-foreground hover:bg-accent',
+                )}
+              >
+                {col.publish ? <Check className="h-3 w-3" /> : <X className="h-3 w-3" />}
+              </button>
+              <button
+                type="button"
+                onClick={() => removeColumn(col.id)}
+                disabled={parsed.columns.length <= 1}
+                className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground/40 transition hover:text-red-500 disabled:opacity-30"
+                title="Удалить колонку"
+              >
+                <Trash2 className="h-3 w-3" />
+              </button>
+            </div>
           ))}
         </div>
         <p className="text-[11px] text-muted-foreground">
-          Это значение будет доступно другим блокам (computed.sum) как источник.
+          Зелёная галочка = колонка доступна как источник в @связать (например @блок.id_колонки).
         </p>
       </div>
 
+      {/* Публикация */}
+      <div className="space-y-2">
+        <Label>Что публиковать как основное значение блока</Label>
+        <div className="grid grid-cols-2 gap-2">
+          <select
+            value={parsed.publishMode}
+            onChange={(e) =>
+              patch({ publishMode: e.target.value as Config['publishMode'] })
+            }
+            className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+          >
+            <option value="sum">Сумма строк</option>
+            <option value="avg">Среднее</option>
+            <option value="count">Количество</option>
+            <option value="last">Последнее значение</option>
+          </select>
+          <select
+            value={parsed.publishColumnId ?? ''}
+            onChange={(e) => patch({ publishColumnId: e.target.value || undefined })}
+            className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+          >
+            {parsed.columns
+              .filter((c) => c.publish !== false)
+              .map((c) => (
+                <option key={c.id} value={c.id}>
+                  Колонка: {c.label}
+                </option>
+              ))}
+          </select>
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          В шапке блока показывается агрегат «основной» колонки. Все publish-колонки также
+          публикуются отдельно (доступны как @блок.id_колонки).
+        </p>
+      </div>
+
+      {/* Копейки */}
       <div className="space-y-1.5">
-        <Label>Формат значений</Label>
-        <div className="flex flex-wrap gap-1">
-          {(['rubles', 'number', 'percent'] as const).map((f) => (
-            <button
-              key={f}
-              type="button"
-              onClick={() => set('format', f)}
-              className={
-                'h-7 rounded-md px-2.5 text-xs font-medium transition-colors ' +
-                (parsed.format === f
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-muted text-muted-foreground hover:bg-accent')
-              }
-            >
-              {f === 'rubles' && '₽ Рубли'}
-              {f === 'number' && '# Число'}
-              {f === 'percent' && '% Процент'}
-            </button>
-          ))}
+        <Label>Копейки (для рублёвых колонок)</Label>
+        <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
+          <div className="min-w-0">
+            <div className="text-xs font-medium">Показывать копейки</div>
+            <div className="text-[11px] text-muted-foreground">
+              {parsed.showKopecks === null
+                ? 'Используется глобальная настройка'
+                : parsed.showKopecks
+                  ? 'Включено (1 234,56 ₽)'
+                  : 'Выключено (1 235 ₽)'}
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5">
+            {parsed.showKopecks !== null && (
+              <button
+                type="button"
+                onClick={() => patch({ showKopecks: null })}
+                className="text-[10px] text-muted-foreground hover:text-foreground"
+              >
+                Сбросить
+              </button>
+            )}
+            <Switch
+              checked={parsed.showKopecks ?? false}
+              onCheckedChange={(v) => patch({ showKopecks: v })}
+            />
+          </div>
         </div>
       </div>
 
-      {parsed.format === 'rubles' && (
-        <div className="space-y-1.5">
-          <Label>Копейки</Label>
-          <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
-            <div className="min-w-0">
-              <div className="text-xs font-medium">Показывать копейки</div>
-              <div className="text-[11px] text-muted-foreground">
-                {parsed.showKopecks === null
-                  ? 'Используется глобальная настройка'
-                  : parsed.showKopecks
-                    ? 'Включено (1 234,56 ₽)'
-                    : 'Выключено (1 235 ₽)'}
-              </div>
-            </div>
-            <div className="flex items-center gap-1.5">
-              {parsed.showKopecks !== null && (
-                <button
-                  type="button"
-                  onClick={() => set('showKopecks', null)}
-                  className="text-[10px] text-muted-foreground hover:text-foreground"
-                >
-                  Сбросить
-                </button>
-              )}
-              <Switch
-                checked={parsed.showKopecks ?? false}
-                onCheckedChange={(v) => set('showKopecks', v)}
-              />
-            </div>
-          </div>
-        </div>
-      )}
-
       <div className="rounded-md bg-muted/30 p-2.5 text-[11px] text-muted-foreground">
-        Строки данных редактируются прямо в блоке (нажмите на текст или число). AI-автозаполнение
-        из истории операций — в разработке.
+        Ячейки с привязкой (`@`) автоматически подтягивают значения других блоков и
+        обновляются в реальном времени. Денежный формат сохраняется через `isMoney` флаг
+        (как в excel.cell).
       </div>
     </div>
   );
@@ -342,16 +1222,20 @@ export const CustomDataBlock: BlockDef = {
   type: 'custom.data',
   displayName: 'Данные (универсальный)',
   description:
-    'Произвольные строки label + значение. Excel-style ячейка для ручного ввода или AI-автозаполнения.',
+    'Строки label + N произвольных колонок (рубли/число/%/текст). Каждая ячейка может быть привязана к другому блоку.',
   category: 'custom',
   icon: Database,
   defaultSize: { w: 4, h: 3 },
   minSize: { w: 2, h: 2 },
-  minContentSize: { w: 200, h: 100 },
   pages: ['*'],
   configSchema: ConfigSchema,
-  defaultConfig: () => ({ rows: [], publishMode: 'sum', format: 'rubles', showKopecks: null }),
-  supportsDependencies: false, // сам публикует значения, но не зависит от других
+  defaultConfig: () => ({
+    columns: defaultColumns(),
+    rows: [],
+    publishMode: 'sum',
+    showKopecks: null,
+  }),
+  supportsDependencies: false,
   SettingsForm: CustomDataSettingsForm,
   Render: RenderCustomData,
 };

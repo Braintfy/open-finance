@@ -40,6 +40,7 @@ const BlockInstanceSchema = z.object({
   config: z.record(z.string(), z.unknown()).optional(),
   appearance: AppearanceSchema,
   dependencies: BlockDependenciesSchema,
+  aiPrompt: z.string().max(8000).optional(),
 });
 
 const PutBody = z.object({

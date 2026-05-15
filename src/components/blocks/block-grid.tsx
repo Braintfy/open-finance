@@ -93,34 +93,92 @@ function normalizeCustomDataConfig(
             ? current.rows
             : [];
 
+  // Колонки: новый формат имеет приоритет, иначе наследуем из current, иначе дефолт.
+  const sourceColumns = Array.isArray(raw.columns)
+    ? raw.columns
+    : Array.isArray(current.columns)
+      ? current.columns
+      : null;
+  const columns = (sourceColumns ?? [
+    { id: 'amount', label: 'Сумма', format: raw.format ?? current.format ?? 'rubles', publish: true },
+  ]).map((c, index) => {
+    const obj = isRecord(c) ? c : {};
+    const id = typeof obj.id === 'string' ? obj.id : `col_${index}`;
+    const formatRaw = String(obj.format ?? 'rubles');
+    const format = ['rubles', 'number', 'percent', 'text'].includes(formatRaw)
+      ? formatRaw
+      : 'rubles';
+    return {
+      id,
+      label: String(obj.label ?? `Колонка ${index + 1}`),
+      format,
+      publish: typeof obj.publish === 'boolean' ? obj.publish : true,
+      ...(typeof obj.width === 'number' ? { width: obj.width } : {}),
+    };
+  });
+  const primaryColId = columns[0]?.id ?? 'amount';
+
   const rows = sourceRows.map((row, index) => {
     if (isRecord(row)) {
-      return {
-        id: typeof row.id === 'string' ? row.id : makeId('ai_row'),
-        label: String(row.label ?? row.name ?? row.title ?? row.category ?? row.description ?? `Строка ${index + 1}`),
-        value: toNumber(row.value ?? row.amount ?? row.total ?? row.sum ?? 0),
-      };
+      const id = typeof row.id === 'string' ? row.id : makeId('ai_row');
+      const label = String(
+        row.label ??
+          row.name ??
+          row.title ??
+          row.category ??
+          row.description ??
+          `Строка ${index + 1}`,
+      );
+      const cells: Record<string, { v: number | string | null; ref?: string; isMoney?: boolean }> = {};
+      // Новый формат: row.cells
+      if (isRecord(row.cells)) {
+        for (const [colId, cell] of Object.entries(row.cells)) {
+          if (isRecord(cell)) {
+            const v = cell.v;
+            cells[colId] = {
+              v: typeof v === 'number' || typeof v === 'string' || v === null ? v : null,
+              ...(typeof cell.ref === 'string' ? { ref: cell.ref } : {}),
+              ...(typeof cell.isMoney === 'boolean' ? { isMoney: cell.isMoney } : {}),
+            };
+          } else if (typeof cell === 'number' || typeof cell === 'string') {
+            cells[colId] = { v: cell };
+          }
+        }
+      }
+      // Legacy: row.value → cells[primary].v
+      if (
+        cells[primaryColId] === undefined &&
+        ('value' in row || 'amount' in row || 'total' in row || 'sum' in row)
+      ) {
+        cells[primaryColId] = {
+          v: toNumber(row.value ?? row.amount ?? row.total ?? row.sum ?? 0),
+        };
+      }
+      return { id, label, cells };
     }
     return {
       id: makeId('ai_row'),
       label: String(row),
-      value: 0,
+      cells: {},
     };
   });
 
   const publishMode = ['sum', 'avg', 'count', 'last'].includes(String(raw.publishMode))
     ? raw.publishMode
     : current.publishMode ?? 'sum';
-  const format = ['rubles', 'number', 'percent'].includes(String(raw.format))
-    ? raw.format
-    : current.format ?? 'rubles';
 
   return {
     ...current,
     ...raw,
+    columns,
     rows,
     publishMode,
-    format,
+    publishColumnId:
+      typeof raw.publishColumnId === 'string'
+        ? raw.publishColumnId
+        : typeof current.publishColumnId === 'string'
+          ? current.publishColumnId
+          : primaryColId,
     showKopecks: typeof raw.showKopecks === 'boolean' || raw.showKopecks === null
       ? raw.showKopecks
       : current.showKopecks ?? null,
@@ -287,6 +345,8 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
   const [saving, setSaving] = useState(false);
   /** Mindmap-overlay: связи между блоками. Выкл/Вкл через кнопку. */
   const [showRelations, setShowRelations] = useState(false);
+  /** Активный drag/resize — для усиления фон-сетки */
+  const [gridActive, setGridActive] = useState(false);
   const gridContainerRef = useRef<HTMLDivElement | null>(null);
   /**
    * SAFEGUARD против критического бага «блоки исчезают»: если хоть раз были
@@ -594,7 +654,12 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
   const settingsDef = settingsBlock ? getBlockDef(settingsBlock.type) : null;
 
   const grid = (
-    <div ref={gridContainerRef} className="relative">
+    <div
+      ref={gridContainerRef}
+      className="block-grid-surface relative"
+      data-edit={editMode ? 'true' : 'false'}
+      data-active={gridActive ? 'true' : 'false'}
+    >
       <ResponsiveGridLayout
         className="layout"
         layouts={layouts}
@@ -604,6 +669,10 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
         isDraggable={true}
         isResizable={true}
         onLayoutChange={onLayoutChange}
+        onDragStart={() => setGridActive(true)}
+        onDragStop={() => setGridActive(false)}
+        onResizeStart={() => setGridActive(true)}
+        onResizeStop={() => setGridActive(false)}
         draggableHandle=".block-drag-handle"
         margin={[10, 10]}
         containerPadding={[0, 0]}
@@ -737,13 +806,23 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
       <MicroAgentDialog
         open={aiBlockId !== null}
         onOpenChange={(o) => { if (!o) setAiBlockId(null); }}
-        blockContext={aiBlockId ? {
-          blockId: aiBlockId,
-          blockType: blocks.find((b) => b.id === aiBlockId)?.type,
-          blockTitle: blocks.find((b) => b.id === aiBlockId)?.appearance?.title ?? getBlockDef(blocks.find((b) => b.id === aiBlockId)?.type ?? '')?.displayName,
-          blockData: blocks.find((b) => b.id === aiBlockId)?.config as Record<string, unknown> | undefined,
-          pageKey,
-        } satisfies BlockContext : undefined}
+        blockContext={aiBlockId ? (() => {
+          const target = blocks.find((b) => b.id === aiBlockId);
+          const def = target ? getBlockDef(target.type) : undefined;
+          // Приоритет master-промпта: instance.aiPrompt > legacy config.blockPrompt (ai.micro-agent)
+          const legacyPrompt =
+            target?.type === 'ai.micro-agent' && typeof target?.config?.blockPrompt === 'string'
+              ? (target.config.blockPrompt as string)
+              : undefined;
+          return {
+            blockId: aiBlockId,
+            blockType: target?.type,
+            blockTitle: target?.appearance?.title ?? def?.displayName,
+            blockData: target?.config as Record<string, unknown> | undefined,
+            pageKey,
+            aiPrompt: target?.aiPrompt ?? legacyPrompt,
+          } satisfies BlockContext;
+        })() : undefined}
         onApply={applyAiAction}
       />
 

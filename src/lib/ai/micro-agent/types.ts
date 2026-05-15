@@ -9,6 +9,13 @@ export type BlockContext = {
   blockData?: Record<string, unknown>;
   /** Ключ страницы */
   pageKey?: string;
+  /**
+   * Master-промпт блока (`BlockInstance.aiPrompt`). Передаётся как
+   * `blockPrompt` в `/api/ai/chat`; имеет приоритет над тем, что
+   * пользователь вводит в раскрывашке "Инструкция для блока" внутри
+   * MicroAgentDialog (которая теперь — fallback).
+   */
+  aiPrompt?: string;
 };
 
 /** Быстрые действия (табы) */

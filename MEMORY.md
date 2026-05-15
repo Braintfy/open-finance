@@ -98,6 +98,8 @@ Open Finance = настраиваемый Lego-конструктор интер
 - Блоки публикуют значения через `useBlockValuePublisher`, если на них можно ссылаться.
 - Связи обнаруживаются не только через `dependencies.sources`, но и через `config.blockRefs` и формулы с `@...`.
 - **Не использовать `sanitizeBlocks` на сервере**: catalog/client exports могут быть пустыми в server bundle.
+- **Координатная сетка-фон** (`.block-grid-surface`, [src/components/blocks/block-grid.css](src/components/blocks/block-grid.css)): шаг 24px через `radial-gradient`. Контейнер имеет `data-edit` (режим редактирования) и `data-active` (drag/resize, через `onDragStart`/`onResizeStart` props RGL) — в этих состояниях точки ярче (`primary` вместо `foreground/0.07`).
+- **`BlockInstance.aiPrompt`** (master-промпт блока) обязан пробрасываться в `MicroAgentDialog.blockContext.aiPrompt` через `block-grid.tsx`. В `/api/ai/chat` приоритет: `aiPrompt > legacy config.blockPrompt > inline инструкция в диалоге`. Persistence: добавлено в `BlockInstanceSchema` API роута `/api/blocks/layout/[pageKey]`.
 
 ### Текущий каталог блоков
 `stat.income`, `stat.expense`, `stat.balance`, `stat.custom`, `cashflow.top-categories`, `cashflow.transactions`, `sheet`, `excel.cell`, `navigate.card`, `computed.sum`, `custom.data`, `chart.cashflow`, `ai.micro-agent`, `inbox.channel-feed`, `unit.ozon-calculator`, `unit.ozon-multi-table`, `unit.yandex-calculator`, `unit.my-store-table`. Каждый `BlockDef` помечен `tags: string[]`, `recommendedFor?: string[]`, `source: 'builtin'|'user'|'paid'` и **`iconName: string`** через карту `BLOCK_META` в `registry.ts` (источник правды для маркетплейса, `AddBlockDialog` и серверного рендера в RSC).
@@ -121,14 +123,15 @@ Open Finance = настраиваемый Lego-конструктор интер
 - `drizzle/init/03-boards.sql` — manual SQL.
 - Запиненные доски отображаются в sidebar; доски видны в `@связать` через `/api/blocks/sources`.
 
-## Sheet / Excel Cell / связи
+## Sheet / Excel Cell / Custom Data / связи
 - `sheet` — мини-таблица с формулами, `@связать`, computed cells в sources API, `__money` metadata для денежных ячеек. Без `minContentSize` — таблица скроллится внутри блока любого размера (`minSize: 1×1`).
 - `excel.cell` — компактная одиночная Excel-like ячейка `3×2`, формулы и `moneyRefs`.
-- **Money detection через `moneyRefs`**: оба `sheet` и `excel.cell` сохраняют `Record<string, boolean>` в config при `@связать` (через `sourceFieldIsMoney`). `formulaReferencesMoneyRefs(raw, moneyRefs)` сначала проверяет сохранённые флаги, потом fallback на эвристику по имени поля. То же используется server-side в `/api/blocks/sources/evaluateSheetCells`.
-- **Публикация `__money`**: KPI-блоки (`stat.*`, `computed.sum`, `custom.data` с format=rubles, `excel.cell` с money формулой) публикуют `__money: 'value'` (или `'value,sum'`) через `useBlockValuePublisher`, чтобы live preview в `@связать` picker правильно форматировал копейки. Sheet публикует `__money` со списком money-ячеек (адресов).
+- `custom.data` (v0.14.0) — **multi-column** блок «Данные» c `Config = { columns: Array<{id, label, format: 'rubles'|'number'|'percent'|'text', publish, width?}>, rows: Array<{id, label, cells: Record<colId, {v, ref?, isMoney?}>}>, publishMode, publishColumnId, showKopecks }`. Каждая ячейка может быть либо ручной (`v`), либо привязкой (`ref` + cached `v` + `isMoney` флаг — мигрировано из `excel.cell.moneyRefs`). На hover ячейки появляется `@`-кнопка для открытия picker'а. Per-column publish: каждая `publish:true` колонка публикует свой агрегат как `{column.id}` (доступен в `@связать` как `@блок.amount`/`@блок.stock`). Legacy `value` = агрегат основной колонки (`publishColumnId`). `parseConfig` мигрирует все старые конфиги (`rows[i].value` + top-level `format`) при чтении.
+- **Money detection через `moneyRefs`/`isMoney`**: `sheet`/`excel.cell` сохраняют `moneyRefs: Record<string, boolean>` в config; `custom.data` хранит флаг per cell в `cells[colId].isMoney`. Все используют общий `sourceFieldIsMoney(block, field)` при выборе через picker. То же mirror на server-side в `/api/blocks/sources/evaluateSheetCells`.
+- **Публикация `__money`**: KPI-блоки (`stat.*`, `computed.sum`, `custom.data` с rubles-колонками, `excel.cell` с money формулой) публикуют `__money: 'col1,col2,...'` (включая `value` если основная колонка денежная) через `useBlockValuePublisher`. `__labels: 'amount=Сумма,stock=Остаток,...'` для красивого отображения в picker'ах.
 - `/api/blocks/sources` server-side считает Sheet formulas, включая linked cells, чтобы вкладки страниц совпадали с live current-page values.
-- `useAvailableBlockSources()` скрывает служебные поля вроде `__money`.
-- Формат денег нельзя выводить из факта `@`; нужен explicit `format: money` (server) / сохранённый `moneyRefs` (client), иначе обычные ячейки будут ошибочно делиться на копейки.
+- `useAvailableBlockSources()` скрывает служебные поля вроде `__money`/`__labels`.
+- Формат денег нельзя выводить из факта `@`; нужен explicit `format: money` (server) / сохранённый `moneyRefs`/`isMoney` (client), иначе обычные ячейки будут ошибочно делиться на копейки.
 
 ## AI Micro-Agent и AI runtime
 ### Ключевые файлы
@@ -230,7 +233,7 @@ Open Finance = настраиваемый Lego-конструктор интер
 ## Файлы, которые AI должен знать (но не грузить все сразу)
 - `START.md` — bootstrap новой сессии, карта, роутинг по типу задачи. **Читается первым.**
 - `MEMORY.md` — этот компактный handoff. **Читается вторым.**
-- `CHANGELOG.md` — история изменений; текущая версия `0.10.4`. Грузить по запросу.
+- `CHANGELOG.md` — история изменений; текущая версия `0.14.0`. Грузить по запросу.
 - `PLAN.md` — стратегическая карта продукта и этапы. Грузить разделами через offset+limit.
 - `CLAUDE.md` — полные правила проекта (всегда применяется через workspace rules).
 - `AGENTS.md` — универсальные правила для AI-агентов (всегда применяется).
@@ -262,8 +265,8 @@ docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev 
 ```
 
 ## Текущий статус на 2026-05-15
-- **Версия:** `0.13.0` в `CHANGELOG.md`; `package.json` всё ещё `0.5.0` и не является источником статуса фич.
-- **Фаза:** Unit Economics MVP с **multi-cluster FBS** (28 кластеров, weighted-sum логистика, новые поля: соинвест/возвраты/отмены/приёмка/лог.плечо/документ.расходы), удалён режим `'nds'`, blocker-фиксы (Marketplace RSC + closure-trap city select). Поверх FBS-апгрейда v0.12.0 (скорости/точки сдачи/склады), DnD-колонок, sticky фикса, bulk-fill, «Маркет блоков», iconName/RSC fix, hot-zone resize, `__labels` для picker. Под капотом — Inbox Channels MVP + AI Micro-Agent + External Providers/VPN/Diagnostics + Boards.
+- **Версия:** `0.14.0` в `CHANGELOG.md`; `package.json` всё ещё `0.5.0` и не является источником статуса фич.
+- **Фаза:** Доработка `custom.data` (multi-column таблица с per-cell привязками, per-column publish), глобальная фон-сетка под BlockGrid, переработка модалки настроек (Стиль и размер + AI / Промпт), `BlockInstance.aiPrompt` как универсальный master-промпт. Поверх Unit Economics MVP с multi-cluster FBS (v0.13.0), FBS-апгрейда v0.12.0, DnD-колонок, sticky фикса, bulk-fill, «Маркет блоков», iconName/RSC fix, hot-zone resize, `__labels` для picker. Под капотом — Inbox Channels MVP + AI Micro-Agent + External Providers/VPN/Diagnostics + Boards.
 - **Build:** `pnpm typecheck` и `pnpm build` проходят; smoke-тесты `pnpm tsx scripts/test-unit-economics.ts` зелёные (**36 PASS**).
 - **Контекстные файлы:** `0.10.3` ввёл `START.md` и переход на ленивую загрузку контекста — `CHANGELOG.md`/`PLAN.md` больше не грузятся целиком по умолчанию.
 - **Ближайшие TODO:**
@@ -288,6 +291,9 @@ docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev 
 - **Money detection в формулах** — нельзя полагаться только на эвристику `refIsPlainNumber` по имени поля. При `@связать` нужно сохранять `moneyRefs[ref] = sourceFieldIsMoney(...)` в config (как в `excel.cell` и `sheet`). Иначе ссылка на KPI будет показывать `2 613 726 900` вместо `26 137 269 ₽`.
 - **`__money` metadata в KPI-блоках** — любой блок, публикующий рублёвое значение через `useBlockValuePublisher`, должен публиковать `__money: 'value'` (или список полей). Без этого live preview в `@связать` picker и `mergeLiveFields` не пометят source как money.
 - **`minContentSize` блокирует ресайз** — если блок умеет сам скроллиться (`overflow-auto` внутри), не задавайте `minContentSize`. Иначе пользователь не сможет уменьшить блок и получит overlay «Мало места».
+- **`{` в JSX-тексте** — TypeScript+React парсят `{...}` как JSX-выражение даже внутри `<p>...</p>`. Если нужна фигурная скобка как литерал — экранировать `&#123;` или использовать строку: `{'{id}'}`. Иначе TS падает с `Cannot find name 'id'`.
+- **Миграция конфигов блоков** — при добавлении новых полей в `ConfigSchema` обязательно проверять `parseConfig` на legacy формат. `custom.data` v0.14.0 мигрирует `rows[i].value` → `cells[primary].v`, top-level `format` → `columns[0].format`. Выбрасывание старых конфигов = потеря данных пользователей.
+- **`BlockInstance.aiPrompt` приоритет над `config.blockPrompt`** — при обращении к AI из любого блока: `instance.aiPrompt > config.blockPrompt (legacy ai.micro-agent) > inline инструкция в MicroAgentDialog`. Реализовано в `block-grid.tsx` (формирование `blockContext`), `micro-agent-dialog.tsx` (отправка в `/api/ai/chat`) и `ai-micro-agent.tsx` (внутренний submit). Persistence: `BlockInstanceSchema.aiPrompt: string.max(8000).optional()` в API роуте `/api/blocks/layout/[pageKey]`.
 - Ollama fallback не должен выбирать embedding-only модели.
 - `useSearchParams` в Next.js 15 должен быть под `<Suspense>`.
 - `bcryptjs` нельзя импортировать в код, который может попасть в middleware/edge runtime.

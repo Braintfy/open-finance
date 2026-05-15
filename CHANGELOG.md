@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.14.0] - 2026-05-15
+
+Доработка блока «Данные» (multi-column с привязками per cell), глобальная
+координатная сетка-фон под BlockGrid и переработка модалки настроек блока
+с master-промптом.
+
+### Added
+
+- **`custom.data` multi-column** ([src/lib/blocks/catalog/custom-data.tsx](src/lib/blocks/catalog/custom-data.tsx)) — блок «Данные» теперь поддерживает произвольное число колонок с per-column форматом (₽/число/%/текст), per-column шириной и флагом `publish`. Каждая ячейка может быть либо ручным значением, либо привязкой к другому блоку (`@blockId.field`) — ровно как в `excel.cell`. Новая схема `Config = { columns, rows: [{id, label, cells: Record<colId, {v, ref?, isMoney?}>}], publishMode, publishColumnId, showKopecks }`. На hover ячейки появляется `@`-кнопка для открытия picker'а блоков-источников; готовый picker — `CellRefPickerDialog` использует `/api/blocks/sources` + live `BlockValuesContext`. Сохраняет money-флаг через `cell.isMoney` (мигрировано из `excel.cell.moneyRefs`).
+- **Per-column publish** — каждая `publish:true` колонка публикуется в `BlockValuesContext` отдельным агрегатом `{column.id} = aggregateByMode(values, publishMode)`. В `__money` попадают все рублёвые publish-колонки, в `__labels` — пары `colId=Label` для красивого отображения в picker'ах. Legacy `value` = агрегат «основной» колонки (`publishColumnId`, по умолчанию первая publish:true).
+- **`SettingsForm` для `custom.data`** — управление колонками (add/remove, inline-edit label, format-pills с иконками `₽/#/%/T`, toggle `publish`), выбор `publishMode` + `publishColumnId`, переопределение `showKopecks`.
+- **Координатная сетка-фон** ([src/components/blocks/block-grid.css](src/components/blocks/block-grid.css), [src/components/blocks/block-grid.tsx](src/components/blocks/block-grid.tsx)) — `.block-grid-surface` рендерит точки с шагом 24px (`radial-gradient` + `hsl(var(--foreground)/0.07)`), почти незаметно в обычном режиме. В `data-edit="true"` (режим «Настроить») точки ярче (`primary/0.18`), в `data-active="true"` (активный drag/resize через `onDragStart`/`onResizeStart` props RGL) — ещё ярче (`primary/0.32`). Применяется автоматически на всех страницах с `BlockGrid` (Dashboard, Cashflow, Inbox, Boards, Unit Economics).
+- **`BlockInstance.aiPrompt: string`** ([src/lib/blocks/types.ts](src/lib/blocks/types.ts)) — универсальное поле для master-промпта блока. Передаётся в `/api/ai/chat` через `MicroAgentDialog.blockContext.aiPrompt`. Имеет приоритет над legacy `config.blockPrompt` в `ai.micro-agent`. Persistence: добавлено `aiPrompt: z.string().max(8000).optional()` в `BlockInstanceSchema` API роута `/api/blocks/layout/[pageKey]`.
+- **Вкладка «AI / Промпт»** в модалке настроек блока ([src/components/blocks/block-settings-dialog.tsx](src/components/blocks/block-settings-dialog.tsx)) — universal для всех блоков, текстовая область для master-промпта с подсказкой, счётчиком символов/токенов и заделом под `BlockDef.defaultAiPrompt` (показывается «Шаблон по типу блока: ещё не задан»).
+
+### Changed
+
+- **Модалка настроек блока** — табы «Внешний вид» и «Размер» объединены в одну вкладку **«Стиль и размер»** с live-preview-карточкой блока (показывает выбранные цвета/иконку/заголовок), цветовыми палитрами в две колонки на десктопе, иконкой и блоком размера со слайдерами + numeric inputs + quick-presets (Маленький / Средний / Большой / Широкий). Финальный набор табов: **Параметры | Связи | Стиль и размер | AI / Промпт**.
+- **`MicroAgentSettingsForm`** (`ai.micro-agent`) — убрано поле «Инструкция для AI (блок-промпт)», теперь оно живёт в общей вкладке «AI / Промпт». Поле «Модель» осталось в «Параметры». `instance.aiPrompt > config.blockPrompt` приоритет в `RenderMicroAgent.handleSubmit` и в `block-grid.tsx → MicroAgentDialog blockContext`.
+- **`MicroAgentDialog`** ([src/components/micro-agent/micro-agent-dialog.tsx](src/components/micro-agent/micro-agent-dialog.tsx)) — при отправке в `/api/ai/chat` master-промпт из `blockContext.aiPrompt` имеет приоритет над inline-инструкцией ввода в раскрывашке.
+- **AI-нормалайзер `normalizeCustomDataConfig`** в `block-grid.tsx` обновлён для multi-column shape: принимает `raw.columns`, миграция legacy `row.value` → `row.cells[primary].v`, поддержка нового `row.cells: Record<colId, {v, ref?, isMoney?}>`.
+
+### Notes
+
+- `parseConfig` в `custom.data` мигрирует все старые конфиги при чтении (legacy `rows[i].value` + top-level `format`), запись всегда в новом формате.
+- `AppearanceForm` и `SizeForm` остались экспортами `block-settings-dialog.tsx` ради `AddBlockDialog`, который использует их при создании нового блока.
+- `minContentSize` у `custom.data` снят — таблица сама скроллится внутри блока любого размера.
+
 ## [0.13.0] - 2026-05-15
 
 Крупный апгрейд Ozon юнит-блоков до соответствия с референсом

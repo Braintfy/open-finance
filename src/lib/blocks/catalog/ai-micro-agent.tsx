@@ -65,7 +65,8 @@ function RenderMicroAgent({ instance, onConfigChange }: BlockRenderProps) {
         body: JSON.stringify({
           messages: [{ role: 'user', content: input.trim() }],
           quickAction: selectedAction ?? undefined,
-          blockPrompt: config.blockPrompt || undefined,
+          // Master-промпт (instance.aiPrompt) > legacy config.blockPrompt
+          blockPrompt: instance.aiPrompt || config.blockPrompt || undefined,
           model: config.model || undefined,
         }),
       });
@@ -260,20 +261,6 @@ function MicroAgentSettingsForm({ config, onChange }: BlockSettingsFormProps) {
   return (
     <div className="space-y-3">
       <div className="space-y-1.5">
-        <Label>Инструкция для AI (блок-промпт)</Label>
-        <textarea
-          value={parsed.blockPrompt}
-          onChange={(e) => onChange({ ...parsed, blockPrompt: e.target.value })}
-          placeholder="Доп. инструкция для AI в этом блоке (необязательно)..."
-          rows={3}
-          className="w-full resize-none rounded-md border px-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
-        />
-        <p className="text-[11px] text-muted-foreground">
-          Эта инструкция добавляется к глобальному system prompt при каждом запросе из этого блока.
-        </p>
-      </div>
-
-      <div className="space-y-1.5">
         <Label>Модель (опционально)</Label>
         <Input
           value={parsed.model}
@@ -284,6 +271,12 @@ function MicroAgentSettingsForm({ config, onChange }: BlockSettingsFormProps) {
         <p className="text-[11px] text-muted-foreground">
           Ollama-тег модели. Оставьте пустым для использования модели по умолчанию.
         </p>
+      </div>
+
+      <div className="rounded-md bg-muted/30 p-2.5 text-[11px] text-muted-foreground">
+        Master-промпт ассистента редактируется во вкладке <strong>«AI / Промпт»</strong>{' '}
+        (доступна для любого блока). Поле <code className="rounded bg-muted px-1">config.blockPrompt</code>{' '}
+        оставлено для обратной совместимости и используется если master-промпт пуст.
       </div>
     </div>
   );

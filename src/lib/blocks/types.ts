@@ -70,6 +70,13 @@ export type BlockInstance = {
   appearance?: BlockAppearance;
   /** Зависимости от других блоков (Excel-style cell references). Только у computed-блоков. */
   dependencies?: BlockDependencies;
+  /**
+   * Master-промпт блока для AI-микроагента. Передаётся в `/api/ai/chat` при
+   * любом обращении к AI из контекста этого блока. Имеет приоритет над
+   * legacy `config.blockPrompt` (`ai.micro-agent`). Глобальные дефолты
+   * по типу блока появятся позже (см. PLAN.md → AI Orchestrator).
+   */
+  aiPrompt?: string;
 };
 
 export type BlockCategory = 'stats' | 'tables' | 'charts' | 'custom';

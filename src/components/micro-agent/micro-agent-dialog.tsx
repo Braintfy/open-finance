@@ -173,7 +173,9 @@ export function MicroAgentDialog({
           ],
           blockContext: blockContext ?? undefined,
           quickAction: selectedAction ?? undefined,
-          blockPrompt: blockPrompt.trim() || undefined,
+          // Приоритет: master-промпт блока (instance.aiPrompt) > inline-инструкция
+          blockPrompt:
+            blockContext?.aiPrompt?.trim() || blockPrompt.trim() || undefined,
         }),
       });
 
