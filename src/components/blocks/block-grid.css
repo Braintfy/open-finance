@@ -46,9 +46,13 @@
 }
 
 /*
-  Координатная "тетрадная" точечная сетка под блоками.
-  Шаг 24px, цвет — `--foreground` с низкой прозрачностью, чтобы автоматически
-  работать в светлой и тёмной теме.
+  Координатная точечная сетка строго совпадает с RGL-grid.
+  Тайл = (colW + marginX) × (rowH + marginY) — задаётся inline-style из BlockGrid.tsx
+  по фактической ширине контейнера. Дот в радиальном градиенте находится в
+  позиции (5px, 5px) тайла = в центре margin-gap (margin = 10px → центр = 5px).
+  Дополнительный background-position (colW, rowH) сдвигает первый тайл так,
+  чтобы первый видимый дот лёг в центр гэпа между cell(0,0) и cell(1,1).
+  Итог: точки ровно в углах ячеек RGL — туда, куда «прилипают» блоки.
 
   Состояния:
     - default — еле заметные точки (визуальный ритм без шума).
@@ -59,27 +63,30 @@
 .block-grid-surface {
   position: relative;
   background-image: radial-gradient(
-    circle at 1px 1px,
-    hsl(var(--foreground) / 0.07) 1px,
-    transparent 1.5px
+    circle at 5px 5px,
+    hsl(var(--foreground) / 0.18) 1px,
+    transparent 1.6px
   );
-  background-size: 24px 24px;
-  background-position: 0 0;
-  /* background-image не interpolate-ится; меняем его jump'ом, fade — на opacity-overlay */
+  /* background-size / background-position приходят inline из BlockGrid.tsx
+     (вычисляются ResizeObserver'ом). Здесь — fallback на типовой lg-layout
+     до первого measure (12 cols, 1200px). */
+  background-size: 100px 50px;
+  background-position: 90px 40px;
+  background-repeat: repeat;
 }
 
 .block-grid-surface[data-edit='true'] {
   background-image: radial-gradient(
-    circle at 1px 1px,
-    hsl(var(--primary) / 0.18) 1px,
-    transparent 1.5px
+    circle at 5px 5px,
+    hsl(var(--primary) / 0.30) 1.25px,
+    transparent 1.85px
   );
 }
 
 .block-grid-surface[data-active='true'] {
   background-image: radial-gradient(
-    circle at 1px 1px,
-    hsl(var(--primary) / 0.32) 1px,
-    transparent 1.5px
+    circle at 5px 5px,
+    hsl(var(--primary) / 0.5) 1.5px,
+    transparent 2.1px
   );
 }

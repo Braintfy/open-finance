@@ -349,6 +349,21 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
   const [gridActive, setGridActive] = useState(false);
   const gridContainerRef = useRef<HTMLDivElement | null>(null);
   /**
+   * Геометрия фон-сетки. Точки рисуются строго в центре каждого margin-gap
+   * между ячейками RGL — то есть точно туда, куда блок «прилипнет».
+   *  - sizeX/sizeY  → background-size (тайл = colW+marginX × rowH+marginY)
+   *  - posX/posY   → background-position (offset = colW × rowH, чтобы дот в радиальном
+   *    градиенте at(5px,5px) попадал в центр гэпа между cell(0,0) и cell(1,1))
+   * Пересчитывается ResizeObserver'ом по реальной ширине .block-grid-surface.
+   * Дефолтные значения нужны до первого measure (SSR + first paint).
+   */
+  const [gridMetrics, setGridMetrics] = useState({
+    sizeX: 100,
+    sizeY: 50,
+    posX: 90,
+    posY: 40,
+  });
+  /**
    * SAFEGUARD против критического бага «блоки исчезают»: если хоть раз были
    * не-пустые blocks, мы НЕ позволяем сохранять [] без явного намерения user'а
    * (Reset / поочерёдное удаление через X). Защита от race condition в RGL,
@@ -478,6 +493,46 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
       flushSave();
     };
   }, [flushSave]);
+
+  // Точные метрики фон-сетки. Должны полностью совпадать с math RGL:
+  //   colW       = (containerWidth - margin[0] * (cols - 1)) / cols
+  //   stepX      = colW + margin[0]   (один тайл = одна колонка + один gap)
+  //   stepY      = rowHeight + margin[1] = 50
+  //   positionX  = colW                (чтобы дот at(5,5) ушёл в центр первого гэпа)
+  //   positionY  = rowHeight           (аналогично по вертикали)
+  // Брейкпоинты cols берутся из BREAKPOINTS/COLS — точно как в RGL.
+  useEffect(() => {
+    const el = gridContainerRef.current;
+    if (!el) return;
+    const MARGIN_X = 10;
+    const MARGIN_Y = 10;
+    const ROW_H = 40;
+
+    const recompute = () => {
+      const width = el.clientWidth;
+      if (width <= 0) return;
+      let cols = COLS.lg;
+      if (width < BREAKPOINTS.xs) cols = COLS.xxs;
+      else if (width < BREAKPOINTS.sm) cols = COLS.xs;
+      else if (width < BREAKPOINTS.md) cols = COLS.sm;
+      else cols = COLS.lg; // md и lg оба = 12
+      const colW = (width - MARGIN_X * (cols - 1)) / cols;
+      const sizeX = colW + MARGIN_X;
+      const sizeY = ROW_H + MARGIN_Y;
+      const posX = colW;
+      const posY = ROW_H;
+      setGridMetrics((prev) =>
+        prev.sizeX === sizeX && prev.sizeY === sizeY && prev.posX === posX && prev.posY === posY
+          ? prev
+          : { sizeX, sizeY, posX, posY }
+      );
+    };
+
+    recompute();
+    const ro = new ResizeObserver(recompute);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   const layouts = useMemo(() => {
     const lg = blocks.map((b) => ({
@@ -659,6 +714,10 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
       className="block-grid-surface relative"
       data-edit={editMode ? 'true' : 'false'}
       data-active={gridActive ? 'true' : 'false'}
+      style={{
+        backgroundSize: `${gridMetrics.sizeX}px ${gridMetrics.sizeY}px`,
+        backgroundPosition: `${gridMetrics.posX}px ${gridMetrics.posY}px`,
+      }}
     >
       <ResponsiveGridLayout
         className="layout"

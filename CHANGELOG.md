@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.15.0] - 2026-05-15
+
+Адаптивные колонки в `custom.data` (auto-fit + drag-resize + кнопка «А»),
+точная геометрия фон-сетки `BlockGrid` (совпадает с RGL-cells),
+cross-page треугольнички в mindmap-overlay'е (incoming/outgoing с popover'ом).
+
+### Added
+
+- **`custom.data` — адаптивные ширины колонок** ([src/lib/blocks/catalog/custom-data.tsx](src/lib/blocks/catalog/custom-data.tsx)) — label-колонка и value-колонки теперь автоматически подгоняются под самое длинное значение через `canvas.measureText` (один общий контекст на весь модуль, SSR-safe). `computeLabelColumnWidth(rows)` и `computeValueColumnWidth(col, rows, liveValues, showKopecks)` учитывают header label + все ячейки в форматированном виде, ограничены диапазоном (label: 80–240px, value: 72–220px). Manual override через `column.width` / новое `config.labelColumnWidth` имеет приоритет. Drag-handle между header'ами колонок (включая label) — pointer-капчер на header-ячейке, локальный `dragState` обновляется на каждое движение без записи в config (только на pointerUp), кнопка-курсор `col-resize` появляется при hover. Кнопка **«A»** (Maximize2-иконка) в шапке блока сбрасывает все ручные widths (`labelColumnWidth=undefined` + удаление `column.width` у всех колонок) → возврат к авто-режиму. Кнопка скрыта когда блок уже в auto-mode.
+- **`/api/blocks/relations` lightweight-эндпоинт** ([src/app/api/blocks/relations/route.ts](src/app/api/blocks/relations/route.ts)) — возвращает все страницы юзера (defaults + saved) с базовой инфой блоков (`blockId`, `type`, `typeLabel`, `label`) и их исходящими связями (`outgoing: [{pageKey, blockId, field}]`), собранными из `block.dependencies.sources` + `@`-refs внутри `config` (через рекурсивный scan + `blockRefs` объекты excel.cell). Без агрегаций — в отличие от `/api/blocks/sources`, который дополнительно резолвит фактические значения для UI-пикеров. Новый эндпоинт быстрее, потому что не дёргает getCashflowSummary/listInboxChannels/evaluateSheetFormula.
+- **`useCrossPageRelations(currentPageKey, enabled)` хук** ([src/lib/blocks/use-cross-page-relations.ts](src/lib/blocks/use-cross-page-relations.ts)) — при `enabled=true` (overlay открыт) делает один fetch и возвращает `Record<blockId, { incoming: CrossPageLink[], outgoing: CrossPageLink[] }>`. **Incoming** = блоки на ДРУГИХ страницах, на которые этот блок ссылается (данные приходят сюда). **Outgoing** = блоки на ДРУГИХ страницах, которые ссылаются на ЭТОТ блок (данные уходят туда). Кэш per-`pageKey` для stale-while-revalidate: при повторном маунте overlay сразу видит прошлый snapshot, обновление в фоне.
+- **Cross-page треугольнички в mindmap** ([src/components/blocks/block-relations-overlay.tsx](src/components/blocks/block-relations-overlay.tsx)) — поверх SVG-edge-overlay добавлен HTML-слой с маркерами cross-page связей. **▶ зелёный** на левом ребре блока (apex смотрит ВНУТРЬ) = incoming, **▶ индиго** на правом ребре блока (apex смотрит НАРУЖУ) = outgoing. Размещаются по вертикальному центру боковых рёбер (top/bottom заняты chrome'ом — drag handle, AI/settings/X, CrossPagePin, Network-иконка, resize hot-zone). Треугольники кликабельны (`pointerEvents: auto`), при клике открывается popover в стиле сайта (`bg-popover`, `border-border`, `shadow-lg`) со списком блоков-целей: каждая строка — `<Link href={pageHref(pageKey)}>` с заголовком блока, лейблом страницы и ExternalLink-иконкой. Закрывается кликом вне (`mousedown` listener на document, скипает клики на trigger/popover через `data-cross-rel-*` атрибуты). Бейдж с `count` показывается если cross-page связей > 1.
+
+### Changed
+
+- **`.block-grid-surface` точная геометрия** ([src/components/blocks/block-grid.tsx](src/components/blocks/block-grid.tsx), [src/components/blocks/block-grid.css](src/components/blocks/block-grid.css)) — фон-сетка теперь рассчитывается под реальные cell'ы RGL: `colW = (containerWidth - margin[0] * (cols - 1)) / cols`, `stepX = colW + margin[0]`, `stepY = rowHeight + margin[1]`, breakpoints/cols 1:1 как у RGL. ResizeObserver на surface пересчитывает inline-style `backgroundSize` + `backgroundPosition` при ресайзе окна. Радиальный градиент сместился с `circle at 1px 1px` на `circle at 5px 5px`, в сочетании с offset (colW, rowH) даёт дот ровно в центре gap'а между ячейками — точки попадают в углы grid-cell'ов (туда, куда «прилипает» блок). Усилены уровни видимости: default 0.18, edit 0.30, active 0.50.
+- **`useCrossPageRelations` использует `cache: 'no-store'`** в fetch — иначе stale данные из CDN/SW могли бы скрывать только что добавленные cross-page refs.
+
+### Notes
+
+- Авто-ширина колонок `custom.data` пересчитывается через `useMemo([config.columns, config.rows, liveValues, showKopecks])` — изменение содержимого ячеек (включая live-обновления привязок) перерасчёт width'ов триггерит автоматически. Хуки вынесены ВЫШЕ early-returns для `density==='xs'/'sm'` (rules-of-hooks).
+- Cross-page outgoing detection пока работает только если ссылающийся блок имеет `block.dependencies.sources` ИЛИ `@page:blockId.field` ref внутри config. Sheet-формулы с локальными ссылками типа `=A1+B2` не считаются cross-page (это локальные cell-refs).
+- Popover треугольничка — обычный absolute div со `z-30`, привязан к triangle-кнопке; при множестве открытых блоков на странице одновременно показывается максимум один (state `openPopover: blockId|direction`).
+
 ## [0.14.0] - 2026-05-15
 
 Доработка блока «Данные» (multi-column с привязками per cell), глобальная

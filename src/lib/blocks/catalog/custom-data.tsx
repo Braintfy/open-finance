@@ -9,7 +9,6 @@ import {
   useContext,
   useEffect,
   useMemo,
-  useRef,
   useState,
 } from 'react';
 import {
@@ -25,6 +24,7 @@ import {
   RussianRuble,
   Type,
   Check,
+  Maximize2,
 } from 'lucide-react';
 import { z } from 'zod';
 import type { BlockDef, BlockRenderProps, BlockSettingsFormProps } from '../types';
@@ -103,6 +103,8 @@ const ConfigSchema = z
     publishColumnId: z.string().optional(),
     format: ColumnFormatSchema.optional(),
     showKopecks: z.boolean().nullable().optional(),
+    /** Override ширины первой («label») колонки в px. Undefined = автоширина. */
+    labelColumnWidth: z.number().optional(),
   })
   .passthrough();
 
@@ -112,6 +114,7 @@ type Config = {
   publishMode: 'sum' | 'avg' | 'count' | 'last';
   publishColumnId?: string;
   showKopecks: boolean | null;
+  labelColumnWidth?: number;
 };
 
 const DEFAULT_COLUMN_ID = 'amount';
@@ -188,17 +191,23 @@ function parseConfig(raw: unknown): Config {
         ? data.publishColumnId
         : columns.find((c) => c.publish !== false)?.id ?? primaryColumnId,
     showKopecks: data.showKopecks === undefined ? null : data.showKopecks,
+    labelColumnWidth:
+      typeof data.labelColumnWidth === 'number' && data.labelColumnWidth > 0
+        ? data.labelColumnWidth
+        : undefined,
   };
 }
 
 function serializeConfig(cfg: Config): Record<string, unknown> {
-  return {
+  const out: Record<string, unknown> = {
     columns: cfg.columns,
     rows: cfg.rows,
     publishMode: cfg.publishMode,
     publishColumnId: cfg.publishColumnId,
     showKopecks: cfg.showKopecks,
   };
+  if (typeof cfg.labelColumnWidth === 'number') out.labelColumnWidth = cfg.labelColumnWidth;
+  return out;
 }
 
 // ============================================================================
@@ -312,6 +321,83 @@ function formatLabel(format: ColumnFormat): string {
   if (format === 'number') return '# Число';
   if (format === 'percent') return '% Процент';
   return 'T Текст';
+}
+
+// ============================================================================
+// Auto-width measurement
+// ============================================================================
+
+/**
+ * Один общий canvas-контекст на весь модуль для measureText.
+ * SSR-safe: лениво инициализируется в браузере при первом обращении.
+ * canvas.measureText в ~50× быстрее DOM-rendering и не требует mount/unmount.
+ */
+let _measureCtx: CanvasRenderingContext2D | null = null;
+function getMeasureCtx(): CanvasRenderingContext2D | null {
+  if (typeof document === 'undefined') return null;
+  if (_measureCtx) return _measureCtx;
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  _measureCtx = ctx;
+  return ctx;
+}
+
+/**
+ * Меряет ширину текста с учётом font-стека приложения.
+ * Шрифт берётся из computed style на body (fallback — sans-serif 12px).
+ * Используем `tabular-nums`-эквивалент (моноширинные цифры) для number/rubles
+ * — там просто умеряем по реальному кол-ву цифр × ширина '0' (стабильно).
+ */
+function measureTextWidth(text: string, fontSize = 12, weight: 400 | 600 = 400): number {
+  if (!text) return 0;
+  const ctx = getMeasureCtx();
+  if (!ctx) {
+    // SSR fallback — грубая оценка ~ 7px на символ
+    return text.length * 7;
+  }
+  ctx.font = `${weight} ${fontSize}px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif`;
+  return ctx.measureText(text).width;
+}
+
+const COL_PADDING_PX = 18; // px-1 (8) + ring/border (2) + breath (8)
+const LABEL_PADDING_PX = 22; // px-2 (16) + breath (6)
+const MIN_LABEL_WIDTH = 80;
+const MAX_LABEL_WIDTH = 240;
+const MIN_VALUE_WIDTH = 72;
+const MAX_VALUE_WIDTH = 220;
+
+/**
+ * Авто-ширина value-колонки = max(header_label, max(formatted_cell_value)) + padding.
+ * Header участвует тоже — иначе при пустых ячейках колонка обрезает заголовок.
+ */
+function computeValueColumnWidth(
+  col: Column,
+  rows: Row[],
+  liveValues: LiveValues,
+  showKopecks: boolean,
+): number {
+  // Header text + icon (~14px ширина иконки + gap)
+  const headerWidth = measureTextWidth(col.label.toUpperCase(), 10, 600) + 14;
+  let maxCell = 0;
+  for (const row of rows) {
+    const resolved = resolveCellValue(row.cells[col.id], liveValues);
+    const text = formatColumnValue(resolved, col.format, showKopecks);
+    const w = measureTextWidth(text, 12, 400);
+    if (w > maxCell) maxCell = w;
+  }
+  const target = Math.max(headerWidth, maxCell) + COL_PADDING_PX;
+  return Math.max(MIN_VALUE_WIDTH, Math.min(MAX_VALUE_WIDTH, Math.ceil(target)));
+}
+
+function computeLabelColumnWidth(rows: Row[]): number {
+  let max = 0;
+  for (const row of rows) {
+    const w = measureTextWidth(row.label, 12, 400);
+    if (w > max) max = w;
+  }
+  const target = max + LABEL_PADDING_PX;
+  return Math.max(MIN_LABEL_WIDTH, Math.min(MAX_LABEL_WIDTH, Math.ceil(target)));
 }
 
 // ============================================================================
@@ -714,6 +800,21 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
 
   const [pickerCell, setPickerCell] = useState<{ rowId: string; columnId: string } | null>(null);
 
+  /**
+   * Drag-state для resize колонок. Локальный — обновляется на каждое движение
+   * мыши без записи в config (чтобы не дёргать persist). На mouseUp коммитим
+   * финальную ширину в config через patch().
+   *  - kind: 'label' — меняется ширина колонки названий строк
+   *  - kind: 'value' — column.width конкретной value-колонки
+   */
+  const [dragState, setDragState] = useState<{
+    kind: 'label' | 'value';
+    columnId?: string;
+    startX: number;
+    startWidth: number;
+    currentWidth: number;
+  } | null>(null);
+
   // ── Aggregate per column ──
   const aggregates = useMemo(() => {
     const result: Record<string, number> = {};
@@ -835,6 +936,23 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
     ? formatColumnValue(aggregates[primaryColumn.id] ?? 0, primaryColumn.format, showKopecks)
     : '—';
 
+  // ── Авто-ширина колонок (хуки ВЫШЕ early-returns: иначе rules-of-hooks нарушаются) ──
+  // Считаем по самому длинному значению (header label + cells, форматированный текст).
+  // Manual override (column.width / labelColumnWidth) имеет приоритет — кнопка «A» в шапке сбрасывает оба.
+  // В xs/sm density этими значениями не пользуемся, но useMemo дёшев и должен быть стабилен.
+  const autoLabelWidth = useMemo(
+    () => computeLabelColumnWidth(config.rows),
+    [config.rows],
+  );
+  const autoValueWidths = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const col of config.columns) {
+      map[col.id] = computeValueColumnWidth(col, config.rows, liveValues, showKopecks);
+    }
+    return map;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config.columns, config.rows, liveValues, showKopecks]);
+
   // ── XS — только итог ──
   if (density === 'xs') {
     return (
@@ -870,13 +988,91 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
   }
 
   // ── MD/LG — таблица ──
-  // grid-template-columns: label_col + value_cols + delete_col
+  function effectiveLabelWidth(): number {
+    if (dragState?.kind === 'label') return dragState.currentWidth;
+    return config.labelColumnWidth ?? autoLabelWidth;
+  }
+  function effectiveValueWidth(col: Column): number {
+    if (dragState?.kind === 'value' && dragState.columnId === col.id) {
+      return dragState.currentWidth;
+    }
+    return col.width ?? autoValueWidths[col.id] ?? 96;
+  }
+
+  const isAutoSized =
+    config.labelColumnWidth === undefined && config.columns.every((c) => c.width === undefined);
+
   const valueColTemplate = config.columns
-    .map((c) => `minmax(${c.format === 'text' ? 80 : 72}px, ${c.width ? `${c.width}px` : 'auto'})`)
+    .map((c) => `${effectiveValueWidth(c)}px`)
     .join(' ');
+  const gridTemplateColumns = `${effectiveLabelWidth()}px ${valueColTemplate} 16px`;
+
+  // ── Drag handlers (column resize) ──
+  function startLabelResize(e: React.PointerEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    const startWidth = effectiveLabelWidth();
+    setDragState({ kind: 'label', startX: e.clientX, startWidth, currentWidth: startWidth });
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  }
+  function startValueResize(e: React.PointerEvent, col: Column) {
+    e.preventDefault();
+    e.stopPropagation();
+    const startWidth = effectiveValueWidth(col);
+    setDragState({
+      kind: 'value',
+      columnId: col.id,
+      startX: e.clientX,
+      startWidth,
+      currentWidth: startWidth,
+    });
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  }
+  function onResizeMove(e: React.PointerEvent) {
+    if (!dragState) return;
+    const delta = e.clientX - dragState.startX;
+    const min = dragState.kind === 'label' ? MIN_LABEL_WIDTH : MIN_VALUE_WIDTH;
+    const max = dragState.kind === 'label' ? MAX_LABEL_WIDTH * 1.5 : MAX_VALUE_WIDTH * 1.5;
+    const next = Math.max(min, Math.min(max, dragState.startWidth + delta));
+    setDragState({ ...dragState, currentWidth: Math.round(next) });
+  }
+  function onResizeEnd(e: React.PointerEvent) {
+    if (!dragState) return;
+    try {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
+    const finalWidth = dragState.currentWidth;
+    if (dragState.kind === 'label') {
+      patch({ labelColumnWidth: finalWidth });
+    } else if (dragState.columnId) {
+      const colId = dragState.columnId;
+      patch({
+        columns: config.columns.map((c) => (c.id === colId ? { ...c, width: finalWidth } : c)),
+      });
+    }
+    setDragState(null);
+  }
+
+  function resetAllWidths() {
+    patch({
+      labelColumnWidth: undefined,
+      columns: config.columns.map((c) => {
+        const { width: _w, ...rest } = c;
+        void _w;
+        return rest;
+      }),
+    });
+  }
 
   return (
-    <Card className="flex h-full min-h-0 flex-col">
+    <Card
+      className="flex h-full min-h-0 flex-col"
+      onPointerMove={dragState ? onResizeMove : undefined}
+      onPointerUp={dragState ? onResizeEnd : undefined}
+      onPointerCancel={dragState ? onResizeEnd : undefined}
+    >
       <header className="flex shrink-0 items-center justify-between gap-2 px-3 pb-2 pt-3">
         <div className="flex min-w-0 items-center gap-1.5">
           <Database
@@ -887,11 +1083,24 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
             {title}
           </span>
         </div>
-        <div
-          className="text-base font-semibold tabular-nums"
-          style={accent ? { color: accent } : undefined}
-        >
-          {headerAggregateText}
+        <div className="flex items-center gap-1.5">
+          {!isAutoSized && (
+            <button
+              type="button"
+              onClick={resetAllWidths}
+              title="Авто-подгон ширины колонок по содержимому"
+              className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition hover:bg-accent hover:text-foreground"
+              aria-label="Сбросить ширину колонок"
+            >
+              <Maximize2 className="h-3 w-3" />
+            </button>
+          )}
+          <div
+            className="text-base font-semibold tabular-nums"
+            style={accent ? { color: accent } : undefined}
+          >
+            {headerAggregateText}
+          </div>
         </div>
       </header>
 
@@ -906,23 +1115,46 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
         ) : (
           <div
             className="grid items-stretch gap-x-1.5 gap-y-1"
-            style={{
-              gridTemplateColumns: `minmax(80px, 1fr) ${valueColTemplate} 16px`,
-            }}
+            style={{ gridTemplateColumns }}
           >
-            {/* Header row */}
-            <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
-              &nbsp;
+            {/* Header row — label column (с правым drag-handle для resize) */}
+            <div className="relative flex items-center text-[10px] uppercase tracking-wide text-muted-foreground">
+              <span className="select-none">&nbsp;</span>
+              <span
+                onPointerDown={startLabelResize}
+                title="Перетащить — изменить ширину колонки названий"
+                className={cn(
+                  'absolute -right-1.5 top-0 h-full w-2 cursor-col-resize select-none touch-none',
+                  'after:pointer-events-none after:absolute after:right-1.5 after:top-1 after:h-[calc(100%-4px)] after:w-px after:bg-transparent',
+                  'hover:after:bg-primary/40',
+                  dragState?.kind === 'label' && 'after:bg-primary/60',
+                )}
+              />
             </div>
-            {config.columns.map((col) => {
+            {config.columns.map((col, colIdx) => {
               const Icon = formatIcon(col.format);
+              const isLast = colIdx === config.columns.length - 1;
               return (
                 <div
                   key={`h-${col.id}`}
-                  className="flex items-center justify-end gap-1 text-[10px] uppercase tracking-wide text-muted-foreground"
+                  className="relative flex items-center justify-end gap-1 text-[10px] uppercase tracking-wide text-muted-foreground"
                 >
                   <Icon className="h-2.5 w-2.5" />
                   <span className="truncate">{col.label}</span>
+                  {!isLast && (
+                    <span
+                      onPointerDown={(e) => startValueResize(e, col)}
+                      title="Перетащить — изменить ширину колонки"
+                      className={cn(
+                        'absolute -right-1.5 top-0 h-full w-2 cursor-col-resize select-none touch-none',
+                        'after:pointer-events-none after:absolute after:right-1.5 after:top-1 after:h-[calc(100%-4px)] after:w-px after:bg-transparent',
+                        'hover:after:bg-primary/40',
+                        dragState?.kind === 'value' &&
+                          dragState.columnId === col.id &&
+                          'after:bg-primary/60',
+                      )}
+                    />
+                  )}
                 </div>
               );
             })}
