@@ -9,6 +9,7 @@ import type { BlockDef, BlockRenderProps } from '../types';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { LinkableNumberCell } from '@/components/unit-economics/linkable-number-cell';
+import { DropdownSelect } from '@/components/unit-economics/dropdown-select';
 import { useAllBlockValuesFlat } from '@/lib/unit-economics/use-live-block-values';
 import { resolveBindingValue } from '@/lib/unit-economics/bindings';
 import type { UnitCellBinding, YandexInputs } from '@/lib/unit-economics/types';
@@ -152,6 +153,8 @@ function RenderYandexCalculator({ instance, onConfigChange }: BlockRenderProps) 
     roi: results.roiPct,
     label: instance.appearance?.title ?? config.title,
     __money: 'profitPerUnit,profitPerMonth',
+    __labels:
+      'profitPerUnit=Прибыль / ед,profitPerMonth=Прибыль / мес,margin=Маржа,roi=ROI',
   });
 
   const positive = results.profitPerUnit > 0;
@@ -195,29 +198,29 @@ function RenderYandexCalculator({ instance, onConfigChange }: BlockRenderProps) 
               </button>
             ))}
           </div>
-          <span>Спецтариф:</span>
-          <select
-            value={inputs.specialTariff}
-            onChange={(e) => setInput('specialTariff', e.target.value)}
-            className="h-6 rounded border border-border/60 bg-background px-1 text-[11px]"
-          >
-            <option value="none">Базовый</option>
-            <option value="showcase">Витрина (5%)</option>
-            <option value="subscription_fby">Подписка FBY (9%)</option>
-            <option value="subscription_fbs">Подписка FBS (16%)</option>
-          </select>
-          <span>Налог:</span>
-          <select
-            value={inputs.taxMode}
-            onChange={(e) => setInput('taxMode', e.target.value)}
-            className="h-6 rounded border border-border/60 bg-background px-1 text-[11px]"
-          >
-            <option value="usn_income">УСН Доходы</option>
-            <option value="usn_income_minus">УСН Д-Р</option>
-            <option value="osno">ОСНО</option>
-            <option value="nds">Только НДС</option>
-            <option value="none">Без налога</option>
-          </select>
+          <DropdownSelect
+            label="Спецтариф"
+            value={String(inputs.specialTariff ?? 'none')}
+            options={[
+              { value: 'none', label: 'Базовый' },
+              { value: 'showcase', label: 'Витрина (5%)' },
+              { value: 'subscription_fby', label: 'Подписка FBY (9%)' },
+              { value: 'subscription_fbs', label: 'Подписка FBS (16%)' },
+            ]}
+            onChange={(v) => setInput('specialTariff', v)}
+          />
+          <DropdownSelect
+            label="Налог"
+            value={String(inputs.taxMode ?? 'usn_income')}
+            options={[
+              { value: 'usn_income', label: 'УСН Доходы' },
+              { value: 'usn_income_minus', label: 'УСН Д-Р' },
+              { value: 'osno', label: 'ОСНО' },
+              { value: 'nds', label: 'Только НДС' },
+              { value: 'none', label: 'Без налога' },
+            ]}
+            onChange={(v) => setInput('taxMode', v)}
+          />
           <input
             type="number"
             value={inputs.taxRatePct}

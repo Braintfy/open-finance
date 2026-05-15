@@ -253,7 +253,7 @@ function PickStep({
           className="inline-flex items-center gap-1 text-primary transition-colors hover:underline"
         >
           <Store className="h-3.5 w-3.5" />
-          Открыть Маркетплейс блоков
+          Открыть Маркет блоков
           <ArrowUpRight className="h-3 w-3" />
         </Link>
       </DialogFooter>
@@ -377,7 +377,7 @@ function ConfigureStep({
         {tab === 'appearance' && (
           <AppearanceForm
             defaultTitle={def.displayName}
-            defaultIcon={def.icon.displayName ?? 'Square'}
+            defaultIcon={def.iconName ?? def.icon?.displayName ?? 'Square'}
             appearance={appearance}
             onChange={onAppearanceChange}
           />

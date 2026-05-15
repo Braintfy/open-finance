@@ -7,31 +7,33 @@
   opacity: 1;
 }
 
+/*
+  Resize handle.
+  По умолчанию полностью скрыт (opacity 0 + pointer-events none).
+  Появляется в трёх случаях:
+    1. Edit mode — `.react-grid-item.block-edit-mode`.
+    2. Курсор над hot-zone в правом нижнем углу
+       (`<div data-resize-hotzone>` в BlockChrome).
+    3. Курсор над самим handle (чтобы не моргал во время drag).
+  Используем CSS `:has()` — поддержан в Chrome 105+ / Safari 15.4+ /
+  Firefox 121+. SSR-безопасно (чисто CSS, без JS).
+*/
 .react-grid-item > .react-resizable-handle {
   z-index: 30;
   pointer-events: none;
   opacity: 0;
-  visibility: hidden;
-  transition: opacity 150ms ease, visibility 0s linear 150ms;
-}
-
-.react-grid-item.block-edit-mode > .react-resizable-handle,
-.react-grid-item:not(.block-edit-mode):hover > .react-resizable-handle {
-  pointer-events: auto;
-  opacity: 1;
-  visibility: visible;
-  transition-delay: 0s, 0s;
-}
-
-.react-grid-item:not(.block-edit-mode):hover > .react-resizable-handle {
-  transition-delay: 3s, 3s;
-}
-
-.react-grid-item.block-edit-mode > .react-resizable-handle,
-.react-grid-item:not(.block-edit-mode):hover > .react-resizable-handle {
+  transition: opacity 100ms ease;
   border-right: 2px solid hsl(var(--primary) / 0.55);
   border-bottom: 2px solid hsl(var(--primary) / 0.55);
   border-radius: 0 0 0.5rem 0;
+}
+
+.react-grid-item.block-edit-mode > .react-resizable-handle,
+.react-grid-item:has([data-resize-hotzone]:hover) > .react-resizable-handle,
+.react-grid-item:has(> .react-resizable-handle:hover) > .react-resizable-handle,
+.react-grid-item.react-grid-item-resizing > .react-resizable-handle {
+  pointer-events: auto;
+  opacity: 1;
 }
 
 .react-grid-item.react-grid-item-resizing {

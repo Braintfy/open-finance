@@ -22,50 +22,95 @@ import { UnitYandexCalculatorBlock } from './catalog/unit-yandex-calculator';
 import { UnitMyStoreTableBlock } from './catalog/unit-my-store-table';
 
 /**
- * Метаданные маркетплейса для каждого блока — tags и recommendedFor задаются
- * здесь, чтобы не править каждый файл отдельно и иметь единый источник правды.
+ * Метаданные маркетплейса для каждого блока — tags, recommendedFor, iconName
+ * и source задаются здесь, чтобы не править каждый catalog-файл отдельно
+ * и иметь единый источник правды.
+ *
+ * `iconName` критичен для RSC: catalog-файлы помечены `'use client'`,
+ * поэтому `def.icon` в server-компонентах превращается в client-reference
+ * без полей (включая `displayName`). Сериализуем имя иконки строкой здесь.
  */
-const BLOCK_META: Record<string, { tags?: string[]; recommendedFor?: string[]; source?: BlockDef['source'] }> = {
-  'stat.income': { tags: ['cashflow', 'kpi', 'finance'], recommendedFor: ['cashflow', 'dashboard'] },
-  'stat.expense': { tags: ['cashflow', 'kpi', 'finance'], recommendedFor: ['cashflow', 'dashboard'] },
-  'stat.balance': { tags: ['cashflow', 'kpi', 'finance'], recommendedFor: ['cashflow', 'dashboard'] },
-  'stat.custom': { tags: ['kpi', 'custom', 'finance'], recommendedFor: ['cashflow', 'dashboard'] },
-  'cashflow.top-categories': { tags: ['cashflow', 'analytics'], recommendedFor: ['cashflow', 'dashboard'] },
-  'cashflow.transactions': { tags: ['cashflow', 'tables'], recommendedFor: ['cashflow'] },
-  sheet: { tags: ['tables', 'spreadsheet', 'universal'], recommendedFor: [] },
-  'navigate.card': { tags: ['navigation', 'dashboard'], recommendedFor: ['dashboard'] },
-  'computed.sum': { tags: ['formula', 'analytics', 'universal'], recommendedFor: [] },
-  'custom.data': { tags: ['data', 'universal'], recommendedFor: [] },
-  'excel.cell': { tags: ['spreadsheet', 'universal'], recommendedFor: [] },
-  'chart.cashflow': { tags: ['charts', 'cashflow'], recommendedFor: ['cashflow', 'dashboard'] },
-  'ai.micro-agent': { tags: ['ai', 'universal'], recommendedFor: [] },
-  'inbox.channel-feed': { tags: ['inbox', 'communications'], recommendedFor: ['inbox'] },
+const BLOCK_META: Record<
+  string,
+  { tags?: string[]; recommendedFor?: string[]; source?: BlockDef['source']; iconName: string }
+> = {
+  'stat.income': {
+    tags: ['cashflow', 'kpi', 'finance'],
+    recommendedFor: ['cashflow', 'dashboard'],
+    iconName: 'ArrowDown',
+  },
+  'stat.expense': {
+    tags: ['cashflow', 'kpi', 'finance'],
+    recommendedFor: ['cashflow', 'dashboard'],
+    iconName: 'ArrowUp',
+  },
+  'stat.balance': {
+    tags: ['cashflow', 'kpi', 'finance'],
+    recommendedFor: ['cashflow', 'dashboard'],
+    iconName: 'Wallet',
+  },
+  'stat.custom': {
+    tags: ['kpi', 'custom', 'finance'],
+    recommendedFor: ['cashflow', 'dashboard'],
+    iconName: 'Sparkles',
+  },
+  'cashflow.top-categories': {
+    tags: ['cashflow', 'analytics'],
+    recommendedFor: ['cashflow', 'dashboard'],
+    iconName: 'BarChart3',
+  },
+  'cashflow.transactions': {
+    tags: ['cashflow', 'tables'],
+    recommendedFor: ['cashflow'],
+    iconName: 'ListOrdered',
+  },
+  sheet: { tags: ['tables', 'spreadsheet', 'universal'], recommendedFor: [], iconName: 'Table2' },
+  'navigate.card': { tags: ['navigation', 'dashboard'], recommendedFor: ['dashboard'], iconName: 'Link' },
+  'computed.sum': { tags: ['formula', 'analytics', 'universal'], recommendedFor: [], iconName: 'Sigma' },
+  'custom.data': { tags: ['data', 'universal'], recommendedFor: [], iconName: 'Database' },
+  'excel.cell': { tags: ['spreadsheet', 'universal'], recommendedFor: [], iconName: 'Calculator' },
+  'chart.cashflow': {
+    tags: ['charts', 'cashflow'],
+    recommendedFor: ['cashflow', 'dashboard'],
+    iconName: 'BarChart3',
+  },
+  'ai.micro-agent': { tags: ['ai', 'universal'], recommendedFor: [], iconName: 'Sparkles' },
+  'inbox.channel-feed': {
+    tags: ['inbox', 'communications'],
+    recommendedFor: ['inbox'],
+    iconName: 'Inbox',
+  },
   'unit.ozon-calculator': {
     tags: ['marketplace', 'unit-economics', 'ozon'],
     recommendedFor: ['unit-economics-ozon'],
+    iconName: 'Calculator',
   },
   'unit.ozon-multi-table': {
     tags: ['marketplace', 'unit-economics', 'ozon', 'tables'],
     recommendedFor: ['unit-economics-ozon-multi'],
+    iconName: 'Table',
   },
   'unit.yandex-calculator': {
     tags: ['marketplace', 'unit-economics', 'yandex'],
     recommendedFor: ['unit-economics-yandex'],
+    iconName: 'Calculator',
   },
   'unit.my-store-table': {
     tags: ['marketplace', 'unit-economics', 'tables', 'custom'],
     recommendedFor: ['unit-economics-my-store'],
+    iconName: 'Store',
   },
 };
 
 function withMeta(def: BlockDef): BlockDef {
   const meta = BLOCK_META[def.type];
-  if (!meta) return { ...def, source: def.source ?? 'builtin' };
+  if (!meta) return { ...def, source: def.source ?? 'builtin', iconName: def.iconName ?? 'Square' };
   return {
     ...def,
     tags: def.tags ?? meta.tags,
     recommendedFor: def.recommendedFor ?? meta.recommendedFor,
     source: def.source ?? meta.source ?? 'builtin',
+    iconName: def.iconName ?? meta.iconName,
   };
 }
 

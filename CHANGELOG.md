@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.12.2] - 2026-05-15
+
+### Fixed
+- **`/marketplace` крах** — Server Component обращался к `b.icon.displayName` объектов `BlockDef`, которые приходят из `'use client'`-каталогов как client-references (без полей). Решение: добавлено поле `iconName?: string` в `BlockDef`, расширена карта `BLOCK_META` в `registry.ts` (одно строковое имя на каждый из 18 блоков), `withMeta()` подставляет `iconName` автоматически. `marketplace/page.tsx` теперь использует `b.iconName ?? 'Square'`. `add-block-dialog.tsx` приведён к симметрии (`def.iconName ?? def.icon?.displayName ?? 'Square'`).
+- **Пустые select-ы FBS / Налог** в Ozon-юнитке (multi и single) — нативный `<select>` на macOS/iOS периодически рендерил пустую метку в закрытом состоянии. Заменён на `DropdownSelect` (Radix `DropdownMenu` + кнопка-trigger с явной меткой и `ChevronDown`). Гарантированный рендер выбранного значения во всех браузерах. Заодно унифицированы select-ы в `unit.yandex-calculator` (Спецтариф / Налог).
+- **Нечитаемые ключи в picker «Итого по товарам»** — раньше picker привязки показывал технические имена (`totalProfitMonth`, `totalMoneyInGoods`). Теперь блоки публикуют `__labels` строкой `"key=Label,..."` через `useBlockValuePublisher`, `useAvailableBlockSources` парсит её в `Record<string, string>`, `unit-cell-binding-dialog` использует `labels[field] ?? sourceFieldLabel(field)`. Cross-page picker (`/api/blocks/sources`) расширен — `unit.ozon-multi-table` и `unit.my-store-table` отдают все publishable поля с человекочитаемыми label/format.
+
+### Changed
+- **Resize handle UX** — было: появляется при hover на блок с задержкой 3 сек («удержание указателя»). Стало: невидимый hot-zone 40×40 в правом нижнем углу `BlockChrome` (`data-resize-hotzone`), CSS-правила в `block-grid.css` показывают handle через `:has([data-resize-hotzone]:hover)` или `:has(> .react-resizable-handle:hover)` без задержек. Edit mode по-прежнему показывает handle всегда.
+- **«Маркетплейс» → «Маркет блоков»** — sidebar label, H1 на `/marketplace`, ссылка из `AddBlockDialog`. URL `/marketplace` сохранён, ссылки и история не ломаются.
+
+### Added
+- **Массовое заполнение колонки** в `unit.ozon-multi-table` (кнопка `MoreVertical` в `SortableHeaderCell` для input-колонок открывает `DropdownMenu` с input + Apply) и в `unit.my-store-table` (секция «Массовое заполнение» в `ColumnEditDialog`, disabled для type=`formula`). Привязанные ячейки (`row.bindings[field]`) пропускаются — биндинги не ломаются. Inline-фидбэк «Применено к N · пропущено K (привязки сохранены)».
+- **`DropdownSelect`** (`src/components/unit-economics/dropdown-select.tsx`) — переиспользуемый wrapper над Radix `DropdownMenu`: явная кнопка-trigger c label/ChevronDown, `min-w-[10rem] max-w-[14rem]`, truncate, отметка выбранного `Check`. Используется в трёх unit-блоках.
+- **`__labels` convention** — соглашение для блоков с богатым output: строка `"key=Human Label,..."` в `useBlockValuePublisher`. Парсится `parseLabelsString` в `values.tsx`. Опубликовано для `unit.ozon-multi-table`, `unit.my-store-table`, `unit.ozon-calculator`, `unit.yandex-calculator`.
+
+## [0.12.1] - 2026-05-15
+
+### Fixed
+- **Unit Ozon UI** — закреплена геометрия таблицы `unit.ozon-multi-table`: фиксированные ширины/minWidth/maxWidth для sticky/header/body/totals ячеек, единые высоты `HEADER_H/ROW_H`, непрозрачные sticky-колонки без полупрозрачного hover-слоя. Это убирает просвечивание и налезание скроллящихся колонок под `# / Артикул / Название`.
+- **Unit My Store UI** — тот же sticky/table fix применён к `unit.my-store-table`, включая непрозрачные sticky-ячейки, фиксированную геометрию и стабильный z-index итоговой строки.
+- **Ozon DnD hydration** — у двух `DndContext` в `unit.ozon-multi-table` добавлены стабильные `id` на основе `instance.id`, чтобы `@dnd-kit` не генерировал разные `aria-describedby` на SSR/client.
+- **FBS/tax display** — в Ozon multi-table и одиночном Ozon-калькуляторе теперь явно видны выбранные FBS-настройки (точка сдачи, скорость, склад) и налоговый режим со ставкой; native select'ы получили закреплённые ширины, `text-foreground` и `color-scheme`, чтобы выбранные значения не выглядели пустыми.
+
 ## [0.12.0] - 2026-05-15
 
 ### Added

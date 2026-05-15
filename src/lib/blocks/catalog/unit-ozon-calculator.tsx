@@ -9,6 +9,7 @@ import type { BlockDef, BlockRenderProps } from '../types';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { LinkableNumberCell } from '@/components/unit-economics/linkable-number-cell';
+import { DropdownSelect } from '@/components/unit-economics/dropdown-select';
 import { useAllBlockValuesFlat } from '@/lib/unit-economics/use-live-block-values';
 import { resolveBindingValue } from '@/lib/unit-economics/bindings';
 import type {
@@ -17,6 +18,7 @@ import type {
   OzonFbsDropoffPoint,
   OzonFbsShipmentSpeed,
   OzonFbsWarehouse,
+  TaxMode,
 } from '@/lib/unit-economics/types';
 import { rublesToKopecks } from '@/lib/unit-economics/types';
 import { calculateOzon, OZON_DEFAULT_INPUTS } from '@/lib/unit-economics/ozon/calculate';
@@ -113,6 +115,14 @@ const PNL_LINES: Array<{ key: keyof ReturnType<typeof calculateOzon>; label: str
   { key: 'overhead', label: 'Прочие расходы', sign: '-' },
 ];
 
+const TAX_MODE_LABELS: Record<TaxMode, string> = {
+  usn_income: 'УСН Доходы',
+  usn_income_minus: 'УСН Д-Р',
+  osno: 'ОСНО',
+  nds: 'Только НДС',
+  none: 'Без налога',
+};
+
 function RenderOzonCalculator({ instance, onConfigChange }: BlockRenderProps) {
   const config = parseConfig(instance.config);
   const liveValues = useAllBlockValuesFlat();
@@ -170,6 +180,8 @@ function RenderOzonCalculator({ instance, onConfigChange }: BlockRenderProps) {
     roi: results.roiPct,
     label: instance.appearance?.title ?? config.title,
     __money: 'profitPerUnit,profitPerMonth',
+    __labels:
+      'profitPerUnit=Прибыль / ед,profitPerMonth=Прибыль / мес,margin=Маржа,roi=ROI',
   });
 
   const positive = results.profitPerUnit > 0;
@@ -179,6 +191,7 @@ function RenderOzonCalculator({ instance, onConfigChange }: BlockRenderProps) {
     const localDefault = FBS_WAREHOUSE_LOCAL_BY_DEFAULT[next];
     if (typeof localDefault === 'boolean') setInput('isLocalCluster', localDefault);
   };
+  const taxMode = inputs.taxMode ?? 'usn_income';
 
   return (
     <Card className="flex h-full flex-col overflow-hidden">
@@ -202,11 +215,14 @@ function RenderOzonCalculator({ instance, onConfigChange }: BlockRenderProps) {
           </span>
           {isFbs && (
             <span
-              className="hidden items-center rounded border border-border/60 bg-background px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground sm:inline-flex"
-              title="Скорость отгрузки и склад FBS"
+              className="inline-flex max-w-[320px] items-center truncate rounded border border-border/60 bg-background px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground"
+              title={`Точка сдачи · ${FBS_DROPOFF_LABELS[inputs.fbsDropoffPoint ?? 'sorting_center']}, скорость · ${FBS_SHIPMENT_SPEED_LABELS[inputs.fbsShipmentSpeed ?? 'standard']}, склад · ${FBS_WAREHOUSE_LABELS[inputs.fbsWarehouse ?? 'almaty']}`}
             >
-              {FBS_SHIPMENT_SPEED_LABELS[inputs.fbsShipmentSpeed ?? 'standard']} ·{' '}
-              {FBS_WAREHOUSE_LABELS[inputs.fbsWarehouse ?? 'almaty']}
+              <span className="truncate">
+                {FBS_DROPOFF_LABELS[inputs.fbsDropoffPoint ?? 'sorting_center']} ·{' '}
+                {FBS_SHIPMENT_SPEED_LABELS[inputs.fbsShipmentSpeed ?? 'standard']} ·{' '}
+                {FBS_WAREHOUSE_LABELS[inputs.fbsWarehouse ?? 'almaty']}
+              </span>
             </span>
           )}
           {Number(inputs.vatPct ?? 0) > 0 && (
@@ -214,6 +230,9 @@ function RenderOzonCalculator({ instance, onConfigChange }: BlockRenderProps) {
               НДС {Number(inputs.vatPct)}%
             </span>
           )}
+          <span className="inline-flex items-center rounded border border-border/60 bg-background px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+            Налог: {TAX_MODE_LABELS[taxMode]} {Number(inputs.taxRatePct ?? 0)}%
+          </span>
           <span className="text-[10px] text-muted-foreground">v{OZON_TARIFF_VERSION}</span>
         </div>
         <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
@@ -238,28 +257,47 @@ function RenderOzonCalculator({ instance, onConfigChange }: BlockRenderProps) {
         </div>
       </div>
 
-      {isFbs && (
-        <div className="flex flex-wrap items-center gap-3 border-b border-border/60 bg-muted/20 px-3 py-2 text-[11px]">
-          <SelectInline
-            label="Точка сдачи"
-            value={inputs.fbsDropoffPoint ?? 'sorting_center'}
-            options={Object.entries(FBS_DROPOFF_LABELS).map(([v, l]) => ({ value: v, label: l }))}
-            onChange={(v) => setInput('fbsDropoffPoint', v as OzonFbsDropoffPoint)}
+      <div className="flex flex-wrap items-center gap-3 border-b border-border/60 bg-muted/20 px-3 py-2 text-[11px]">
+        {isFbs && (
+          <>
+            <DropdownSelect
+              label="Точка сдачи"
+              value={inputs.fbsDropoffPoint ?? 'sorting_center'}
+              options={Object.entries(FBS_DROPOFF_LABELS).map(([v, l]) => ({ value: v, label: l }))}
+              onChange={(v) => setInput('fbsDropoffPoint', v as OzonFbsDropoffPoint)}
+            />
+            <DropdownSelect
+              label="Скорость отгрузки"
+              value={inputs.fbsShipmentSpeed ?? 'standard'}
+              options={Object.entries(FBS_SHIPMENT_SPEED_LABELS).map(([v, l]) => ({ value: v, label: l }))}
+              onChange={(v) => setInput('fbsShipmentSpeed', v as OzonFbsShipmentSpeed)}
+            />
+            <DropdownSelect
+              label="Склад FBS"
+              value={inputs.fbsWarehouse ?? 'almaty'}
+              options={Object.entries(FBS_WAREHOUSE_LABELS).map(([v, l]) => ({ value: v, label: l }))}
+              onChange={(v) => handleWarehouseChange(v as OzonFbsWarehouse)}
+            />
+          </>
+        )}
+        <DropdownSelect
+          label="Налог"
+          value={taxMode}
+          options={Object.entries(TAX_MODE_LABELS).map(([v, l]) => ({ value: v, label: l }))}
+          onChange={(v) => setInput('taxMode', v as TaxMode)}
+        />
+        <div className="flex items-center gap-1.5">
+          <span className="text-muted-foreground">Ставка:</span>
+          <input
+            type="number"
+            value={Number(inputs.taxRatePct ?? 0)}
+            step={1}
+            onChange={(e) => setInput('taxRatePct', Number(e.target.value))}
+            className="h-6 w-14 rounded border border-border/60 bg-background px-1 text-right text-[11px] font-medium text-foreground tabular-nums [color-scheme:light] dark:[color-scheme:dark]"
           />
-          <SelectInline
-            label="Скорость отгрузки"
-            value={inputs.fbsShipmentSpeed ?? 'standard'}
-            options={Object.entries(FBS_SHIPMENT_SPEED_LABELS).map(([v, l]) => ({ value: v, label: l }))}
-            onChange={(v) => setInput('fbsShipmentSpeed', v as OzonFbsShipmentSpeed)}
-          />
-          <SelectInline
-            label="Склад FBS"
-            value={inputs.fbsWarehouse ?? 'almaty'}
-            options={Object.entries(FBS_WAREHOUSE_LABELS).map(([v, l]) => ({ value: v, label: l }))}
-            onChange={(v) => handleWarehouseChange(v as OzonFbsWarehouse)}
-          />
+          <span className="text-muted-foreground">%</span>
         </div>
-      )}
+      </div>
 
       <div className="grid flex-1 overflow-auto" style={{ gridTemplateColumns: '1fr 1fr' }}>
         {/* Inputs */}
@@ -414,35 +452,6 @@ function Metric({
         {value}
       </div>
       {hint && <div className="mt-0.5 truncate text-[10px] text-muted-foreground">{hint}</div>}
-    </div>
-  );
-}
-
-function SelectInline({
-  label,
-  value,
-  options,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  options: Array<{ value: string; label: string }>;
-  onChange: (v: string) => void;
-}) {
-  return (
-    <div className="flex items-center gap-1.5">
-      <span className="text-muted-foreground">{label}:</span>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="h-6 rounded border border-border/60 bg-background px-1 text-[11px]"
-      >
-        {options.map((o) => (
-          <option key={o.value} value={o.value}>
-            {o.label}
-          </option>
-        ))}
-      </select>
     </div>
   );
 }

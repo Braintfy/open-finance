@@ -93,7 +93,7 @@ export function UnitCellBindingDialog({
         label: String(liveValues[`${b.blockId}.label`] ?? `Блок ${b.blockId.slice(0, 8)}`),
         fields: b.fields.map((field) => ({
           name: field,
-          label: sourceFieldLabel(field),
+          label: b.labels[field] ?? sourceFieldLabel(field),
           value:
             liveValues[field === 'value' ? b.blockId : `${b.blockId}.${field}`] ?? null,
           format: undefined,

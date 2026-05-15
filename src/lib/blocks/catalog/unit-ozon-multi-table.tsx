@@ -14,7 +14,13 @@ import {
   AlertTriangle,
   CheckCircle2,
   GripVertical,
+  MoreVertical,
 } from 'lucide-react';
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+} from '@/components/ui/dropdown-menu';
 import { z } from 'zod';
 import {
   DndContext,
@@ -36,6 +42,7 @@ import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { LinkableNumberCell } from '@/components/unit-economics/linkable-number-cell';
+import { DropdownSelect } from '@/components/unit-economics/dropdown-select';
 import { useAllBlockValuesFlat } from '@/lib/unit-economics/use-live-block-values';
 import { resolveBindingValue } from '@/lib/unit-economics/bindings';
 import type {
@@ -196,6 +203,23 @@ const RESULT_COLUMNS: ResultColumn[] = [
   { key: 'moneyInStock', label: 'Деньги в товаре', format: 'money', w: 130 },
 ];
 
+const STICKY_INDEX_W = 32;
+const STICKY_ARTICLE_W = 110;
+const STICKY_NAME_W = 220;
+const ACTIONS_W = 80;
+const STICKY_ARTICLE_LEFT = STICKY_INDEX_W;
+const STICKY_NAME_LEFT = STICKY_INDEX_W + STICKY_ARTICLE_W;
+const STICKY_GROUP_W = STICKY_INDEX_W + STICKY_ARTICLE_W + STICKY_NAME_W;
+const HEADER_H = 42;
+const ROW_H = 30;
+const TAX_MODE_LABELS: Record<TaxMode | 'none', string> = {
+  usn_income: 'УСН Доходы',
+  usn_income_minus: 'УСН Д-Р',
+  osno: 'ОСНО',
+  nds: 'Только НДС',
+  none: 'Без налога',
+};
+
 function formatNumber(value: number, format: ResultColumn['format'], showKopecks: boolean): string {
   if (!Number.isFinite(value)) return '—';
   if (format === 'money') {
@@ -354,6 +378,30 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
     [updateRow],
   );
 
+  /**
+   * Массовое заполнение колонки одинаковым значением.
+   * Привязанные ячейки (`row.bindings[field]`) пропускаем — связь не ломаем.
+   * Возвращаем счётчик применённых/пропущенных строк, чтобы header показал
+   * inline-сообщение пользователю.
+   */
+  const bulkFillField = useCallback(
+    (field: RowInputKey, value: number): { applied: number; skipped: number } => {
+      let applied = 0;
+      let skipped = 0;
+      const nextRows = config.rows.map((r) => {
+        if (r.bindings[field]) {
+          skipped += 1;
+          return r;
+        }
+        applied += 1;
+        return { ...r, inputs: { ...r.inputs, [field]: value } };
+      });
+      persist({ rows: nextRows });
+      return { applied, skipped };
+    },
+    [config.rows, persist],
+  );
+
   // ----- Column order (DnD) -----
   const inputOrder = useMemo(
     () => resolveColumnOrder<RowInputKey>(config.columnOrder?.inputs, ROW_INPUT_FIELDS),
@@ -469,6 +517,10 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
     lossCount: totals.lossy,
     label: instance.appearance?.title ?? config.title,
     __money: 'totalProfitMonth,totalStockValue,totalMoneyInGoods',
+    __labels:
+      'rowsCount=Товаров,avgMargin=Средняя маржа,avgRoi=Средний ROI,' +
+      'totalProfitMonth=Прибыль / мес,totalStockValue=Себестоимость остатка,' +
+      'totalMoneyInGoods=Деньги в товаре,profitableCount=Прибыльных,lossCount=Убыточных',
   });
 
   // ----- Import -----
@@ -538,9 +590,10 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
 
   // ----- Render -----
   const totalRowWidth =
-    32 + 110 + 220 +
+    STICKY_GROUP_W +
     inputOrder.reduce((acc, f) => acc + (FIELD_META[f].w ?? 80), 0) +
-    resultColumnsOrdered.reduce((acc, c) => acc + (c.w ?? 90), 0) + 80;
+    resultColumnsOrdered.reduce((acc, c) => acc + (c.w ?? 90), 0) +
+    ACTIONS_W;
 
   return (
     <Card className="flex h-full flex-col overflow-hidden">
@@ -565,10 +618,14 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
           </span>
           {config.global.mode === 'fbs' && (
             <span
-              className="hidden items-center rounded border border-border/60 bg-background px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground sm:inline-flex"
-              title={`Скорость отгрузки · ${FBS_SHIPMENT_SPEED_LABELS[config.global.fbsShipmentSpeed]}, склад · ${FBS_WAREHOUSE_LABELS[config.global.fbsWarehouse]}`}
+              className="inline-flex max-w-[320px] items-center truncate rounded border border-border/60 bg-background px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground"
+              title={`Точка сдачи · ${FBS_DROPOFF_LABELS[config.global.fbsDropoffPoint]}, скорость · ${FBS_SHIPMENT_SPEED_LABELS[config.global.fbsShipmentSpeed]}, склад · ${FBS_WAREHOUSE_LABELS[config.global.fbsWarehouse]}`}
             >
-              {FBS_SHIPMENT_SPEED_LABELS[config.global.fbsShipmentSpeed]} · {FBS_WAREHOUSE_LABELS[config.global.fbsWarehouse]}
+              <span className="truncate">
+                {FBS_DROPOFF_LABELS[config.global.fbsDropoffPoint]} ·{' '}
+                {FBS_SHIPMENT_SPEED_LABELS[config.global.fbsShipmentSpeed]} ·{' '}
+                {FBS_WAREHOUSE_LABELS[config.global.fbsWarehouse]}
+              </span>
             </span>
           )}
           {config.global.vatPct > 0 && (
@@ -576,6 +633,9 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
               НДС {config.global.vatPct}%
             </span>
           )}
+          <span className="inline-flex items-center rounded border border-border/60 bg-background px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+            Налог: {TAX_MODE_LABELS[config.global.taxMode]} {config.global.taxRatePct}%
+          </span>
           <span className="text-[10px] text-muted-foreground">v{OZON_TARIFF_VERSION}</span>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
@@ -645,16 +705,21 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
           <div className="min-w-full text-[11px]" style={{ minWidth: `${totalRowWidth}px` }}>
             {/* Header */}
             <div className="sticky top-0 z-40 flex border-b border-border/70 bg-card">
-              <HeaderCell width={32} sticky stickyLeft={0} className="text-center font-semibold text-muted-foreground">
+              <HeaderCell width={STICKY_INDEX_W} sticky stickyLeft={0} className="text-center font-semibold text-muted-foreground">
                 #
               </HeaderCell>
-              <HeaderCell width={110} sticky stickyLeft={32} className="font-semibold">
+              <HeaderCell width={STICKY_ARTICLE_W} sticky stickyLeft={STICKY_ARTICLE_LEFT} className="font-semibold">
                 Артикул
               </HeaderCell>
-              <HeaderCell width={220} sticky stickyLeft={142} stickyEdge className="font-semibold">
+              <HeaderCell width={STICKY_NAME_W} sticky stickyLeft={STICKY_NAME_LEFT} stickyEdge className="font-semibold">
                 Название товара
               </HeaderCell>
-              <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleInputDragEnd}>
+              <DndContext
+                id={`${instance.id}-ozon-input-columns`}
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragEnd={handleInputDragEnd}
+              >
                 <SortableContext items={inputOrder as string[]} strategy={horizontalListSortingStrategy}>
                   {inputOrder.map((f) => (
                     <SortableHeaderCell
@@ -662,6 +727,11 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
                       id={f}
                       width={FIELD_META[f].w ?? 80}
                       className="font-semibold text-foreground"
+                      bulkFill={{
+                        label: FIELD_META[f].label,
+                        unit: FIELD_META[f].unit,
+                        onApply: (val) => bulkFillField(f, val),
+                      }}
                     >
                       <span className="block truncate">{FIELD_META[f].label}</span>
                       {FIELD_META[f].unit && (
@@ -673,7 +743,12 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
                   ))}
                 </SortableContext>
               </DndContext>
-              <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleResultDragEnd}>
+              <DndContext
+                id={`${instance.id}-ozon-result-columns`}
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragEnd={handleResultDragEnd}
+              >
                 <SortableContext
                   items={resultOrder as string[]}
                   strategy={horizontalListSortingStrategy}
@@ -690,7 +765,7 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
                   ))}
                 </SortableContext>
               </DndContext>
-              <HeaderCell width={80} className="text-center font-semibold text-muted-foreground">
+              <HeaderCell width={ACTIONS_W} className="text-center font-semibold text-muted-foreground">
                 Действия
               </HeaderCell>
             </div>
@@ -698,12 +773,12 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
             {computed.map(({ row, results }, idx) => (
               <div
                 key={row.id}
-                className="group flex border-b border-border/40 transition-colors hover:bg-accent/5 [&:hover_[data-sticky]]:bg-accent/5"
+                className="group flex border-b border-border/40 transition-colors hover:bg-accent/5"
               >
-                <BodyCell width={32} sticky stickyLeft={0} className="justify-center text-center text-muted-foreground tabular-nums">
+                <BodyCell width={STICKY_INDEX_W} sticky stickyLeft={0} className="justify-center text-center text-muted-foreground tabular-nums">
                   {idx + 1}
                 </BodyCell>
-                <BodyCell width={110} sticky stickyLeft={32}>
+                <BodyCell width={STICKY_ARTICLE_W} sticky stickyLeft={STICKY_ARTICLE_LEFT}>
                   <input
                     type="text"
                     value={row.article}
@@ -712,7 +787,7 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
                     className="h-full w-full min-w-0 truncate border-0 bg-transparent px-1.5 text-[11px] outline-none placeholder:text-muted-foreground/60"
                   />
                 </BodyCell>
-                <BodyCell width={220} sticky stickyLeft={142} stickyEdge>
+                <BodyCell width={STICKY_NAME_W} sticky stickyLeft={STICKY_NAME_LEFT} stickyEdge>
                   <input
                     type="text"
                     value={row.name}
@@ -763,7 +838,7 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
                     </BodyCell>
                   );
                 })}
-                <BodyCell width={80} className="justify-center">
+                <BodyCell width={ACTIONS_W} className="justify-center">
                   <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
                     <Button
                       variant="ghost"
@@ -799,7 +874,7 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
 
             {/* Totals row */}
             <div className="sticky bottom-0 z-[35] flex border-t border-border/70 bg-card text-[11px] font-semibold">
-              <BodyCell width={32 + 110 + 220} sticky stickyLeft={0} stickyEdge className="justify-end px-3 text-muted-foreground">
+              <BodyCell width={STICKY_GROUP_W} sticky stickyLeft={0} stickyEdge zIndex={36} className="justify-end px-3 text-muted-foreground">
                 Итого по {totals.rowsCount} товарам · прибыль/мес
               </BodyCell>
               {inputOrder.map((f) => (
@@ -836,7 +911,7 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
                 }
                 return <BodyCell key={col.key} width={col.w ?? 90} className="px-1.5" />;
               })}
-              <BodyCell width={80} className="justify-end px-2 text-[10px] text-muted-foreground">
+              <BodyCell width={ACTIONS_W} className="justify-end px-2 text-[10px] text-muted-foreground">
                 +{totals.profitable} / −{totals.lossy}
               </BodyCell>
             </div>
@@ -852,6 +927,7 @@ function HeaderCell({
   sticky,
   stickyLeft,
   stickyEdge,
+  zIndex,
   className,
   children,
 }: {
@@ -860,6 +936,7 @@ function HeaderCell({
   stickyLeft?: number;
   /** Последняя колонка sticky-группы — даёт тень-разделитель справа */
   stickyEdge?: boolean;
+  zIndex?: number;
   className?: string;
   children?: React.ReactNode;
 }) {
@@ -873,9 +950,13 @@ function HeaderCell({
       }
       style={{
         width,
+        minWidth: width,
+        maxWidth: width,
+        height: HEADER_H,
+        boxSizing: 'border-box',
         position: sticky ? 'sticky' : undefined,
         left: sticky ? stickyLeft : undefined,
-        zIndex: sticky ? 45 : undefined,
+        zIndex: sticky ? zIndex ?? 45 : zIndex,
         boxShadow: stickyEdge ? '1px 0 0 0 var(--border)' : undefined,
       }}
     >
@@ -889,6 +970,7 @@ function BodyCell({
   sticky,
   stickyLeft,
   stickyEdge,
+  zIndex,
   className,
   children,
 }: {
@@ -897,6 +979,7 @@ function BodyCell({
   stickyLeft?: number;
   /** Последняя колонка sticky-группы — даёт тень-разделитель справа */
   stickyEdge?: boolean;
+  zIndex?: number;
   className?: string;
   children?: React.ReactNode;
 }) {
@@ -910,10 +993,13 @@ function BodyCell({
       }
       style={{
         width,
-        height: 30,
+        minWidth: width,
+        maxWidth: width,
+        height: ROW_H,
+        boxSizing: 'border-box',
         position: sticky ? 'sticky' : undefined,
         left: sticky ? stickyLeft : undefined,
-        zIndex: sticky ? 30 : undefined,
+        zIndex: sticky ? zIndex ?? 30 : zIndex,
         boxShadow: stickyEdge ? '1px 0 0 0 var(--border)' : undefined,
       }}
     >
@@ -927,20 +1013,32 @@ function BodyCell({
  * Использует solid `bg-card`, чтобы во время перетаскивания через scrollable
  * область контент под ячейкой не просвечивал.
  */
+type BulkFillSpec = {
+  label: string;
+  unit?: string;
+  onApply: (value: number) => { applied: number; skipped: number };
+};
+
 function SortableHeaderCell({
   id,
   width,
   className,
   children,
+  bulkFill,
 }: {
   id: string;
   width: number;
   className?: string;
   children?: React.ReactNode;
+  bulkFill?: BulkFillSpec;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
   const style: React.CSSProperties = {
     width,
+    minWidth: width,
+    maxWidth: width,
+    height: HEADER_H,
+    boxSizing: 'border-box',
     transform: CSS.Translate.toString(transform),
     transition,
     zIndex: isDragging ? 50 : undefined,
@@ -965,8 +1063,86 @@ function SortableHeaderCell({
       >
         <GripVertical className="h-3 w-3" />
       </button>
-      <div className="pl-2">{children}</div>
+      <div className="pl-2 pr-3">{children}</div>
+      {bulkFill && <BulkFillMenu spec={bulkFill} />}
     </div>
+  );
+}
+
+function BulkFillMenu({ spec }: { spec: BulkFillSpec }) {
+  const [draft, setDraft] = useState('');
+  const [feedback, setFeedback] = useState<string | null>(null);
+
+  function handleApply() {
+    const num = Number(draft.replace(',', '.'));
+    if (!Number.isFinite(num)) {
+      setFeedback('Введите число');
+      return;
+    }
+    const { applied, skipped } = spec.onApply(num);
+    setFeedback(
+      skipped > 0
+        ? `Применено к ${applied} · пропущено ${skipped} (привязки сохранены)`
+        : `Применено к ${applied}`,
+    );
+    setTimeout(() => setFeedback(null), 2200);
+    setDraft('');
+  }
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          className="absolute right-0.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/h:opacity-70"
+          title="Массовое заполнение колонки"
+          aria-label="Массовое заполнение колонки"
+          onClick={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <MoreVertical className="h-3 w-3" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" sideOffset={6} className="w-60 p-2">
+        <div className="space-y-2 text-xs">
+          <div className="font-semibold normal-case text-foreground">Заполнить колонку</div>
+          <div className="text-[11px] normal-case text-muted-foreground">
+            Применит «{spec.label}» ко всем строкам. Привязанные ячейки будут пропущены.
+          </div>
+          <div className="flex items-center gap-1.5">
+            <input
+              type="number"
+              autoFocus
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  handleApply();
+                }
+              }}
+              placeholder="Значение"
+              className="h-7 flex-1 rounded border border-border/60 bg-background px-2 text-[12px] tabular-nums focus:border-primary focus:outline-none"
+            />
+            {spec.unit && <span className="text-[11px] text-muted-foreground">{spec.unit}</span>}
+            <Button
+              type="button"
+              size="sm"
+              className="h-7 px-2 text-[11px]"
+              onClick={handleApply}
+              disabled={draft.trim().length === 0}
+            >
+              Применить
+            </Button>
+          </div>
+          {feedback && (
+            <div className="rounded bg-accent/50 px-2 py-1 text-[11px] normal-case text-foreground">
+              {feedback}
+            </div>
+          )}
+        </div>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -1009,19 +1185,19 @@ function GlobalParamsBar({
       </div>
       {isFbs && (
         <>
-          <SelectParam
+          <DropdownSelect
             label="Точка сдачи"
             value={global.fbsDropoffPoint}
             options={Object.entries(FBS_DROPOFF_LABELS).map(([v, l]) => ({ value: v, label: l }))}
             onChange={(v) => onChange('fbsDropoffPoint', v as OzonFbsDropoffPoint)}
           />
-          <SelectParam
+          <DropdownSelect
             label="Скорость отгрузки"
             value={global.fbsShipmentSpeed}
             options={Object.entries(FBS_SHIPMENT_SPEED_LABELS).map(([v, l]) => ({ value: v, label: l }))}
             onChange={(v) => onChange('fbsShipmentSpeed', v as OzonFbsShipmentSpeed)}
           />
-          <SelectParam
+          <DropdownSelect
             label="Склад FBS"
             value={global.fbsWarehouse}
             options={Object.entries(FBS_WAREHOUSE_LABELS).map(([v, l]) => ({ value: v, label: l }))}
@@ -1070,56 +1246,28 @@ function GlobalParamsBar({
         step={1}
         onChange={(v) => onChange('vatPct', v)}
       />
+      <DropdownSelect
+        label="Налог"
+        value={global.taxMode}
+        options={[
+          { value: 'usn_income', label: 'УСН Доходы' },
+          { value: 'usn_income_minus', label: 'УСН Д-Р' },
+          { value: 'osno', label: 'ОСНО' },
+          { value: 'nds', label: 'Только НДС' },
+          { value: 'none', label: 'Без налога' },
+        ]}
+        onChange={(v) => onChange('taxMode', v as GlobalParams['taxMode'])}
+      />
       <div className="flex items-center gap-1.5">
-        <span className="text-muted-foreground">Налог:</span>
-        <select
-          value={global.taxMode}
-          onChange={(e) => onChange('taxMode', e.target.value as GlobalParams['taxMode'])}
-          className="h-6 rounded border border-border/60 bg-background px-1 text-[11px]"
-        >
-          <option value="usn_income">УСН Доходы</option>
-          <option value="usn_income_minus">УСН Д-Р</option>
-          <option value="osno">ОСНО</option>
-          <option value="nds">Только НДС</option>
-          <option value="none">Без налога</option>
-        </select>
+        <span className="text-muted-foreground">Ставка:</span>
         <input
           type="number"
           value={global.taxRatePct}
           onChange={(e) => onChange('taxRatePct', Number(e.target.value))}
-          className="h-6 w-12 rounded border border-border/60 bg-background px-1 text-right text-[11px] tabular-nums"
+          className="h-6 w-14 rounded border border-border/60 bg-background px-1 text-right text-[11px] tabular-nums"
         />
         <span className="text-muted-foreground">%</span>
       </div>
-    </div>
-  );
-}
-
-function SelectParam({
-  label,
-  value,
-  options,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  options: Array<{ value: string; label: string }>;
-  onChange: (v: string) => void;
-}) {
-  return (
-    <div className="flex items-center gap-1.5">
-      <span className="text-muted-foreground">{label}:</span>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="h-6 rounded border border-border/60 bg-background px-1 text-[11px]"
-      >
-        {options.map((o) => (
-          <option key={o.value} value={o.value}>
-            {o.label}
-          </option>
-        ))}
-      </select>
     </div>
   );
 }

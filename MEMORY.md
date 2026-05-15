@@ -84,7 +84,7 @@ Open Finance = настраиваемый Lego-конструктор интер
 - `src/lib/blocks/types.ts` — `BlockDef`, `BlockInstance`, `BlockDependencies`, `BlockAppearance`, `PageLayout`.
 - `src/lib/blocks/registry.ts` — `ALL_BLOCKS`, `DEFAULT_LAYOUTS`, `getDefaultLayout`, `listBlocksForPage`.
 - `src/components/blocks/block-grid.tsx` — drag/resize/save, relation overlay, AI dialog integration.
-- `src/components/blocks/block-grid.css` — resize handle скрыт в обычном режиме и появляется после 3s hover; в edit mode сразу.
+- `src/components/blocks/block-grid.css` — resize handle скрыт в обычном режиме; появляется через CSS `:has([data-resize-hotzone]:hover)` (40×40 hot-zone в правом нижнем углу `BlockChrome`) или сразу в edit mode. Анимация opacity 100мс, без задержек. Без JS-таймеров.
 - `src/components/blocks/block-chrome.tsx` — wrapper, hover controls, settings/delete/AI.
 - `src/components/blocks/block-settings-dialog.tsx` — настройки блока: параметры, внешний вид, размер, связи.
 - `src/app/api/blocks/layout/[pageKey]/route.ts` — persist layout.
@@ -100,7 +100,7 @@ Open Finance = настраиваемый Lego-конструктор интер
 - **Не использовать `sanitizeBlocks` на сервере**: catalog/client exports могут быть пустыми в server bundle.
 
 ### Текущий каталог блоков
-`stat.income`, `stat.expense`, `stat.balance`, `stat.custom`, `cashflow.top-categories`, `cashflow.transactions`, `sheet`, `excel.cell`, `navigate.card`, `computed.sum`, `custom.data`, `chart.cashflow`, `ai.micro-agent`, `inbox.channel-feed`, `unit.ozon-calculator`, `unit.ozon-multi-table`, `unit.yandex-calculator`, `unit.my-store-table`. Каждый `BlockDef` помечен `tags: string[]`, `recommendedFor?: string[]` и `source: 'builtin'|'user'|'paid'` через карту `BLOCK_META` в `registry.ts` (источник правды для маркетплейса и `AddBlockDialog`).
+`stat.income`, `stat.expense`, `stat.balance`, `stat.custom`, `cashflow.top-categories`, `cashflow.transactions`, `sheet`, `excel.cell`, `navigate.card`, `computed.sum`, `custom.data`, `chart.cashflow`, `ai.micro-agent`, `inbox.channel-feed`, `unit.ozon-calculator`, `unit.ozon-multi-table`, `unit.yandex-calculator`, `unit.my-store-table`. Каждый `BlockDef` помечен `tags: string[]`, `recommendedFor?: string[]`, `source: 'builtin'|'user'|'paid'` и **`iconName: string`** через карту `BLOCK_META` в `registry.ts` (источник правды для маркетплейса, `AddBlockDialog` и серверного рендера в RSC).
 
 ## Реализованные страницы и модули
 - **Dashboard `/dashboard`** — BlockGrid с KPI и navigation cards.
@@ -108,7 +108,7 @@ Open Finance = настраиваемый Lego-конструктор интер
 - **Inbox `/inbox`** — BlockGrid с двумя дефолтными блоками `inbox.channel-feed` размером `6×12`.
 - **Boards `/boards`, `/boards/[boardId]`** — персональные доски на BlockGrid, `pageKey = board-{boardId}`.
 - **Unit Economics `/unit-economics`** — четыре вкладки (`unit-economics-ozon`, `unit-economics-ozon-multi`, `unit-economics-yandex`, `unit-economics-my-store`), каждый таб = свой `pageKey` с самостоятельным BlockGrid layout.
-- **Marketplace `/marketplace`** — каталог всех блоков (browse-only, без установки). `src/app/(app)/marketplace/{page,marketplace-client}.tsx`. Поиск, фильтр по категории и тегам, диалог детальной инфо. Кнопки «Создать блок» и «Купить блок» disabled (заглушки на будущее). Пункт sidebar `marketplace` (`Store` icon).
+- **Marketplace «Маркет блоков» `/marketplace`** — каталог всех блоков (browse-only, без установки). `src/app/(app)/marketplace/{page,marketplace-client}.tsx`. Поиск, фильтр по категории и тегам, диалог детальной инфо. Кнопки «Создать блок» и «Купить блок» disabled (заглушки на будущее). Пункт sidebar `marketplace` с label «Маркет блоков» (`Store` icon). URL `/marketplace` сохранён ради ссылок и истории.
 - **Settings `/settings`** — visibility toggles, форматирование, настройки разделов.
 - **Admin AI pages** — local models, external providers/proxy/diagnostics, system prompt.
 
@@ -198,11 +198,13 @@ Open Finance = настраиваемый Lego-конструктор интер
 - **НДС vs Налог:** `vatPct/vat` — отдельная строка расхода, не зависит от taxMode. `taxRatePct/tax` — налог на прибыль (УСН/ОСНО). Не объединять.
 - **FBS-апгрейд (v0.12.0):** `OzonInputs.fbsShipmentSpeed='fast'` даёт `+FBS_FAST_SHIPMENT_COMMISSION_BUMP_PCT(=2)` к комиссии (только при `mode='fbs'`). `fbsWarehouse` синхронизирует `isLocalCluster` через `FBS_WAREHOUSE_LOCAL_BY_DEFAULT` на UI-стороне (не в `calculate.ts`); пользователь может потом вручную перебить toggle. Все три FBS-поля опциональные, default `'sorting_center' / 'standard' / 'almaty'`.
 - **Linkable cells:** money-флаг обязателен для денежных привязок, иначе будет повторение бага «деление/не деление на 100». Fallback хранится при пропадании источника, показывается warning state. Внутри ячейки **всегда** `<input>` (в linked — readOnly + onClick → picker), иначе вернётся сдвиг между manual и linked.
-- **Sticky cells в unit-таблицах (v0.12.0):** background всегда **solid** `bg-card` (без `/95`, без `backdrop-blur`); каждая sticky-ячейка имеет `overflow:hidden isolate` (новый stacking-context). z-index: header sticky `45`, totals row `35`, body sticky `30`. На последней sticky-колонке — `boxShadow: '1px 0 0 0 var(--border)'`. Hover — `hover:bg-accent/5` без полупрозрачности; sticky-cells получают тот же тон через `[&:hover_[data-sticky]]:bg-accent/5`. Inputs Артикул/Название имеют `truncate`.
-- **Column DnD (Ozon multi-table):** порядок input-колонок и result-колонок хранится отдельно в `config.global.columnOrder = { inputs: string[]; results: string[] }`. `resolveColumnOrder<T>()` мерджит сохранённый порядок с дефолтом — новые колонки идут в конец, удалённые — выкидываются. Sticky `#`/Артикул/Название/Действия не drag'аются. Drag handle (`GripVertical`) внутри `SortableHeaderCell` появляется при hover, активируется через `PointerSensor` с `distance: 5`. Input и result колонки нельзя смешивать (отдельные `DndContext`).
+- **Sticky cells в unit-таблицах (v0.12.1):** background всегда **solid** `bg-card` (без `/95`, без `backdrop-blur`); каждая sticky-ячейка имеет `overflow:hidden isolate` (новый stacking-context). Геометрия фиксируется явно: sticky widths `32/110/220`, `HEADER_H=42`, `ROW_H=30`, `minWidth/maxWidth/boxSizing` на header/body/totals. z-index: header sticky `45`, totals row `35`, body sticky `30`, sticky totals `36`. На последней sticky-колонке — `boxShadow: '1px 0 0 0 var(--border)'`. Важно: **не возвращать** `[&:hover_[data-sticky]]:bg-accent/5` или другой полупрозрачный hover на sticky-cells — он снова покажет скроллящийся текст под `Артикул/Название`. Inputs Артикул/Название имеют `truncate`.
+- **Select-ы в юнит-блоках (v0.12.2):** ВСЕ выпадающие списки (FBS-параметры, Налог, Спецтариф) — через `DropdownSelect` (`src/components/unit-economics/dropdown-select.tsx`, обёртка над Radix `DropdownMenu`). Не возвращать нативные `<select>` — на macOS/iOS они рендерят пустую метку в закрытом состоянии при заполненном value, даже с `text-foreground [color-scheme:light]`.
+- **Bulk fill колонок (v0.12.2):** Ozon multi — `MoreVertical` в `SortableHeaderCell` (только для input-колонок), открывает `DropdownMenu` с input + Apply. My Store — секция «Массовое заполнение» в `ColumnEditDialog` (disabled для type=`formula`). Оба обработчика обязаны **пропускать** строки с активным `bindings[field]` (биндинг приоритетнее) и возвращать `{ applied, skipped }` для inline-фидбэка.
+- **Column DnD (Ozon multi-table):** порядок input-колонок и result-колонок хранится отдельно в `config.global.columnOrder = { inputs: string[]; results: string[] }`. `resolveColumnOrder<T>()` мерджит сохранённый порядок с дефолтом — новые колонки идут в конец, удалённые — выкидываются. Sticky `#`/Артикул/Название/Действия не drag'аются. Drag handle (`GripVertical`) внутри `SortableHeaderCell` появляется при hover, активируется через `PointerSensor` с `distance: 5`. Input и result колонки нельзя смешивать (отдельные `DndContext`). У каждого `DndContext` должен быть стабильный `id` на основе `instance.id`, иначе `@dnd-kit` может дать hydration mismatch по `aria-describedby`.
 - **XLSX-импорт Ozon:** маппинг колонок по заголовкам, не индексам. SheetJS читать с `cellStyles: false`. Fallback ZIP/XML парсер обходит «битый» stylesheet от Ozon. Фильтровать служебные строки-метки.
 - **Tenant isolation:** все API под `auth()`, все DB-запросы фильтруются по `tenant_id`. `unit_products` upsert по `(tenant_id, marketplace, article)`.
-- **Aggregate outputs:** все unit-блоки публикуют через `useBlockValuePublisher` с `__money` для денежных полей. Ozon: `rowsCount`, `avgMargin`, `avgRoi`, `totalProfitMonth`, `totalStockValue`, `totalMoneyInGoods`. My Store: `rowsCount`, `totalRevenue`, `totalProfit`, `avgMargin`, `stockTotal`.
+- **Aggregate outputs:** все unit-блоки публикуют через `useBlockValuePublisher` с `__money` для денежных полей и **`__labels`** convention `"key=Human Label,..."` для picker привязок. Ozon multi: `rowsCount`, `avgMargin`, `avgRoi`, `totalProfitMonth`, `totalStockValue`, `totalMoneyInGoods`. My Store: `rowsCount`, `totalRevenue`, `totalProfit`, `avgMargin`, `stockTotal`. Calculators: `profitPerUnit`, `profitPerMonth`, `margin`, `roi`. `useAvailableBlockSources()` парсит `__labels` в `Record<string,string>`; `unit-cell-binding-dialog` использует `labels[field] ?? sourceFieldLabel(field)`.
 - **`/api/blocks/sources`:** `unit-economics-*` page labels и `unit.*` type labels (включая `unit.my-store-table`) в `DEFAULT_PAGE_KEYS`/`PAGE_LABELS`/`TYPE_LABELS`. `fieldsForBlock` возвращает publishable поля.
 - **My Store column model:** `{ id, label, type: 'number'|'percent'|'money'|'text'|'formula', unit?, default?, width?, formula?, positive?, hidden? }`. `formula`-колонки read-only, не биндятся. Доступные переменные в формулах: id колонок текущей строки + `vatPct`, `taxRatePct`. Защита от циклов → `'#CYCLE'`.
 - **Yoolip credentials:** не хранить в git/плане. Только email + факт наличия тестового доступа в плане; пароль — вне репозитория.
@@ -258,9 +260,9 @@ docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev 
 ```
 
 ## Текущий статус на 2026-05-15
-- **Версия:** `0.12.0` в `CHANGELOG.md`; `package.json` всё ещё `0.5.0` и не является источником статуса фич.
-- **Фаза:** Unit Economics MVP с FBS-апгрейдом + DnD-колонок + sticky фикс, Marketplace browse-only + редизайн `AddBlockDialog`, поверх Inbox Channels MVP + AI Micro-Agent + External Providers/VPN/Diagnostics + Boards.
-- **Build:** `pnpm typecheck` и `pnpm build` проходят; smoke-тесты `pnpm tsx scripts/test-unit-economics.ts` зелёные (32 PASS, включая FBS fast +2% commission, FBO без надбавки, VAT, формулы и циклы Store, XLSX-парсер).
+- **Версия:** `0.12.2` в `CHANGELOG.md`; `package.json` всё ещё `0.5.0` и не является источником статуса фич.
+- **Фаза:** Unit Economics MVP с FBS-апгрейдом + DnD-колонок + sticky фикс + bulk-fill, «Маркет блоков» browse-only + редизайн `AddBlockDialog` + iconName/RSC fix, новый UX ресайза через hot-zone, `__labels` convention для picker привязок. Поверх Inbox Channels MVP + AI Micro-Agent + External Providers/VPN/Diagnostics + Boards.
+- **Build:** `pnpm typecheck` и `pnpm build` проходят; smoke-тесты `pnpm tsx scripts/test-unit-economics.ts` зелёные (32 PASS).
 - **Контекстные файлы:** `0.10.3` ввёл `START.md` и переход на ленивую загрузку контекста — `CHANGELOG.md`/`PLAN.md` больше не грузятся целиком по умолчанию.
 - **Ближайшие TODO:**
   - реализовать парсер `СЕБЕС озон.xlsx` для seed-колонок Мой магазин (отдельный скрипт);
@@ -273,7 +275,9 @@ docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev 
 
 ## Грабли, которые нельзя повторять
 - `sanitizeBlocks` на сервере может выкинуть блоки из-за client-only catalog.
-- Resize handle нельзя делать через JS hover-marker внутри `BlockChrome`; CSS hover на `.react-grid-item` стабильнее.
+- Resize handle нельзя делать через JS hover-marker внутри `BlockChrome`; CSS-only через `:has([data-resize-hotzone]:hover)` стабильнее. Hot-zone должен быть `pointer-events: auto` (иначе `:hover` не сработает) и иметь z-index ниже action toolbar (z-30).
+- **`b.icon.displayName` в RSC падает** — `BlockDef.icon` приходит из `'use client'`-каталогов как client-reference, у которого нет полей. Server Components должны использовать **`b.iconName`** (string из `BLOCK_META`), не `icon.displayName`.
+- **Native `<select>` в шапке таблиц** — на macOS/iOS закрытое состояние периодически рендерит пустую метку при заполненном value. Использовать `DropdownSelect` (Radix DropdownMenu + button trigger).
 - Sheet sources нельзя строить только из raw saved cells: формулы и linked cells должны считаться/merge-иться.
 - Служебные поля (`__money`) нужны для metadata, но не должны показываться selectable source.
 - `formatRublesWithSettings` принимает копейки; не форматировать обычные Sheet cells как деньги без metadata.

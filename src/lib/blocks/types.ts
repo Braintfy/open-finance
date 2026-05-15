@@ -81,6 +81,13 @@ export type BlockDef = {
   description: string;
   category: BlockCategory;
   icon: LucideIcon;
+  /**
+   * Имя иконки строкой (для сериализации через RSC-границу).
+   * Server Components не могут читать `icon.displayName` напрямую — `'use client'`
+   * catalog-файлы превращают `icon` в client-reference, у которого нет полей.
+   * `iconName` обычно подставляется автоматически через `withMeta()` в `registry.ts`.
+   */
+  iconName?: string;
   defaultSize: { w: number; h: number };
   /** Минимум в ячейках grid (1x1 разрешено по умолчанию) */
   minSize: { w: number; h: number };

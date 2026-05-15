@@ -198,10 +198,37 @@ export function useBlockDependencyResult(
 }
 
 /**
+ * Парсит строку `__labels` формата `"key=Label,key2=Label2"` в map.
+ * Convention для блоков, публикующих много полей с техническими именами
+ * (totalProfitMonth, avgMargin, …) — чтобы picker показывал человеческие
+ * названия вместо ключей.
+ */
+function parseLabelsString(raw: unknown): Record<string, string> {
+  if (typeof raw !== 'string' || raw.length === 0) return {};
+  const result: Record<string, string> = {};
+  for (const pair of raw.split(',')) {
+    const [k, ...rest] = pair.split('=');
+    if (!k || rest.length === 0) continue;
+    const key = k.trim();
+    const value = rest.join('=').trim();
+    if (key && value) result[key] = value;
+  }
+  return result;
+}
+
+/**
  * Хук для UI: получить список всех опубликованных блоков
  * (для BlockReferencePicker — подсказывает доступные источники).
+ *
+ * `labels` — map fieldName → человекочитаемый label, собранный из
+ * `__labels` convention блока-источника. Picker должен использовать его
+ * через `labels[field] ?? defaultLabel(field)`.
  */
-export function useAvailableBlockSources(): Array<{ blockId: string; fields: string[] }> {
+export function useAvailableBlockSources(): Array<{
+  blockId: string;
+  fields: string[];
+  labels: Record<string, string>;
+}> {
   const api = useContext(BlockValuesContext);
   const [, setTick] = useState(0);
 
@@ -214,5 +241,6 @@ export function useAvailableBlockSources(): Array<{ blockId: string; fields: str
   return Array.from(api.get().values.entries()).map(([blockId, output]) => ({
     blockId,
     fields: Object.keys(output).filter((field) => !field.startsWith('__')),
+    labels: parseLabelsString(output.__labels),
   }));
 }

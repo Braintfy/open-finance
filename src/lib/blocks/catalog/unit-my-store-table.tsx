@@ -155,6 +155,16 @@ function formatNumber(value: number, col: Column, showKopecks: boolean): string 
   return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(value);
 }
 
+const STICKY_INDEX_W = 32;
+const STICKY_ARTICLE_W = 110;
+const STICKY_NAME_W = 220;
+const ACTIONS_W = 80;
+const STICKY_ARTICLE_LEFT = STICKY_INDEX_W;
+const STICKY_NAME_LEFT = STICKY_INDEX_W + STICKY_ARTICLE_W;
+const STICKY_GROUP_W = STICKY_INDEX_W + STICKY_ARTICLE_W + STICKY_NAME_W;
+const HEADER_H = 42;
+const ROW_H = 30;
+
 function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
   const config = parseConfig(instance.config);
   const liveValues = useAllBlockValuesFlat();
@@ -270,6 +280,30 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
     [updateRow],
   );
 
+  /**
+   * Массовое заполнение колонки одинаковым значением во всех строках.
+   * Привязанные ячейки пропускаются — биндинг не ломаем. Текстовые/числовые
+   * колонки поддержаны через union; для формульных — bulk fill бессмыслен,
+   * UI должен disable-ить кнопку.
+   */
+  const bulkFillColumn = useCallback(
+    (colId: string, value: number | string): { applied: number; skipped: number } => {
+      let applied = 0;
+      let skipped = 0;
+      const nextRows = config.rows.map((r) => {
+        if (r.bindings[colId]) {
+          skipped += 1;
+          return r;
+        }
+        applied += 1;
+        return { ...r, values: { ...r.values, [colId]: value } };
+      });
+      persist({ rows: nextRows });
+      return { applied, skipped };
+    },
+    [config.rows, persist],
+  );
+
   const visibleColumns = useMemo(
     () => config.columns.filter((c) => !c.hidden),
     [config.columns],
@@ -350,12 +384,15 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
     stockTotal: totals.stockTotal,
     label: instance.appearance?.title ?? config.title,
     __money: 'totalRevenue,totalProfit',
+    __labels:
+      'rowsCount=Товаров,totalRevenue=Выручка / мес,totalProfit=Прибыль / мес,' +
+      'avgMargin=Средняя маржа,stockTotal=Сумма остатков',
   });
 
   const editingColumn = editingCol ? config.columns.find((c) => c.id === editingCol) ?? null : null;
 
   const totalRowWidth =
-    32 + 110 + 220 + visibleColumns.reduce((acc, c) => acc + (c.width ?? 96), 0) + 80;
+    STICKY_GROUP_W + visibleColumns.reduce((acc, c) => acc + (c.width ?? 96), 0) + ACTIONS_W;
 
   return (
     <Card className="flex h-full flex-col overflow-hidden">
@@ -439,13 +476,13 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
           <div className="min-w-full text-[11px]" style={{ minWidth: `${totalRowWidth}px` }}>
             {/* Header row */}
             <div className="sticky top-0 z-40 flex border-b border-border/70 bg-card">
-              <HeaderCell width={32} sticky stickyLeft={0} className="text-center font-semibold text-muted-foreground">
+              <HeaderCell width={STICKY_INDEX_W} sticky stickyLeft={0} className="text-center font-semibold text-muted-foreground">
                 #
               </HeaderCell>
-              <HeaderCell width={110} sticky stickyLeft={32} className="font-semibold">
+              <HeaderCell width={STICKY_ARTICLE_W} sticky stickyLeft={STICKY_ARTICLE_LEFT} className="font-semibold">
                 Артикул
               </HeaderCell>
-              <HeaderCell width={220} sticky stickyLeft={142} stickyEdge className="font-semibold">
+              <HeaderCell width={STICKY_NAME_W} sticky stickyLeft={STICKY_NAME_LEFT} stickyEdge className="font-semibold">
                 Название товара
               </HeaderCell>
               {visibleColumns.map((col) => (
@@ -457,7 +494,7 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
                     <button
                       type="button"
                       onClick={() => setEditingCol(col.id)}
-                      className="opacity-0 transition-opacity group-hover:opacity-100 hover:text-primary"
+                      className="opacity-0 transition-opacity group-hover/header:opacity-100 hover:text-primary"
                       title="Настроить колонку"
                     >
                       <Settings2 className="h-3 w-3" />
@@ -470,7 +507,7 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
                   )}
                 </HeaderCell>
               ))}
-              <HeaderCell width={80} className="text-center font-semibold text-muted-foreground">
+              <HeaderCell width={ACTIONS_W} className="text-center font-semibold text-muted-foreground">
                 Действия
               </HeaderCell>
             </div>
@@ -478,12 +515,12 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
             {computedRows.map(({ row, values }, idx) => (
               <div
                 key={row.id}
-                className="group flex border-b border-border/40 transition-colors hover:bg-accent/5 [&:hover_[data-sticky]]:bg-accent/5"
+                className="group flex border-b border-border/40 transition-colors hover:bg-accent/5"
               >
-                <BodyCell width={32} sticky stickyLeft={0} className="justify-center text-center text-muted-foreground tabular-nums">
+                <BodyCell width={STICKY_INDEX_W} sticky stickyLeft={0} className="justify-center text-center text-muted-foreground tabular-nums">
                   {idx + 1}
                 </BodyCell>
-                <BodyCell width={110} sticky stickyLeft={32}>
+                <BodyCell width={STICKY_ARTICLE_W} sticky stickyLeft={STICKY_ARTICLE_LEFT}>
                   <input
                     type="text"
                     value={row.article}
@@ -492,7 +529,7 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
                     className="h-full w-full min-w-0 truncate border-0 bg-transparent px-1.5 text-[11px] outline-none placeholder:text-muted-foreground/60"
                   />
                 </BodyCell>
-                <BodyCell width={220} sticky stickyLeft={142} stickyEdge>
+                <BodyCell width={STICKY_NAME_W} sticky stickyLeft={STICKY_NAME_LEFT} stickyEdge>
                   <input
                     type="text"
                     value={row.name}
@@ -543,7 +580,7 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
                           value={text}
                           onChange={(e) => updateRowValue(row.id, col.id, e.target.value)}
                           placeholder={col.label}
-                          className="h-full w-full min-w-0 border-0 bg-transparent px-1.5 text-[11px] outline-none placeholder:text-muted-foreground/60"
+                          className="h-full w-full min-w-0 truncate border-0 bg-transparent px-1.5 text-[11px] outline-none placeholder:text-muted-foreground/60"
                         />
                       </BodyCell>
                     );
@@ -566,7 +603,7 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
                     </BodyCell>
                   );
                 })}
-                <BodyCell width={80} className="justify-center">
+                <BodyCell width={ACTIONS_W} className="justify-center">
                   <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
                     <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => duplicateRow(row.id)} title="Дублировать">
                       <Copy className="h-3 w-3" />
@@ -590,7 +627,7 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
 
             {/* Totals */}
             <div className="sticky bottom-0 z-[35] flex border-t border-border/70 bg-card text-[11px] font-semibold">
-              <BodyCell width={32 + 110 + 220} sticky stickyLeft={0} stickyEdge className="justify-end px-3 text-muted-foreground">
+              <BodyCell width={STICKY_GROUP_W} sticky stickyLeft={0} stickyEdge zIndex={36} className="justify-end px-3 text-muted-foreground">
                 Итого по {totals.rowsCount} товарам
               </BodyCell>
               {visibleColumns.map((col) => {
@@ -624,7 +661,7 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
                 }
                 return <BodyCell key={col.id} width={col.width ?? 96} className="px-1.5" />;
               })}
-              <BodyCell width={80} className="px-1.5" />
+              <BodyCell width={ACTIONS_W} className="px-1.5" />
             </div>
           </div>
         )}
@@ -640,6 +677,7 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
             setEditingCol(null);
           }}
           onToggleHidden={() => updateColumn(editingColumn.id, { hidden: !editingColumn.hidden })}
+          onBulkFill={(value) => bulkFillColumn(editingColumn.id, value)}
         />
       )}
     </Card>
@@ -651,6 +689,7 @@ function HeaderCell({
   sticky,
   stickyLeft,
   stickyEdge,
+  zIndex,
   className,
   children,
 }: {
@@ -658,6 +697,7 @@ function HeaderCell({
   sticky?: boolean;
   stickyLeft?: number;
   stickyEdge?: boolean;
+  zIndex?: number;
   className?: string;
   children?: React.ReactNode;
 }) {
@@ -671,9 +711,13 @@ function HeaderCell({
       }
       style={{
         width,
+        minWidth: width,
+        maxWidth: width,
+        height: HEADER_H,
+        boxSizing: 'border-box',
         position: sticky ? 'sticky' : undefined,
         left: sticky ? stickyLeft : undefined,
-        zIndex: sticky ? 45 : undefined,
+        zIndex: sticky ? zIndex ?? 45 : zIndex,
         boxShadow: stickyEdge ? '1px 0 0 0 var(--border)' : undefined,
       }}
     >
@@ -687,6 +731,7 @@ function BodyCell({
   sticky,
   stickyLeft,
   stickyEdge,
+  zIndex,
   className,
   children,
 }: {
@@ -694,6 +739,7 @@ function BodyCell({
   sticky?: boolean;
   stickyLeft?: number;
   stickyEdge?: boolean;
+  zIndex?: number;
   className?: string;
   children?: React.ReactNode;
 }) {
@@ -707,10 +753,13 @@ function BodyCell({
       }
       style={{
         width,
-        height: 30,
+        minWidth: width,
+        maxWidth: width,
+        height: ROW_H,
+        boxSizing: 'border-box',
         position: sticky ? 'sticky' : undefined,
         left: sticky ? stickyLeft : undefined,
-        zIndex: sticky ? 30 : undefined,
+        zIndex: sticky ? zIndex ?? 30 : zIndex,
         boxShadow: stickyEdge ? '1px 0 0 0 var(--border)' : undefined,
       }}
     >
@@ -725,14 +774,46 @@ function ColumnEditDialog({
   onSave,
   onDelete,
   onToggleHidden,
+  onBulkFill,
 }: {
   column: Column;
   onClose: () => void;
   onSave: (patch: Partial<Column>) => void;
   onDelete: () => void;
   onToggleHidden: () => void;
+  onBulkFill: (value: number | string) => { applied: number; skipped: number };
 }) {
   const [draft, setDraft] = useState<Column>({ ...column });
+  const [bulkDraft, setBulkDraft] = useState('');
+  const [bulkFeedback, setBulkFeedback] = useState<string | null>(null);
+  const isFormula = column.type === 'formula';
+  const isText = column.type === 'text';
+
+  function handleBulkApply() {
+    if (isFormula) return;
+    const trimmed = bulkDraft.trim();
+    if (!trimmed) return;
+    let value: number | string;
+    if (isText) {
+      value = trimmed;
+    } else {
+      const num = Number(trimmed.replace(',', '.'));
+      if (!Number.isFinite(num)) {
+        setBulkFeedback('Введите число');
+        return;
+      }
+      value = num;
+    }
+    const { applied, skipped } = onBulkFill(value);
+    setBulkFeedback(
+      skipped > 0
+        ? `Применено к ${applied} · пропущено ${skipped} (привязки сохранены)`
+        : `Применено к ${applied}`,
+    );
+    setTimeout(() => setBulkFeedback(null), 2200);
+    setBulkDraft('');
+  }
+
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="sm:max-w-md">
@@ -792,6 +873,55 @@ function ColumnEditDialog({
             />
             Подсвечивать +/−
           </label>
+
+          <div className="rounded border border-dashed border-border/60 bg-muted/20 p-3">
+            <div className="mb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+              Массовое заполнение
+            </div>
+            {isFormula ? (
+              <p className="text-[11px] text-muted-foreground">
+                Колонка типа «Формула» вычисляется автоматически — массовое заполнение недоступно.
+              </p>
+            ) : (
+              <>
+                <p className="mb-2 text-[11px] text-muted-foreground">
+                  Применит указанное значение ко всем строкам колонки. Привязанные ячейки будут
+                  пропущены.
+                </p>
+                <div className="flex items-center gap-1.5">
+                  <Input
+                    type={isText ? 'text' : 'number'}
+                    value={bulkDraft}
+                    onChange={(e) => setBulkDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleBulkApply();
+                      }
+                    }}
+                    placeholder={isText ? 'Текст' : 'Значение'}
+                    className="h-8 flex-1 text-sm"
+                  />
+                  {column.unit && !isText && (
+                    <span className="text-xs text-muted-foreground">{column.unit}</span>
+                  )}
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={handleBulkApply}
+                    disabled={bulkDraft.trim().length === 0}
+                  >
+                    Применить
+                  </Button>
+                </div>
+                {bulkFeedback && (
+                  <div className="mt-2 rounded bg-accent/50 px-2 py-1 text-[11px] text-foreground">
+                    {bulkFeedback}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
         </div>
         <DialogFooter className="flex items-center justify-between gap-2 sm:justify-between">
           <div className="flex items-center gap-2">

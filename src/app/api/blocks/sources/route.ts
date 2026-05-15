@@ -407,6 +407,10 @@ async function fieldsForBlock(block: BlockInstance, tenantId: string, monthlySum
       { name: 'value', label: 'Цена', value: Math.round(price * 100), format: 'money' },
       { name: 'price', label: 'Цена', value: Math.round(price * 100), format: 'money' },
       { name: 'stock', label: 'Остаток', value: stock, format: 'number' },
+      { name: 'profitPerUnit', label: 'Прибыль / ед', value: null, format: 'money' },
+      { name: 'profitPerMonth', label: 'Прибыль / мес', value: null, format: 'money' },
+      { name: 'margin', label: 'Маржа', value: null, format: 'number' },
+      { name: 'roi', label: 'ROI', value: null, format: 'number' },
     ];
   }
   if (block.type === 'unit.ozon-multi-table') {
@@ -419,6 +423,14 @@ async function fieldsForBlock(block: BlockInstance, tenantId: string, monthlySum
       { name: 'value', label: 'Товаров', value: rows.length, format: 'number' },
       { name: 'rowsCount', label: 'Товаров', value: rows.length, format: 'number' },
       { name: 'stockTotal', label: 'Сумма остатков', value: stockTotal, format: 'number' },
+      // Live-вычисляемые на клиенте; здесь — только метки для cross-page picker.
+      { name: 'totalProfitMonth', label: 'Прибыль / мес', value: null, format: 'money' },
+      { name: 'totalMoneyInGoods', label: 'Деньги в товаре', value: null, format: 'money' },
+      { name: 'totalStockValue', label: 'Себестоимость остатка', value: null, format: 'money' },
+      { name: 'avgMargin', label: 'Средняя маржа', value: null, format: 'number' },
+      { name: 'avgRoi', label: 'Средний ROI', value: null, format: 'number' },
+      { name: 'profitableCount', label: 'Прибыльных', value: null, format: 'number' },
+      { name: 'lossCount', label: 'Убыточных', value: null, format: 'number' },
     ];
   }
   if (block.type === 'unit.my-store-table') {
@@ -431,6 +443,9 @@ async function fieldsForBlock(block: BlockInstance, tenantId: string, monthlySum
       { name: 'value', label: 'Товаров', value: rows.length, format: 'number' },
       { name: 'rowsCount', label: 'Товаров', value: rows.length, format: 'number' },
       { name: 'stockTotal', label: 'Сумма остатков', value: stockTotal, format: 'number' },
+      { name: 'totalRevenue', label: 'Выручка / мес', value: null, format: 'money' },
+      { name: 'totalProfit', label: 'Прибыль / мес', value: null, format: 'money' },
+      { name: 'avgMargin', label: 'Средняя маржа', value: null, format: 'number' },
     ];
   }
   if (block.type === 'inbox.channel-feed') {

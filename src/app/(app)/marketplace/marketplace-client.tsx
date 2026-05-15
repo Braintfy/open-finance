@@ -1,6 +1,6 @@
-// PURPOSE: Клиентский каталог блоков (browse-only). Поиск, фильтр по
-// категории и тегам. Кнопки «Создать блок» и «Купить блок» видны, но
-// disabled — пока заглушки на будущее.
+// PURPOSE: Клиентский каталог блоков (Маркет блоков, browse-only).
+// Поиск, фильтр по категории и тегам. Кнопки «Создать блок» и «Купить блок»
+// видны, но disabled — пока заглушки на будущее.
 'use client';
 
 import { useMemo, useState } from 'react';
@@ -90,7 +90,7 @@ export function MarketplaceClient({ blocks }: { blocks: MarketplaceBlock[] }) {
             >
               <ChevronLeft className="h-4 w-4" />
             </Link>
-            <h1 className="text-xl font-semibold tracking-tight">Маркетплейс блоков</h1>
+            <h1 className="text-xl font-semibold tracking-tight">Маркет блоков</h1>
           </div>
           <p className="mt-1 text-sm text-muted-foreground">
             Полный каталог: добавляйте в любой раздел через «+» внутри страницы. Создание и покупка

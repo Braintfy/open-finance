@@ -57,7 +57,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     { key: 'cashflow', href: '/cashflow', label: 'Денежный поток', icon: Wallet },
     { key: 'unit-economics', href: '/unit-economics', label: 'Юнит-экономика', icon: Calculator },
     { key: 'boards', href: '/boards', label: 'Мои доски', icon: LayoutGrid },
-    { key: 'marketplace', href: '/marketplace', label: 'Маркетплейс', icon: Store },
+    { key: 'marketplace', href: '/marketplace', label: 'Маркет блоков', icon: Store },
     { key: 'deadlines', href: '/deadlines', label: 'Дедлайны', icon: Calendar },
     { key: 'settings', href: '/settings', label: 'Настройки', icon: Settings, protected: true },
   ];

@@ -154,6 +154,20 @@ export function BlockChrome({
         </div>
       )}
 
+      {/*
+        Resize hot-zone: невидимая 40×40 область в правом нижнем углу.
+        Сам по себе ничего не делает — служит триггером для CSS-правил
+        в block-grid.css (`:has([data-resize-hotzone]:hover)`),
+        которые показывают react-resizable-handle.
+        Данные подсказки наведения проксируем сюда через cursor-se-resize.
+        В view mode (не edit) и без относительной позиции родителя — не мешает.
+      */}
+      <div
+        data-resize-hotzone
+        aria-hidden
+        className="pointer-events-auto absolute bottom-0 right-0 z-20 h-10 w-10 cursor-se-resize"
+      />
+
       {/* Само содержимое блока. В edit mode — рамка + приглушённость + блокировка кликов */}
       <div
         className={

@@ -1,4 +1,4 @@
-// PURPOSE: /marketplace — каталог всех блоков (browse-only).
+// PURPOSE: /marketplace — Маркет блоков (browse-only).
 // Создание/покупка пользовательских блоков — заглушки на будущее.
 import { redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
@@ -30,7 +30,7 @@ export default async function MarketplacePage() {
     displayName: b.displayName,
     description: b.description,
     category: b.category,
-    iconName: b.icon.displayName ?? 'Square',
+    iconName: b.iconName ?? 'Square',
     pages: b.pages.map(pageLabel),
     tags: b.tags ?? [],
     source: b.source ?? 'builtin',
