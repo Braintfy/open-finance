@@ -125,6 +125,10 @@ const NODE_FILL = '#4f46e5';
 const TRI_SIZE = 14;
 /** Отступ треугольника от ребра блока внутрь (выравнивание по вертикальному центру). */
 const TRI_INSET = 4;
+/** Радиус edge-anchor circle (см. <circle r={4} /> ниже). Должен быть в синке. */
+const ANCHOR_R = 4;
+/** Минимальный gap между низом anchor-кружочка и верхом треугольника. */
+const ANCHOR_TRI_GAP = 6;
 
 export function BlockRelationsOverlay({ blocks, currentPageKey, containerRef, highlighted }: Props) {
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -316,13 +320,21 @@ export function BlockRelationsOverlay({ blocks, currentPageKey, containerRef, hi
           const incomingKey = `in:${box.blockId}`;
           const outgoingKey = `out:${box.blockId}`;
 
-          // Размещаем треугольники по вертикальному центру боковых рёбер.
-          // Top/bottom углы заняты chrome'ом (drag handle, AI/settings, CrossPagePin,
-          // Network-иконка, resize hot-zone) — посередине свободно.
-          const middleY = (box.top + box.bottom) / 2 - TRI_SIZE / 2;
+          // Anchor-кружочки (edge-точки локальных связей) рисуются в SVG в
+          // вертикальном центре левого/правого ребра блока. Треугольники ставим
+          // НИЖЕ кружочка, чтобы они не перекрывались. Расчёт:
+          //   anchor center Y = (top + bottom) / 2
+          //   triangle top    = anchor centerY + ANCHOR_R + ANCHOR_TRI_GAP
+          // Top/bottom углы заняты chrome'ом (drag/AI/settings/CrossPagePin),
+          // правое/левое ребро ниже кружочка — единственное чистое место.
+          const anchorCenterY = (box.top + box.bottom) / 2;
+          let triTop = anchorCenterY + ANCHOR_R + ANCHOR_TRI_GAP;
+          // Защита от вылета за нижнюю границу блока для совсем маленьких блоков.
+          const maxTriTop = box.bottom - TRI_SIZE - 4;
+          if (triTop > maxTriTop) triTop = maxTriTop;
           return (
             <div key={`tri-${box.blockId}`}>
-              {/* Incoming — на LEFT-edge, остриём ▶ (внутрь блока) */}
+              {/* Incoming — LEFT-edge, ниже anchor-кружка, остриём ▶ внутрь блока */}
               {rel.incoming.length > 0 && (
                 <CrossPageTriangle
                   direction="incoming"
@@ -334,11 +346,11 @@ export function BlockRelationsOverlay({ blocks, currentPageKey, containerRef, hi
                   }
                   style={{
                     left: box.left + TRI_INSET,
-                    top: middleY,
+                    top: triTop,
                   }}
                 />
               )}
-              {/* Outgoing — на RIGHT-edge, остриём ▶ (наружу блока) */}
+              {/* Outgoing — RIGHT-edge, ниже anchor-кружка, остриём ▶ наружу блока */}
               {rel.outgoing.length > 0 && (
                 <CrossPageTriangle
                   direction="outgoing"
@@ -350,7 +362,7 @@ export function BlockRelationsOverlay({ blocks, currentPageKey, containerRef, hi
                   }
                   style={{
                     left: box.right - TRI_INSET - TRI_SIZE,
-                    top: middleY,
+                    top: triTop,
                   }}
                 />
               )}

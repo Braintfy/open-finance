@@ -157,43 +157,72 @@ export type PageLayout = {
   hiddenSections?: string[]; // ['inbox', 'deadlines'] — скрытые элементы навигации
 };
 
-/** Цветовые пресеты для UI пикера */
+/**
+ * Цветовые пресеты для UI пикера.
+ * Расширенный набор (24 + default): основные цвета по 2 насыщенности (light/regular)
+ * для гибкой палитры в стиле Notion/Linear. Используются как `borderColor` и
+ * `accentColor` в `BlockAppearance`.
+ */
 export const ACCENT_COLORS: Array<{ name: string; value: string; bg: string }> = [
   { name: 'По умолчанию', value: '', bg: 'transparent' },
+  // Основной ряд — насыщенные
   { name: 'Синий', value: '#3b82f6', bg: '#3b82f6' },
+  { name: 'Голубой', value: '#0ea5e9', bg: '#0ea5e9' },
+  { name: 'Тиловый', value: '#14b8a6', bg: '#14b8a6' },
   { name: 'Зелёный', value: '#10b981', bg: '#10b981' },
-  { name: 'Красный', value: '#ef4444', bg: '#ef4444' },
+  { name: 'Лайм', value: '#84cc16', bg: '#84cc16' },
   { name: 'Янтарный', value: '#f59e0b', bg: '#f59e0b' },
-  { name: 'Фиолетовый', value: '#8b5cf6', bg: '#8b5cf6' },
+  { name: 'Оранжевый', value: '#f97316', bg: '#f97316' },
+  { name: 'Красный', value: '#ef4444', bg: '#ef4444' },
   { name: 'Розовый', value: '#ec4899', bg: '#ec4899' },
+  { name: 'Фуксия', value: '#d946ef', bg: '#d946ef' },
+  { name: 'Фиолетовый', value: '#8b5cf6', bg: '#8b5cf6' },
+  { name: 'Индиго', value: '#6366f1', bg: '#6366f1' },
   { name: 'Серый', value: '#64748b', bg: '#64748b' },
+  // Светлый ряд — приглушённые (для рамок и мягких акцентов)
+  { name: 'Синий·л', value: '#93c5fd', bg: '#93c5fd' },
+  { name: 'Тиловый·л', value: '#5eead4', bg: '#5eead4' },
+  { name: 'Зелёный·л', value: '#86efac', bg: '#86efac' },
+  { name: 'Янтарный·л', value: '#fcd34d', bg: '#fcd34d' },
+  { name: 'Красный·л', value: '#fca5a5', bg: '#fca5a5' },
+  { name: 'Розовый·л', value: '#f9a8d4', bg: '#f9a8d4' },
+  { name: 'Фиолетовый·л', value: '#c4b5fd', bg: '#c4b5fd' },
+  { name: 'Серый·л', value: '#cbd5e1', bg: '#cbd5e1' },
+  // Глубокий ряд — насыщенные dark-shade
+  { name: 'Синий·т', value: '#1d4ed8', bg: '#1d4ed8' },
+  { name: 'Зелёный·т', value: '#047857', bg: '#047857' },
+  { name: 'Чёрный', value: '#0f172a', bg: '#0f172a' },
 ];
 
-/** Иконки lucide для быстрого пикера (палитра по умолчанию). Полный каталог — в icon-library.ts */
+/**
+ * Иконки lucide для быстрого пикера (расширенная палитра по умолчанию).
+ * Покрывает финансы, графики, действия, объекты — самые ходовые для финансовых
+ * блоков. Полный каталог (>1500 иконок) — в `icon-library.ts`, доступен через
+ * "Выбрать из каталога".
+ */
 export const ICON_NAMES = [
-  'Wallet',
-  'DollarSign',
-  'CreditCard',
-  'Banknote',
-  'Coins',
-  'TrendingUp',
-  'TrendingDown',
-  'BarChart3',
-  'PieChart',
-  'Activity',
-  'Target',
-  'Calendar',
-  'Briefcase',
-  'ShoppingCart',
-  'Receipt',
-  'Building2',
-  'Users',
-  'Heart',
-  'Star',
-  'Zap',
-  'ArrowDown',
-  'ArrowUp',
-  'Database',
-  'Sparkles',
+  // Финансы и деньги
+  'Wallet', 'DollarSign', 'CreditCard', 'Banknote', 'Coins',
+  'PiggyBank', 'Landmark', 'Receipt', 'CircleDollarSign', 'HandCoins',
+  'RussianRuble', 'Percent', 'BadgeDollarSign', 'BadgePercent',
+  // Графики и аналитика
+  'BarChart3', 'PieChart', 'LineChart', 'TrendingUp', 'TrendingDown',
+  'Activity', 'Sigma', 'Calculator', 'Target', 'Gauge',
+  // Время, календарь
+  'Calendar', 'Clock', 'Hourglass', 'Timer',
+  // Бизнес и работа
+  'Briefcase', 'Building2', 'Building', 'Factory', 'Store',
+  'ShoppingCart', 'ShoppingBag', 'Package', 'Truck', 'Boxes',
+  // Люди и социальное
+  'Users', 'User', 'UserCheck', 'Heart', 'Star',
+  // Действия и стрелки
+  'ArrowUp', 'ArrowDown', 'ArrowUpRight', 'ArrowDownRight', 'Repeat',
+  'Plus', 'Minus', 'Check', 'X',
+  // Объекты данных
+  'Database', 'Server', 'HardDrive', 'FileText', 'File',
+  'Folder', 'Inbox', 'Mail', 'Bell', 'Tag',
+  // Спецсимволы
+  'Sparkles', 'Zap', 'Flame', 'Bookmark', 'Bot',
+  'Cpu', 'Globe', 'Lock', 'Key', 'Settings',
 ] as const;
 export type IconName = (typeof ICON_NAMES)[number];

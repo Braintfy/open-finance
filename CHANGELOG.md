@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.15.1] - 2026-05-15
+
+UI-полировка модалки настроек блока (плотный layout, расширенные палитры
+цветов и иконок) и фикс перекрытия cross-page треугольников с anchor-кружочками
+в mindmap-overlay'е.
+
+### Changed
+
+- **`BlockSettingsDialog` redesign** ([src/components/blocks/block-settings-dialog.tsx](src/components/blocks/block-settings-dialog.tsx)) — модалка перешла с `max-w-3xl` + `gap-y-4` на `max-w-2xl` + `gap-0 p-0` со sticky header'ом (px-5 py-3) и footer'ом (border-t bg-muted/20). Tabs теперь рендерятся в `bg-muted/20` бэйра с тонким primary-индикатором (`absolute -bottom-px`), вместо border-b-2. В `StyleAndSizeForm` верхняя часть превратилась в двухколоночный grid `200px + 1fr` (preview-чип слева с цветным backplate под иконкой, заголовок справа) — убрано большое пустое поле "ПРЕВЬЮ". Размер-блок получил пресеты в плоской ряд + два слайдера в `sm:grid-cols-2`. AI-промпт-форма уплотнена (textarea rows 8→9, заголовки uppercase tracking, padding 3→2.5). Все uppercase-лейблы используют `text-[10px] font-medium tracking-wide text-muted-foreground` — единый стиль с другими секциями проекта (cashflow, sheet headers).
+- **Расширенная палитра цветов** ([src/lib/blocks/types.ts](src/lib/blocks/types.ts)) — `ACCENT_COLORS` вырос с 8 до 25 (default + 13 насыщенных + 8 light + 3 dark). Добавлены: голубой/тиловый/лайм/оранжевый/фуксия/индиго в основном ряду; light-варианты (3b82f6→93c5fd, etc.) для мягких рамок; deep-варианты (1d4ed8, 047857, 0f172a) для контраста. UI: `ColorPalette` перешла на `grid grid-cols-12 gap-1` (4×24px = одна строка из 25 ячеек), default-кнопка стала dashed border с символом `×`, активная кнопка получила `ring-2 ring-primary ring-offset-1 ring-offset-background` — лучше виден focus в обоих темах.
+- **Расширенная палитра иконок** ([src/lib/blocks/types.ts](src/lib/blocks/types.ts)) — `ICON_NAMES` вырос с 24 до 70 иконок: финансы (Wallet, PiggyBank, Landmark, RussianRuble, BadgePercent), графики (LineChart, Sigma, Calculator, Gauge), время (Clock, Hourglass, Timer), бизнес (Factory, Store, Package, Truck, Boxes), люди/действия (UserCheck, Repeat, Plus, Minus), данные (Server, HardDrive, FileText, Folder, Inbox, Mail, Bell, Tag), спец (Flame, Bookmark, Bot, Cpu, Globe, Lock, Key, Settings). UI: `IconPalette` перешла на `grid grid-cols-12 gap-1`, кнопки 7×7 с `bg-muted/40` фоном (вместо плоского border'а), активная — `border-primary bg-primary/10 text-primary shadow-sm`, под палитрой строка-метаданные `{N} в палитре · Каталог 1500+`.
+- **`AppearanceForm` (legacy для AddBlockDialog)** — синхронизирован с новым `StyleAndSizeForm`: использует `ColorSection` (uppercase-лейбл + опц. hint справа) и тот же стиль для иконки.
+
+### Fixed
+
+- **Треугольнички cross-page больше не перекрывают anchor-кружочки** ([src/components/blocks/block-relations-overlay.tsx](src/components/blocks/block-relations-overlay.tsx)) — раньше треугольник позиционировался по `(top+bottom)/2 - TRI_SIZE/2`, что попадало ровно в центр edge-anchor'а (`<circle r={4} cx={left} cy={midY}/>`) и они визуально слипались (см. скрин юзера). Теперь `triTop = anchorCenterY + ANCHOR_R + ANCHOR_TRI_GAP` (4 + 6 = 10px ниже центра кружочка). Добавлены константы `ANCHOR_R = 4` (синк с `<circle r={4}/>`) и `ANCHOR_TRI_GAP = 6`. Защита от вылета за нижнюю границу блока: `triTop = min(triTop, box.bottom - TRI_SIZE - 4)`.
+
 ## [0.15.0] - 2026-05-15
 
 Адаптивные колонки в `custom.data` (auto-fit + drag-resize + кнопка «А»),

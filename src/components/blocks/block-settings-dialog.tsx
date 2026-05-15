@@ -60,17 +60,20 @@ export function BlockSettingsDialog({
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-3xl">
-        <DialogHeader>
-          <DialogTitle>Настройки блока</DialogTitle>
-          <DialogDescription>
-            <span className="font-medium">{def.displayName}</span> —{' '}
+      <DialogContent className="max-w-2xl gap-0 overflow-hidden p-0">
+        {/* Header — компактный, описание блока на одну строку с тултипом */}
+        <DialogHeader className="border-b border-border/60 px-5 py-3">
+          <DialogTitle className="text-sm font-semibold">Настройки блока</DialogTitle>
+          <DialogDescription className="line-clamp-1 text-[11px]">
+            <span className="font-medium text-foreground">{def.displayName}</span>
+            <span className="mx-1 text-muted-foreground/60">·</span>
             <span className="text-muted-foreground">{def.description}</span>
           </DialogDescription>
         </DialogHeader>
 
-        <div className="-mx-6 border-b px-6">
-          <div className="flex gap-1">
+        {/* Tabs — тонкая панель без double padding */}
+        <div className="border-b border-border/60 bg-muted/20 px-5">
+          <div className="flex gap-0.5">
             {TABS.map((t) => {
               if (t.key === 'params' && !def.SettingsForm) return null;
               if (t.key === 'links' && !def.supportsDependencies) return null;
@@ -80,20 +83,24 @@ export function BlockSettingsDialog({
                   type="button"
                   onClick={() => setTab(t.key)}
                   className={cn(
-                    'px-3 py-2 text-sm font-medium transition border-b-2',
+                    'relative px-3 py-2 text-xs font-medium transition',
                     tab === t.key
-                      ? 'border-primary text-foreground'
-                      : 'border-transparent text-muted-foreground hover:text-foreground'
+                      ? 'text-foreground'
+                      : 'text-muted-foreground hover:text-foreground'
                   )}
                 >
                   {t.label}
+                  {tab === t.key && (
+                    <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-t bg-primary" />
+                  )}
                 </button>
               );
             })}
           </div>
         </div>
 
-        <div className="max-h-[60vh] space-y-4 overflow-y-auto pt-2">
+        {/* Body */}
+        <div className="max-h-[68vh] overflow-y-auto px-5 py-4">
           {tab === 'params' && def.SettingsForm && (
             <def.SettingsForm
               config={instance.config ?? {}}
@@ -139,8 +146,8 @@ export function BlockSettingsDialog({
           )}
         </div>
 
-        <DialogFooter>
-          <Button onClick={onClose}>Готово</Button>
+        <DialogFooter className="border-t border-border/60 bg-muted/20 px-5 py-2.5">
+          <Button size="sm" onClick={onClose}>Готово</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -189,77 +196,93 @@ function StyleAndSizeForm({
 
   return (
     <div className="space-y-4">
-      {/* Live preview */}
-      <div className="rounded-lg border border-dashed border-border/60 bg-muted/30 p-3">
-        <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-          Превью
-        </div>
-        <div
-          className="mt-1.5 flex items-center gap-2 rounded-md border bg-card px-3 py-2 shadow-sm"
-          style={{ borderColor: previewBorder }}
-        >
-          <PreviewIcon className="h-4 w-4 shrink-0" style={{ color: previewAccent }} />
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-medium" style={{ color: previewAccent }}>
-              {appearance.title || defaultTitle}
+      {/* Header row — preview + title side-by-side для плотности */}
+      <div className="grid gap-3 md:grid-cols-[200px_minmax(0,1fr)]">
+        {/* Live preview — компактный chip */}
+        <div className="flex flex-col">
+          <Label className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            Превью
+          </Label>
+          <div
+            className="flex flex-1 items-center gap-2 rounded-md border bg-card px-2.5 py-2 shadow-sm"
+            style={{ borderColor: previewBorder }}
+          >
+            <div
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md"
+              style={{ background: `${previewAccent}1a` }}
+            >
+              <PreviewIcon className="h-4 w-4" style={{ color: previewAccent }} />
             </div>
-            <div className="text-[10px] text-muted-foreground">
-              {w} × {h} ячеек grid
+            <div className="min-w-0 flex-1">
+              <div
+                className="truncate text-xs font-semibold"
+                style={{ color: previewAccent }}
+              >
+                {appearance.title || defaultTitle}
+              </div>
+              <div className="text-[10px] text-muted-foreground tabular-nums">
+                {w}×{h} grid
+              </div>
             </div>
           </div>
         </div>
+
+        {/* Title input */}
+        <div className="flex flex-col">
+          <Label htmlFor="block-title" className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            Заголовок
+          </Label>
+          <Input
+            id="block-title"
+            value={appearance.title ?? ''}
+            placeholder={defaultTitle}
+            onChange={(e) => setAppearance('title', e.target.value || undefined)}
+            className="h-9"
+          />
+        </div>
       </div>
 
-      {/* Заголовок */}
-      <div className="space-y-1.5">
-        <Label htmlFor="block-title">Заголовок</Label>
-        <Input
-          id="block-title"
-          value={appearance.title ?? ''}
-          placeholder={defaultTitle}
-          onChange={(e) => setAppearance('title', e.target.value || undefined)}
-        />
-      </div>
-
-      {/* Цвета */}
+      {/* Colors — две палитры в одной плоскости */}
       <div className="grid gap-3 md:grid-cols-2">
-        <div className="space-y-1.5">
-          <Label>Цвет рамки</Label>
-          <ColorPalette
-            value={appearance.borderColor}
-            onChange={(v) => setAppearance('borderColor', v || undefined)}
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label>Цвет акцента</Label>
-          <ColorPalette
-            value={appearance.accentColor}
-            onChange={(v) => setAppearance('accentColor', v || undefined)}
-          />
-          <p className="text-[11px] text-muted-foreground">Иконки и значения внутри блока</p>
-        </div>
+        <ColorSection
+          label="Цвет рамки"
+          value={appearance.borderColor}
+          onChange={(v) => setAppearance('borderColor', v || undefined)}
+        />
+        <ColorSection
+          label="Цвет акцента"
+          hint="Иконки и значения"
+          value={appearance.accentColor}
+          onChange={(v) => setAppearance('accentColor', v || undefined)}
+        />
       </div>
 
       {/* Иконка */}
       <div className="space-y-1.5">
-        <Label>Иконка</Label>
+        <div className="flex items-baseline justify-between">
+          <Label className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            Иконка
+          </Label>
+          <span className="text-[10px] text-muted-foreground">
+            По умолч.{' '}
+            <code className="rounded bg-muted px-1 py-0.5 font-mono text-[9px]">
+              {defaultIcon}
+            </code>
+          </span>
+        </div>
         <IconPalette
           value={appearance.icon}
           onChange={(v) => setAppearance('icon', v || undefined)}
         />
-        <p className="text-[11px] text-muted-foreground">
-          По умолчанию:{' '}
-          <code className="rounded bg-muted px-1 py-0.5 text-[10px]">{defaultIcon}</code>
-        </p>
       </div>
 
       {/* Размер */}
-      <div className="space-y-3 rounded-lg border border-border/60 bg-muted/20 p-3">
-        <div className="flex items-center justify-between">
-          <Label className="text-xs uppercase tracking-wide text-muted-foreground">
-            Размер
+      <div className="space-y-2.5 rounded-lg border border-border/60 bg-muted/20 p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <Label className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            Размер · {w}×{h}
           </Label>
-          <div className="flex gap-1">
+          <div className="flex gap-0.5">
             {SIZE_PRESETS.map((p) => {
               const active = w === p.w && h === p.h;
               return (
@@ -271,7 +294,7 @@ function StyleAndSizeForm({
                     'h-6 rounded px-2 text-[10px] font-medium transition',
                     active
                       ? 'bg-primary text-primary-foreground'
-                      : 'bg-muted text-muted-foreground hover:bg-accent',
+                      : 'bg-background text-muted-foreground ring-1 ring-border hover:bg-accent hover:text-foreground',
                   )}
                   title={`${p.w}×${p.h}`}
                 >
@@ -282,25 +305,51 @@ function StyleAndSizeForm({
           </div>
         </div>
 
-        <SizeRow
-          label="Ширина (колонок из 12)"
-          value={w}
-          min={minW}
-          max={12}
-          onChange={(v) => onSizeChange({ w: v, h })}
-        />
-        <SizeRow
-          label="Высота (строк grid'а)"
-          value={h}
-          min={minH}
-          max={20}
-          onChange={(v) => onSizeChange({ w, h: v })}
-        />
-        <p className="text-[11px] text-muted-foreground">
-          Размер влияет на плотность контента блока (xs/sm/md/lg). Большинство блоков
-          сами выбирают компактный вид при маленьком размере.
+        <div className="grid gap-3 sm:grid-cols-2">
+          <SizeRow
+            label="Ширина"
+            value={w}
+            min={minW}
+            max={12}
+            onChange={(v) => onSizeChange({ w: v, h })}
+          />
+          <SizeRow
+            label="Высота"
+            value={h}
+            min={minH}
+            max={20}
+            onChange={(v) => onSizeChange({ w, h: v })}
+          />
+        </div>
+        <p className="text-[10px] text-muted-foreground">
+          Размер влияет на плотность контента (xs/sm/md/lg) — большинство блоков сами
+          переключают вид.
         </p>
       </div>
+    </div>
+  );
+}
+
+function ColorSection({
+  label,
+  hint,
+  value,
+  onChange,
+}: {
+  label: string;
+  hint?: string;
+  value: string | undefined;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-baseline justify-between">
+        <Label className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+          {label}
+        </Label>
+        {hint && <span className="text-[10px] text-muted-foreground">{hint}</span>}
+      </div>
+      <ColorPalette value={value} onChange={onChange} />
     </div>
   );
 }
@@ -319,9 +368,11 @@ function SizeRow({
   onChange: (v: number) => void;
 }) {
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-1">
       <div className="flex items-center justify-between gap-2">
-        <Label className="text-xs">{label}</Label>
+        <Label className="text-[11px] text-muted-foreground">
+          {label} <span className="text-muted-foreground/60">({min}–{max})</span>
+        </Label>
         <input
           type="number"
           value={value}
@@ -332,7 +383,7 @@ function SizeRow({
             if (!Number.isFinite(n)) return;
             onChange(Math.min(max, Math.max(min, n)));
           }}
-          className="h-7 w-16 rounded-md border border-input bg-background px-2 text-right text-xs tabular-nums"
+          className="h-6 w-12 rounded-md border border-input bg-background px-1.5 text-right text-xs tabular-nums"
         />
       </div>
       <input
@@ -343,10 +394,6 @@ function SizeRow({
         onChange={(e) => onChange(Number(e.target.value))}
         className="w-full accent-primary"
       />
-      <div className="flex justify-between text-[10px] text-muted-foreground">
-        <span>min: {min}</span>
-        <span>max: {max}</span>
-      </div>
     </div>
   );
 }
@@ -383,21 +430,22 @@ function AiPromptForm({
 
   return (
     <div className="space-y-3">
-      <div className="flex items-start gap-2 rounded-lg border border-primary/20 bg-primary/5 p-3 text-[11px] text-muted-foreground">
-        <Sparkles className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
-        <div>
-          <div className="font-medium text-foreground">Master-промпт блока</div>
-          <p className="mt-0.5">
-            Этот текст добавляется к запросу AI при любом обращении к блоку.
-            AI прочитает его перед обработкой запроса пользователя. Глобальные
-            дефолты по типу блока появятся позже.
+      <div className="flex items-start gap-2 rounded-md border border-primary/20 bg-primary/5 p-2.5 text-[11px] text-muted-foreground">
+        <Sparkles className="mt-0.5 h-3 w-3 shrink-0 text-primary" />
+        <div className="min-w-0">
+          <div className="text-xs font-medium text-foreground">Master-промпт блока</div>
+          <p className="mt-0.5 text-[11px] leading-snug">
+            Добавляется к каждому AI-запросу из этого блока. Описывай назначение блока, тон,
+            формат ответов. Глобальные дефолты по типу — в будущей итерации.
           </p>
         </div>
       </div>
 
-      <div className="space-y-1.5">
+      <div className="space-y-1">
         <div className="flex items-center justify-between gap-2">
-          <Label htmlFor="block-prompt">Текст промпта</Label>
+          <Label htmlFor="block-prompt" className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            Текст промпта
+          </Label>
           {value.length > 0 && (
             <button
               type="button"
@@ -414,26 +462,25 @@ function AiPromptForm({
           id="block-prompt"
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          rows={8}
+          rows={9}
           placeholder={
             tip ??
-            `Доп. инструкция для AI при работе с блоком "${blockTypeLabel}". Например: что хранится, как считать, в каком тоне отвечать.`
+            `Доп. инструкция для AI при работе с блоком "${blockTypeLabel}". Что хранится, как считать, в каком тоне отвечать.`
           }
           className="w-full resize-y rounded-md border border-input bg-background px-3 py-2 font-mono text-[12px] leading-relaxed shadow-sm focus:outline-none focus:ring-1 focus:ring-primary"
         />
         <div className="flex items-center justify-between text-[10px] text-muted-foreground">
           <span>
-            Шаблон по типу блока: <code className="rounded bg-muted px-1">{blockType}</code>
-            {' '}— ещё не задан
+            Тип <code className="rounded bg-muted px-1 font-mono text-[9px]">{blockType}</code>
           </span>
           <span className="tabular-nums">
-            {len} симв · ≈ {approxTokens} токенов
+            {len} симв · ≈{approxTokens} токенов
           </span>
         </div>
       </div>
 
       {tip && (
-        <div className="rounded-md bg-muted/40 p-2.5 text-[11px] text-muted-foreground">
+        <div className="rounded-md border border-border/50 bg-muted/30 p-2 text-[11px] leading-snug text-muted-foreground">
           <span className="font-medium text-foreground">Подсказка:</span> {tip}
         </div>
       )}
@@ -472,34 +519,36 @@ export function AppearanceForm({
         />
       </div>
 
-      <div className="space-y-1.5">
-        <Label>Цвет рамки</Label>
-        <ColorPalette
+      <div className="grid gap-3 md:grid-cols-2">
+        <ColorSection
+          label="Цвет рамки"
           value={appearance.borderColor}
           onChange={(v) => set('borderColor', v || undefined)}
         />
-      </div>
-
-      <div className="space-y-1.5">
-        <Label>Цвет акцента</Label>
-        <ColorPalette
+        <ColorSection
+          label="Цвет акцента"
+          hint="Иконки и значения"
           value={appearance.accentColor}
           onChange={(v) => set('accentColor', v || undefined)}
         />
-        <p className="text-[11px] text-muted-foreground">
-          Используется для иконок и значений внутри блока
-        </p>
       </div>
 
       <div className="space-y-1.5">
-        <Label>Иконка</Label>
+        <div className="flex items-baseline justify-between">
+          <Label className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            Иконка
+          </Label>
+          <span className="text-[10px] text-muted-foreground">
+            По умолч.{' '}
+            <code className="rounded bg-muted px-1 py-0.5 font-mono text-[9px]">
+              {defaultIcon}
+            </code>
+          </span>
+        </div>
         <IconPalette
           value={appearance.icon}
           onChange={(v) => set('icon', v || undefined)}
         />
-        <p className="text-[11px] text-muted-foreground">
-          По умолчанию: <code className="rounded bg-muted px-1 py-0.5 text-[10px]">{defaultIcon}</code>
-        </p>
       </div>
     </div>
   );
@@ -513,29 +562,38 @@ function ColorPalette({
   onChange: (v: string) => void;
 }) {
   return (
-    <div className="flex flex-wrap gap-1.5">
+    <div className="grid grid-cols-12 gap-1">
       {ACCENT_COLORS.map((c) => {
         const active = (value ?? '') === c.value;
+        const isDefault = !c.value;
         return (
           <button
             key={c.name}
             type="button"
             onClick={() => onChange(c.value)}
             className={cn(
-              'flex h-7 w-7 items-center justify-center rounded border transition',
-              active ? 'ring-2 ring-primary ring-offset-1' : 'hover:scale-110'
+              'group relative flex h-6 w-6 items-center justify-center rounded-md transition',
+              isDefault
+                ? 'border border-dashed border-border bg-background'
+                : 'shadow-sm hover:scale-110',
+              active && 'ring-2 ring-primary ring-offset-1 ring-offset-background',
             )}
-            style={{
-              backgroundColor: c.value || 'transparent',
-              borderColor: c.value ? c.value : 'hsl(var(--border))',
-            }}
+            style={
+              isDefault
+                ? undefined
+                : { backgroundColor: c.value }
+            }
             title={c.name}
+            aria-label={c.name}
           >
-            {active && (
-              <Check
-                className="h-3 w-3"
-                style={{ color: c.value ? 'white' : 'currentColor' }}
-              />
+            {active &&
+              (isDefault ? (
+                <Check className="h-3 w-3 text-foreground" />
+              ) : (
+                <Check className="h-3 w-3 text-white drop-shadow" />
+              ))}
+            {!active && isDefault && (
+              <span className="text-[9px] text-muted-foreground/60">×</span>
             )}
           </button>
         );
@@ -552,16 +610,19 @@ function IconPalette({
   onChange: (v: string) => void;
 }) {
   const [modalOpen, setModalOpen] = useState(false);
+  const totalIcons = ICON_NAMES.length;
 
   return (
     <>
-      <div className="grid grid-cols-10 gap-1">
+      <div className="grid grid-cols-12 gap-1">
         <button
           type="button"
           onClick={() => onChange('')}
           className={cn(
-            'flex h-8 w-8 items-center justify-center rounded border text-xs text-muted-foreground transition',
-            !value ? 'ring-2 ring-primary' : 'hover:bg-accent'
+            'flex h-7 w-7 items-center justify-center rounded-md border border-dashed text-[10px] text-muted-foreground transition',
+            !value
+              ? 'border-primary bg-primary/10 text-primary'
+              : 'border-border hover:border-foreground/40 hover:text-foreground'
           )}
           title="По умолчанию"
         >
@@ -576,26 +637,33 @@ function IconPalette({
               type="button"
               onClick={() => onChange(n)}
               className={cn(
-                'flex h-8 w-8 items-center justify-center rounded border transition',
-                active ? 'ring-2 ring-primary' : 'hover:bg-accent'
+                'flex h-7 w-7 items-center justify-center rounded-md border transition',
+                active
+                  ? 'border-primary bg-primary/10 text-primary shadow-sm'
+                  : 'border-transparent bg-muted/40 text-muted-foreground hover:border-border hover:bg-accent hover:text-foreground'
               )}
               title={n}
             >
-              <Icon className="h-4 w-4" />
+              <Icon className="h-3.5 w-3.5" />
             </button>
           );
         })}
       </div>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        className="mt-2 w-full"
-        onClick={() => setModalOpen(true)}
-      >
-        <Grid3X3 className="h-3.5 w-3.5" />
-        Выбрать из каталога ({'>'}1500 иконок)
-      </Button>
+      <div className="mt-1.5 flex items-center justify-between gap-2">
+        <span className="text-[10px] text-muted-foreground tabular-nums">
+          {totalIcons} в палитре
+        </span>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-7 text-[11px]"
+          onClick={() => setModalOpen(true)}
+        >
+          <Grid3X3 className="h-3 w-3" />
+          Каталог · 1500+
+        </Button>
+      </div>
       {modalOpen && (
         <Suspense fallback={null}>
           <IconPickerModal
