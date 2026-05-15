@@ -206,6 +206,50 @@ console.log('\n# Ozon: глобальный НДС (vatPct)');
   near(withVat.profitPerUnit, noVat.profitPerUnit - 200, 0.01, 'profit с НДС меньше на 200');
 }
 
+console.log('\n# Ozon FBS: скорость отгрузки (+2% к комиссии)');
+{
+  const baseFbs = calculateOzon({
+    mode: 'fbs', price: 1000, discountPct: 0, cost: 200, volumeL: 1, isLocalCluster: true,
+    commissionMode: 'manual', commissionPct: 15, acquiringPct: 0, deliveryPvzPct: 0, deliveryPvzCap: 0,
+    buyoutPct: 100, returnProcessing: 0, drrPct: 0,
+    taxMode: 'none', taxRatePct: 0,
+    fbsShipmentSpeed: 'standard',
+    salesPerMonth: 0, batchSize: 0, stock: 0, overheadPerUnit: 0,
+  });
+  const fastFbs = calculateOzon({
+    mode: 'fbs', price: 1000, discountPct: 0, cost: 200, volumeL: 1, isLocalCluster: true,
+    commissionMode: 'manual', commissionPct: 15, acquiringPct: 0, deliveryPvzPct: 0, deliveryPvzCap: 0,
+    buyoutPct: 100, returnProcessing: 0, drrPct: 0,
+    taxMode: 'none', taxRatePct: 0,
+    fbsShipmentSpeed: 'fast',
+    salesPerMonth: 0, batchSize: 0, stock: 0, overheadPerUnit: 0,
+  });
+  const slowFbs = calculateOzon({
+    mode: 'fbs', price: 1000, discountPct: 0, cost: 200, volumeL: 1, isLocalCluster: true,
+    commissionMode: 'manual', commissionPct: 15, acquiringPct: 0, deliveryPvzPct: 0, deliveryPvzCap: 0,
+    buyoutPct: 100, returnProcessing: 0, drrPct: 0,
+    taxMode: 'none', taxRatePct: 0,
+    fbsShipmentSpeed: 'slow',
+    salesPerMonth: 0, batchSize: 0, stock: 0, overheadPerUnit: 0,
+  });
+  near(baseFbs.commission, 150, 0.5, 'FBS standard: commission = 15% от 1000 = 150');
+  near(fastFbs.commission, 170, 0.5, 'FBS fast: commission = (15+2)% от 1000 = 170');
+  near(slowFbs.commission, 150, 0.5, 'FBS slow: commission = 15% (без штрафов)');
+}
+
+console.log('\n# Ozon FBO: скорость отгрузки FBS не влияет (только FBS)');
+{
+  const fboFast = calculateOzon({
+    mode: 'fbo', price: 1000, discountPct: 0, cost: 200, volumeL: 1, isLocalCluster: true,
+    commissionMode: 'manual', commissionPct: 15, acquiringPct: 0, deliveryPvzPct: 0, deliveryPvzCap: 0,
+    buyoutPct: 100, returnProcessing: 0, drrPct: 0,
+    taxMode: 'none', taxRatePct: 0,
+    fbsShipmentSpeed: 'fast',
+    salesPerMonth: 0, batchSize: 0, stock: 0, overheadPerUnit: 0,
+  });
+  near(fboFast.commission, 150, 0.5, 'FBO + fast: commission остаётся 15% (без надбавки FBS)');
+}
+
 console.log('\n# Yandex: глобальный НДС (vatPct)');
 {
   const r = calculateYandex({

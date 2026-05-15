@@ -11,10 +11,22 @@ import { Input } from '@/components/ui/input';
 import { LinkableNumberCell } from '@/components/unit-economics/linkable-number-cell';
 import { useAllBlockValuesFlat } from '@/lib/unit-economics/use-live-block-values';
 import { resolveBindingValue } from '@/lib/unit-economics/bindings';
-import type { OzonInputs, UnitCellBinding } from '@/lib/unit-economics/types';
+import type {
+  OzonInputs,
+  UnitCellBinding,
+  OzonFbsDropoffPoint,
+  OzonFbsShipmentSpeed,
+  OzonFbsWarehouse,
+} from '@/lib/unit-economics/types';
 import { rublesToKopecks } from '@/lib/unit-economics/types';
 import { calculateOzon, OZON_DEFAULT_INPUTS } from '@/lib/unit-economics/ozon/calculate';
-import { OZON_TARIFF_VERSION } from '@/lib/unit-economics/ozon/tariffs-2026-04-07';
+import {
+  OZON_TARIFF_VERSION,
+  FBS_DROPOFF_LABELS,
+  FBS_SHIPMENT_SPEED_LABELS,
+  FBS_WAREHOUSE_LABELS,
+  FBS_WAREHOUSE_LOCAL_BY_DEFAULT,
+} from '@/lib/unit-economics/ozon/tariffs-2026-04-07';
 import { useBlockValuePublisher } from '@/lib/blocks/values';
 import { useFormatSettings, formatRublesWithSettings } from '@/lib/format-settings';
 
@@ -161,11 +173,17 @@ function RenderOzonCalculator({ instance, onConfigChange }: BlockRenderProps) {
   });
 
   const positive = results.profitPerUnit > 0;
+  const isFbs = inputs.mode === 'fbs';
+  const handleWarehouseChange = (next: OzonFbsWarehouse) => {
+    setInput('fbsWarehouse', next);
+    const localDefault = FBS_WAREHOUSE_LOCAL_BY_DEFAULT[next];
+    if (typeof localDefault === 'boolean') setInput('isLocalCluster', localDefault);
+  };
 
   return (
     <Card className="flex h-full flex-col overflow-hidden">
-      <div className="flex items-center justify-between gap-2 border-b border-border/60 px-3 py-2">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 px-3 py-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Calculator className="h-4 w-4 text-muted-foreground" />
           <Input
             value={config.title}
@@ -182,6 +200,15 @@ function RenderOzonCalculator({ instance, onConfigChange }: BlockRenderProps) {
           >
             {inputs.mode}
           </span>
+          {isFbs && (
+            <span
+              className="hidden items-center rounded border border-border/60 bg-background px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground sm:inline-flex"
+              title="Скорость отгрузки и склад FBS"
+            >
+              {FBS_SHIPMENT_SPEED_LABELS[inputs.fbsShipmentSpeed ?? 'standard']} ·{' '}
+              {FBS_WAREHOUSE_LABELS[inputs.fbsWarehouse ?? 'almaty']}
+            </span>
+          )}
           {Number(inputs.vatPct ?? 0) > 0 && (
             <span className="inline-flex items-center rounded border border-border/60 bg-background px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
               НДС {Number(inputs.vatPct)}%
@@ -210,6 +237,29 @@ function RenderOzonCalculator({ instance, onConfigChange }: BlockRenderProps) {
           </div>
         </div>
       </div>
+
+      {isFbs && (
+        <div className="flex flex-wrap items-center gap-3 border-b border-border/60 bg-muted/20 px-3 py-2 text-[11px]">
+          <SelectInline
+            label="Точка сдачи"
+            value={inputs.fbsDropoffPoint ?? 'sorting_center'}
+            options={Object.entries(FBS_DROPOFF_LABELS).map(([v, l]) => ({ value: v, label: l }))}
+            onChange={(v) => setInput('fbsDropoffPoint', v as OzonFbsDropoffPoint)}
+          />
+          <SelectInline
+            label="Скорость отгрузки"
+            value={inputs.fbsShipmentSpeed ?? 'standard'}
+            options={Object.entries(FBS_SHIPMENT_SPEED_LABELS).map(([v, l]) => ({ value: v, label: l }))}
+            onChange={(v) => setInput('fbsShipmentSpeed', v as OzonFbsShipmentSpeed)}
+          />
+          <SelectInline
+            label="Склад FBS"
+            value={inputs.fbsWarehouse ?? 'almaty'}
+            options={Object.entries(FBS_WAREHOUSE_LABELS).map(([v, l]) => ({ value: v, label: l }))}
+            onChange={(v) => handleWarehouseChange(v as OzonFbsWarehouse)}
+          />
+        </div>
+      )}
 
       <div className="grid flex-1 overflow-auto" style={{ gridTemplateColumns: '1fr 1fr' }}>
         {/* Inputs */}
@@ -364,6 +414,35 @@ function Metric({
         {value}
       </div>
       {hint && <div className="mt-0.5 truncate text-[10px] text-muted-foreground">{hint}</div>}
+    </div>
+  );
+}
+
+function SelectInline({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: Array<{ value: string; label: string }>;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="text-muted-foreground">{label}:</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="h-6 rounded border border-border/60 bg-background px-1 text-[11px]"
+      >
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
     </div>
   );
 }

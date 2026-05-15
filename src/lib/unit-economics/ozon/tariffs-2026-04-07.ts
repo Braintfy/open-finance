@@ -45,6 +45,57 @@ export const HIGH_VOLUME_FBO_DISCOUNT = 0.15;
 /** Возврат: процент от логистики FBO (приёмка возврата + обработка). */
 export const RETURN_LOGISTICS_PCT_OF_FORWARD = 0.5;
 
+/**
+ * Надбавка к комиссии за быструю отгрузку FBS (12–24 ч).
+ * Источник: FBS-калькулятор Синего Рассвета (опция «12-24 ч (+2% ком.)»).
+ */
+export const FBS_FAST_SHIPMENT_COMMISSION_BUMP_PCT = 2;
+
+/**
+ * Карта складов FBS → локальный/нелокальный кластер по умолчанию.
+ * Если склад в карте — берётся это значение; иначе — true (локальный).
+ * Слаг 'other' трактуется как нелокальный (если пользователь явно не переопределит
+ * глобальный isLocalCluster).
+ */
+export const FBS_WAREHOUSE_LOCAL_BY_DEFAULT: Record<string, boolean> = {
+  almaty: true,
+  moscow: true,
+  spb: true,
+  ekaterinburg: true,
+  kazan: true,
+  novosibirsk: true,
+  rostov: true,
+  krasnodar: true,
+  other: false,
+};
+
+/** Человекочитаемые подписи складов FBS (для UI). */
+export const FBS_WAREHOUSE_LABELS: Record<string, string> = {
+  almaty: 'Алматы',
+  moscow: 'Москва',
+  spb: 'Санкт-Петербург',
+  ekaterinburg: 'Екатеринбург',
+  kazan: 'Казань',
+  novosibirsk: 'Новосибирск',
+  rostov: 'Ростов-на-Дону',
+  krasnodar: 'Краснодар',
+  other: 'Прочий склад',
+};
+
+/** Подписи точек сдачи FBS. */
+export const FBS_DROPOFF_LABELS: Record<string, string> = {
+  sorting_center: 'Сортировочный центр',
+  pickup_point: 'Пункт приёма',
+  ozon_warehouse: 'Склад Ozon',
+};
+
+/** Подписи скоростей отгрузки FBS. */
+export const FBS_SHIPMENT_SPEED_LABELS: Record<string, string> = {
+  fast: '12–24 ч (+2% ком.)',
+  standard: '24–48 ч',
+  slow: '48–72 ч',
+};
+
 /** Дефолты для новых записей */
 export const OZON_DEFAULTS = {
   acquiringPct: 1.5,

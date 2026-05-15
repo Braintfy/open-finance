@@ -21,6 +21,54 @@ import { UnitOzonMultiTableBlock } from './catalog/unit-ozon-multi-table';
 import { UnitYandexCalculatorBlock } from './catalog/unit-yandex-calculator';
 import { UnitMyStoreTableBlock } from './catalog/unit-my-store-table';
 
+/**
+ * Метаданные маркетплейса для каждого блока — tags и recommendedFor задаются
+ * здесь, чтобы не править каждый файл отдельно и иметь единый источник правды.
+ */
+const BLOCK_META: Record<string, { tags?: string[]; recommendedFor?: string[]; source?: BlockDef['source'] }> = {
+  'stat.income': { tags: ['cashflow', 'kpi', 'finance'], recommendedFor: ['cashflow', 'dashboard'] },
+  'stat.expense': { tags: ['cashflow', 'kpi', 'finance'], recommendedFor: ['cashflow', 'dashboard'] },
+  'stat.balance': { tags: ['cashflow', 'kpi', 'finance'], recommendedFor: ['cashflow', 'dashboard'] },
+  'stat.custom': { tags: ['kpi', 'custom', 'finance'], recommendedFor: ['cashflow', 'dashboard'] },
+  'cashflow.top-categories': { tags: ['cashflow', 'analytics'], recommendedFor: ['cashflow', 'dashboard'] },
+  'cashflow.transactions': { tags: ['cashflow', 'tables'], recommendedFor: ['cashflow'] },
+  sheet: { tags: ['tables', 'spreadsheet', 'universal'], recommendedFor: [] },
+  'navigate.card': { tags: ['navigation', 'dashboard'], recommendedFor: ['dashboard'] },
+  'computed.sum': { tags: ['formula', 'analytics', 'universal'], recommendedFor: [] },
+  'custom.data': { tags: ['data', 'universal'], recommendedFor: [] },
+  'excel.cell': { tags: ['spreadsheet', 'universal'], recommendedFor: [] },
+  'chart.cashflow': { tags: ['charts', 'cashflow'], recommendedFor: ['cashflow', 'dashboard'] },
+  'ai.micro-agent': { tags: ['ai', 'universal'], recommendedFor: [] },
+  'inbox.channel-feed': { tags: ['inbox', 'communications'], recommendedFor: ['inbox'] },
+  'unit.ozon-calculator': {
+    tags: ['marketplace', 'unit-economics', 'ozon'],
+    recommendedFor: ['unit-economics-ozon'],
+  },
+  'unit.ozon-multi-table': {
+    tags: ['marketplace', 'unit-economics', 'ozon', 'tables'],
+    recommendedFor: ['unit-economics-ozon-multi'],
+  },
+  'unit.yandex-calculator': {
+    tags: ['marketplace', 'unit-economics', 'yandex'],
+    recommendedFor: ['unit-economics-yandex'],
+  },
+  'unit.my-store-table': {
+    tags: ['marketplace', 'unit-economics', 'tables', 'custom'],
+    recommendedFor: ['unit-economics-my-store'],
+  },
+};
+
+function withMeta(def: BlockDef): BlockDef {
+  const meta = BLOCK_META[def.type];
+  if (!meta) return { ...def, source: def.source ?? 'builtin' };
+  return {
+    ...def,
+    tags: def.tags ?? meta.tags,
+    recommendedFor: def.recommendedFor ?? meta.recommendedFor,
+    source: def.source ?? meta.source ?? 'builtin',
+  };
+}
+
 const ALL_BLOCKS: BlockDef[] = [
   StatIncomeBlock,
   StatExpenseBlock,
@@ -40,7 +88,7 @@ const ALL_BLOCKS: BlockDef[] = [
   UnitOzonMultiTableBlock,
   UnitYandexCalculatorBlock,
   UnitMyStoreTableBlock,
-];
+].map(withMeta);
 
 const REGISTRY = new Map<string, BlockDef>(ALL_BLOCKS.map((b) => [b.type, b]));
 
@@ -52,6 +100,19 @@ export function listBlocksForPage(pageKey: string): BlockDef[] {
   return ALL_BLOCKS.filter(
     (b) => b.pages.includes('*') || b.pages.includes(pageKey)
   );
+}
+
+/**
+ * Блоки, рекомендуемые для конкретной страницы.
+ * Правило: `recommendedFor` явно содержит pageKey ИЛИ `pages` содержит pageKey
+ * (без '*'-блоков, чтобы Рекомендуемые не превращались во «всё»).
+ */
+export function listRecommendedForPage(pageKey: string): BlockDef[] {
+  return ALL_BLOCKS.filter((b) => {
+    if (b.recommendedFor?.includes(pageKey)) return true;
+    if (b.pages.includes(pageKey)) return true;
+    return false;
+  });
 }
 
 export function listAllBlocks(): BlockDef[] {

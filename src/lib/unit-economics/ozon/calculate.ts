@@ -8,6 +8,7 @@ import {
   autoCommissionPct,
   fboLogisticsCost,
   fbsLogisticsCost,
+  FBS_FAST_SHIPMENT_COMMISSION_BUMP_PCT,
   HIGH_VOLUME_FBO_DISCOUNT,
   NON_LOCAL_CLUSTER_MULTIPLIER,
   RETURN_LOGISTICS_PCT_OF_FORWARD,
@@ -22,6 +23,9 @@ export const OZON_DEFAULT_INPUTS: OzonInputs = {
   volumeL: 1,
   isLocalCluster: true,
   highVolumeDiscount: false,
+  fbsDropoffPoint: 'sorting_center',
+  fbsShipmentSpeed: 'standard',
+  fbsWarehouse: 'almaty',
   commissionMode: 'auto',
   commissionPct: 16,
   extraCommissionPct: 0,
@@ -76,7 +80,16 @@ export function calculateOzon(rawInputs: Partial<OzonInputs>): OzonResults {
     inputs.commissionMode === 'auto'
       ? autoCommissionPct(buyerPrice, safeNumber(inputs.commissionPct))
       : safeNumber(inputs.commissionPct);
-  const totalCommissionPct = clamp(baseCommissionPct + safeNumber(inputs.extraCommissionPct), 0, 100);
+  // FBS: быстрая отгрузка (12–24ч) добавляет фиксированный % к комиссии.
+  const fastShipmentBumpPct =
+    inputs.mode === 'fbs' && inputs.fbsShipmentSpeed === 'fast'
+      ? FBS_FAST_SHIPMENT_COMMISSION_BUMP_PCT
+      : 0;
+  const totalCommissionPct = clamp(
+    baseCommissionPct + safeNumber(inputs.extraCommissionPct) + fastShipmentBumpPct,
+    0,
+    100,
+  );
   const commission = round2((buyerPrice * totalCommissionPct) / 100);
 
   const acquiring = round2((buyerPrice * clamp(safeNumber(inputs.acquiringPct), 0, 100)) / 100);

@@ -438,7 +438,7 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
         ) : (
           <div className="min-w-full text-[11px]" style={{ minWidth: `${totalRowWidth}px` }}>
             {/* Header row */}
-            <div className="sticky top-0 z-30 flex border-b border-border/70 bg-card/95 backdrop-blur">
+            <div className="sticky top-0 z-40 flex border-b border-border/70 bg-card">
               <HeaderCell width={32} sticky stickyLeft={0} className="text-center font-semibold text-muted-foreground">
                 #
               </HeaderCell>
@@ -478,7 +478,7 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
             {computedRows.map(({ row, values }, idx) => (
               <div
                 key={row.id}
-                className="group flex border-b border-border/40 transition-colors hover:bg-accent/10 [&:hover_[data-sticky]]:bg-accent/10"
+                className="group flex border-b border-border/40 transition-colors hover:bg-accent/5 [&:hover_[data-sticky]]:bg-accent/5"
               >
                 <BodyCell width={32} sticky stickyLeft={0} className="justify-center text-center text-muted-foreground tabular-nums">
                   {idx + 1}
@@ -489,7 +489,7 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
                     value={row.article}
                     onChange={(e) => updateRow(row.id, { article: e.target.value })}
                     placeholder="Артикул"
-                    className="h-full w-full min-w-0 border-0 bg-transparent px-1.5 text-[11px] outline-none placeholder:text-muted-foreground/60"
+                    className="h-full w-full min-w-0 truncate border-0 bg-transparent px-1.5 text-[11px] outline-none placeholder:text-muted-foreground/60"
                   />
                 </BodyCell>
                 <BodyCell width={220} sticky stickyLeft={142} stickyEdge>
@@ -498,7 +498,7 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
                     value={row.name}
                     onChange={(e) => updateRow(row.id, { name: e.target.value })}
                     placeholder="Название товара"
-                    className="h-full w-full min-w-0 border-0 bg-transparent px-1.5 text-[11px] outline-none placeholder:text-muted-foreground/60"
+                    className="h-full w-full min-w-0 truncate border-0 bg-transparent px-1.5 text-[11px] outline-none placeholder:text-muted-foreground/60"
                   />
                 </BodyCell>
                 {visibleColumns.map((col) => {
@@ -589,7 +589,7 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
             ))}
 
             {/* Totals */}
-            <div className="sticky bottom-0 z-[25] flex border-t border-border/70 bg-card/95 text-[11px] font-semibold backdrop-blur">
+            <div className="sticky bottom-0 z-[35] flex border-t border-border/70 bg-card text-[11px] font-semibold">
               <BodyCell width={32 + 110 + 220} sticky stickyLeft={0} stickyEdge className="justify-end px-3 text-muted-foreground">
                 Итого по {totals.rowsCount} товарам
               </BodyCell>
@@ -665,15 +665,15 @@ function HeaderCell({
     <div
       data-sticky={sticky ? '' : undefined}
       className={
-        'group/header flex shrink-0 flex-col justify-center border-r border-border/40 px-1.5 py-1.5 text-[10px] uppercase tracking-wider text-muted-foreground ' +
-        (sticky ? 'bg-card ' : '') +
+        'group/header flex shrink-0 flex-col justify-center overflow-hidden border-r border-border/40 px-1.5 py-1.5 text-[10px] uppercase tracking-wider text-muted-foreground ' +
+        (sticky ? 'isolate bg-card ' : '') +
         (className ?? '')
       }
       style={{
         width,
         position: sticky ? 'sticky' : undefined,
         left: sticky ? stickyLeft : undefined,
-        zIndex: sticky ? 35 : undefined,
+        zIndex: sticky ? 45 : undefined,
         boxShadow: stickyEdge ? '1px 0 0 0 var(--border)' : undefined,
       }}
     >
@@ -701,8 +701,8 @@ function BodyCell({
     <div
       data-sticky={sticky ? '' : undefined}
       className={
-        'flex shrink-0 items-center border-r border-border/30 ' +
-        (sticky ? 'bg-card ' : '') +
+        'flex shrink-0 items-center overflow-hidden border-r border-border/30 ' +
+        (sticky ? 'isolate bg-card ' : '') +
         (className ?? '')
       }
       style={{
@@ -710,7 +710,7 @@ function BodyCell({
         height: 30,
         position: sticky ? 'sticky' : undefined,
         left: sticky ? stickyLeft : undefined,
-        zIndex: sticky ? 20 : undefined,
+        zIndex: sticky ? 30 : undefined,
         boxShadow: stickyEdge ? '1px 0 0 0 var(--border)' : undefined,
       }}
     >

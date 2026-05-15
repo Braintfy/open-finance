@@ -100,7 +100,7 @@ Open Finance = настраиваемый Lego-конструктор интер
 - **Не использовать `sanitizeBlocks` на сервере**: catalog/client exports могут быть пустыми в server bundle.
 
 ### Текущий каталог блоков
-`stat.income`, `stat.expense`, `stat.balance`, `stat.custom`, `cashflow.top-categories`, `cashflow.transactions`, `sheet`, `excel.cell`, `navigate.card`, `computed.sum`, `custom.data`, `chart.cashflow`, `ai.micro-agent`, `inbox.channel-feed`, `unit.ozon-calculator`, `unit.ozon-multi-table`, `unit.yandex-calculator`, `unit.my-store-table`.
+`stat.income`, `stat.expense`, `stat.balance`, `stat.custom`, `cashflow.top-categories`, `cashflow.transactions`, `sheet`, `excel.cell`, `navigate.card`, `computed.sum`, `custom.data`, `chart.cashflow`, `ai.micro-agent`, `inbox.channel-feed`, `unit.ozon-calculator`, `unit.ozon-multi-table`, `unit.yandex-calculator`, `unit.my-store-table`. Каждый `BlockDef` помечен `tags: string[]`, `recommendedFor?: string[]` и `source: 'builtin'|'user'|'paid'` через карту `BLOCK_META` в `registry.ts` (источник правды для маркетплейса и `AddBlockDialog`).
 
 ## Реализованные страницы и модули
 - **Dashboard `/dashboard`** — BlockGrid с KPI и navigation cards.
@@ -108,6 +108,7 @@ Open Finance = настраиваемый Lego-конструктор интер
 - **Inbox `/inbox`** — BlockGrid с двумя дефолтными блоками `inbox.channel-feed` размером `6×12`.
 - **Boards `/boards`, `/boards/[boardId]`** — персональные доски на BlockGrid, `pageKey = board-{boardId}`.
 - **Unit Economics `/unit-economics`** — четыре вкладки (`unit-economics-ozon`, `unit-economics-ozon-multi`, `unit-economics-yandex`, `unit-economics-my-store`), каждый таб = свой `pageKey` с самостоятельным BlockGrid layout.
+- **Marketplace `/marketplace`** — каталог всех блоков (browse-only, без установки). `src/app/(app)/marketplace/{page,marketplace-client}.tsx`. Поиск, фильтр по категории и тегам, диалог детальной инфо. Кнопки «Создать блок» и «Купить блок» disabled (заглушки на будущее). Пункт sidebar `marketplace` (`Store` icon).
 - **Settings `/settings`** — visibility toggles, форматирование, настройки разделов.
 - **Admin AI pages** — local models, external providers/proxy/diagnostics, system prompt.
 
@@ -173,10 +174,10 @@ Open Finance = настраиваемый Lego-конструктор интер
 - Telegram channel пока placeholder.
 - Подключение каналов живёт в настройках конкретного `inbox.channel-feed` блока, не в общей settings-секции.
 
-## Unit Economics (MVP, v0.11.1)
+## Unit Economics (MVP, v0.12.0)
 ### Ключевые файлы
-- `src/lib/unit-economics/types.ts` — `Marketplace`, `OzonMode`, `YandexMode`, `TaxMode`, `OzonInputs/Results` (с полем `vatPct/vat`), `YandexInputs/Results` (тоже с `vatPct/vat`), `UnitCellBinding`, утилиты (`clamp`, `safeNumber`, `round2`, `rublesToKopecks`).
-- `src/lib/unit-economics/ozon/{tariffs-2026-04-07,calculate}.ts` — версионированный тарифный пак (`OZON_TARIFF_VERSION = ozon_2026_04_07`) и pure-TS engine. НДС считается отдельной строкой (`vat = buyerPrice * vatPct/100`), `tax` — отдельно для УСН/ОСНО.
+- `src/lib/unit-economics/types.ts` — `Marketplace`, `OzonMode`, `YandexMode`, `TaxMode`, `OzonFbsDropoffPoint/ShipmentSpeed/Warehouse`, `OzonInputs/Results` (с полем `vatPct/vat` + опциональные `fbsDropoffPoint?/fbsShipmentSpeed?/fbsWarehouse?`), `YandexInputs/Results` (с `vatPct/vat`), `UnitCellBinding`, утилиты (`clamp`, `safeNumber`, `round2`, `rublesToKopecks`).
+- `src/lib/unit-economics/ozon/{tariffs-2026-04-07,calculate}.ts` — версионированный тарифный пак (`OZON_TARIFF_VERSION = ozon_2026_04_07`) и pure-TS engine. НДС считается отдельной строкой (`vat = buyerPrice * vatPct/100`), `tax` — отдельно для УСН/ОСНО. Добавлены `FBS_FAST_SHIPMENT_COMMISSION_BUMP_PCT = 2`, `FBS_WAREHOUSE_LOCAL_BY_DEFAULT`, `FBS_WAREHOUSE_LABELS`, `FBS_DROPOFF_LABELS`, `FBS_SHIPMENT_SPEED_LABELS`. `calculateOzon` добавляет +2% к `commissionPct` при `mode='fbs' && fbsShipmentSpeed='fast'` (для FBO надбавка не применяется).
 - `src/lib/unit-economics/yandex/{tariffs-2026-04-01,calculate}.ts` — то же для Yandex, НДС от `customerPrice`.
 - `src/lib/unit-economics/bindings.ts` — `isBindingActive`, `bindingScopedKey`, `resolveBindingValue` (kopecks→rubles по флагу `money`), `bindingHasValue`.
 - `src/lib/unit-economics/use-live-block-values.ts` — `useAllBlockValuesFlat` (live из `BlockValuesContext`), `useRemoteBlockSources` (`/api/blocks/sources`).
@@ -189,14 +190,16 @@ Open Finance = настраиваемый Lego-конструктор интер
 - `src/lib/blocks/catalog/{unit-ozon-calculator,unit-ozon-multi-table,unit-yandex-calculator,unit-my-store-table}.tsx` — блоки.
 - `src/components/unit-economics/{unit-cell-binding-dialog,linkable-number-cell}.tsx` — UI привязок (linkable-number-cell всегда `<input>`, в linked-режиме `readOnly` + onClick → picker).
 - `src/app/(app)/unit-economics/{page,unit-economics-client}.tsx` — server + client страница (4 таба).
-- `scripts/test-unit-economics.ts` — smoke tests, 28 PASS (запуск: `pnpm tsx scripts/test-unit-economics.ts [path-to-xlsx]`).
+- `scripts/test-unit-economics.ts` — smoke tests, 32 PASS (запуск: `pnpm tsx scripts/test-unit-economics.ts [path-to-xlsx]`).
 
 ### Инварианты
 - **Версионирование тарифов:** сохранённые `unit_calculations.tariff_version` ссылаются на конкретный pack (`ozon_2026_04_07`, `yandex_2026_04_01`); при добавлении нового pack — не перезаписывать старые расчёты.
 - **Деньги:** в БД хранить в копейках (`integer`), в `inputs/results` JSONB — рубли с `money: true` пометкой при необходимости. UI форматирует через существующие helpers.
 - **НДС vs Налог:** `vatPct/vat` — отдельная строка расхода, не зависит от taxMode. `taxRatePct/tax` — налог на прибыль (УСН/ОСНО). Не объединять.
+- **FBS-апгрейд (v0.12.0):** `OzonInputs.fbsShipmentSpeed='fast'` даёт `+FBS_FAST_SHIPMENT_COMMISSION_BUMP_PCT(=2)` к комиссии (только при `mode='fbs'`). `fbsWarehouse` синхронизирует `isLocalCluster` через `FBS_WAREHOUSE_LOCAL_BY_DEFAULT` на UI-стороне (не в `calculate.ts`); пользователь может потом вручную перебить toggle. Все три FBS-поля опциональные, default `'sorting_center' / 'standard' / 'almaty'`.
 - **Linkable cells:** money-флаг обязателен для денежных привязок, иначе будет повторение бага «деление/не деление на 100». Fallback хранится при пропадании источника, показывается warning state. Внутри ячейки **всегда** `<input>` (в linked — readOnly + onClick → picker), иначе вернётся сдвиг между manual и linked.
-- **Sticky cells в unit-таблицах:** background всегда `bg-card` (не `var(--background)` через inline style); z-index sticky body cells `20`, header cells `35`, totals row container `z-[25]`. На последней sticky-колонке — `boxShadow: '1px 0 0 0 var(--border)'`. Hover-фон строки — через `[&:hover_[data-sticky]]:bg-accent/10`.
+- **Sticky cells в unit-таблицах (v0.12.0):** background всегда **solid** `bg-card` (без `/95`, без `backdrop-blur`); каждая sticky-ячейка имеет `overflow:hidden isolate` (новый stacking-context). z-index: header sticky `45`, totals row `35`, body sticky `30`. На последней sticky-колонке — `boxShadow: '1px 0 0 0 var(--border)'`. Hover — `hover:bg-accent/5` без полупрозрачности; sticky-cells получают тот же тон через `[&:hover_[data-sticky]]:bg-accent/5`. Inputs Артикул/Название имеют `truncate`.
+- **Column DnD (Ozon multi-table):** порядок input-колонок и result-колонок хранится отдельно в `config.global.columnOrder = { inputs: string[]; results: string[] }`. `resolveColumnOrder<T>()` мерджит сохранённый порядок с дефолтом — новые колонки идут в конец, удалённые — выкидываются. Sticky `#`/Артикул/Название/Действия не drag'аются. Drag handle (`GripVertical`) внутри `SortableHeaderCell` появляется при hover, активируется через `PointerSensor` с `distance: 5`. Input и result колонки нельзя смешивать (отдельные `DndContext`).
 - **XLSX-импорт Ozon:** маппинг колонок по заголовкам, не индексам. SheetJS читать с `cellStyles: false`. Fallback ZIP/XML парсер обходит «битый» stylesheet от Ozon. Фильтровать служебные строки-метки.
 - **Tenant isolation:** все API под `auth()`, все DB-запросы фильтруются по `tenant_id`. `unit_products` upsert по `(tenant_id, marketplace, article)`.
 - **Aggregate outputs:** все unit-блоки публикуют через `useBlockValuePublisher` с `__money` для денежных полей. Ozon: `rowsCount`, `avgMargin`, `avgRoi`, `totalProfitMonth`, `totalStockValue`, `totalMoneyInGoods`. My Store: `rowsCount`, `totalRevenue`, `totalProfit`, `avgMargin`, `stockTotal`.
@@ -254,10 +257,10 @@ docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev 
 docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev < drizzle/init/05-unit-economics.sql
 ```
 
-## Текущий статус на 2026-05-14
-- **Версия:** `0.11.1` в `CHANGELOG.md`; `package.json` всё ещё `0.5.0` и не является источником статуса фич.
-- **Фаза:** Unit Economics MVP (Ozon FBO/FBS + multi, Яндекс Маркет, Мой магазин) поверх Inbox Channels MVP + AI Micro-Agent + External Providers/VPN/Diagnostics + Boards.
-- **Build:** `pnpm typecheck` и `pnpm build` проходят; smoke-тесты `pnpm tsx scripts/test-unit-economics.ts` зелёные (28 PASS, включая VAT в Ozon/Yandex, формулы и циклы Store, XLSX-парсер).
+## Текущий статус на 2026-05-15
+- **Версия:** `0.12.0` в `CHANGELOG.md`; `package.json` всё ещё `0.5.0` и не является источником статуса фич.
+- **Фаза:** Unit Economics MVP с FBS-апгрейдом + DnD-колонок + sticky фикс, Marketplace browse-only + редизайн `AddBlockDialog`, поверх Inbox Channels MVP + AI Micro-Agent + External Providers/VPN/Diagnostics + Boards.
+- **Build:** `pnpm typecheck` и `pnpm build` проходят; smoke-тесты `pnpm tsx scripts/test-unit-economics.ts` зелёные (32 PASS, включая FBS fast +2% commission, FBO без надбавки, VAT, формулы и циклы Store, XLSX-парсер).
 - **Контекстные файлы:** `0.10.3` ввёл `START.md` и переход на ленивую загрузку контекста — `CHANGELOG.md`/`PLAN.md` больше не грузятся целиком по умолчанию.
 - **Ближайшие TODO:**
   - реализовать парсер `СЕБЕС озон.xlsx` для seed-колонок Мой магазин (отдельный скрипт);

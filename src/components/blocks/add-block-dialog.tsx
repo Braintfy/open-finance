@@ -1,8 +1,9 @@
 // PURPOSE: Wizard добавления блока — выбор типа → настройка параметров/внешнего вида/размера → создать
 'use client';
 
-import { useState } from 'react';
-import { ChevronLeft } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import Link from 'next/link';
+import { ChevronLeft, Sparkles, Store, ArrowUpRight } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -13,7 +14,7 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { listBlocksForPage } from '@/lib/blocks/registry';
+import { listAllBlocks, listRecommendedForPage } from '@/lib/blocks/registry';
 import type { BlockAppearance, BlockCategory, BlockDef } from '@/lib/blocks/types';
 import { AppearanceForm, SizeForm } from './block-settings-dialog';
 import { cn } from '@/lib/utils';
@@ -52,7 +53,8 @@ export function AddBlockDialog({
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 4, h: 2 });
   const [tab, setTab] = useState<'params' | 'appearance' | 'size'>('params');
 
-  const all = listBlocksForPage(pageKey);
+  const recommended = listRecommendedForPage(pageKey);
+  const all = listAllBlocks();
 
   function reset() {
     setStep('pick');
@@ -95,7 +97,12 @@ export function AddBlockDialog({
     >
       <DialogContent className="max-w-2xl">
         {step === 'pick' ? (
-          <PickStep onPick={pickBlock} blocks={all} existingTypes={existingTypes} />
+          <PickStep
+            onPick={pickBlock}
+            recommended={recommended}
+            all={all}
+            existingTypes={existingTypes}
+          />
         ) : (
           <ConfigureStep
             def={picked!}
@@ -125,32 +132,56 @@ function hasAppearance(a: BlockAppearance): boolean {
 // ============================================================================
 
 function PickStep({
-  blocks,
+  recommended,
+  all,
   existingTypes,
   onPick,
 }: {
-  blocks: BlockDef[];
+  recommended: BlockDef[];
+  all: BlockDef[];
   existingTypes: string[];
   onPick: (def: BlockDef) => void;
 }) {
   const [query, setQuery] = useState('');
-  const filtered = blocks.filter((b) => {
-    const q = query.trim().toLowerCase();
-    if (!q) return true;
-    return (
-      b.displayName.toLowerCase().includes(q) ||
-      b.description.toLowerCase().includes(q) ||
-      b.type.toLowerCase().includes(q)
-    );
-  });
+  const [showAll, setShowAll] = useState(recommended.length === 0);
 
-  const grouped = filtered.reduce<Record<BlockCategory, BlockDef[]>>(
-    (acc, b) => {
-      (acc[b.category] ??= []).push(b);
-      return acc;
-    },
-    { stats: [], tables: [], charts: [], custom: [] }
+  const matches = (b: BlockDef, q: string) =>
+    !q ||
+    b.displayName.toLowerCase().includes(q) ||
+    b.description.toLowerCase().includes(q) ||
+    b.type.toLowerCase().includes(q) ||
+    (b.tags ?? []).some((t) => t.toLowerCase().includes(q));
+
+  const q = query.trim().toLowerCase();
+
+  const filteredRecommended = useMemo(
+    () => recommended.filter((b) => matches(b, q)),
+    [recommended, q],
   );
+  const filteredAll = useMemo(
+    () => all.filter((b) => matches(b, q)),
+    [all, q],
+  );
+
+  // В режиме «все» исключаем рекомендованные, чтобы они не дублировались
+  const recommendedTypes = new Set(recommended.map((b) => b.type));
+  const otherBlocks = useMemo(
+    () => filteredAll.filter((b) => !recommendedTypes.has(b.type)),
+    [filteredAll, recommendedTypes],
+  );
+
+  const groupByCategory = (blocks: BlockDef[]) =>
+    blocks.reduce<Record<BlockCategory, BlockDef[]>>(
+      (acc, b) => {
+        (acc[b.category] ??= []).push(b);
+        return acc;
+      },
+      { stats: [], tables: [], charts: [], custom: [] },
+    );
+
+  const otherGrouped = groupByCategory(otherBlocks);
+  const isQuerying = q.length > 0;
+  const expanded = showAll || isQuerying;
 
   return (
     <>
@@ -162,60 +193,113 @@ function PickStep({
       </DialogHeader>
 
       <Input
-        placeholder="Поиск…"
+        placeholder="Поиск по названию, описанию или тегу…"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         autoFocus
       />
 
       <div className="max-h-[60vh] overflow-y-auto pr-1">
-        {(Object.keys(grouped) as BlockCategory[]).map((cat) => {
-          const items = grouped[cat];
-          if (items.length === 0) return null;
-          return (
-            <div key={cat} className="mb-5">
-              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                {CATEGORY_LABELS[cat]}
+        {recommended.length > 0 && (
+          <section className="mb-5">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <Sparkles className="h-3 w-3" />
+                Рекомендуемые
               </h3>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                {items.map((def) => {
-                  const Icon = def.icon;
-                  const used = existingTypes.includes(def.type);
-                  return (
-                    <button
-                      key={def.type}
-                      type="button"
-                      onClick={() => onPick(def)}
-                      className="flex items-start gap-3 rounded-md border p-3 text-left transition hover:bg-accent"
-                    >
-                      <div className="rounded-md bg-muted p-2">
-                        <Icon className="h-4 w-4" />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <div className="font-medium">{def.displayName}</div>
-                          {used && (
-                            <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                              уже на странице
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-xs text-muted-foreground">{def.description}</div>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
+              {!isQuerying && recommended.length < all.length && (
+                <button
+                  type="button"
+                  onClick={() => setShowAll((v) => !v)}
+                  className="text-xs font-medium text-primary hover:underline"
+                >
+                  {showAll ? 'Свернуть' : 'Показать все'}
+                </button>
+              )}
             </div>
-          );
-        })}
-        {filtered.length === 0 && (
+            <BlockGrid blocks={filteredRecommended} existingTypes={existingTypes} onPick={onPick} />
+            {filteredRecommended.length === 0 && (
+              <p className="py-4 text-center text-xs text-muted-foreground">
+                Среди рекомендованных ничего не найдено
+              </p>
+            )}
+          </section>
+        )}
+
+        {expanded &&
+          (Object.keys(otherGrouped) as BlockCategory[]).map((cat) => {
+            const items = otherGrouped[cat];
+            if (items.length === 0) return null;
+            return (
+              <section key={cat} className="mb-5">
+                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  {CATEGORY_LABELS[cat]}
+                </h3>
+                <BlockGrid blocks={items} existingTypes={existingTypes} onPick={onPick} />
+              </section>
+            );
+          })}
+
+        {expanded && filteredAll.length === 0 && (
           <p className="py-12 text-center text-sm text-muted-foreground">
-            Нет блоков, подходящих под запрос
+            Ничего не нашлось. Попробуйте другой запрос.
           </p>
         )}
       </div>
+
+      <DialogFooter className="border-t pt-3 text-[11px] text-muted-foreground sm:justify-between">
+        <Link
+          href="/marketplace"
+          className="inline-flex items-center gap-1 text-primary transition-colors hover:underline"
+        >
+          <Store className="h-3.5 w-3.5" />
+          Открыть Маркетплейс блоков
+          <ArrowUpRight className="h-3 w-3" />
+        </Link>
+      </DialogFooter>
     </>
+  );
+}
+
+function BlockGrid({
+  blocks,
+  existingTypes,
+  onPick,
+}: {
+  blocks: BlockDef[];
+  existingTypes: string[];
+  onPick: (def: BlockDef) => void;
+}) {
+  return (
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+      {blocks.map((def) => {
+        const Icon = def.icon;
+        const used = existingTypes.includes(def.type);
+        return (
+          <button
+            key={def.type}
+            type="button"
+            onClick={() => onPick(def)}
+            className="flex items-start gap-3 rounded-md border p-3 text-left transition hover:bg-accent"
+          >
+            <div className="rounded-md bg-muted p-2">
+              <Icon className="h-4 w-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <div className="font-medium">{def.displayName}</div>
+                {used && (
+                  <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                    уже на странице
+                  </span>
+                )}
+              </div>
+              <div className="text-xs text-muted-foreground">{def.description}</div>
+            </div>
+          </button>
+        );
+      })}
+    </div>
   );
 }
 

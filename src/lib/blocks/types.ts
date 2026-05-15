@@ -97,6 +97,22 @@ export type BlockDef = {
   minContentSize?: { w: number; h: number };
   /** Где этот блок имеет смысл (cashflow, dashboard, *) */
   pages: string[]; // '*' = везде
+  /**
+   * Страницы, на которых блок попадает в зону «Рекомендуемые» в модалке
+   * добавления и в маркетплейсе блоков. Если не задано — рекомендуемые
+   * выводятся по правилу `pages.includes(pageKey) || pages.includes('*')`.
+   */
+  recommendedFor?: string[];
+  /**
+   * Свободные теги для маркетплейса блоков (фильтры, поиск).
+   * Например: ['marketplace', 'unit-economics'], ['analytics'], ['ai'].
+   */
+  tags?: string[];
+  /**
+   * Источник блока — для будущих пользовательских/купленных блоков.
+   * 'builtin' (default) — встроенный, 'user' — созданный юзером, 'paid' — куплен.
+   */
+  source?: 'builtin' | 'user' | 'paid';
   configSchema?: z.ZodSchema;
   /** Дефолтный config для нового инстанса */
   defaultConfig?: () => Record<string, unknown>;

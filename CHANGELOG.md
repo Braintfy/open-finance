@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.12.0] - 2026-05-15
+
+### Added
+- **DnD-перетаскивание колонок** в блоке `unit.ozon-multi-table`: hover на header показывает drag-handle (`GripVertical`) — input-колонки и result-колонки имеют отдельные `DndContext`/`SortableContext` (нельзя смешивать input и result между собой). Sticky `#`/Артикул/Название/Действия не двигаются. Порядок сохраняется в `config.global.columnOrder = { inputs: string[]; results: string[] }` через `safeParse`-совместимое расширение схемы; новые колонки автоматически добавляются в конец, удалённые — выкидываются (`resolveColumnOrder`).
+- **Раздел `/marketplace`** — каталог всех блоков (browse-only). Поиск по названию/описанию/тегам, фильтр по категории и тегам, карточки с иконкой/описанием/тегами/доступными страницами, диалог детальной информации (defaultSize, supportsDependencies, теги). Кнопки «Создать блок» и «Купить блок» — disabled-заглушки на будущее. Sidebar-пункт «Маркетплейс» (иконка `Store`).
+- **Метаданные блоков** в `BlockDef`: опциональные `recommendedFor: string[]` (страницы, для которых блок «рекомендован»), `tags: string[]` (метки для фильтра в маркетплейсе), `source: 'builtin' | 'user' | 'paid'` (default `'builtin'`). Заполнено для всех 18 встроенных блоков через карту `BLOCK_META` в `registry.ts` + `withMeta()`-обёртку (без правки каждого файла-блока).
+- **`listRecommendedForPage(pageKey)`** в `registry.ts` — сборка рекомендованных: `recommendedFor.includes(pageKey)` ИЛИ `pages.includes(pageKey)` (без `'*'`-универсалов).
+- **Редизайн `AddBlockDialog`**: зона «Рекомендуемые» с иконкой `Sparkles` сверху + кнопка «Показать все»/«Свернуть». В режиме «все» показываются остальные блоки сгруппированные по категории (рекомендованные не дублируются). Поиск по названию/описанию/тегам — расширяет каталог автоматически. Footer диалога — ссылка «Открыть Маркетплейс блоков →».
+- **Полный апгрейд FBS** на блоке `unit.ozon-multi-table` и одиночном Ozon-калькуляторе: 3 глобальных селекта (видны только при `mode === 'fbs'`) — Точка сдачи (`sorting_center / pickup_point / ozon_warehouse`), Скорость отгрузки (`fast 12–24ч (+2% ком.) / standard 24–48ч / slow 48–72ч`), Склад FBS (`almaty / moscow / spb / ekaterinburg / kazan / novosibirsk / rostov / krasnodar / other`). При смене склада автосинхронизируется toggle «Локальный кластер» (`FBS_WAREHOUSE_LOCAL_BY_DEFAULT`). Чип режима в заголовке расширен: `FBS · 12–24 ч (+2% ком.) · Алматы`.
+- **Тарифы FBS** (`tariffs-2026-04-07.ts`): константа `FBS_FAST_SHIPMENT_COMMISSION_BUMP_PCT = 2`, карты `FBS_WAREHOUSE_LOCAL_BY_DEFAULT`, `FBS_WAREHOUSE_LABELS`, `FBS_DROPOFF_LABELS`, `FBS_SHIPMENT_SPEED_LABELS`. `calculateOzon` добавляет +2% к комиссии при `mode='fbs' && fbsShipmentSpeed='fast'` (для FBO надбавка не применяется).
+- **4 новых смоук-теста** (`scripts/test-unit-economics.ts`): FBS standard/fast/slow комиссия, FBO + fast не получает надбавку. Итого **32 PASS, 0 FAIL**.
+
+### Fixed
+- **Окончательное «просвечивание» sticky-колонок** в `unit.ozon-multi-table` и `unit.my-store-table`. Корни проблемы: `bg-card/95 backdrop-blur` (полупрозрачный header), отсутствие `overflow:hidden` на `BodyCell` (текст из `<input>` соседних ячеек выезжал в sticky-зону), мягкий z-index. Решение: header-row `→ bg-card` (solid, без `backdrop-blur`); sticky cells получили `overflow:hidden isolate` (новый stacking-context); z-index: header sticky `35→45`, totals `25→35`, body sticky `20→30`; hover остаётся непрозрачным `hover:bg-accent/5` без слоя поверх sticky; inputs Артикул/Название теперь `truncate` чтобы текст не выезжал. Те же правки в обоих табличных блоках.
+
+### Changed
+- **`OzonInputs`** дополнен опциональными FBS-полями `fbsDropoffPoint?`, `fbsShipmentSpeed?`, `fbsWarehouse?`. `OZON_DEFAULT_INPUTS` имеет default'ы `'sorting_center' / 'standard' / 'almaty'`. Старые сохранённые расчёты не ломаются.
+- **`GlobalParamsSchema`** в `unit.ozon-multi-table.tsx` — добавлены `fbsDropoffPoint / fbsShipmentSpeed / fbsWarehouse`; добавлено опциональное поле `columnOrder`. `safeParse` сохраняет совместимость с предыдущими блоками без этих полей.
+- **`AddBlockDialog`** теперь использует `listAllBlocks()` + `listRecommendedForPage()` вместо `listBlocksForPage()`, чтобы пользователь мог через «Показать все» добавить нетипичный для текущей страницы блок.
+- **Sidebar** (`(app)/layout.tsx`) — между «Мои доски» и «Дедлайны» вставлен пункт «Маркетплейс» (`Store` icon, key `marketplace`).
+- **Зависимости**: добавлены `@dnd-kit/core ^6.3.1`, `@dnd-kit/sortable ^10.0.0`, `@dnd-kit/utilities ^3.2.2` (упоминались в `PLAN.md` как планируемые — теперь установлены).
+
+### Notes
+- БД-схема не менялась, миграции не нужны.
+- Маркетплейс — browse-only: установка/создание/покупка блоков остаётся заглушкой (видны disabled-кнопки) под отдельную итерацию.
+- DnD добавлен только в `unit.ozon-multi-table` (там колонки фиксированные); у `unit.my-store-table` уже есть полноценный column editor — DnD добавим следующей итерацией при необходимости.
+
 ## [0.11.1] - 2026-05-14
 
 ### Added

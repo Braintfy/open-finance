@@ -4,6 +4,30 @@
 export type Marketplace = 'ozon' | 'yandex';
 
 export type OzonMode = 'fbo' | 'fbs';
+
+/** Точка сдачи отгрузки FBS в Ozon. */
+export type OzonFbsDropoffPoint = 'sorting_center' | 'pickup_point' | 'ozon_warehouse';
+
+/**
+ * Скорость отгрузки FBS:
+ * - fast (12–24 ч) — даёт +FBS_FAST_SHIPMENT_COMMISSION_BUMP_PCT к комиссии (бонус-скидка
+ *   маркетплейса в обмен на быструю отгрузку).
+ * - standard (24–48 ч) — без надбавки.
+ * - slow (48–72 ч) — без надбавки (можно использовать в будущем для штрафов).
+ */
+export type OzonFbsShipmentSpeed = 'fast' | 'standard' | 'slow';
+
+/** Слаг склада отгрузки FBS. 'other' — неизвестный/прочий (нелокальный по умолчанию). */
+export type OzonFbsWarehouse =
+  | 'almaty'
+  | 'moscow'
+  | 'spb'
+  | 'ekaterinburg'
+  | 'kazan'
+  | 'novosibirsk'
+  | 'rostov'
+  | 'krasnodar'
+  | 'other';
 export type YandexMode = 'fby' | 'fbs' | 'dbs' | 'express';
 
 export type TaxMode =
@@ -65,6 +89,13 @@ export type OzonInputs = {
   isLocalCluster: boolean;
   /** Скидка >50 заказов FBO за 7 дней (только для FBO) */
   highVolumeDiscount: boolean;
+  // FBS-специфика (используются только при mode='fbs')
+  /** Точка сдачи отгрузки FBS (sorting_center / pickup_point / ozon_warehouse). */
+  fbsDropoffPoint?: OzonFbsDropoffPoint;
+  /** Скорость отгрузки FBS. 'fast' даёт +FBS_FAST_SHIPMENT_COMMISSION_BUMP_PCT к комиссии. */
+  fbsShipmentSpeed?: OzonFbsShipmentSpeed;
+  /** Слаг склада отгрузки FBS. Может определять isLocalCluster по умолчанию. */
+  fbsWarehouse?: OzonFbsWarehouse;
   // Комиссия
   /** Тип ставки: 'auto' — по правилам Ozon (≤100/101–300/иначе ручная), 'manual' — задано вручную */
   commissionMode: 'auto' | 'manual';
