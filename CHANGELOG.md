@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.15.2] - 2026-05-16
+
+Security-патч Next.js (CVE-2026-44578, SSRF через WebSocket upgrade-запросы) + три
+UI-фикса по обратной связи: рамка блока теперь применяется визуально (раньше
+inset boxShadow на wrapper'е перекрывался `bg-card` детьми), цветовая палитра
+перестала «слипаться» в узком столбце, треугольник cross-page сидит ровно под
+кружочком на той же вертикальной оси.
+
+### Security
+
+- **Next.js 15.5.4 → 15.5.18** (CVE-2026-44578, severity high, CVSS 3.1 = 8.6) — self-hosted Node.js server позволял SSRF через специально сформированные WebSocket upgrade-запросы (атакующий мог проксировать запросы на внутренние сервисы или cloud metadata endpoints). Фикс в 15.5.16+, мы взяли latest 15.5.x (`15.5.18`). Vercel-hosted деплои не затронуты, но мы планируем self-hosted и AWS — патчим обязательно. Bump в пределах 15.5.x — breaking changes отсутствуют, typecheck + build прошли. [GHSA-c4j6-fc7j-m34r](https://github.com/vercel/next.js/security/advisories/GHSA-c4j6-fc7j-m34r), [NVD CVE-2026-44578](https://nvd.nist.gov/vuln/detail/CVE-2026-44578).
+
+### Fixed
+
+- **`BlockChrome` теперь честно рисует `appearance.borderColor`** ([src/components/blocks/block-chrome.tsx](src/components/blocks/block-chrome.tsx)) — раньше border применялся как `boxShadow: inset 0 0 0 2px {color}` на wrapper'е `<div className="group relative h-full w-full">`. Большинство блоков рендерят внутренний контейнер с `bg-card` и собственным `border` на всю площадь — inset-shadow родителя физически прячется под бэкграундом ребёнка. Поэтому пользователь выбирал «Цвет рамки» в настройках, а визуально ничего не менялось. Фикс: отдельный absolute-overlay `<div className="pointer-events-none absolute inset-0 z-20 rounded-lg">` с тем же `boxShadow: inset` — сидит на z-20 ПОВЕРХ детей блока (которые z-0/z-10), но НИЖЕ chrome-контролов (z-30). `pointer-events-none` гарантирует, что клики проходят насквозь в блок.
+- **ColorPalette не «слипается» в узком столбце** ([src/components/blocks/block-settings-dialog.tsx](src/components/blocks/block-settings-dialog.tsx)) — `grid grid-cols-12` сжимал 24px-swatches до ~22px и они теряли отступы (при `max-w-2xl` модалке и двух колонках под цвета каждая получала ~310px при нужных 332px на 12 ячеек × 24px + gap-1). Переход на `flex flex-wrap gap-1.5` с фиксированным размером `h-5 w-5` (20px): swatches не деформируются, естественно переносятся на следующую строку. Активная ячейка вместо `ring-2 ring-primary` теперь рисует **двойное кольцо** через `boxShadow: 0 0 0 2px hsl(var(--background)), 0 0 0 4px {colorValue}` — 2px gap до фона + 2px кольца ЦВЕТА самой палитры. Это даёт честный визуальный акцент даже для тёмных цветов (например `#0f172a`), которые раньше сливались с background в dark-теме. Иконка `Check` отрисована с `strokeWidth=3` для лучшей читаемости поверх цветной заливки. `IconPalette` тоже переехала на `flex flex-wrap` — кнопки 28×28 не деформируются.
+- **Cross-page треугольник теперь ровно под кружочком** ([src/components/blocks/block-relations-overlay.tsx](src/components/blocks/block-relations-overlay.tsx)) — в v0.15.1 треугольник был ниже центра по Y (правильно), но смещён ВНУТРЬ блока по X на `TRI_INSET = 4`. Из-за этого визуально он не воспринимался как продолжение того же anchor-ряда, что и кружочек — кружочек на ребре блока, треугольник в 4px глубже внутри. По эскизу пользователя треугольник должен сидеть на той же вертикальной оси, что и кружочек (= край блока). Новая формула: `left = edgeX - TRI_SIZE/2` (центр треугольника на ребре блока), `top = anchorCenterY + ANCHOR_R + ANCHOR_TRI_GAP`. Константа `TRI_INSET` удалена (больше не нужна).
+
 ## [0.15.1] - 2026-05-15
 
 UI-полировка модалки настроек блока (плотный layout, расширенные палитры

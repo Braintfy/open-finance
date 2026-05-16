@@ -562,38 +562,49 @@ function ColorPalette({
   onChange: (v: string) => void;
 }) {
   return (
-    <div className="grid grid-cols-12 gap-1">
+    <div className="flex flex-wrap gap-1.5">
       {ACCENT_COLORS.map((c) => {
         const active = (value ?? '') === c.value;
         const isDefault = !c.value;
+        // Активная ячейка: яркое 2px кольцо ЦВЕТА палитры + 2px gap до фона.
+        // Это даёт честный визуальный акцент даже когда цвет тёмный
+        // (например #0f172a) и сливается с фоном.
+        const activeRing = active
+          ? `0 0 0 2px hsl(var(--background)), 0 0 0 4px ${
+              c.value || 'hsl(var(--primary))'
+            }`
+          : undefined;
         return (
           <button
             key={c.name}
             type="button"
             onClick={() => onChange(c.value)}
             className={cn(
-              'group relative flex h-6 w-6 items-center justify-center rounded-md transition',
+              'relative flex h-5 w-5 shrink-0 items-center justify-center rounded transition',
               isDefault
                 ? 'border border-dashed border-border bg-background'
                 : 'shadow-sm hover:scale-110',
-              active && 'ring-2 ring-primary ring-offset-1 ring-offset-background',
             )}
-            style={
-              isDefault
-                ? undefined
-                : { backgroundColor: c.value }
-            }
+            style={{
+              ...(isDefault ? null : { backgroundColor: c.value }),
+              ...(activeRing ? { boxShadow: activeRing } : null),
+            }}
             title={c.name}
             aria-label={c.name}
           >
-            {active &&
-              (isDefault ? (
-                <Check className="h-3 w-3 text-foreground" />
-              ) : (
-                <Check className="h-3 w-3 text-white drop-shadow" />
-              ))}
+            {active && (
+              <Check
+                className={cn(
+                  'h-2.5 w-2.5',
+                  isDefault ? 'text-foreground' : 'text-white drop-shadow',
+                )}
+                strokeWidth={3}
+              />
+            )}
             {!active && isDefault && (
-              <span className="text-[9px] text-muted-foreground/60">×</span>
+              <span className="text-[9px] leading-none text-muted-foreground/60">
+                ×
+              </span>
             )}
           </button>
         );
@@ -614,15 +625,15 @@ function IconPalette({
 
   return (
     <>
-      <div className="grid grid-cols-12 gap-1">
+      <div className="flex flex-wrap gap-1">
         <button
           type="button"
           onClick={() => onChange('')}
           className={cn(
-            'flex h-7 w-7 items-center justify-center rounded-md border border-dashed text-[10px] text-muted-foreground transition',
+            'flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-dashed text-[10px] transition',
             !value
               ? 'border-primary bg-primary/10 text-primary'
-              : 'border-border hover:border-foreground/40 hover:text-foreground'
+              : 'border-border text-muted-foreground hover:border-foreground/40 hover:text-foreground',
           )}
           title="По умолчанию"
         >
@@ -637,10 +648,10 @@ function IconPalette({
               type="button"
               onClick={() => onChange(n)}
               className={cn(
-                'flex h-7 w-7 items-center justify-center rounded-md border transition',
+                'flex h-7 w-7 shrink-0 items-center justify-center rounded-md border transition',
                 active
                   ? 'border-primary bg-primary/10 text-primary shadow-sm'
-                  : 'border-transparent bg-muted/40 text-muted-foreground hover:border-border hover:bg-accent hover:text-foreground'
+                  : 'border-transparent bg-muted/40 text-muted-foreground hover:border-border hover:bg-accent hover:text-foreground',
               )}
               title={n}
             >

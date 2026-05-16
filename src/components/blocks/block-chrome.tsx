@@ -67,23 +67,29 @@ export function BlockChrome({
   if (appearance?.accentColor) cssVars['--block-accent'] = appearance.accentColor;
   if (appearance?.borderColor) cssVars['--block-border'] = appearance.borderColor;
 
-  const wrapperStyle: CSSProperties = {
-    ...cssVars,
-    ...(appearance?.borderColor
-      ? {
-          boxShadow: `inset 0 0 0 2px ${appearance.borderColor}`,
-          borderRadius: '0.5rem',
-        }
-      : {}),
-  };
-
   return (
     <div
       className="group group/block relative h-full w-full"
-      style={wrapperStyle}
+      style={cssVars}
       onMouseEnter={handleEnter}
       onMouseLeave={handleLeave}
     >
+      {/*
+        Border-overlay: рисует цветную рамку поверх детей блока.
+        Использовать inset boxShadow на wrapper'е нельзя — у большинства блоков
+        внутренний контейнер с `bg-card` и `border` рисуется на всю площадь и
+        прячет inset-shadow родителя. Полупрозрачный fill + outer ring дают
+        видимый акцент на любом фоне (light/dark + кастомные bg).
+      */}
+      {appearance?.borderColor && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0 z-20 rounded-lg"
+          style={{
+            boxShadow: `inset 0 0 0 2px ${appearance.borderColor}`,
+          }}
+        />
+      )}
       {/* Drag handle — сверху по центру. Работает при hover (Notion-style) и в edit mode. */}
       <div
         className={

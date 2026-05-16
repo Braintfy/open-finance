@@ -121,10 +121,8 @@ function buildPath(e: PositionedEdge): string {
 
 const STROKE = '#6366f1';
 const NODE_FILL = '#4f46e5';
-/** Размер треугольника-маркера cross-page связи. */
+/** Размер треугольника-маркера cross-page связи (квадратный bbox). */
 const TRI_SIZE = 14;
-/** Отступ треугольника от ребра блока внутрь (выравнивание по вертикальному центру). */
-const TRI_INSET = 4;
 /** Радиус edge-anchor circle (см. <circle r={4} /> ниже). Должен быть в синке. */
 const ANCHOR_R = 4;
 /** Минимальный gap между низом anchor-кружочка и верхом треугольника. */
@@ -321,20 +319,20 @@ export function BlockRelationsOverlay({ blocks, currentPageKey, containerRef, hi
           const outgoingKey = `out:${box.blockId}`;
 
           // Anchor-кружочки (edge-точки локальных связей) рисуются в SVG в
-          // вертикальном центре левого/правого ребра блока. Треугольники ставим
-          // НИЖЕ кружочка, чтобы они не перекрывались. Расчёт:
-          //   anchor center Y = (top + bottom) / 2
-          //   triangle top    = anchor centerY + ANCHOR_R + ANCHOR_TRI_GAP
-          // Top/bottom углы заняты chrome'ом (drag/AI/settings/CrossPagePin),
-          // правое/левое ребро ниже кружочка — единственное чистое место.
+          // вертикальном центре левого/правого ребра блока (cx = box.left/right,
+          // cy = anchorCenterY). Треугольник — отдельный «второй узел» сразу
+          // ПОД кружочком, на той же вертикальной оси (= край блока), чтобы
+          // визуально читался как продолжение того же anchor-ряда.
+          //   triTop  = anchorCenterY + ANCHOR_R + ANCHOR_TRI_GAP
+          //   triLeft = edgeX - TRI_SIZE/2  (центр треугольника на ребре блока)
           const anchorCenterY = (box.top + box.bottom) / 2;
           let triTop = anchorCenterY + ANCHOR_R + ANCHOR_TRI_GAP;
-          // Защита от вылета за нижнюю границу блока для совсем маленьких блоков.
-          const maxTriTop = box.bottom - TRI_SIZE - 4;
+          // Защита от вылета за нижнюю границу для совсем маленьких блоков.
+          const maxTriTop = box.bottom - TRI_SIZE / 2 - 2;
           if (triTop > maxTriTop) triTop = maxTriTop;
           return (
             <div key={`tri-${box.blockId}`}>
-              {/* Incoming — LEFT-edge, ниже anchor-кружка, остриём ▶ внутрь блока */}
+              {/* Incoming — на левом ребре блока (под кружочком), apex ▶ внутрь */}
               {rel.incoming.length > 0 && (
                 <CrossPageTriangle
                   direction="incoming"
@@ -345,12 +343,12 @@ export function BlockRelationsOverlay({ blocks, currentPageKey, containerRef, hi
                     setOpenPopover((prev) => (prev === incomingKey ? null : incomingKey))
                   }
                   style={{
-                    left: box.left + TRI_INSET,
+                    left: box.left - TRI_SIZE / 2,
                     top: triTop,
                   }}
                 />
               )}
-              {/* Outgoing — RIGHT-edge, ниже anchor-кружка, остриём ▶ наружу блока */}
+              {/* Outgoing — на правом ребре блока (под кружочком), apex ▶ наружу */}
               {rel.outgoing.length > 0 && (
                 <CrossPageTriangle
                   direction="outgoing"
@@ -361,7 +359,7 @@ export function BlockRelationsOverlay({ blocks, currentPageKey, containerRef, hi
                     setOpenPopover((prev) => (prev === outgoingKey ? null : outgoingKey))
                   }
                   style={{
-                    left: box.right - TRI_INSET - TRI_SIZE,
+                    left: box.right - TRI_SIZE / 2,
                     top: triTop,
                   }}
                 />
