@@ -1,0 +1,86 @@
+// PURPOSE: POST /api/marketplaces/accounts/[id]/sync — запуск ручной
+// синхронизации. Создаёт job, запускает runFullSync асинхронно (не блокируем
+// ответ — клиент поллит /jobs/[jobId]). Опциональный body: { stage }
+// — синхронизировать только один стейдж.
+
+import { NextResponse } from 'next/server';
+import { z } from 'zod';
+import { auth } from '@/lib/auth';
+import { createSyncJob, getAccount } from '@/lib/marketplaces/queries';
+import { runFullSync } from '@/lib/marketplaces/ozon/sync/full';
+import {
+  OZON_FULL_STAGES,
+  type OzonStageKind,
+} from '@/lib/marketplaces/types';
+import type { SyncStageState } from '@/lib/db/schema/marketplaces';
+
+export const runtime = 'nodejs';
+export const maxDuration = 300; // запас на Vercel-deploy
+
+type RouteCtx = { params: Promise<{ id: string }> };
+
+const BodySchema = z
+  .object({
+    stage: z.enum(OZON_FULL_STAGES).optional(),
+  })
+  .strict()
+  .optional();
+
+export async function POST(req: Request, ctx: RouteCtx) {
+  try {
+    const { id } = await ctx.params;
+    const session = await auth();
+    if (!session?.tenantId || !session.userId) {
+      return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
+    }
+    const account = await getAccount({ tenantId: session.tenantId, id });
+    if (!account) {
+      return NextResponse.json({ ok: false, error: 'Not found' }, { status: 404 });
+    }
+
+    let body: z.infer<typeof BodySchema> = undefined;
+    try {
+      const raw = await req.text();
+      body = raw ? BodySchema.parse(JSON.parse(raw)) : undefined;
+    } catch (e) {
+      const msg = e instanceof z.ZodError ? e.issues[0]?.message : 'Invalid body';
+      return NextResponse.json({ ok: false, error: msg }, { status: 400 });
+    }
+
+    const onlyStage = body?.stage as OzonStageKind | undefined;
+
+    const initStages = (
+      onlyStage ? [onlyStage] : ([...OZON_FULL_STAGES] as OzonStageKind[])
+    ).reduce<Record<string, SyncStageState>>((acc, s) => {
+      acc[s] = { status: 'pending' };
+      return acc;
+    }, {});
+
+    const job = await createSyncJob({
+      tenantId: session.tenantId,
+      accountId: id,
+      kind: onlyStage ?? 'full',
+      stages: initStages,
+    });
+
+    // Запускаем в фоне (в том же процессе), не блокируем ответ.
+    // Ошибки логируем — финальный статус будет записан в БД оркестратором.
+    runFullSync({
+      tenantId: session.tenantId,
+      userId: session.userId,
+      accountId: id,
+      jobId: job.id,
+      onlyStage,
+    }).catch((e) => {
+      console.error('[marketplaces] runFullSync background error:', e);
+    });
+
+    return NextResponse.json({ ok: true, jobId: job.id });
+  } catch (e) {
+    console.error('[marketplaces] POST /accounts/[id]/sync failed:', e);
+    return NextResponse.json(
+      { ok: false, error: e instanceof Error ? e.message : 'Failed' },
+      { status: 500 },
+    );
+  }
+}

@@ -68,6 +68,8 @@ src/
 | Новый AI tool | `src/lib/ai/tools/index.ts` + пример `src/lib/ai/tools/query-inbox-messages.ts`, потом `docs/AI_TOOLS.md` |
 | Inbox / IMAP / Telegram | `src/lib/inbox/{imap,mime,crypto,queries}.ts`, `src/lib/blocks/catalog/inbox-channel-feed.tsx`, `docs/EMAIL_BEGET.md` |
 | Курсы валют / `currency.rates` блок | `src/lib/currency/{types,queries,sources/cbr}.ts`, `src/lib/blocks/catalog/currency-rates.tsx`, `src/app/api/currency/rates/{route,refresh/route}.ts`, `drizzle/init/06-currency.sql` |
+| Интеграции маркетплейсов (Ozon Seller API) | `src/lib/marketplaces/{types,crypto,queries,use-accounts}.ts`, `src/lib/marketplaces/ozon/{client,endpoints,types,upsert}.ts` + `sync/*.ts`, `src/app/api/marketplaces/accounts/**`, `src/app/(app)/settings/integrations/{page,integrations-client}.tsx`, `src/components/unit-economics/{ozon-sync-button,ozon-product-picker-dialog}.tsx`, `drizzle/init/07-marketplaces.sql`. При работе с самим API — смотреть `OZON_API_VERSION_MAP` в `endpoints.ts` (единая точка версионирования) |
+| Roadmap для marketplace-интеграций (что делать после v0.17.0, как мониторить изменения API, план аналитических блоков) | `docs/MARKETPLACES_FUTURE_PLAN.md` |
 | Boards | `src/lib/db/schema/boards.ts`, `src/lib/boards/queries.ts`, `src/app/(app)/boards/*`, `drizzle/init/03-boards.sql` |
 | Cashflow / транзакции | `src/lib/cashflow/*`, `src/modules/cashflow/*`, `src/app/api/cashflow/*` |
 | DB schema / миграции | `src/lib/db/schema/*`, `drizzle/init/*.sql`. После изменений: дать пользователю команды `pnpm db:generate && pnpm db:push`. |

@@ -1,5 +1,95 @@
 # Changelog
 
+## [0.17.0] - 2026-05-17
+
+Интеграция Ozon Seller API: подключение магазинов в новом разделе
+`/settings/integrations`, типизированный клиент с rate-limit, оркестратор
+7 стейджей синхронизации (товары / цены / комиссии / остатки / заказы /
+реализация / транзакции / оборачиваемость), кнопка «Загрузить из Ozon»
+в Ozon юнит-блоках, plan-gate на multi-store (Pro+), задел под cron-расписание.
+api_key хранится зашифрованным AES-256-GCM, никогда не возвращается raw на клиент.
+
+### Added
+
+- **Раздел Настройки → Интеграции** ([src/app/(app)/settings/integrations/page.tsx](src/app/(app)/settings/integrations/page.tsx) + [integrations-client.tsx](src/app/(app)/settings/integrations/integrations-client.tsx)) — подключение Ozon Seller API:
+  - Создание/редактирование/удаление аккаунтов (Client-Id + Api-Key из ЛК Ozon → Настройки → Seller API).
+  - Тогглы «Что синхронизировать»: каталог товаров, цены и комиссии, остатки, заказы (с настройкой окна в днях), реализация, транзакции (с окном), оборачиваемость.
+  - Кнопки «Тест подключения» (вызов `/v1/seller/info`), «Синхронизировать сейчас» (запуск runFullSync), inline-прогресс с per-stage статусами.
+  - История последних синхронизаций с раскрытием деталей по стейджам.
+  - Plan-gate: free/trial — 1 магазин на маркетплейс; Pro/Business/Enterprise — unlimited. Кнопка «Добавить магазин» disabled с tooltip для не-premium.
+- **`src/lib/marketplaces/`** новый модуль:
+  - [`types.ts`](src/lib/marketplaces/types.ts) — `OzonSyncSettings`, `OZON_FULL_STAGES`, `DEFAULT_OZON_SYNC_SETTINGS`, `CreateAccountSchema`/`UpdateAccountSchema` (Zod), `isPremiumPlan()`, `AccountPublic` (DTO без расшифрованного api_key).
+  - [`crypto.ts`](src/lib/marketplaces/crypto.ts) — реэкспорт `encryptSecret/decryptSecret/maskSecret` из `lib/inbox/crypto.ts` (общий `INBOX_SECRET_KEY`, AES-256-GCM).
+  - [`queries.ts`](src/lib/marketplaces/queries.ts) — tenant-scoped CRUD `marketplace_accounts`/`ozon_sync_jobs`, `canAddAccount()` (plan-gate), `updateAccountLastSync()`, `updateSyncJobStage()` (atomic per-stage merge через `jsonb_set`).
+  - [`use-accounts.ts`](src/lib/marketplaces/use-accounts.ts) — React-хук для списка аккаунтов в блоках.
+- **`src/lib/marketplaces/ozon/`** клиент Ozon Seller API:
+  - [`client.ts`](src/lib/marketplaces/ozon/client.ts) — `OzonClient` с native fetch, headers `Client-Id`/`Api-Key`, timeout 30s, **token-bucket rate-limit 40 RPS per Client-Id** (Ozon допускает 50, держим запас), exponential backoff на 429/5xx (3 retry, base 500/1500/4000ms + jitter), не ретраит 4xx кроме 429.
+  - [`types.ts`](src/lib/marketplaces/ozon/types.ts) — Zod-схемы ответов API (`.passthrough()` для гибкости).
+  - [`endpoints.ts`](src/lib/marketplaces/ozon/endpoints.ts) — типизированные обёртки 10 endpoints + `OZON_API_VERSION_MAP` (единая точка при изменении версии: `sellerInfo`, `productList /v3`, `productInfoList /v3`, `productInfoPrices /v5`, `productInfoStocks /v4`, `postingFbsList /v3`, `postingFboList /v2`, `financeRealization /v2`, `financeTransactionList /v3`, `analyticsTurnoverStocks /v1`).
+- **`src/lib/marketplaces/ozon/sync/`** оркестратор синхронизации:
+  - [`full.ts`](src/lib/marketplaces/ozon/sync/full.ts) — последовательное прогон 7 стейджей с записью per-stage прогресса в `ozon_sync_jobs.stages`, финализация `marketplace_accounts.last_sync_*`.
+  - [`products.ts`](src/lib/marketplaces/ozon/sync/products.ts), [`prices.ts`](src/lib/marketplaces/ozon/sync/prices.ts), [`stocks.ts`](src/lib/marketplaces/ozon/sync/stocks.ts), [`orders.ts`](src/lib/marketplaces/ozon/sync/orders.ts), [`realization.ts`](src/lib/marketplaces/ozon/sync/realization.ts), [`transactions.ts`](src/lib/marketplaces/ozon/sync/transactions.ts), [`turnover.ts`](src/lib/marketplaces/ozon/sync/turnover.ts) — отдельные файлы на каждый стейдж с единым контрактом `runStage(ctx) → StageResult`.
+  - [`upsert.ts`](src/lib/marketplaces/ozon/upsert.ts) — маппинг Ozon-сущностей в БД: `upsertUnitProductFromOzon()` (идемпотентен по `(tenant_id, marketplace, article=offer_id)`, мерджит metadata через `||` JSONB, **не перезаписывает costKopecks** — себестоимость пользователя), `upsertFbsPosting`/`upsertFboPosting`/`insertRealizationBatch`/`upsertTransaction`/`updateTurnoverForProduct`. Расчёт `volume_l_x100` из `weight/depth/width/height` с конвертацией единиц.
+- **API-роуты** (все `runtime='nodejs'`, `auth()`, tenant_id filtering, top-level try/catch):
+  - [`/api/marketplaces/accounts`](src/app/api/marketplaces/accounts/route.ts) — `GET` (список), `POST` (создать с `canAddAccount` plan-gate).
+  - [`/api/marketplaces/accounts/[id]`](src/app/api/marketplaces/accounts/[id]/route.ts) — `GET`/`PATCH`/`DELETE`. apiKey шифруется в `updateAccount`; никогда не возвращает raw.
+  - [`/api/marketplaces/accounts/[id]/test`](src/app/api/marketplaces/accounts/[id]/test/route.ts) — `POST` проверка через `/v1/seller/info`.
+  - [`/api/marketplaces/accounts/[id]/sync`](src/app/api/marketplaces/accounts/[id]/sync/route.ts) — `POST` создаёт job, запускает `runFullSync` асинхронно через `Promise.resolve().then(...)`, возвращает `jobId` сразу. `maxDuration=300` для serverless.
+  - [`/api/marketplaces/accounts/[id]/jobs`](src/app/api/marketplaces/accounts/[id]/jobs/route.ts) — `GET` история (последние 20).
+  - [`/api/marketplaces/accounts/[id]/jobs/[jobId]`](src/app/api/marketplaces/accounts/[id]/jobs/[jobId]/route.ts) — `GET` polling-эндпоинт для конкретного job.
+- **DB schema** [`marketplaces.ts`](src/lib/db/schema/marketplaces.ts) + [`drizzle/init/07-marketplaces.sql`](drizzle/init/07-marketplaces.sql):
+  - `marketplace_accounts` — `tenant_id, user_id, marketplace ('ozon'|'yandex'|'wb'), name, client_id, api_key_enc (AES-256-GCM), status, sync_settings JSONB (тогглы + cron-поля), company_info JSONB, last_sync_{at,status,error,summary}`. Уникальный индекс `(tenant_id, marketplace, client_id)`.
+  - `ozon_sync_jobs` — `tenant_id, account_id, kind, status, started_at, finished_at, items_processed/total, stages JSONB (per-stage SyncStageState), errors JSONB`.
+  - `ozon_orders` — `posting_number UNIQUE per account, scheme ('fbo'|'fbs'), status, order_created_at, delivered_at, cancelled_at, returned_at, items JSONB, raw JSONB`. Для расчёта реального `salesPerMonth`/`returnsPct`/`cancelPct`.
+  - `ozon_realization` — `account_id, period_from, period_to, sku, offer_id, qty, gross_kopecks, commission_kopecks, logistics_kopecks, ads_kopecks, raw JSONB`. Индекс `(account_id, period_from, sku)`.
+  - `ozon_transactions` — `account_id, transaction_id UNIQUE per account, operation_type, operation_date, amount_kopecks, posting_number, sku, raw JSONB`.
+  - `unit_products.marketplace_account_id uuid NULL` (FK `marketplaces.accounts.id` `ON DELETE SET NULL`) — связь синхронизированного товара с источником, XLSX-импорт оставляет NULL.
+- **Кнопка «Загрузить из Ozon»** в Ozon юнит-блоках:
+  - [src/components/unit-economics/ozon-sync-button.tsx](src/components/unit-economics/ozon-sync-button.tsx) — shared компонент с polling `/jobs/[jobId]` каждые 1.5s, DropdownMenu для multi-store (Pro+), inline-прогресс, fallback-ссылка на `/settings/integrations` если аккаунтов нет.
+  - В [unit-ozon-multi-table.tsx](src/lib/blocks/catalog/unit-ozon-multi-table.tsx) — рядом с «Импорт XLSX»; после sync вызывается `loadProductsAndPopulate()`.
+  - В [unit-ozon-calculator.tsx](src/lib/blocks/catalog/unit-ozon-calculator.tsx) — в верхней панели; после sync открывается `OzonProductPickerDialog` для выбора одного товара (автозаполнение price/cost/volumeL/commissionPct и заголовка блока именем товара).
+  - [src/components/unit-economics/ozon-product-picker-dialog.tsx](src/components/unit-economics/ozon-product-picker-dialog.tsx) — диалог с поиском по article/name, читает `/api/unit-economics/products?marketplace=ozon`.
+- **Навигатор в `/settings`** ([src/app/(app)/settings/settings-client.tsx](src/app/(app)/settings/settings-client.tsx)) — карточка «Маркетплейсы (Ozon, …)» с переходом на `/settings/integrations`.
+
+### Changed
+
+- [src/lib/db/schema/unit-economics.ts](src/lib/db/schema/unit-economics.ts) — добавлено nullable-поле `marketplaceAccountId` (uuid, FK на `marketplace_accounts.id`, `on delete set null`) + индекс `unit_products_marketplace_account_idx`. Существующие записи (XLSX-импорт) сохраняют `NULL`.
+- [src/lib/db/schema/index.ts](src/lib/db/schema/index.ts) — добавлен экспорт `./marketplaces`.
+- [START.md](START.md) — добавлена строка маршрутизации «Интеграции маркетплейсов» с указанием ключевых файлов.
+- [MEMORY.md](MEMORY.md) — новый раздел «Marketplace Integrations / Ozon Seller API» с инвариантами, ключевыми файлами, граблями rate-limit/fire-and-forget/realization-window и manual SQL для `07-marketplaces.sql`.
+- [PLAN.md](PLAN.md) — добавлен TODO «BullMQ cron для Ozon sync» и зафиксирован mini-plan для дальнейших аналитических блоков и документации.
+
+### Security / Invariants
+
+- **api_key хранится только в `marketplace_accounts.api_key_enc` (AES-256-GCM с `INBOX_SECRET_KEY`).** Никогда не возвращается raw на клиент — только `maskSecret(api_key_enc)`. В логах sync — тоже нет ключа.
+- **Все API-роуты под `auth()` + tenant_id filtering.** Невозможно прочитать чужой аккаунт даже зная `id`.
+- **Top-level try/catch с `NextResponse.json({ ok: false, error })`** во всех роутах — никогда не возвращаем HTML error page. Specific case: распознавание `relation "marketplace_accounts" does not exist` → 503 с прямой инструкцией применить SQL.
+- **Rate-limit per Client-Id 40 RPS** (Ozon allow 50) + exponential backoff — не блокируем чужие магазины при горячем sync одного, не упираемся в 429 от Ozon.
+
+### Deferred (TODO в PLAN.md)
+
+- BullMQ-воркер для авто-синхронизации по расписанию (поля `auto_sync_enabled/cron` в `OzonSyncSettings` уже есть, UI рисует disclaimer).
+- Yandex Market / Wildberries (схема `marketplace_accounts` уже мультимаркетная).
+- Ozon Push API (вебхуки) как замена polling'а.
+- Incremental sync через `updated_at` фильтры.
+- AI-tool `sync_ozon` для голосового запуска через Cmd+K.
+- Аналитические блоки `ozon.*` (sales-by-sku, commissions-vs-tariff, returns-heatmap, actual-vs-plan).
+- Документация `docs/MARKETPLACES_OZON.md` для AI-агентов (как менять endpoint версии, типичные пагинационные паттерны, известные quirks).
+
+### Команды на применение
+
+```bash
+pnpm install # на всякий случай
+pnpm db:generate # сгенерировать миграции из новой Drizzle-схемы (необязательно для dev — applied через manual SQL)
+docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev < drizzle/init/07-marketplaces.sql
+pnpm build
+```
+
+После применения SQL открыть `/settings/integrations`, добавить Ozon-аккаунт
+(Client-Id + Api-Key из ЛК Ozon → Настройки → Seller API), нажать
+«Тест подключения», потом «Синхронизировать сейчас». В блоках
+«Юнит-экономика Ozon» появится кнопка «Загрузить из Ozon».
+
 ## [0.16.0] - 2026-05-16
 
 Новый блок «Курсы валют» (`currency.rates`) с публикацией курсов в реальном

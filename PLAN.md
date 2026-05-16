@@ -1117,12 +1117,19 @@ interface PaymentProvider {
 - [ ] Phase 2 модули: ПСН, НПД, АУСН (после MVP)
 
 ### Этап 6 — API-интеграции маркетплейсов (3 недели)
-- [ ] OZON Seller API v3 (заказы, финансы, реклама, склад)
-- [ ] WB Statistics API
-- [ ] Яндекс.Маркет Partner API
-- [ ] BullMQ background sync (каждый час)
-- [ ] Unit-экономика по товару (маржа, ДРР, ROAS, себестоимость)
-- [ ] Webhook handlers
+- [x] OZON Seller API: каркас + 7 стейджей синхронизации (products / prices / stocks / orders / realization / transactions / turnover) — v0.17.0
+- [x] Plan-gate multi-store (Pro+) — v0.17.0
+- [x] Tenant-scoped `marketplace_accounts` + AES-256-GCM api_key — v0.17.0
+- [x] Кнопка «Загрузить из Ozon» в unit-блоках, product picker — v0.17.0
+- [ ] **BullMQ background sync для Ozon (каждый час / по расписанию из `sync_settings.auto_sync_cron`)** — поля схемы уже есть, нужен воркер. Зависимость: Redis уже в стеке (Docker compose). Каркас воркера: `src/workers/ozon-sync.ts` + `src/lib/queues/ozon-sync.ts` (BullMQ queue + scheduler); в `marketplace_accounts.sync_settings.autoSyncEnabled=true` запускать каждые N часов.
+- [ ] Ozon Push API (вебхуки) — заменить polling-у когда понадобится near-real-time.
+- [ ] Incremental sync через `updated_at` фильтры — сейчас full re-sync на каждом запуске.
+- [ ] WB Statistics API (структура `marketplace_accounts` уже мультимаркетная, нужен коннектор+endpoints+sync).
+- [ ] Яндекс.Маркет Partner API (аналогично WB).
+- [ ] Аналитические блоки на основе синхронизированных данных Ozon — см. mini-plan `docs/MARKETPLACES_FUTURE_PLAN.md` (создать в следующей итерации).
+- [ ] AI-tool `sync_ozon` для голосового запуска через Cmd+K.
+- [ ] Документация для AI-агентов `docs/MARKETPLACES_OZON.md` (как менять `OZON_API_VERSION_MAP`, типичные паттерны пагинации, известные quirks — см. mini-plan).
+- [ ] Unit-экономика по товару (маржа, ДРР, ROAS, себестоимость) — частично закрыто блоками `unit.ozon-*` (вход вручную / XLSX / Ozon API); реальный ДРР/ROAS требует ozon_transactions+ads-операции.
 
 ### Этап 7 — Поставки + Планировщик + Дедлайны (2 недели)
 - [ ] Модуль «Поставки» (поставщики, грузы, этапы доставки, оплаты)

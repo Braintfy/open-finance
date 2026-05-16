@@ -3,15 +3,18 @@
 // с долями (%) — соответствует референсу синий-рассвет.рф.
 'use client';
 
-import { useCallback, useMemo } from 'react';
-import { Calculator } from 'lucide-react';
+import { useCallback, useMemo, useState } from 'react';
+import { Calculator, Search } from 'lucide-react';
 import { z } from 'zod';
 import type { BlockDef, BlockRenderProps } from '../types';
+import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { LinkableNumberCell } from '@/components/unit-economics/linkable-number-cell';
 import { DropdownSelect } from '@/components/unit-economics/dropdown-select';
 import { ClusterSelector } from '@/components/unit-economics/cluster-selector';
+import { OzonSyncButton } from '@/components/unit-economics/ozon-sync-button';
+import { OzonProductPickerDialog } from '@/components/unit-economics/ozon-product-picker-dialog';
 import { useAllBlockValuesFlat } from '@/lib/unit-economics/use-live-block-values';
 import { resolveBindingValue } from '@/lib/unit-economics/bindings';
 import type {
@@ -197,6 +200,8 @@ function RenderOzonCalculator({ instance, onConfigChange }: BlockRenderProps) {
     [config.bindings, persist],
   );
 
+  const [pickerOpen, setPickerOpen] = useState(false);
+
   const inputs = useMemo<OzonInputs>(() => {
     const merged = { ...OZON_DEFAULT_INPUTS } as OzonInputs;
     for (const [key, value] of Object.entries(config.inputs)) {
@@ -273,7 +278,20 @@ function RenderOzonCalculator({ instance, onConfigChange }: BlockRenderProps) {
           </span>
           <span className="text-[10px] text-muted-foreground">v{OZON_TARIFF_VERSION}</span>
         </div>
-        <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+          <OzonSyncButton
+            onCompleted={() => {
+              setPickerOpen(true);
+            }}
+          />
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setPickerOpen(true)}
+            title="Выбрать товар из ранее синхронизированных"
+          >
+            <Search /> Подобрать товар
+          </Button>
           <span>Схема:</span>
           <div className="flex overflow-hidden rounded border border-border/60">
             {(['fbo', 'fbs'] as const).map((mode) => (
@@ -516,6 +534,30 @@ function RenderOzonCalculator({ instance, onConfigChange }: BlockRenderProps) {
           </div>
         </div>
       </div>
+
+      <OzonProductPickerDialog
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        onPick={(p) => {
+          const patch: Record<string, unknown> = {
+            price: p.priceRub,
+            volumeL: p.volumeL > 0 ? p.volumeL : inputs.volumeL,
+          };
+          if (p.costRub > 0) patch.cost = p.costRub;
+          // Заполняем комиссию из Ozon в зависимости от текущего режима.
+          if (inputs.mode === 'fbo' && p.commissionFboPct !== null) {
+            patch.commissionPct = p.commissionFboPct;
+          } else if (inputs.mode === 'fbs' && p.commissionFbsPct !== null) {
+            patch.commissionPct = p.commissionFbsPct;
+          }
+          setInputs(patch);
+          // Обновляем заголовок блока подтянутым именем товара.
+          if (p.name) {
+            persist({ title: p.name });
+          }
+          setPickerOpen(false);
+        }}
+      />
     </Card>
   );
 }

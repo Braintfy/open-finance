@@ -15,6 +15,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { tenants } from './tenants';
 import { users } from './users';
+import { marketplaceAccounts } from './marketplaces';
 
 export type UnitMarketplace = 'ozon' | 'yandex';
 
@@ -44,6 +45,14 @@ export const unitProducts = pgTable(
     /** Себестоимость в копейках */
     costKopecks: integer('cost_kopecks').notNull().default(0),
     volumeL: integer('volume_l_x100').notNull().default(0), // объём * 100 для целого
+    /**
+     * Ссылка на подключённый маркетплейс-аккаунт (если товар синхронизирован
+     * через Seller API). Nullable: для импорта из XLSX оставляем NULL.
+     */
+    marketplaceAccountId: uuid('marketplace_account_id').references(
+      () => marketplaceAccounts.id,
+      { onDelete: 'set null' },
+    ),
     /** Прочие данные импорта (например полный набор колонок Ozon) */
     metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
     createdAt: timestamp('created_at').defaultNow().notNull(),
@@ -53,6 +62,7 @@ export const unitProducts = pgTable(
     index('unit_products_tenant_idx').on(t.tenantId),
     index('unit_products_tenant_marketplace_idx').on(t.tenantId, t.marketplace),
     uniqueIndex('unit_products_tenant_mp_article_idx').on(t.tenantId, t.marketplace, t.article),
+    index('unit_products_marketplace_account_idx').on(t.marketplaceAccountId),
   ],
 );
 

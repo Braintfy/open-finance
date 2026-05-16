@@ -10,3 +10,4 @@ export * from './boards';
 export * from './inbox';
 export * from './unit-economics';
 export * from './currency';
+export * from './marketplaces';

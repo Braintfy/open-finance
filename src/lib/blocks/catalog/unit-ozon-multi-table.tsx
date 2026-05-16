@@ -63,6 +63,7 @@ import {
 } from '@/lib/unit-economics/ozon/tariffs-2026-04-07';
 import { migrateOzonRaw } from '@/lib/unit-economics/ozon/migrate';
 import { ClusterSelector } from '@/components/unit-economics/cluster-selector';
+import { OzonSyncButton } from '@/components/unit-economics/ozon-sync-button';
 import { useBlockValuePublisher } from '@/lib/blocks/values';
 import { useFormatSettings, formatRublesWithSettings } from '@/lib/format-settings';
 import { rublesToKopecks } from '@/lib/unit-economics/types';
@@ -694,6 +695,11 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
           >
             <Upload /> Импорт XLSX
           </Button>
+          <OzonSyncButton
+            onCompleted={async () => {
+              await loadProductsAndPopulate();
+            }}
+          />
           <Button variant="outline" size="sm" onClick={() => addRows(1)}>
             <Plus /> 1
           </Button>

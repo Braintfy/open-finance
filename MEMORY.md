@@ -114,6 +114,7 @@ Open Finance = настраиваемый Lego-конструктор интер
 - **Unit Economics `/unit-economics`** — четыре вкладки (`unit-economics-ozon`, `unit-economics-ozon-multi`, `unit-economics-yandex`, `unit-economics-my-store`), каждый таб = свой `pageKey` с самостоятельным BlockGrid layout.
 - **Marketplace «Маркет блоков» `/marketplace`** — каталог всех блоков (browse-only, без установки). `src/app/(app)/marketplace/{page,marketplace-client}.tsx`. Поиск, фильтр по категории и тегам, диалог детальной инфо. Кнопки «Создать блок» и «Купить блок» disabled (заглушки на будущее). Пункт sidebar `marketplace` с label «Маркет блоков» (`Store` icon). URL `/marketplace` сохранён ради ссылок и истории.
 - **Settings `/settings`** — visibility toggles, форматирование, настройки разделов.
+- **Settings → Integrations `/settings/integrations`** (v0.17.0) — подключение marketplace-аккаунтов (Ozon Seller API), тогглы синхронизации по 7 стейджам, тест/sync/история job'ов.
 - **Admin AI pages** — local models, external providers/proxy/diagnostics, system prompt.
 
 ## Boards — персональные рабочие пространства
@@ -234,6 +235,44 @@ Open Finance = настраиваемый Lego-конструктор интер
 - **Money detection потребителем**: `sourceFieldIsMoney()` в `custom-data.tsx` → если `field.format === 'number'` (а у currency.rates все fields явно `'number'`), возвращает `false`. Дополнительные категории (`'Финансы'`) добавлять в isMoney-эвристику НЕ нужно.
 - **`/api/blocks/sources` подгружает курсы 1 раз**: `getCurrencyRates()` вызывается в начале `GET`, результат кэшируется в `currencyRatesByCode: Map<string, CurrencyRate>` и пробрасывается в каждый `fieldsForBlock(...)`. Не делать этот вызов внутри `fieldsForBlock` — иначе на 50 блоков будет 50 SQL-запросов.
 
+## Marketplace Integrations / Ozon Seller API (v0.17.0)
+### Ключевые файлы
+- `src/lib/db/schema/marketplaces.ts` + `drizzle/init/07-marketplaces.sql` — таблицы `marketplace_accounts` (подключённые магазины, api_key зашифрован AES-256-GCM), `ozon_sync_jobs` (история job'ов с per-stage `stages JSONB`), `ozon_orders`, `ozon_realization`, `ozon_transactions`. `unit_products.marketplace_account_id uuid NULL` — связь синхронизированного товара с источником.
+- `src/lib/marketplaces/types.ts` — `OzonSyncSettings`, `OZON_FULL_STAGES` (порядок: products → prices → stocks → orders → realization → transactions → turnover), `DEFAULT_OZON_SYNC_SETTINGS`, Zod-схемы `CreateAccountSchema`/`UpdateAccountSchema`, `isPremiumPlan()` (plan-gate: `pro/business/enterprise` → unlimited магазинов; иначе max 1 per marketplace).
+- `src/lib/marketplaces/crypto.ts` — реэкспорт `encryptSecret/decryptSecret/maskSecret` из `src/lib/inbox/crypto.ts` (общий `INBOX_SECRET_KEY` AES-256-GCM).
+- `src/lib/marketplaces/queries.ts` — tenant-scoped CRUD `marketplace_accounts`/`ozon_sync_jobs`, `canAddAccount()` (plan-gate), `toPublicAccount()` (никогда не возвращает расшифрованный api_key — только `apiKeyMasked`).
+- `src/lib/marketplaces/ozon/client.ts` — `OzonClient` с **per-clientId token-bucket rate-limit 40 RPS** (Ozon допускает 50, держим запас) + exponential backoff на 429/5xx (3 retry, base 500/1500/4000ms + jitter) + timeout 30s. Лимитер живёт в in-memory `Map<clientId, RateLimiter>` — НЕ переживает перезагрузку, при горизонтальном масштабе → Redis-token-bucket (та же грабля что и currency v0.16.0).
+- `src/lib/marketplaces/ozon/types.ts` — Zod-схемы ответов Ozon (`.passthrough()` для необязательных полей).
+- `src/lib/marketplaces/ozon/endpoints.ts` — типизированные обёртки 10 endpoints + `OZON_API_VERSION_MAP` (если Ozon выкатит `/v6/product/info/prices` — править в одном месте + в `types.ts`).
+- `src/lib/marketplaces/ozon/sync/{products,prices,stocks,orders,realization,transactions,turnover}.ts` — отдельный файл на стейдж, общий контракт `runStage(ctx) → StageResult` (см. `sync/types.ts`).
+- `src/lib/marketplaces/ozon/sync/full.ts` — оркестратор: последовательно прогоняет стейджи, пишет per-stage прогресс в `ozon_sync_jobs.stages` через `jsonb_set`, финализирует `marketplace_accounts.last_sync_*`.
+- `src/lib/marketplaces/ozon/upsert.ts` — маппинг Ozon-сущностей в наши таблицы. `upsertUnitProductFromOzon()` идемпотентен по `(tenant_id, marketplace, article=offer_id)`, мерджит `metadata` через `unit_products.metadata || $::jsonb` (не затирает кастомные поля).
+- `src/app/api/marketplaces/accounts/route.ts` + `[id]/{route,test,sync,jobs/[jobId?]}/route.ts` — все Node runtime, `auth()`, фильтрация по `tenant_id`, top-level try/catch. `sync` запускает `runFullSync` в фоне через `Promise...catch()` (не блокирует ответ), клиент поллит `/jobs/[jobId]` каждые 1.5s.
+- `src/app/(app)/settings/integrations/{page,integrations-client}.tsx` — UI настроек: карточки аккаунтов (status chip, last sync), создание/удаление/правка ключа, тогглы «что синхронизировать» (7 стейджей + окно дней для orders/transactions), тест подключения, ручная синхронизация с inline-прогрессом, история job'ов (top 5).
+- `src/components/unit-economics/ozon-sync-button.tsx` — shared «Загрузить из Ozon» с polling + DropdownMenu для multi-store (Pro+). Используется в `unit-ozon-multi-table.tsx` (после sync → `loadProductsAndPopulate()`) и `unit-ozon-calculator.tsx` (после sync → открывает `OzonProductPickerDialog`).
+- `src/components/unit-economics/ozon-product-picker-dialog.tsx` — диалог выбора одного товара из синхронизированных (для калькулятора).
+
+### Инварианты
+- **api_key хранится только в `marketplace_accounts.api_key_enc` (AES-256-GCM).** Никогда не возвращаем raw на клиент — только `maskSecret(api_key_enc)`. Шифр-ключ — `INBOX_SECRET_KEY` (общий с inbox). При проде перейти на отдельный `MARKETPLACE_SECRET_KEY` через `crypto.ts`.
+- **`tenant_id` фильтрация ВЕЗДЕ.** Все queries фильтруются. API-роуты делают `auth() → session.tenantId → getAccount({ tenantId, id })`.
+- **Rate-limit per Client-Id, не per tenant.** Один tenant с двумя магазинами имеет 2 независимых лимитера. При горизонтальном масштабировании на N pod'ов — `Map` не разделится, нужен Redis.
+- **Backoff не ретраит 4xx (кроме 429).** `OzonApiError` с `status >= 400 && status < 500 && status !== 429` пробрасывается сразу — иначе будем биться об «401 Unauthorized» десятки раз.
+- **`runFullSync` — fire-and-forget в API-роуте.** `POST /sync` возвращает `jobId` сразу, оркестратор крутится в том же Node-процессе. На Vercel `maxDuration=300` (5 минут). Для большого магазина запускать стейджи по одному через `{ stage: 'orders' }` в body.
+- **Per-stage прогресс через `jsonb_set`.** `updateSyncJobStage({ stage, state })` использует `jsonb_set(stages, '{prices}', $jsonb, true)` — это безопасно от гонок с другими стейджами. Параллельные стейджи (если когда-нибудь) сделают `concurrent updates` на одной строке job, но `jsonb_set` атомарен per-`UPDATE`.
+- **Маппинг товара идемпотентен.** `upsertUnitProductFromOzon` использует `onConflictDoUpdate({ target: [tenant_id, marketplace, article] })` и **никогда не перезаписывает `costKopecks`** (себестоимость — пользовательский ввод). `metadata` мерджится через `||` JSONB-оператор — кастомные поля пользователя сохраняются.
+- **Plan-gate в `canAddAccount`.** `tenant.plan` берётся из `tenants` таблицы. `free`/`trial_pro`/null/любой не-premium → max 1 magazин per marketplace. Pro+ → unlimited. UI блокирует кнопку «Добавить магазин» при `!canAddOzon` с tooltip.
+- **`marketplace_account_id` в `unit_products` nullable.** XLSX-импорт оставляет NULL; sync проставляет FK. При удалении аккаунта (`ON DELETE SET NULL`) товары остаются — пользователь не теряет данные.
+- **Cron-планирование ОТЛОЖЕНО.** Поля `auto_sync_enabled` и `auto_sync_cron` уже есть в `OzonSyncSettings`, UI рисует disclaimer. BullMQ-воркер — отдельный этап (см. PLAN.md TODO «BullMQ cron для Ozon sync»).
+
+### Что отложили (зафиксировано в PLAN.md / `docs/MARKETPLACES_FUTURE_PLAN.md`)
+- BullMQ cron-расписание для авто-синхронизации.
+- Yandex Market / Wildberries (таблица `marketplace_accounts` уже мультимаркетная, но коннекторов нет).
+- Ozon Push API (вебхуки от Ozon — pollin'g сейчас).
+- Incremental sync через `updated_at` фильтры.
+- AI-tool `sync_ozon` (для голосового запуска через Cmd+K).
+- Аналитические блоки: `ozon.sales-by-sku`, `ozon.commissions-vs-tariff`, `ozon.returns-heatmap`, `ozon.unit-economics-actual-vs-plan` — см. mini-plan.
+- Документация для AI-агентов `docs/MARKETPLACES_OZON.md`/`docs/MARKETPLACES_WB.md` — см. mini-plan.
+
 ## RAG memory / AI Orchestrator
 - Schema уже есть: `src/lib/db/schema/ai.ts` (`memory_chunks`, `ai_usage`, `ai_audit_log`, `ai_agents`).
 - `src/lib/ai/orchestrator.ts` пока scaffold/TODO для Этапа 4.
@@ -282,15 +321,19 @@ docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev 
 docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev < drizzle/init/04-inbox.sql
 docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev < drizzle/init/05-unit-economics.sql
 docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev < drizzle/init/06-currency.sql
+docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev < drizzle/init/07-marketplaces.sql
 ```
 
-## Текущий статус на 2026-05-16
-- **Версия:** `0.16.0` в `CHANGELOG.md`; `package.json` всё ещё `0.5.0` и не является источником статуса фич.
-- **Фаза:** новый блок `currency.rates` (свежие курсы ЦБ РФ через cbr-xml-daily.ru, бесплатно/без ключей/без лимитов) с публикацией курсов как `@блок.usd`/`@блок.eur`/... для использования в формулах и привязках, кэш в Postgres-таблице `currency_rates` с lazy-refresh (порог 23h) + manual refresh кнопка с rate-limit 1/min. Плюс UX-фикс блока «Данные»: селект «основной колонки» больше не пустой когда у всех колонок снят флаг публикации (раньше активировался только при добавлении третьей колонки). Поверх v0.15.2 (security-патч Next.js CVE-2026-44578, BlockChrome.borderColor через absolute-overlay, ColorPalette flex-wrap, cross-page триангуляция), v0.15.1 (UI-полировка модалки + расширенные палитры 25 цветов / 70 иконок), v0.15.0 (адаптивные ширины колонок `custom.data`, точная геометрия фон-сетки, cross-page треугольнички, lightweight `/api/blocks/relations`), v0.14.0 (multi-column `custom.data`, BlockInstance.aiPrompt), Unit Economics MVP, «Маркет блоков». Под капотом — Inbox Channels MVP + AI Micro-Agent + External Providers/VPN/Diagnostics + Boards.
-- **Build:** `pnpm typecheck` и `pnpm build` проходят (новые роуты `/api/currency/rates` и `/api/currency/rates/refresh` зарегистрированы); smoke-тесты `pnpm tsx scripts/test-unit-economics.ts` зелёные (**36 PASS**).
+## Текущий статус на 2026-05-17
+- **Версия:** `0.17.0` в `CHANGELOG.md`; `package.json` всё ещё `0.5.0` и не является источником статуса фич.
+- **Фаза:** интеграция Ozon Seller API: новый раздел `/settings/integrations`, таблицы `marketplace_accounts` (AES-256-GCM для api_key) + `ozon_sync_jobs` + `ozon_orders`/`ozon_realization`/`ozon_transactions`, оркестратор 7 стейджей (products/prices/stocks/orders/realization/transactions/turnover), типизированный `OzonClient` с token-bucket 40 RPS, plan-gate на multi-store (Pro+). В блоках `unit.ozon-multi-table` и `unit.ozon-calculator` появилась кнопка «Загрузить из Ozon» и picker товаров. Cron-расписание заложено в схему (`auto_sync_enabled/cron`), реализация BullMQ-воркера отложена. Поверх v0.16.0 (currency rates), v0.15.2 (security/UI-полировка), Unit Economics MVP, «Маркет блоков», Inbox MVP, AI Micro-Agent.
+- **Build:** `pnpm typecheck` и `pnpm build` проходят (новые роуты `/api/marketplaces/accounts/*` зарегистрированы); smoke-тесты `pnpm tsx scripts/test-unit-economics.ts` зелёные (**36 PASS**).
 - **Контекстные файлы:** `0.10.3` ввёл `START.md` и переход на ленивую загрузку контекста — `CHANGELOG.md`/`PLAN.md` больше не грузятся целиком по умолчанию.
 - **Ближайшие TODO:**
-  - применить `06-currency.sql` в dev DB (manual SQL command выше) и сделать первый refresh курсов через POST `/api/currency/rates/refresh`;
+  - применить `07-marketplaces.sql` в dev DB (manual SQL command выше) и протестировать подключение реального Ozon-аккаунта через `/settings/integrations` → «Тест подключения» → «Синхронизировать»;
+  - применить `06-currency.sql` в dev DB и сделать первый refresh курсов через POST `/api/currency/rates/refresh`;
+  - **BullMQ cron для авто-синхронизации Ozon** (поля `auto_sync_enabled/cron` уже есть в `OzonSyncSettings`, UI рисует disclaimer; воркер пока не реализован);
+  - реализовать аналитические блоки на основе синхронизированных данных Ozon — см. mini-plan в `PLAN.md` / `docs/MARKETPLACES_FUTURE_PLAN.md`;
   - реализовать парсер `СЕБЕС озон.xlsx` для seed-колонок Мой магазин (отдельный скрипт);
   - применить `05-unit-economics.sql` в dev DB (manual SQL command выше);
   - применить `04-inbox.sql` в dev DB;
@@ -339,3 +382,8 @@ docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev 
 - **Next.js HTML-500 на unhandled route exception** (v0.16.0 audit) — если route handler бросает exception БЕЗ try/catch, Next возвращает HTML error page (или вообще пустое тело в production). Frontend, делающий `await response.json()`, падает с `Unexpected end of JSON input` — пользователь видит криптическое сообщение вместо реальной причины. **Правило:** ВСЕ route handlers, которые могут потенциально упасть на `db.*`/external fetch, обязаны иметь top-level try/catch с `NextResponse.json({ ok: false, error })`. На клиенте использовать `parseJsonResponse(response)` хелпер: сначала `response.text()`, потом `JSON.parse()` с try/catch — даёт пользователю осмысленное сообщение (включая extract `<title>` HTML-страницы как hint).
 - **Auto-refresh без guard → рекурсия** (v0.16.0 audit) — в `useCurrencyRates()` логика «БД пустая → авто-refresh» приведёт к бесконечному циклу, если refresh тоже возвращает пустой массив (CBR недоступен, или таблица не создана). Решение: `useRef<boolean>` flag (`triedAutoRefreshRef`), сбрасывается только при unmount. Один авто-вызов за жизнь компонента, дальше — только через user-кликом по `RefreshCw`. То же правило применять для любых auto-trigger'ов в reactive store.
 - **Async fetch + setState после unmount** (v0.16.0 audit) — fetch'ы в hook'ах должны защищаться от setState после unmount: `mountedRef = useRef(true)` + cleanup в useEffect + обёртка `safeSetState`. Без этого React пишет warning и могут быть гонки при быстром add/remove блока.
+- **In-memory token-bucket per Client-Id для Ozon (v0.17.0)** — `src/lib/marketplaces/ozon/client.ts` использует `Map<clientId, RateLimiter>`. Ozon допускает 50 RPS, мы держим 40 с запасом. Лимитер живёт ровно в одном Node-процессе. Симптомы при горизонтальном масштабе: N pod'ов × 40 RPS = 40N → 429 от Ozon. Решение (когда понадобится): переехать на Redis-token-bucket (паттерн `LUA INCR + EXPIRE`). Та же грабля что и `currency rate-limit` — обе схемы должны мигрировать одновременно при появлении Redis в проде.
+- **`runFullSync` fire-and-forget на Vercel timeout (v0.17.0)** — `POST /api/marketplaces/accounts/[id]/sync` запускает `runFullSync(...)` через `Promise.resolve().then(...)` и возвращает `jobId` немедленно. Внутри одного serverless-инвока есть `maxDuration=300` (5 минут). Большие магазины (>1000 SKU + 90 дней заказов + транзакции) могут не успеть. Текущее решение: пользователь видит in-progress job через polling, незавершённые стейджи остаются `running` в `ozon_sync_jobs.stages` (нет завершающего записи). Долгосрочно: либо переезд на BullMQ-worker, либо UI должен запускать стейджи по одному через `{ stage }` в body. Не показывать пользователю «завершено» только по факту возврата `jobId` — состояние всегда читать из `/jobs/[jobId]`.
+- **`onConflictDoUpdate` + `sql\`unit_products.metadata\`` (v0.17.0)** — `upsertUnitProductFromOzon` мерджит metadata через `unit_products.metadata || ${JSON.stringify(meta)}::jsonb`. Drizzle `sql` template безопасен от inj'екций, но `JSON.stringify` критичен — нельзя класть raw object. Если когда-то метаданные содержат значения от Ozon с одиночными кавычками внутри строк (например marketing_actions.name = `O'Connell`), это сейчас работает корректно (jsonb-литерал escape'ит при cast'е), но при ручном `string interpolation` сломалось бы. Не уходить от `JSON.stringify(...)::jsonb` к `string concat`.
+- **`ozon_orders.delivered_at` — псевдо-derived из status (v0.17.0)** — Ozon API не отдаёт явное `delivered_at` в `/v3/posting/fbs/list`. Текущее решение: при `status === 'delivered'` ставим `new Date()` (момент текущей синхронизации). Это **приблизительно** правильно только если sync запускается часто. Для точных метрик «дни до доставки» нужен отдельный fetch `/v3/posting/fbs/get` per posting → дорого. Если бизнес-метрика «time-to-delivery» станет важной — добавить отдельный стейдж `enrich-deliveries` (FF Ozon).
+- **`/v2/finance/realization` — НЕ возвращает данные за текущий месяц (v0.17.0)** — отчёт формируется Ozon'ом по концу месяца. В стейдже `realization` тянем 2 последних **закрытых** месяца, текущий пропускаем. Если запросить незавершённый — Ozon возвращает 400/пустой ответ. Не считать «отсутствие данных за май» багом, если сегодня 17 мая.

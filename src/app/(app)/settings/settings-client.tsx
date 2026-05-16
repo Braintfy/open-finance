@@ -3,6 +3,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import {
   LayoutDashboard,
   LayoutGrid,
@@ -20,6 +21,8 @@ import {
   Save,
   Coins,
   Calculator,
+  Plug,
+  ChevronRight,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -199,8 +202,33 @@ export function SettingsClient({
         </AlertDescription>
       </Alert>
 
+      <IntegrationsLink />
+
       <FormatSection />
     </div>
+  );
+}
+
+function IntegrationsLink() {
+  return (
+    <section>
+      <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+        Интеграции
+      </div>
+      <Link
+        href="/settings/integrations"
+        className="flex items-center gap-3 rounded-lg border bg-card px-3 py-3 transition-colors hover:bg-muted/40"
+      >
+        <Plug className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-medium">Маркетплейсы (Ozon, …)</div>
+          <div className="truncate text-[11px] text-muted-foreground">
+            Подключить Seller API для синхронизации цен, остатков и комиссий
+          </div>
+        </div>
+        <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+      </Link>
+    </section>
   );
 }
 
