@@ -1386,22 +1386,35 @@ function CustomDataSettingsForm({ config, onChange }: BlockSettingsFormProps) {
             <option value="last">Последнее значение</option>
           </select>
           <select
-            value={parsed.publishColumnId ?? ''}
-            onChange={(e) => patch({ publishColumnId: e.target.value || undefined })}
+            value={parsed.publishColumnId ?? parsed.columns[0]?.id ?? ''}
+            onChange={(e) => {
+              const nextId = e.target.value || undefined;
+              const target = parsed.columns.find((c) => c.id === nextId);
+              if (target && target.publish === false) {
+                patch({
+                  publishColumnId: nextId,
+                  columns: parsed.columns.map((c) =>
+                    c.id === nextId ? { ...c, publish: true } : c,
+                  ),
+                });
+              } else {
+                patch({ publishColumnId: nextId });
+              }
+            }}
             className="h-8 rounded-md border border-input bg-background px-2 text-xs"
           >
-            {parsed.columns
-              .filter((c) => c.publish !== false)
-              .map((c) => (
-                <option key={c.id} value={c.id}>
-                  Колонка: {c.label}
-                </option>
-              ))}
+            {parsed.columns.map((c) => (
+              <option key={c.id} value={c.id}>
+                Колонка: {c.label}
+                {c.publish === false ? ' · не публикуется' : ''}
+              </option>
+            ))}
           </select>
         </div>
         <p className="text-[11px] text-muted-foreground">
           В шапке блока показывается агрегат «основной» колонки. Все publish-колонки также
-          публикуются отдельно (доступны как @блок.id_колонки).
+          публикуются отдельно (доступны как @блок.id_колонки). При выборе скрытой колонки
+          она автоматически становится publish-колонкой.
         </p>
       </div>
 

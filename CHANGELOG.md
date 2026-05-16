@@ -1,5 +1,52 @@
 # Changelog
 
+## [0.16.0] - 2026-05-16
+
+Новый блок «Курсы валют» (`currency.rates`) с публикацией курсов в реальном
+времени для использования в формулах и привязках, плюс фикс пустого селекта
+«основная колонка» в блоке Данные (`custom.data`), когда у всех колонок снят
+флаг публикации. После первоначальной реализации проведён аудит — закрыты
+race-condition в hook'е, защита от не-JSON ответов сервера, понятные сообщения
+при ненастроенной БД.
+
+### Hardened (audit pass)
+
+- **Frontend: защита от не-JSON ответов** ([src/lib/blocks/catalog/currency-rates.tsx](src/lib/blocks/catalog/currency-rates.tsx)) — если route handler упадёт с unhandled exception (например, не применена SQL-миграция и Drizzle бросает `relation "currency_rates" does not exist`), Next.js возвращает HTML error page, и `await response.json()` падает с непонятным `Unexpected end of JSON input`. Введён хелпер `parseJsonResponse(response)`: сначала `response.text()`, потом `JSON.parse()` с extract'ом `<title>` HTML-страницы как hint'а. Пользователь видит человеческое: `"Сервер вернул не-JSON ответ: 500 Internal Server Error. Проверьте логи и применение SQL-миграции drizzle/init/06-currency.sql"`.
+- **Frontend: race-condition после unmount** — `useCurrencyRates()` теперь хранит `mountedRef` и обёртку `safeSetState`, чтобы async fetch'и не дёргали `setState` после unmount компонента (классический React-warning + потенциальный source of stale state). Также `triedAutoRefreshRef` гарантирует ровно ОДИН авто-refresh за жизнь компонента — без guard'а пустой ответ от refresh'а триггерил бы рекурсивный цикл.
+- **Frontend: error message переносится** — добавлены `whitespace-pre-wrap break-words` к контейнеру ошибки в Render. Раньше длинные сообщения (полный HTTP-стек или multi-line error) обрезались.
+- **Frontend: useMemo для `parseConfig`** — без обёртки в `useMemo` каждый рендер создавал новый массив `config.codes` → пересчёт `visible`/`publishOutput` на пустом месте + лишние ре-публикации в `BlockValuesContext`.
+- **Backend: try/catch + распознавание missing-table** ([src/app/api/currency/rates/route.ts](src/app/api/currency/rates/route.ts), [src/app/api/currency/rates/refresh/route.ts](src/app/api/currency/rates/refresh/route.ts)) — оба роута полностью обёрнуты, при ошибке всегда возвращается JSON. Если ошибка содержит `relation .*currency_rates.* does not exist` (regex), отдаём `503` с прямой инструкцией: `"Применить SQL: docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev < drizzle/init/06-currency.sql"`. Это покрывает самый частый failure mode setup'а.
+- **CBR loader: защита от невалидной даты** ([src/lib/currency/sources/cbr.ts](src/lib/currency/sources/cbr.ts)) — `new Date(data.Date).toISOString()` мог бросить `RangeError` на нестандартном формате. Теперь fallback на текущую дату, если `getTime()` возвращает `NaN`.
+
+### Added
+
+- **Блок `currency.rates`** ([src/lib/blocks/catalog/currency-rates.tsx](src/lib/blocks/catalog/currency-rates.tsx)) — свежие курсы валют ЦБ РФ для использования в `@связать`. Config: `codes` (массив выбранных валют, дефолт `['USD','EUR','CNY','AED']`), `primaryCode` (для шапки блока и публикации как `value`), `showDelta`/`showPercent` (стрелка ↑↓ + Δ% от вчерашнего курса). Density-aware Render: `xs` → курс primaryCode + `CODE/RUB`, `sm` → код + курс, `md/lg` → список валют со стрелками тренда и Δ%. Кнопка `RefreshCw` в шапке блока — принудительный refresh (rate-limit 1/min на tenant). Settings-форма: 9 «популярных» валют (USD/EUR/CNY/AED/TRY/GBP/JPY/KZT/BYN) с описаниями + кнопка «Остальные валюты ЦБ» открывает диалог со всеми ~30 валютами и search'ем. Publisher (`useBlockValuePublisher`): `value: rates[primaryCode]`, `usd/eur/cny/...` (по выбранным), `usd_change/eur_change/...` (Δ% от вчера), `__labels: 'usd=USD (₽),...'`. **`__money` НЕ публикуется** — курс это число (RUB за 1 единицу), а не money-формат; формулы вида `=A1*@currency.usd` работают корректно когда A1 — money, а курс — обычное число.
+- **`/api/currency/rates`** ([src/app/api/currency/rates/route.ts](src/app/api/currency/rates/route.ts)) — `GET`: список snapshot'ов из БД, опциональный фильтр `?codes=USD,EUR,CNY`, lazy-refresh при возрасте >23h (асинхронный, не блокирует ответ). Защита от параллельных refresh'ей через `inflightRefresh` глобальный promise.
+- **`/api/currency/rates/refresh`** ([src/app/api/currency/rates/refresh/route.ts](src/app/api/currency/rates/refresh/route.ts)) — `POST`: принудительный refresh, требует auth, rate-limit 1/min per tenant через in-memory `Map<tenantId, lastRefreshAt>`. При ошибке fetch у ЦБ возвращает `502` с понятным сообщением.
+- **`src/lib/currency/`** модуль:
+  - [`types.ts`](src/lib/currency/types.ts) — `CurrencyRate`, `CurrencyStaleness`, `CURRENCY_STALENESS_WINDOW_MS = 23h`.
+  - [`sources/cbr.ts`](src/lib/currency/sources/cbr.ts) — `fetchCbrDaily()`: тянет `https://www.cbr-xml-daily.ru/daily_json.js` (community JSON-mirror официального XML ЦБ, бесплатно/без ключей/без лимитов). Нормализует `Nominal>1` (10 KRW = 110₽ → 11₽/KRW) к курсу за 1 единицу. Таймаут 8s + 1 retry с задержкой 800ms.
+  - [`queries.ts`](src/lib/currency/queries.ts) — `getCurrencyRates(codes?)`, `getStaleness()`, `refreshCurrencyRates()` с bulk upsert через `onConflictDoUpdate({ target: code, set: { ...sql\`excluded.field\` } })`.
+- **DB schema** [`currency_rates`](src/lib/db/schema/currency.ts) + [`drizzle/init/06-currency.sql`](drizzle/init/06-currency.sql) — общая таблица (НЕ tenant-scoped, это публичные данные): `code` (PK, varchar(8)), `nominal`, `name`, `rate_rub` (numeric 18,6 — за 1 единицу), `previous_rub` (для Δ%), `source` (default `cbr`), `source_date`, `updated_at`. Индекс по `updated_at desc`.
+- **Регистрация** ([src/lib/blocks/registry.ts](src/lib/blocks/registry.ts)) — `BLOCK_META['currency.rates'] = { tags: ['finance', 'currency', 'universal', 'data'], recommendedFor: ['dashboard'], iconName: 'Banknote' }`. В `/api/blocks/sources` добавлены `TYPE_LABELS['currency.rates'] = { label: 'Курсы валют', category: 'Финансы' }` и ветка в `fieldsForBlock`, читающая из `getCurrencyRates()` (один SQL на весь GET, кэшируется в `currencyRatesByCode: Map<string, CurrencyRate>`).
+
+### Fixed
+
+- **`custom.data` Settings: пустой селект «основной колонки»** ([src/lib/blocks/catalog/custom-data.tsx](src/lib/blocks/catalog/custom-data.tsx)) — раньше селект `publishColumnId` фильтровал колонки через `.filter((c) => c.publish !== false)`, и если пользователь снимал флаг публикации со всех колонок (`<X/>` в кнопке-toggle), список становился пустым и поле выглядело «отключённым». «Активировался» только при добавлении третьей колонки с дефолтным `publish: true`. Это путало UX, потому что `publishColumnId` (какую колонку показывать в шапке как агрегат) и `publish` колонки (экспорт через `@блок.id_колонки`) — это две **разные оси**, а не зависимые. Фикс: убран фильтр, селект показывает **все** колонки. Колонки с `publish: false` помечены текстом `· не публикуется`. При выборе такой колонки она автоматически переключается в `publish: true` (защита: основная колонка обязана экспортироваться, иначе `value`/`__money='value'` не сработают через `@блок`-ссылки).
+
+### Notes
+
+- **Источники курсов — анализ.** Для MVP выбран ЦБ РФ через `cbr-xml-daily.ru` — единственный из доступных вариантов **без API-ключей и без лимитов**. Альтернативы (ExchangeRate-API: 1500/мес, OpenExchangeRates: 1000/мес, Fixer: 100/мес) требуют ключ и для самообновления раз в сутки явно избыточны. Frankfurter (на основе ECB) — резерв на Phase 2 для нерублёвых пар. Свой парсер Yandex Финансы / MOEX / Banki.ru рассматривался, но: верстка ломается, юридическая серая зона, а ЦБ покрывает 99% сценариев финансового пользователя в РФ. История курсов (sparkline-график), кросс-курсы (USD→EUR через RUB), криптовалюты — отдельные итерации, в этой не делается.
+- **Команды для применения:**
+  ```bash
+  pnpm typecheck
+  pnpm build
+  docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev < drizzle/init/06-currency.sql
+  # первичный seed (после первого пользовательского запроса GET /api/currency/rates
+  # делает background-refresh автоматически; этот curl только если хочется сразу):
+  curl -X POST http://localhost:3000/api/currency/rates/refresh
+  ```
+
 ## [0.15.2] - 2026-05-16
 
 Security-патч Next.js (CVE-2026-44578, SSRF через WebSocket upgrade-запросы) + три

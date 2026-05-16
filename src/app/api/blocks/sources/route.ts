@@ -8,6 +8,8 @@ import { transactions } from '@/lib/db/schema/transactions';
 import { loadLayout } from '@/lib/blocks/queries';
 import { getCashflowSummary } from '@/lib/cashflow/queries';
 import { listInboxChannels, listInboxMessages } from '@/lib/inbox/queries';
+import { getCurrencyRates } from '@/lib/currency/queries';
+import type { CurrencyRate } from '@/lib/currency/types';
 import type { BlockInstance } from '@/lib/blocks/types';
 import FormulaParser, { MAX_COLUMN, MAX_ROW } from 'fast-formula-parser';
 
@@ -71,6 +73,7 @@ const TYPE_LABELS: Record<string, { label: string; category: string }> = {
   'unit.ozon-multi-table': { label: 'Ozon · юнит-таблица', category: 'Юнит-экономика' },
   'unit.yandex-calculator': { label: 'Яндекс · калькулятор', category: 'Юнит-экономика' },
   'unit.my-store-table': { label: 'Мой магазин · таблица', category: 'Юнит-экономика' },
+  'currency.rates': { label: 'Курсы валют', category: 'Финансы' },
 };
 
 function pageLabel(pageKey: string): string {
@@ -326,7 +329,12 @@ function evaluateSheetCells(block: BlockInstance): { values: Map<string, number 
   return { values, moneyCells };
 }
 
-async function fieldsForBlock(block: BlockInstance, tenantId: string, monthlySummary: Awaited<ReturnType<typeof getCashflowSummary>>): Promise<SourceField[]> {
+async function fieldsForBlock(
+  block: BlockInstance,
+  tenantId: string,
+  monthlySummary: Awaited<ReturnType<typeof getCashflowSummary>>,
+  currencyRatesByCode: Map<string, CurrencyRate>,
+): Promise<SourceField[]> {
   if (block.type === 'stat.income') {
     return [
       { name: 'value', label: 'Сумма', value: monthlySummary.incomeTotal, format: 'money' },
@@ -448,6 +456,43 @@ async function fieldsForBlock(block: BlockInstance, tenantId: string, monthlySum
       { name: 'avgMargin', label: 'Средняя маржа', value: null, format: 'number' },
     ];
   }
+  if (block.type === 'currency.rates') {
+    const cfg = block.config ?? {};
+    const codesRaw = Array.isArray(cfg.codes) ? cfg.codes : ['USD', 'EUR', 'CNY', 'AED'];
+    const codes = codesRaw
+      .map((c) => (typeof c === 'string' ? c.toUpperCase() : ''))
+      .filter(Boolean);
+    const primaryRaw = typeof cfg.primaryCode === 'string' ? cfg.primaryCode.toUpperCase() : codes[0];
+    const primaryCode = primaryRaw && codes.includes(primaryRaw) ? primaryRaw : codes[0];
+    const fields: SourceField[] = [];
+    const primary = primaryCode ? currencyRatesByCode.get(primaryCode) : undefined;
+    fields.push({
+      name: 'value',
+      label: primary ? `${primary.code}/RUB` : 'Курс',
+      value: primary?.rateRub ?? null,
+      format: 'number',
+    });
+    for (const code of codes) {
+      const rate = currencyRatesByCode.get(code);
+      const key = code.toLowerCase();
+      fields.push({
+        name: key,
+        label: `${code} (₽)`,
+        value: rate?.rateRub ?? null,
+        format: 'number',
+      });
+      if (rate && rate.previousRub !== null && rate.previousRub > 0) {
+        const delta = ((rate.rateRub - rate.previousRub) / rate.previousRub) * 100;
+        fields.push({
+          name: `${key}_change`,
+          label: `${code} Δ%`,
+          value: Number(delta.toFixed(4)),
+          format: 'number',
+        });
+      }
+    }
+    return fields;
+  }
   if (block.type === 'inbox.channel-feed') {
     const [channels, latest] = await Promise.all([
       listInboxChannels(tenantId, block.id),
@@ -484,14 +529,21 @@ export async function GET() {
   const pageKeys: string[] = Array.from(new Set([...DEFAULT_PAGE_KEYS, ...saved.map((r) => r.pageKey)]));
   const now = new Date();
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-  const monthlySummary = await getCashflowSummary(tenantId, monthStart);
+  const [monthlySummary, currencyRatesList] = await Promise.all([
+    getCashflowSummary(tenantId, monthStart),
+    getCurrencyRates().catch((error) => {
+      console.error('[blocks/sources] currency rates load failed:', error);
+      return [] as CurrencyRate[];
+    }),
+  ]);
+  const currencyRatesByCode = new Map(currencyRatesList.map((r) => [r.code, r]));
 
   const pages = await Promise.all(pageKeys.map(async (pageKey) => {
     const layout = await loadLayout({ tenantId, userId, pageKey });
     const blocks = await Promise.all(layout.blocks.map(async (block) => {
       const meta = typeMeta(block.type);
       const label = titleOf(block);
-      const fields = await fieldsForBlock(block, tenantId, monthlySummary);
+      const fields = await fieldsForBlock(block, tenantId, monthlySummary, currencyRatesByCode);
       return {
         blockId: block.id,
         pageKey,
