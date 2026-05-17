@@ -15,6 +15,7 @@ import {
   CheckCircle2,
   GripVertical,
   MoreVertical,
+  Settings as SettingsIcon,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -64,6 +65,14 @@ import {
 import { migrateOzonRaw } from '@/lib/unit-economics/ozon/migrate';
 import { ClusterSelector } from '@/components/unit-economics/cluster-selector';
 import { OzonSyncButton } from '@/components/unit-economics/ozon-sync-button';
+import { OzonSyncSettingsDialog } from '@/components/unit-economics/ozon-sync-settings-dialog';
+import { OzonSyncPreviewDialog } from '@/components/unit-economics/ozon-sync-preview-dialog';
+import {
+  buildSyncDiff,
+  type SyncDiff,
+  type SyncOzonProduct,
+  type SyncRowSnapshot,
+} from '@/components/unit-economics/ozon-sync-diff';
 import { useBlockValuePublisher } from '@/lib/blocks/values';
 import { useFormatSettings, formatRublesWithSettings } from '@/lib/format-settings';
 import { rublesToKopecks } from '@/lib/unit-economics/types';
@@ -118,14 +127,42 @@ const ColumnOrderSchema = z
   })
   .optional();
 
+// Карта тогглов «какие колонки заполнять из Ozon при синхронизации».
+// Базовые включены по умолчанию, расширенные (комиссия, salesPerMonth,
+// buyoutPct) — выключены, чтобы не перетирать ручные настройки пользователя.
+const SyncColumnMapSchema = z.object({
+  article:       z.boolean().default(true),
+  name:          z.boolean().default(true),
+  price:         z.boolean().default(true),
+  cost:          z.boolean().default(false),
+  stock:         z.boolean().default(true),
+  volumeL:       z.boolean().default(true),
+  commissionPct: z.boolean().default(false),
+  salesPerMonth: z.boolean().default(false),
+  buyoutPct:     z.boolean().default(false),
+});
+
+const SyncSettingsSchema = z.object({
+  accountId:        z.string().nullable().default(null),
+  conflictPolicy:   z.enum(['overwrite', 'fill-empty', 'skip']).default('fill-empty'),
+  matchBy:          z.enum(['article', 'sku']).default('article'),
+  columnMap:        SyncColumnMapSchema.default(SyncColumnMapSchema.parse({})),
+  treatZeroAsEmpty: z.boolean().default(true),
+});
+
 const ConfigSchema = z.object({
   title: z.string().default('Юнит-экономика Ozon'),
   global: GlobalParamsSchema.default(GlobalParamsSchema.parse({})),
   rows: z.array(RowSchema).default([]),
   columnOrder: ColumnOrderSchema,
+  sync: SyncSettingsSchema.default(SyncSettingsSchema.parse({})),
 });
 
 type Config = z.infer<typeof ConfigSchema>;
+export type OzonBlockSyncSettings = z.infer<typeof SyncSettingsSchema>;
+export type OzonBlockSyncColumnMap = z.infer<typeof SyncColumnMapSchema>;
+export const OZON_BLOCK_SYNC_SETTINGS_DEFAULT: OzonBlockSyncSettings =
+  SyncSettingsSchema.parse({});
 
 function makeId(prefix: string): string {
   return typeof crypto !== 'undefined' && 'randomUUID' in crypto
@@ -338,6 +375,20 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
   const [importing, setImporting] = useState(false);
   const [importMessage, setImportMessage] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
+
+  // Sync workflow state
+  const [syncSettingsOpen, setSyncSettingsOpen] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewDiff, setPreviewDiff] = useState<SyncDiff | null>(null);
+  const [diffBuilding, setDiffBuilding] = useState(false);
+  const [diffError, setDiffError] = useState<string | null>(null);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const persist = useCallback(
     (patch: Partial<Config>) => {
@@ -577,7 +628,9 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
       }
       if (commit) {
         setImportMessage(`Импортировано: ${data.inserted} из ${data.totalRows}`);
-        await loadProductsAndPopulate();
+        // После импорта XLSX — собираем diff (по тем же правилам политики),
+        // чтобы пользователь увидел превью и решил применять ли.
+        await buildDiffAndOpenPreview(config.sync.accountId);
       } else {
         setImportMessage(`Найдено товаров: ${data.totalRows}. Распознано колонок: ${
           Object.keys(data.recognizedColumns ?? {}).length
@@ -591,38 +644,76 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
     }
   }
 
-  async function loadProductsAndPopulate() {
+  /**
+   * После завершения серверной sync-job'ы (sync API дёрнул Ozon → обновил unit_products)
+   * собираем diff с текущими строками блока по правилам из config.sync и
+   * показываем превью пользователю. Применяется только при подтверждении.
+   */
+  async function buildDiffAndOpenPreview(accountId?: string | null) {
+    setDiffBuilding(true);
+    setDiffError(null);
+    setPreviewDiff(null);
     try {
-      const res = await fetch('/api/unit-economics/products?marketplace=ozon');
-      const data = await res.json();
-      if (!data.ok || !Array.isArray(data.products)) return;
-      const newRows: Row[] = data.products.slice(0, 200).map((p: {
-        id: string;
-        article: string | null;
-        name: string;
-        priceKopecks: number;
-        costKopecks: number;
-        stockMarketplace: number;
-        stockOwn: number;
-        volumeL: number;
-      }) => ({
-        id: makeId('r'),
-        productId: p.id,
-        article: p.article ?? '',
-        name: p.name ?? '',
-        inputs: {
-          price: p.priceKopecks / 100,
-          cost: p.costKopecks / 100,
-          stock: (p.stockMarketplace ?? 0) + (p.stockOwn ?? 0),
-          volumeL: (p.volumeL ?? 0) / 100,
-        },
-        bindings: {},
+      const needAggregates =
+        config.sync.columnMap.salesPerMonth || config.sync.columnMap.buyoutPct;
+      const params = new URLSearchParams({ marketplace: 'ozon', limit: '500' });
+      if (accountId) params.set('accountId', accountId);
+      if (needAggregates) params.set('include', 'aggregates');
+
+      const res = await fetch(`/api/unit-economics/products?${params.toString()}`);
+      const data = (await res.json()) as {
+        ok: boolean;
+        error?: string;
+        products?: Array<SyncOzonProduct & Record<string, unknown>>;
+      };
+      if (!mountedRef.current) return;
+      if (!data.ok || !Array.isArray(data.products)) {
+        setDiffError(data.error ?? 'Не удалось загрузить товары из БД');
+        setDiffBuilding(false);
+        return;
+      }
+
+      const currentRows: SyncRowSnapshot[] = config.rows.map((r) => ({
+        id: r.id,
+        productId: r.productId ?? null,
+        article: r.article ?? '',
+        name: r.name ?? '',
+        inputs: r.inputs as Record<string, unknown>,
+        bindings: r.bindings as Record<string, unknown>,
       }));
-      if (newRows.length === 0) return;
-      persist({ rows: newRows });
-    } catch {
-      // ignore
+
+      const diff = buildSyncDiff({
+        currentRows,
+        ozonProducts: data.products,
+        sync: config.sync,
+        mode: config.global.mode,
+      });
+
+      setPreviewDiff(diff);
+      setPreviewOpen(true);
+    } catch (e) {
+      if (mountedRef.current) {
+        setDiffError(e instanceof Error ? e.message : 'Network error');
+      }
+    } finally {
+      if (mountedRef.current) setDiffBuilding(false);
     }
+  }
+
+  function applyPreviewDiff() {
+    if (!previewDiff) return;
+    // resultRows из diff имеют тип SyncRowSnapshot — мапим обратно в Row.
+    const newRows: Row[] = previewDiff.resultRows.map((r) => ({
+      id: r.id,
+      productId: r.productId ?? null,
+      article: r.article,
+      name: r.name,
+      inputs: r.inputs as Record<string, unknown>,
+      bindings: r.bindings as Record<string, unknown>,
+    }));
+    persist({ rows: newRows });
+    setPreviewOpen(false);
+    setPreviewDiff(null);
   }
 
   // ----- Render -----
@@ -633,6 +724,7 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
     ACTIONS_W;
 
   return (
+    <>
     <Card className="flex h-full flex-col overflow-hidden">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 px-3 py-2">
         <div className="flex items-center gap-2">
@@ -695,9 +787,20 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
           >
             <Upload /> Импорт XLSX
           </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setSyncSettingsOpen(true)}
+            title="Настройки синхронизации с Ozon: магазин, политика конфликтов, какие колонки заполнять"
+          >
+            <SettingsIcon /> Настройки Ozon
+          </Button>
           <OzonSyncButton
-            onCompleted={async () => {
-              await loadProductsAndPopulate();
+            accountId={config.sync.accountId}
+            labelIdle={diffBuilding ? 'Готовим превью…' : 'Синхронизировать'}
+            labelRunning="Синхронизация…"
+            onCompleted={async ({ accountId }) => {
+              await buildDiffAndOpenPreview(accountId);
             }}
           />
           <Button variant="outline" size="sm" onClick={() => addRows(1)}>
@@ -722,6 +825,12 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
         <div className="flex items-start gap-2 border-b border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <span>{importError}</span>
+        </div>
+      )}
+      {diffError && (
+        <div className="flex items-start gap-2 border-b border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>{diffError}</span>
         </div>
       )}
 
@@ -961,6 +1070,29 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
         )}
       </div>
     </Card>
+
+    <OzonSyncSettingsDialog
+      open={syncSettingsOpen}
+      initial={config.sync}
+      blockMode={config.global.mode}
+      onClose={() => setSyncSettingsOpen(false)}
+      onSave={(next) => persist({ sync: next })}
+    />
+
+    <OzonSyncPreviewDialog
+      open={previewOpen}
+      diff={previewDiff}
+      onApply={applyPreviewDiff}
+      onCancel={() => {
+        setPreviewOpen(false);
+        setPreviewDiff(null);
+      }}
+      onEditSettings={() => {
+        setPreviewOpen(false);
+        setSyncSettingsOpen(true);
+      }}
+    />
+    </>
   );
 }
 

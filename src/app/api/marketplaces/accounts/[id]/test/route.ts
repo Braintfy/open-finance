@@ -41,7 +41,17 @@ export async function POST(_req: Request, ctx: RouteCtx) {
 
     try {
       const info = await sellerInfo(client);
-      const companyInfo = (info.result ?? {}) as Record<string, unknown>;
+      // Ozon отдаёт seller-info в двух формах: с обёрткой result или плоско.
+      // Допускаем обе, берём первую с полезным содержимым.
+      const root = info as Record<string, unknown>;
+      const nested = (root.result ?? null) as Record<string, unknown> | null;
+      const companyInfo: Record<string, unknown> = nested && typeof nested === 'object'
+        ? nested
+        : {
+            company_id: root.company_id,
+            name: root.name,
+            is_enabled: root.is_enabled,
+          };
       await updateAccount({
         tenantId: session.tenantId,
         id,

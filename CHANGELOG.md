@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.17.1] - 2026-05-17
+
+Робастность Ozon-синхронизации и продвинутая интеграция Ozon с блоком
+`unit.ozon-multi-table`. Исправлены валидационные ошибки `/v1/seller/info`
+и `primary_image`, добавлена мини-инструкция «Где взять Client-Id/Api-Key»,
+блок получил dedicated диалог настроек синхронизации (магазин, политика
+конфликтов, какие колонки заполнять) и **детальный preview-модал** с
+артикулом/полем/было/станет перед применением изменений.
+
+### Added
+
+- **[src/components/integrations/ozon-key-help.tsx](src/components/integrations/ozon-key-help.tsx)** — складная инструкция «Где взять Client-Id и Api-Key Ozon»: 7 шагов, ссылка на `seller.ozon.ru/app/settings/api-keys`, акцент на роли **Admin read only** (238 методов), срок действия 180 дней, AES-256-GCM в БД. Два варианта: `full` (страница интеграций) и `compact` (диалог создания аккаунта).
+- **Диалог настроек синхронизации блока** [`ozon-sync-settings-dialog.tsx`](src/components/unit-economics/ozon-sync-settings-dialog.tsx) — выбор магазина, политика конфликтов (`overwrite`/`fill-empty`/`skip`), `matchBy` (article|sku), `treatZeroAsEmpty`, гранулярный columnMap по группам: «Идентификаторы / Базовые / Расширенные», с описанием источника данных под каждым полем и предупреждениями для полей, требующих включённый стейдж (`salesPerMonth` ← заказы, `commissionPct` ← FBO/FBS из global.mode блока).
+- **Pure-function diff builder** [`ozon-sync-diff.ts`](src/components/unit-economics/ozon-sync-diff.ts) — собирает детальный diff между текущими строками блока и данными Ozon: индексация по `matchBy` (case-insensitive, trim для article), применение `conflictPolicy`, маппинг полей блока ↔ unit_products, поддержка `commissionPct.{fbo,fbs}` по mode блока. Возвращает `totals` + `changes[]` (rowKey, field, before, after, action, reason) + `resultRows`.
+- **Smoke-тесты diff** [`scripts/test-ozon-sync-diff.ts`](scripts/test-ozon-sync-diff.ts) — 25 кейсов: все политики, `treatZeroAsEmpty`, mode fbo/fbs, empty inputs, case-insensitive matching, matchBy=sku fallback. Все PASS.
+- **Detailed Preview-модал** [`ozon-sync-preview-dialog.tsx`](src/components/unit-economics/ozon-sync-preview-dialog.tsx) — summary-карточки (новые / обновлено / пропущено / без изменений), фильтр-pills по типу действия, scrollable таблица 7 колонок: «Артикул · Название · Колонка · Было · → · Станет · badge», пагинация по 200 строк, action-badges (new/изменено/пропущено с reason-tooltip).
+- **Кнопка «Настройки Ozon»** в toolbar `unit.ozon-multi-table` ([unit-ozon-multi-table.tsx](src/lib/blocks/catalog/unit-ozon-multi-table.tsx)) — открывает `OzonSyncSettingsDialog`. Кнопка «Синхронизировать» переименована/обновлена: использует `accountId` из конфига блока (если задан), после завершения job собирает diff и открывает превью.
+- **`/api/unit-economics/products?include=aggregates&accountId=…`** ([products/route.ts](src/app/api/unit-economics/products/route.ts)) — query param `include=aggregates` агрегирует `ozon_orders` (LATERAL `jsonb_array_elements(items)`) для расчёта `salesPerMonth` (delivered за 30 дней) и `buyoutPct` (delivered / total за 90 дней, минимум 5 заказов в окне). `accountId` ограничивает выборку конкретным магазином. Поддержка обоих драйверов drizzle (`{rows}` vs прямой массив).
+- **Sync config в схеме блока** [unit-ozon-multi-table.tsx](src/lib/blocks/catalog/unit-ozon-multi-table.tsx) — секция `sync` в Zod-схеме: `accountId`, `conflictPolicy`, `matchBy`, `treatZeroAsEmpty`, и `columnMap` (article/name/price/cost/stock/volumeL/commissionPct/salesPerMonth/buyoutPct). Все поля с `.default()` — backward-compat для старых конфигов.
+- **`JobErrorsBlock`** в `/settings/integrations` — раскрываемый список ошибок job'а с stage-badge, info-tooltip для «schema mismatch» сообщений (после lenient-mode такие ошибки = warnings).
+
+### Fixed
+
+- **Ошибка валидации `/v1/seller/info`: `result: Required`** ([types.ts](src/lib/marketplaces/ozon/types.ts), [test/route.ts](src/app/api/marketplaces/accounts/[id]/test/route.ts)) — `SellerInfoSchema` теперь принимает обе формы ответа Ozon: с обёрткой `result` и плоскую. Test-route извлекает companyInfo как `info.result ?? { name, company_id, is_enabled }`.
+- **Ошибка `items.N.primary_image: Expected string, received array`** ([types.ts](src/lib/marketplaces/ozon/types.ts), [upsert.ts](src/lib/marketplaces/ozon/upsert.ts)) — `ProductInfoSchema.primary_image: z.union([z.string(), z.array(z.string())]).optional()`. `upsertUnitProductFromOzon()` нормализует через `normalizePrimaryImage()`: массив или строка → массив без пустых строк. В metadata сохраняется отдельно `primaryImage` (первый URL) и `images` (полный массив; приоритет `info.images`, fallback на primary).
+- **`upsertUnitProductFromOzon()` возвращает `boolean`** — пропускает запись и возвращает `false`, если у Ozon-карточки нет `info.id` или `info.offer_id` (раньше падало бы на NOT NULL / уникальном индексе). Стейдж `products` считает skipped, добавляет `warnings: ["N товаров пропущено: у них нет id или offer_id"]`. Прежняя сигнатура `Promise<void>` совместима с другими стейджами (prices/stocks) — они игнорируют возврат.
+
+### Changed
+
+- **`OzonClient.post()` — lenient mode по умолчанию** ([client.ts](src/lib/marketplaces/ozon/client.ts)) — при несовпадении Zod-схемы (после `safeParse`) пишет `console.warn('[ozon] schema mismatch on ...')` и возвращает raw JSON, **не бросает ошибку**. Sync продолжается. Опция `{ strict: true }` сохраняет старое поведение (бросает `OzonApiError`). 4xx/5xx по-прежнему throw — lenient НЕ глотает HTTP-ошибки.
+- **`RATE_LIMITERS` cleanup** ([client.ts](src/lib/marketplaces/ozon/client.ts)) — добавлен `lastUsedAt` на `RateLimiter`, опortunistic cleanup лимитеров старше 1ч при создании нового (`size % 8 === 0`). Без `setInterval` (плохо для serverless).
+- **`OzonSyncButton`** ([ozon-sync-button.tsx](src/components/unit-economics/ozon-sync-button.tsx)) — props `accountId?: string | null` (pinned account для блоков), `mountedRef` для защиты от setState после unmount. Если `accountId` задан и существует — dropdown прячется, кнопка работает только с этим магазином. Если pinned аккаунт удалён — fallback к первому активному + warning «Сохранённый магазин удалён».
+- **`OzonSyncSettingsDialog`** автоматически переключает draft на первый доступный магазин, если сохранённый `accountId` больше не существует (с предупреждением «Сохранённый аккаунт удалён»).
+- **`/settings/integrations`** — `OzonKeyHelp` (full) в начале секции Ozon Seller, `OzonKeyHelp` (compact) в `CreateAccountDialog`. Стейджи job'a теперь рендерят свои ошибки inline (через `truncate()`), плюс детальный `JobErrorsBlock` под списком стейджей.
+- **Импорт XLSX в `unit.ozon-multi-table`** — после успешного импорта тоже открывает preview-модал согласно `config.sync` (не сразу применяет, как раньше).
+
+### Audit / Reliability
+
+- Все новые `setState` в `OzonSyncButton` и `RenderOzonMultiTable` защищены `mountedRef`.
+- `tenant_id` явно присутствует в WHERE нового SQL (`/api/unit-economics/products?include=aggregates`).
+- `OzonClient.post({ strict: false })` НЕ глотает 4xx/5xx — они по-прежнему throw `OzonApiError`. Lenient режим срабатывает только на Zod-парсинг.
+- Backward-compat: блок `unit.ozon-multi-table` со старым конфигом (без `sync`) корректно подхватывает `.default()` значения.
+- `pnpm typecheck` ✓ · `pnpm build` ✓ · `pnpm tsx scripts/test-ozon-sync-diff.ts` → 25/25 PASS.
+
 ## [0.17.0] - 2026-05-17
 
 Интеграция Ozon Seller API: подключение магазинов в новом разделе

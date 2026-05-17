@@ -15,16 +15,25 @@ export const OzonErrorSchema = z
   .passthrough();
 
 // ---- /v1/seller/info -----------------------------------------------------
+// Ozon отдаёт поля иногда в обёртке result, иногда на верхнем уровне.
+// Допускаем обе формы; downstream должен брать info.result ?? info.
 
-export const SellerInfoSchema = z.object({
-  result: z
-    .object({
-      company_id: z.number().optional(),
-      name: z.string().optional(),
-      is_enabled: z.boolean().optional(),
-    })
-    .passthrough(),
-});
+const SellerInfoBodySchema = z
+  .object({
+    company_id: z.number().optional(),
+    name: z.string().optional(),
+    is_enabled: z.boolean().optional(),
+  })
+  .passthrough();
+
+export const SellerInfoSchema = z
+  .object({
+    result: SellerInfoBodySchema.optional(),
+    company_id: z.number().optional(),
+    name: z.string().optional(),
+    is_enabled: z.boolean().optional(),
+  })
+  .passthrough();
 
 // ---- /v3/product/list ----------------------------------------------------
 
@@ -51,9 +60,11 @@ export const ProductListResponseSchema = z.object({
 
 export const ProductInfoSchema = z
   .object({
-    id: z.number(),
-    name: z.string(),
-    offer_id: z.string(),
+    // Ослаблено: id/offer_id могут быть null для частично заполненных карточек;
+    // upsert пропустит такие записи (skipped без fatal).
+    id: z.number().nullable().optional(),
+    name: z.string().nullable().optional(),
+    offer_id: z.string().nullable().optional(),
     barcode: z.string().optional(),
     barcodes: z.array(z.string()).optional(),
     weight: z.number().optional(),
@@ -62,7 +73,9 @@ export const ProductInfoSchema = z
     width: z.number().optional(),
     height: z.number().optional(),
     dimension_unit: z.string().optional(),
-    primary_image: z.string().optional(),
+    // С 2026-05 Ozon отдаёт primary_image массивом URL.
+    // Раньше была строка — поддерживаем обе формы.
+    primary_image: z.union([z.string(), z.array(z.string())]).optional(),
     images: z.array(z.string()).optional(),
     sources: z
       .array(

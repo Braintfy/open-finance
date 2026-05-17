@@ -38,12 +38,19 @@ export function OzonSyncButton({
   className,
   labelIdle = 'Загрузить из Ozon',
   labelRunning = 'Синхронизация…',
+  accountId: pinnedAccountIdRaw,
 }: {
   onCompleted: (args: { accountId: string; status: Job['status'] }) => void | Promise<void>;
   size?: 'sm' | 'default' | 'lg';
   className?: string;
   labelIdle?: string;
   labelRunning?: string;
+  /**
+   * Если задан — синхронизация работает только с этим аккаунтом, DropdownMenu
+   * прячется. Если аккаунт не существует (удалён) — fallback к первому
+   * доступному, либо empty-state.
+   */
+  accountId?: string | null;
 }) {
   const { accounts, loading } = useMarketplaceAccounts({ marketplace: 'ozon' });
   const [syncingAccountId, setSyncingAccountId] = useState<string | null>(null);
@@ -52,8 +59,21 @@ export function OzonSyncButton({
   const [completedMessage, setCompletedMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const pollRef = useRef<number | null>(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const activeAccounts = accounts.filter((a) => a.status !== 'disabled');
+  // Резолвим pinned accountId: если он существует — используем, иначе fallback
+  const pinnedAccount = pinnedAccountIdRaw
+    ? activeAccounts.find((a) => a.id === pinnedAccountIdRaw) ?? null
+    : null;
+  const pinnedAccountMissing = Boolean(pinnedAccountIdRaw) && !pinnedAccount;
 
   const startSync = useCallback(
     async (accountId: string) => {
@@ -69,6 +89,7 @@ export function OzonSyncButton({
           body: '{}',
         });
         const data = await res.json();
+        if (!mountedRef.current) return;
         if (data.ok) {
           setActiveJobId(data.jobId);
         } else {
@@ -76,6 +97,7 @@ export function OzonSyncButton({
           setSyncingAccountId(null);
         }
       } catch (e) {
+        if (!mountedRef.current) return;
         setErrorMessage(e instanceof Error ? e.message : 'Network error');
         setSyncingAccountId(null);
       }
@@ -151,6 +173,37 @@ export function OzonSyncButton({
     );
   }
 
+  // Если задан pinned accountId — синхронизируем только его, dropdown не нужен.
+  // Если pinned потерялся — рендерим обычное поведение (single/multi-account
+  // fallback), плюс показываем warning под кнопкой.
+  if (pinnedAccount) {
+    return (
+      <div className="flex flex-col items-end gap-0.5">
+        <Button
+          size={size}
+          variant="outline"
+          disabled={isRunning}
+          onClick={() => startSync(pinnedAccount.id)}
+          className={className}
+          title={`Магазин: ${pinnedAccount.name}`}
+        >
+          {isRunning ? <Loader2 className="animate-spin" /> : <Cloud />}
+          {isRunning ? `${labelRunning} (${progress})` : labelIdle}
+        </Button>
+        {completedMessage && (
+          <span className="inline-flex items-center gap-1 text-[10px] text-emerald-700 dark:text-emerald-400">
+            <Check className="h-3 w-3" /> {completedMessage}
+          </span>
+        )}
+        {errorMessage && (
+          <span className="inline-flex items-center gap-1 text-[10px] text-amber-700 dark:text-amber-400">
+            <AlertTriangle className="h-3 w-3" /> {errorMessage}
+          </span>
+        )}
+      </div>
+    );
+  }
+
   if (activeAccounts.length === 1) {
     const account = activeAccounts[0];
     return (
@@ -166,6 +219,12 @@ export function OzonSyncButton({
           {isRunning ? <Loader2 className="animate-spin" /> : <Cloud />}
           {isRunning ? `${labelRunning} (${progress})` : labelIdle}
         </Button>
+        {pinnedAccountMissing && (
+          <span className="inline-flex items-center gap-1 text-[10px] text-amber-700 dark:text-amber-400">
+            <AlertTriangle className="h-3 w-3" /> Сохранённый магазин удалён —
+            используем {account.name}
+          </span>
+        )}
         {completedMessage && (
           <span className="inline-flex items-center gap-1 text-[10px] text-emerald-700 dark:text-emerald-400">
             <Check className="h-3 w-3" /> {completedMessage}

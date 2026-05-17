@@ -3,6 +3,7 @@
 // - Заголовки Client-Id / Api-Key
 // - Token-bucket rate-limit 40 RPS per Client-Id (Ozon allow 50 RPS, держим запас)
 // - Exponential backoff на 429/5xx (max 3 retry)
+// - Lenient Zod валидация по умолчанию (warning + raw json, не throw)
 // - Никогда не логируем api_key
 
 import type { ZodSchema } from 'zod';
@@ -10,11 +11,15 @@ import type { ZodSchema } from 'zod';
 const BASE_URL = 'https://api-seller.ozon.ru';
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_RETRIES = 3;
+const LIMITER_TTL_MS = 60 * 60 * 1000; // 1h: лимитеры, не использованные >1ч, выкидываем
 
 /**
  * Per-clientId token-bucket. Живёт в памяти Node-процесса. При горизонтальном
  * масштабе мигрировать в Redis. См. CHANGELOG/MEMORY граблю «rate-limit
  * in-memory» (currency v0.16.0 уже это упоминает).
+ *
+ * Добавлен TTL-cleanup чтобы не копить ссылки на больше-не-используемые
+ * клиенты (пользователь удалил аккаунт — лимитер тоже выкидываем спустя час).
  */
 const RATE_LIMITERS = new Map<string, RateLimiter>();
 
@@ -23,15 +28,18 @@ class RateLimiter {
   private readonly refillPerMs: number;
   private tokens: number;
   private lastRefill: number;
+  lastUsedAt: number;
 
   constructor(capacity = 40, refillPerSec = 40) {
     this.capacity = capacity;
     this.refillPerMs = refillPerSec / 1000;
     this.tokens = capacity;
     this.lastRefill = Date.now();
+    this.lastUsedAt = Date.now();
   }
 
   async acquire(): Promise<void> {
+    this.lastUsedAt = Date.now();
     while (true) {
       this.refill();
       if (this.tokens >= 1) {
@@ -53,9 +61,21 @@ class RateLimiter {
   }
 }
 
+function cleanupLimiters() {
+  const now = Date.now();
+  for (const [key, limiter] of RATE_LIMITERS) {
+    if (now - limiter.lastUsedAt > LIMITER_TTL_MS) {
+      RATE_LIMITERS.delete(key);
+    }
+  }
+}
+
 function getLimiter(clientId: string): RateLimiter {
   const existing = RATE_LIMITERS.get(clientId);
   if (existing) return existing;
+  // Оппортунистический cleanup только при создании нового лимитера —
+  // дёшево и не требует setInterval (плохо для serverless).
+  if (RATE_LIMITERS.size > 0 && RATE_LIMITERS.size % 8 === 0) cleanupLimiters();
   const limiter = new RateLimiter();
   RATE_LIMITERS.set(clientId, limiter);
   return limiter;
@@ -93,12 +113,21 @@ export class OzonClient {
   /**
    * Низкоуровневый POST-вызов. Возвращает распарсенный JSON.
    * Прогоняет через Zod если schema передана.
+   *
+   * По умолчанию валидация **lenient**: при несовпадении схемы пишем warning
+   * в console и возвращаем raw json (downstream код должен быть готов к
+   * undefined-полям — у нас все поля .optional()). Это страхует от того,
+   * что Ozon тихо добавит новое поле или поменяет тип — sync не упадёт
+   * полностью, пропустит подозрительную запись и пойдёт дальше.
+   *
+   * Чтобы заставить падать жёстко (например, когда схема используется как
+   * runtime-контракт критичного поля) — передать `strict: true`.
    */
   async post<T>(
     path: string,
     body: unknown,
     schema?: ZodSchema<T>,
-    options?: { timeoutMs?: number; retry?: number },
+    options?: { timeoutMs?: number; retry?: number; strict?: boolean },
   ): Promise<T> {
     const limiter = getLimiter(this.creds.clientId);
     let attempt = 0;
@@ -153,15 +182,22 @@ export class OzonClient {
         if (!schema) return json as T;
         const parsed = schema.safeParse(json);
         if (!parsed.success) {
-          throw new OzonApiError(
-            `Ozon ${path}: ответ не прошёл валидацию (${parsed.error.issues
-              .map((i) => i.path.join('.') + ': ' + i.message)
-              .slice(0, 3)
-              .join('; ')})`,
-            res.status,
-            path,
-            json,
-          );
+          const summary = parsed.error.issues
+            .map((i) => i.path.join('.') + ': ' + i.message)
+            .slice(0, 3)
+            .join('; ');
+          if (options?.strict) {
+            throw new OzonApiError(
+              `Ozon ${path}: ответ не прошёл валидацию (${summary})`,
+              res.status,
+              path,
+              json,
+            );
+          }
+          // Lenient: предупреждаем и возвращаем raw — downstream код
+          // на наших .passthrough() схемах справится.
+          console.warn(`[ozon] schema mismatch on ${path}: ${summary}`);
+          return json as T;
         }
         return parsed.data;
       } catch (e) {

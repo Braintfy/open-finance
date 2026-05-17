@@ -86,15 +86,30 @@ export type CombinedProduct = {
 };
 
 /**
+ * Нормализует primary_image: с 2026-05 Ozon отдаёт массив URL.
+ * Старый формат — строка. Возвращаем массив без пустых строк.
+ */
+function normalizePrimaryImage(value: string | string[] | undefined): string[] {
+  if (!value) return [];
+  if (Array.isArray(value)) return value.filter((s) => typeof s === 'string' && s.length > 0);
+  return [value];
+}
+
+/**
  * Upsert одного товара. Идентификатор: (tenant_id, marketplace, article).
  * article === offer_id. Все доп-данные складываем в metadata, чтобы не
  * раздувать схему unit_products.
+ *
+ * Возвращает true если запись upsert'нулась, false если skip (нет ключей).
  */
 export async function upsertUnitProductFromOzon(
   ctx: UpsertContext,
   payload: CombinedProduct,
-): Promise<void> {
+): Promise<boolean> {
   const { info, prices, stocks, turnover } = payload;
+  // Skip без обязательных полей — у нас не на что мапить запись.
+  if (!info.id || !info.offer_id) return false;
+
   const dims = parseDimensions(info);
   const priceRub = parseMoneyRu(prices?.price?.price);
   const priceWithSppRub = parseMoneyRu(prices?.price?.marketing_seller_price);
@@ -105,9 +120,13 @@ export async function upsertUnitProductFromOzon(
     .filter((s) => s.type === 'fbs' || s.type === 'crossborder')
     .reduce((sum, s) => sum + (s.present ?? 0), 0);
 
+  const primaryImages = normalizePrimaryImage(info.primary_image);
+  const images = info.images && info.images.length > 0 ? info.images : primaryImages;
+
   const metadata = {
     productId: info.id,
-    images: info.images ?? (info.primary_image ? [info.primary_image] : []),
+    images,
+    primaryImage: primaryImages[0] ?? null,
     weightG: dims.weightG,
     dimensionsMm: dims.dimsMm,
     priceWithSpp: priceWithSppRub,
@@ -131,7 +150,7 @@ export async function upsertUnitProductFromOzon(
       article: info.offer_id,
       sku: String(info.id),
       barcode: info.barcode ?? info.barcodes?.[0] ?? null,
-      name: info.name,
+      name: info.name ?? info.offer_id,
       status: info.status?.state ?? null,
       visibility: info.visible === false ? 'hidden' : 'visible',
       stockMarketplace,
@@ -148,7 +167,7 @@ export async function upsertUnitProductFromOzon(
       set: {
         sku: String(info.id),
         barcode: info.barcode ?? info.barcodes?.[0] ?? sql`unit_products.barcode`,
-        name: info.name,
+        name: info.name ?? sql`unit_products.name`,
         status: info.status?.state ?? sql`unit_products.status`,
         visibility: info.visible === false ? 'hidden' : 'visible',
         stockMarketplace,
@@ -161,6 +180,7 @@ export async function upsertUnitProductFromOzon(
         updatedAt: new Date(),
       },
     });
+  return true;
 }
 
 // ---------------------------------------------------------------------------

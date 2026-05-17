@@ -29,13 +29,15 @@ export async function syncProductsStage(ctx: StageContext): Promise<StageResult>
     }
 
     let processed = 0;
+    let skipped = 0;
     for (let i = 0; i < allProductIds.length; i += INFO_CHUNK) {
       const chunk = allProductIds.slice(i, i + INFO_CHUNK);
       const info = await productInfoList(ctx.client, { product_id: chunk });
       const items = info.result?.items ?? info.items ?? [];
       for (const product of items) {
-        await upsertUnitProductFromOzon(ctx, { info: product });
-        processed += 1;
+        const ok = await upsertUnitProductFromOzon(ctx, { info: product });
+        if (ok) processed += 1;
+        else skipped += 1;
       }
       ctx.onProgress?.(processed, allProductIds.length);
     }
@@ -43,6 +45,10 @@ export async function syncProductsStage(ctx: StageContext): Promise<StageResult>
     return {
       itemsProcessed: processed,
       itemsTotal: allProductIds.length,
+      warnings:
+        skipped > 0
+          ? [`${skipped} товаров пропущено: у них нет id или offer_id`]
+          : undefined,
     };
   });
 }

@@ -53,6 +53,7 @@ import {
   type OzonStageKind,
   type OzonSyncSettings,
 } from '@/lib/marketplaces/types';
+import { OzonKeyHelp } from '@/components/integrations/ozon-key-help';
 
 type AccountPublic = {
   id: string;
@@ -182,6 +183,10 @@ export function IntegrationsClient({
               План «{tenantPlan}» · 1 магазин (Pro+ для нескольких)
             </span>
           )}
+        </div>
+
+        <div className="mb-3">
+          <OzonKeyHelp defaultOpen={accounts.length === 0} />
         </div>
 
         {accounts.length === 0 ? (
@@ -482,9 +487,7 @@ function AccountCard({
             })}
           </div>
           {activeJob.errors.length > 0 && (
-            <div className="mt-1 text-amber-700 dark:text-amber-400">
-              Ошибки: {activeJob.errors.map((e) => e.message).join('; ').slice(0, 200)}
-            </div>
+            <JobErrorsBlock errors={activeJob.errors} />
           )}
         </div>
       )}
@@ -623,10 +626,23 @@ function AccountCard({
                                   ({s.itemsProcessed})
                                 </span>
                               )}
+                            {s.error && (
+                              <span
+                                className="truncate text-amber-700 dark:text-amber-400"
+                                title={s.error}
+                              >
+                                · {truncate(s.error, 40)}
+                              </span>
+                            )}
                           </div>
                         );
                       })}
                     </div>
+                    {j.errors.length > 0 && (
+                      <div className="mt-1.5 pl-5">
+                        <JobErrorsBlock errors={j.errors} />
+                      </div>
+                    )}
                   </details>
                 ))}
               </div>
@@ -744,6 +760,65 @@ function StatusChip({
   );
 }
 
+function truncate(s: string, len: number): string {
+  if (!s) return '';
+  return s.length > len ? s.slice(0, len - 1) + '…' : s;
+}
+
+/**
+ * Развёрнутый список ошибок job'a с stage/path/message. Schema-mismatch
+ * получает info-подсказку, потому что после lenient-mode такие ошибки
+ * по сути предупреждения — sync должен был всё равно завершиться.
+ */
+function JobErrorsBlock({
+  errors,
+}: {
+  errors: Array<{ stage?: string; message: string; at: string }>;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  if (!errors || errors.length === 0) return null;
+  const visible = expanded ? errors : errors.slice(0, 3);
+  return (
+    <div className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100">
+      <div className="mb-0.5 flex items-center justify-between">
+        <span className="font-semibold">Ошибки ({errors.length})</span>
+        {errors.length > 3 && (
+          <button
+            type="button"
+            className="text-[10px] underline hover:no-underline"
+            onClick={() => setExpanded((v) => !v)}
+          >
+            {expanded ? 'свернуть' : `показать все ${errors.length}`}
+          </button>
+        )}
+      </div>
+      <ul className="space-y-0.5">
+        {visible.map((e, i) => {
+          const isValidation = /не прошёл валидацию|schema mismatch/i.test(e.message);
+          return (
+            <li key={i} className="flex items-start gap-1">
+              {e.stage && (
+                <span className="shrink-0 rounded bg-amber-200/60 px-1 font-mono text-[10px] text-amber-900 dark:bg-amber-800/60 dark:text-amber-100">
+                  {e.stage}
+                </span>
+              )}
+              <span className="min-w-0 flex-1 break-words">{e.message}</span>
+              {isValidation && (
+                <span
+                  className="shrink-0 cursor-help text-[10px] underline decoration-dotted"
+                  title="После v0.17.1 lenient-режим: такие ошибки логируются как warning и не должны прерывать sync. Если sync всё равно упал — проверьте сетевые ошибки и rate-limit."
+                >
+                  ?
+                </span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 function jobStatusLabel(s: Job['status']): string {
   if (s === 'pending') return 'Ожидание';
   if (s === 'running') return 'Идёт';
@@ -803,10 +878,11 @@ function CreateAccountDialog({
           <DialogTitle>Подключить магазин Ozon</DialogTitle>
           <DialogDescription>
             Ключи берутся в ЛК Ozon: Настройки → Seller API → создать ключ
-            (Read-Only достаточно).
+            (роль <b>Admin read only</b>, 238 методов).
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
+          <OzonKeyHelp variant="compact" />
           <div>
             <Label>Название магазина</Label>
             <Input
