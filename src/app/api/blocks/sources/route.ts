@@ -11,6 +11,8 @@ import { listInboxChannels, listInboxMessages } from '@/lib/inbox/queries';
 import { getCurrencyRates } from '@/lib/currency/queries';
 import type { CurrencyRate } from '@/lib/currency/types';
 import type { BlockInstance } from '@/lib/blocks/types';
+import { getOzonAnalyticsTotals } from '@/lib/blocks/catalog/unit-ozon-analytics-queries';
+import { OzonAnalyticsBlockConfigSchema } from '@/lib/blocks/catalog/unit-ozon-analytics-types';
 import FormulaParser, { MAX_COLUMN, MAX_ROW } from 'fast-formula-parser';
 
 type SourceField = {
@@ -483,25 +485,45 @@ async function fieldsForBlock(
     ];
   }
   if (block.type === 'unit.ozon-analytics') {
-    // Live-аналитика грузится клиентом из /api/marketplaces/analytics/ozon.
-    // В sources фиксируем только метки полей для cross-block picker'а.
+    // Серверный расчёт агрегатов аналитики — реальные значения для cross-block picker.
     // Синхронизировано с useBlockValuePublisher в unit-ozon-analytics.tsx.
-    return [
-      { name: 'value', label: 'Выручка / период', value: null, format: 'money' },
-      { name: 'revenue', label: 'Выручка / период', value: null, format: 'money' },
-      { name: 'ads', label: 'Реклама / период', value: null, format: 'money' },
-      { name: 'totalCostRub', label: 'Себестоимость проданного', value: null, format: 'money' },
-      { name: 'totalProfitRub', label: 'Прибыль (выручка−себест)', value: null, format: 'money' },
-      { name: 'drr', label: 'ДРР %', value: null, format: 'number' },
-      { name: 'orders', label: 'Заказы доставлено', value: null, format: 'number' },
-      { name: 'cancelled', label: 'Заказы отменено', value: null, format: 'number' },
-      { name: 'returned', label: 'Заказы возврат', value: null, format: 'number' },
-      { name: 'qtyDelivered', label: 'Штук доставлено', value: null, format: 'number' },
-      { name: 'productsWithSales', label: 'Товары с продажами', value: null, format: 'number' },
-      { name: 'rowsCount', label: 'Всего товаров', value: null, format: 'number' },
-      { name: 'stockTotal', label: 'Остатки (шт)', value: null, format: 'number' },
-      { name: 'avgBuyoutPct', label: 'Средний выкуп %', value: null, format: 'number' },
-    ];
+    const cfg = OzonAnalyticsBlockConfigSchema.safeParse(block.config ?? {});
+    const parsed = cfg.success ? cfg.data : OzonAnalyticsBlockConfigSchema.parse({});
+    try {
+      const t = await getOzonAnalyticsTotals(
+        tenantId,
+        parsed.accountId,
+        parsed.periodPreset,
+        parsed.customFrom,
+        parsed.customTo,
+      );
+      return [
+        { name: 'value', label: 'Выручка / период', value: Math.round(t.revenueRub * 100), format: 'money' },
+        { name: 'revenue', label: 'Выручка / период', value: Math.round(t.revenueRub * 100), format: 'money' },
+        { name: 'ads', label: 'Реклама / период', value: Math.round(t.adsRub * 100), format: 'money' },
+        { name: 'totalCostRub', label: 'Себестоимость проданного', value: Math.round(t.totalCostRub * 100), format: 'money' },
+        { name: 'totalProfitRub', label: 'Прибыль (выручка−себест)', value: Math.round(t.totalProfitRub * 100), format: 'money' },
+        { name: 'drr', label: 'ДРР %', value: t.drrPct !== null ? Math.round(t.drrPct * 10) / 10 : null, format: 'number' },
+        { name: 'orders', label: 'Заказы доставлено', value: t.delivered, format: 'number' },
+        { name: 'cancelled', label: 'Заказы отменено', value: t.cancelled, format: 'number' },
+        { name: 'returned', label: 'Заказы возврат', value: t.returned, format: 'number' },
+        { name: 'qtyDelivered', label: 'Штук доставлено', value: t.qtyDelivered, format: 'number' },
+        { name: 'productsWithSales', label: 'Товары с продажами', value: t.productsWithSales, format: 'number' },
+        { name: 'rowsCount', label: 'Всего товаров', value: t.rowsCount, format: 'number' },
+        { name: 'stockTotal', label: 'Остатки (шт)', value: t.stockTotal, format: 'number' },
+        { name: 'avgBuyoutPct', label: 'Средний выкуп %', value: t.avgBuyoutPct, format: 'number' },
+      ];
+    } catch (e) {
+      console.error('[blocks/sources] ozon-analytics totals failed:', e);
+      return [
+        { name: 'value', label: 'Выручка / период', value: null, format: 'money' },
+        { name: 'revenue', label: 'Выручка / период', value: null, format: 'money' },
+        { name: 'ads', label: 'Реклама / период', value: null, format: 'money' },
+        { name: 'drr', label: 'ДРР %', value: null, format: 'number' },
+        { name: 'orders', label: 'Заказы доставлено', value: null, format: 'number' },
+        { name: 'productsWithSales', label: 'Товары с продажами', value: null, format: 'number' },
+      ];
+    }
   }
   if (block.type === 'unit.ozon-kpi') {
     return [

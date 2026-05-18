@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.18.7] - 2025-05-19
+
+Модалка связей: реальные значения из Ozon-аналитики вместо "—" (null).
+
+### Исправлено
+
+- **Значения "—" в модалке связей для Ozon-аналитики** (`src/app/api/blocks/sources/route.ts`). Endpoint `/api/blocks/sources` теперь выполняет реальный SQL-запрос для `unit.ozon-analytics` блоков — возвращает агрегаты (выручка, реклама, ДРР, заказы, остатки и др.) вместо `null`. Данные видны при привязке с любой страницы.
+- **Формат ₽ для live-блоков в модалке привязок** (`src/components/unit-economics/unit-cell-binding-dialog.tsx`). Для live-блоков (текущая страница) теперь корректно определяется `format: 'money'` через `__money` convention — денежные поля отображаются как рубли.
+
+### Добавлено
+
+- **`getOzonAnalyticsTotals()`** (`src/lib/blocks/catalog/unit-ozon-analytics-queries.ts`). Переиспользуемая серверная функция расчёта агрегатов Ozon-аналитики — упрощённый SQL (только SUM/COUNT, без per-product breakdown, ~100ms).
+- **`moneyFields` в `useAvailableBlockSources()`** (`src/lib/blocks/values.tsx`). Хук теперь возвращает Set<string> с именами денежных полей (парсится из `__money` convention блока-источника).
+
 ## [0.18.6] - 2025-05-19
 
 Блок «Ozon · Аналитика»: расширенная публикация данных для модалки связей (cross-block bindings).

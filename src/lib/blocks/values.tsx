@@ -228,6 +228,7 @@ export function useAvailableBlockSources(): Array<{
   blockId: string;
   fields: string[];
   labels: Record<string, string>;
+  moneyFields: Set<string>;
 }> {
   const api = useContext(BlockValuesContext);
   const [, setTick] = useState(0);
@@ -242,5 +243,11 @@ export function useAvailableBlockSources(): Array<{
     blockId,
     fields: Object.keys(output).filter((field) => !field.startsWith('__')),
     labels: parseLabelsString(output.__labels),
+    moneyFields: parseMoneyString(output.__money),
   }));
+}
+
+function parseMoneyString(raw: unknown): Set<string> {
+  if (typeof raw !== 'string' || raw.length === 0) return new Set();
+  return new Set(raw.split(',').map((s) => s.trim()).filter(Boolean));
 }

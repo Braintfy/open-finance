@@ -96,7 +96,7 @@ export function UnitCellBindingDialog({
           label: b.labels[field] ?? sourceFieldLabel(field),
           value:
             liveValues[field === 'value' ? b.blockId : `${b.blockId}.${field}`] ?? null,
-          format: undefined,
+          format: b.moneyFields.has(field) ? 'money' as const : undefined,
         })),
       }))
       .sort((a, b) => a.label.localeCompare(b.label, 'ru'));
