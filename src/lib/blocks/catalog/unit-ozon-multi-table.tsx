@@ -13,6 +13,9 @@ import {
   AlertTriangle,
   GripVertical,
   MoreVertical,
+  ArrowUp,
+  ArrowDown,
+  ArrowDownUp,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -133,12 +136,14 @@ const SyncColumnMapSchema = z.object({
   article:       z.boolean().default(true),
   name:          z.boolean().default(true),
   price:         z.boolean().default(true),
+  discountPct:   z.boolean().default(true),
   cost:          z.boolean().default(false),
   stock:         z.boolean().default(true),
   volumeL:       z.boolean().default(true),
-  commissionPct: z.boolean().default(false),
-  salesPerMonth: z.boolean().default(false),
-  buyoutPct:     z.boolean().default(false),
+  commissionPct: z.boolean().default(true),
+  buyoutPct:     z.boolean().default(true),
+  drrPct:        z.boolean().default(true),
+  salesPerMonth: z.boolean().default(true),
 });
 
 const SyncSettingsSchema = z.object({
@@ -571,6 +576,46 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
     });
   }, [config.rows, config.global, liveValues]);
 
+  // --- Sort state ---
+  type SortKey = RowInputKey | keyof OzonResults | 'article' | 'name' | null;
+  type SortDir = 'asc' | 'desc';
+  const [sortKey, setSortKey] = useState<SortKey>(null);
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
+
+  function toggleSort(key: SortKey) {
+    if (sortKey === key) {
+      if (sortDir === 'desc') setSortDir('asc');
+      else { setSortKey(null); setSortDir('desc'); }
+    } else {
+      setSortKey(key);
+      setSortDir('desc');
+    }
+  }
+
+  const sortedComputed = useMemo(() => {
+    if (!sortKey) return computed;
+    const sorted = [...computed];
+    sorted.sort((a, b) => {
+      let av: number | string = 0;
+      let bv: number | string = 0;
+      if (sortKey === 'article') { av = a.row.article; bv = b.row.article; }
+      else if (sortKey === 'name') { av = a.row.name; bv = b.row.name; }
+      else if (sortKey in a.results) {
+        av = (a.results as unknown as Record<string, number>)[sortKey] ?? 0;
+        bv = (b.results as unknown as Record<string, number>)[sortKey] ?? 0;
+      } else {
+        av = Number(a.row.inputs[sortKey] ?? FIELD_META[sortKey as RowInputKey]?.default ?? 0);
+        bv = Number(b.row.inputs[sortKey] ?? FIELD_META[sortKey as RowInputKey]?.default ?? 0);
+      }
+      if (typeof av === 'string' && typeof bv === 'string') {
+        return sortDir === 'asc' ? av.localeCompare(bv, 'ru') : bv.localeCompare(av, 'ru');
+      }
+      const na = Number(av); const nb = Number(bv);
+      return sortDir === 'asc' ? na - nb : nb - na;
+    });
+    return sorted;
+  }, [computed, sortKey, sortDir]);
+
   const totals = useMemo(() => {
     let totalProfitMonth = 0;
     let totalStockValue = 0;
@@ -633,7 +678,7 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
     setPreviewDiff(null);
     try {
       const needAggregates =
-        config.sync.columnMap.salesPerMonth || config.sync.columnMap.buyoutPct;
+        config.sync.columnMap.salesPerMonth || config.sync.columnMap.buyoutPct || config.sync.columnMap.drrPct;
       const params = new URLSearchParams({ marketplace: 'ozon', limit: '500' });
       if (accountId) params.set('accountId', accountId);
       if (needAggregates) params.set('include', 'aggregates');
@@ -823,6 +868,8 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
                         unit: FIELD_META[f].unit,
                         onApply: (val) => bulkFillField(f, val),
                       }}
+                      sortState={sortKey === f ? sortDir : null}
+                      onSort={() => toggleSort(f)}
                     >
                       <span className="block truncate">{FIELD_META[f].label}</span>
                       {FIELD_META[f].unit && (
@@ -850,6 +897,8 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
                       id={c.key as string}
                       width={c.w ?? 90}
                       className="font-semibold text-foreground"
+                      sortState={sortKey === c.key ? sortDir : null}
+                      onSort={() => toggleSort(c.key)}
                     >
                       <span className="block truncate">{c.label}</span>
                     </SortableHeaderCell>
@@ -861,7 +910,7 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
               </HeaderCell>
             </div>
 
-            {computed.map(({ row, results }, idx) => (
+            {sortedComputed.map(({ row, results }, idx) => (
               <div
                 key={row.id}
                 className="group flex border-b border-border/40 transition-colors hover:bg-accent/5"
@@ -1139,12 +1188,16 @@ function SortableHeaderCell({
   className,
   children,
   bulkFill,
+  sortState,
+  onSort,
 }: {
   id: string;
   width: number;
   className?: string;
   children?: React.ReactNode;
   bulkFill?: BulkFillSpec;
+  sortState?: 'asc' | 'desc' | null;
+  onSort?: () => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
   const style: React.CSSProperties = {
@@ -1164,8 +1217,10 @@ function SortableHeaderCell({
       style={style}
       className={
         'group/h relative flex shrink-0 flex-col justify-center overflow-hidden border-r border-border/40 bg-card px-1.5 py-1.5 text-[10px] uppercase tracking-wider text-muted-foreground ' +
+        (onSort ? 'cursor-pointer hover:bg-accent/20 ' : '') +
         (className ?? '')
       }
+      onClick={onSort}
     >
       <button
         type="button"
@@ -1174,10 +1229,24 @@ function SortableHeaderCell({
         className="absolute left-0.5 top-1/2 -translate-y-1/2 cursor-grab opacity-0 transition-opacity group-hover/h:opacity-60 hover:opacity-100 active:cursor-grabbing"
         title="Перетащите, чтобы изменить порядок"
         aria-label="Перетащить колонку"
+        onClick={(e) => e.stopPropagation()}
       >
         <GripVertical className="h-3 w-3" />
       </button>
-      <div className="pl-2 pr-3">{children}</div>
+      <div className="flex items-center gap-0.5 pl-2 pr-3">
+        <div className="min-w-0 flex-1">{children}</div>
+        {onSort && (
+          <span className="shrink-0">
+            {sortState === 'asc' ? (
+              <ArrowUp className="h-2.5 w-2.5 text-primary" />
+            ) : sortState === 'desc' ? (
+              <ArrowDown className="h-2.5 w-2.5 text-primary" />
+            ) : (
+              <ArrowDownUp className="h-2.5 w-2.5 opacity-0 group-hover/h:opacity-40" />
+            )}
+          </span>
+        )}
+      </div>
       {bulkFill && <BulkFillMenu spec={bulkFill} />}
     </div>
   );
@@ -1185,21 +1254,22 @@ function SortableHeaderCell({
 
 function BulkFillMenu({ spec }: { spec: BulkFillSpec }) {
   const [draft, setDraft] = useState('');
-  const [feedback, setFeedback] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<{ text: string; ok: boolean } | null>(null);
 
   function handleApply() {
     const num = Number(draft.replace(',', '.'));
     if (!Number.isFinite(num)) {
-      setFeedback('Введите число');
+      setFeedback({ text: 'Введите корректное число', ok: false });
       return;
     }
     const { applied, skipped } = spec.onApply(num);
-    setFeedback(
-      skipped > 0
-        ? `Применено к ${applied} · пропущено ${skipped} (привязки сохранены)`
-        : `Применено к ${applied}`,
-    );
-    setTimeout(() => setFeedback(null), 2200);
+    setFeedback({
+      text: skipped > 0
+        ? `✓ ${applied} строк обновлено · ${skipped} пропущено (привязки)`
+        : `✓ ${applied} строк обновлено`,
+      ok: true,
+    });
+    setTimeout(() => setFeedback(null), 2500);
     setDraft('');
   }
 
@@ -1209,40 +1279,51 @@ function BulkFillMenu({ spec }: { spec: BulkFillSpec }) {
         <button
           type="button"
           className="absolute right-0.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/h:opacity-70"
-          title="Массовое заполнение колонки"
-          aria-label="Массовое заполнение колонки"
+          title="Заполнить колонку"
+          aria-label="Заполнить колонку"
           onClick={(e) => e.stopPropagation()}
           onPointerDown={(e) => e.stopPropagation()}
         >
           <MoreVertical className="h-3 w-3" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" sideOffset={6} className="w-60 p-2">
-        <div className="space-y-2 text-xs">
-          <div className="font-semibold normal-case text-foreground">Заполнить колонку</div>
-          <div className="text-[11px] normal-case text-muted-foreground">
-            Применит «{spec.label}» ко всем строкам. Привязанные ячейки будут пропущены.
+      <DropdownMenuContent align="end" sideOffset={6} className="w-72 p-3">
+        <div className="space-y-3">
+          <div>
+            <div className="text-[13px] font-semibold normal-case text-foreground">
+              Заполнить «{spec.label}»
+            </div>
+            <div className="mt-0.5 text-[11px] normal-case leading-snug text-muted-foreground">
+              Значение применится ко всем строкам таблицы.
+              Привязанные ячейки будут пропущены.
+            </div>
           </div>
-          <div className="flex items-center gap-1.5">
-            <input
-              type="number"
-              autoFocus
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  handleApply();
-                }
-              }}
-              placeholder="Значение"
-              className="h-7 flex-1 rounded border border-border/60 bg-background px-2 text-[12px] tabular-nums focus:border-primary focus:outline-none"
-            />
-            {spec.unit && <span className="text-[11px] text-muted-foreground">{spec.unit}</span>}
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1">
+              <input
+                type="number"
+                autoFocus
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleApply();
+                  }
+                }}
+                placeholder="0"
+                className="h-8 w-full rounded-md border border-border bg-background px-3 pr-8 text-sm tabular-nums focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/30"
+              />
+              {spec.unit && (
+                <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
+                  {spec.unit}
+                </span>
+              )}
+            </div>
             <Button
               type="button"
               size="sm"
-              className="h-7 px-2 text-[11px]"
+              className="h-8 px-3 text-xs"
               onClick={handleApply}
               disabled={draft.trim().length === 0}
             >
@@ -1250,8 +1331,15 @@ function BulkFillMenu({ spec }: { spec: BulkFillSpec }) {
             </Button>
           </div>
           {feedback && (
-            <div className="rounded bg-accent/50 px-2 py-1 text-[11px] normal-case text-foreground">
-              {feedback}
+            <div
+              className={
+                'rounded-md px-2.5 py-1.5 text-[11px] normal-case ' +
+                (feedback.ok
+                  ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300'
+                  : 'bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300')
+              }
+            >
+              {feedback.text}
             </div>
           )}
         </div>

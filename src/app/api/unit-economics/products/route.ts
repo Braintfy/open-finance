@@ -12,7 +12,7 @@ import {
   upsertUnitProduct,
 } from '@/lib/unit-economics/queries';
 import type { UnitMarketplace } from '@/lib/db/schema/unit-economics';
-import { ozonOrders } from '@/lib/db/schema/marketplaces';
+import { ozonOrders, ozonTransactions } from '@/lib/db/schema/marketplaces';
 
 const ALLOWED_MP: UnitMarketplace[] = ['ozon', 'yandex'];
 
@@ -64,7 +64,12 @@ export async function GET(req: NextRequest) {
       delivered_90d: number;
       cancelled_90d: number;
       returned_90d: number;
+      revenue_30d_kopecks: number | string;
+      ads_30d_kopecks: number | string;
     };
+    const accountCondsTx = accountId
+      ? sql`AND tx.account_id = ${accountId}`
+      : sql``;
     const rawResult = await db.execute<AggRow>(sql`
       WITH item_rows AS (
         SELECT
@@ -74,22 +79,42 @@ export async function GET(req: NextRequest) {
           o.delivered_at,
           o.cancelled_at,
           o.returned_at,
-          (it->>'offerId')::text AS offer_id
+          (it->>'offerId')::text AS offer_id,
+          COALESCE(NULLIF(it->>'price', '')::numeric, 0) AS item_price_rub,
+          COALESCE(NULLIF(it->>'quantity', '')::numeric, 0) AS item_qty
         FROM ${ozonOrders} o
         CROSS JOIN LATERAL jsonb_array_elements(o.items) AS it
         WHERE o.tenant_id = ${session.tenantId}
           ${accountConds}
           AND o.order_created_at >= ${since90Iso}::timestamp
+      ),
+      agg_ads AS (
+        SELECT
+          tx.sku,
+          SUM(ABS(tx.amount_kopecks)) AS ads_kopecks
+        FROM ${ozonTransactions} tx
+        WHERE tx.tenant_id = ${session.tenantId}
+          ${accountCondsTx}
+          AND tx.operation_date >= ${since30Iso}::timestamp
+          AND tx.sku IS NOT NULL
+          AND (
+            lower(tx.operation_type) LIKE '%promot%'
+            OR lower(tx.operation_type) LIKE '%advertis%'
+            OR lower(tx.operation_type) LIKE '%marketing%'
+          )
+        GROUP BY tx.sku
       )
       SELECT
-        offer_id,
-        COUNT(*) FILTER (WHERE status = 'delivered' AND order_created_at >= ${since30Iso}::timestamp) AS delivered_30d,
-        COUNT(*) FILTER (WHERE status = 'delivered') AS delivered_90d,
-        COUNT(*) FILTER (WHERE cancelled_at IS NOT NULL) AS cancelled_90d,
-        COUNT(*) FILTER (WHERE returned_at IS NOT NULL) AS returned_90d
-      FROM item_rows
-      WHERE offer_id IS NOT NULL AND offer_id <> ''
-      GROUP BY offer_id
+        ir.offer_id,
+        COUNT(DISTINCT ir.id) FILTER (WHERE ir.status = 'delivered' AND ir.order_created_at >= ${since30Iso}::timestamp) AS delivered_30d,
+        COUNT(DISTINCT ir.id) FILTER (WHERE ir.status = 'delivered') AS delivered_90d,
+        COUNT(DISTINCT ir.id) FILTER (WHERE ir.cancelled_at IS NOT NULL) AS cancelled_90d,
+        COUNT(DISTINCT ir.id) FILTER (WHERE ir.returned_at IS NOT NULL) AS returned_90d,
+        COALESCE(SUM(ir.item_qty * ir.item_price_rub * 100) FILTER (WHERE ir.status = 'delivered' AND ir.order_created_at >= ${since30Iso}::timestamp), 0) AS revenue_30d_kopecks,
+        0 AS ads_30d_kopecks
+      FROM item_rows ir
+      WHERE ir.offer_id IS NOT NULL AND ir.offer_id <> ''
+      GROUP BY ir.offer_id
     `);
     // Drizzle's db.execute возвращает разные структуры в зависимости от драйвера:
     // node-postgres → { rows: [...] }, postgres-js → массив напрямую.
@@ -98,9 +123,34 @@ export async function GET(req: NextRequest) {
       ? (rawResult as AggRow[])
       : (((rawResult as unknown) as { rows: AggRow[] }).rows ?? []);
 
+    // Build ads map by sku (separate query — can't LEFT JOIN in the grouped CTE easily)
+    type AdsRow = { sku: string; ads_kopecks: number | string };
+    const adsResult = await db.execute<AdsRow>(sql`
+      SELECT
+        tx.sku,
+        SUM(ABS(tx.amount_kopecks)) AS ads_kopecks
+      FROM ${ozonTransactions} tx
+      WHERE tx.tenant_id = ${session.tenantId}
+        ${accountId ? sql`AND tx.account_id = ${accountId}` : sql``}
+        AND tx.operation_date >= ${since30Iso}::timestamp
+        AND tx.sku IS NOT NULL
+        AND (
+          lower(tx.operation_type) LIKE '%promot%'
+          OR lower(tx.operation_type) LIKE '%advertis%'
+          OR lower(tx.operation_type) LIKE '%marketing%'
+        )
+      GROUP BY tx.sku
+    `);
+    const adsRows: AdsRow[] = Array.isArray(adsResult)
+      ? (adsResult as AdsRow[])
+      : (((adsResult as unknown) as { rows: AdsRow[] }).rows ?? []);
+    const adsBySku = new Map<string, number>();
+    for (const a of adsRows) adsBySku.set(a.sku, Number(a.ads_kopecks ?? 0));
+
     const aggregatesByArticle = new Map<string, {
       salesPerMonth: number;
       buyoutPct: number | null;
+      revenueKopecks30d: number;
     }>();
     for (const row of aggregateRows) {
       const delivered30 = Number(row.delivered_30d ?? 0);
@@ -108,20 +158,26 @@ export async function GET(req: NextRequest) {
       const cancelled90 = Number(row.cancelled_90d ?? 0);
       const returned90 = Number(row.returned_90d ?? 0);
       const total = delivered90 + cancelled90 + returned90;
-      // НЕдостаточно данных — статистика нерепрезентативна, не показываем.
       const buyoutPct = total >= 5 ? (delivered90 / total) * 100 : null;
       aggregatesByArticle.set(row.offer_id, {
         salesPerMonth: delivered30,
         buyoutPct,
+        revenueKopecks30d: Number(row.revenue_30d_kopecks ?? 0),
       });
     }
 
     const enriched = products.map((p) => {
       const agg = p.article ? aggregatesByArticle.get(p.article) : undefined;
+      const adsKop = p.sku ? (adsBySku.get(p.sku) ?? 0) : 0;
+      const revKop = agg?.revenueKopecks30d ?? 0;
+      const drrPct = revKop > 0 && adsKop > 0
+        ? Math.round(((adsKop / revKop) * 100) * 10) / 10
+        : null;
       return {
         ...p,
         salesPerMonth: agg?.salesPerMonth ?? null,
         buyoutPct: agg?.buyoutPct ?? null,
+        drrPct,
       };
     });
 

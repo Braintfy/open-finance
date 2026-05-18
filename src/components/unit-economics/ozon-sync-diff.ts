@@ -17,12 +17,14 @@ export type OzonBlockSyncColumnMap = {
   article: boolean;
   name: boolean;
   price: boolean;
+  discountPct: boolean;
   cost: boolean;
   stock: boolean;
   volumeL: boolean;
   commissionPct: boolean;
-  salesPerMonth: boolean;
   buyoutPct: boolean;
+  drrPct: boolean;
+  salesPerMonth: boolean;
 };
 
 export type OzonBlockSyncSettings = {
@@ -73,12 +75,14 @@ export type DiffField =
   | 'article'
   | 'name'
   | 'price'
+  | 'discountPct'
   | 'cost'
   | 'stock'
   | 'volumeL'
   | 'commissionPct'
-  | 'salesPerMonth'
-  | 'buyoutPct';
+  | 'buyoutPct'
+  | 'drrPct'
+  | 'salesPerMonth';
 
 export type CellChange = {
   /** article исходной строки или 'NEW:{ozonArticle}' для новых строк */
@@ -111,23 +115,27 @@ export const FIELD_LABELS: Record<DiffField, string> = {
   article: 'Артикул',
   name: 'Название',
   price: 'Цена',
+  discountPct: 'Скидка, %',
   cost: 'Себестоимость',
   stock: 'Остаток',
   volumeL: 'Объём, л',
   commissionPct: 'Комиссия, %',
-  salesPerMonth: 'Продаж/мес',
   buyoutPct: 'Выкуп, %',
+  drrPct: 'ДРР, %',
+  salesPerMonth: 'Продаж/мес',
 };
 
 // Маппинг сync-полей → input-ключ в row.inputs. article/name — на верхнем уровне.
 const INPUT_FIELD_MAP: Partial<Record<DiffField, string>> = {
   price: 'price',
+  discountPct: 'discountPct',
   cost: 'cost',
   stock: 'stock',
   volumeL: 'volumeL',
   commissionPct: 'commissionPct',
-  salesPerMonth: 'salesPerMonth',
   buyoutPct: 'buyoutPct',
+  drrPct: 'drrPct',
+  salesPerMonth: 'salesPerMonth',
 };
 
 function makeRowId(prefix: string): string {
@@ -199,10 +207,14 @@ function getProductValue(
       return product.article ?? '';
     case 'name':
       return product.name ?? '';
-    case 'price':
+    case 'price': {
+      // Приоритет: marketing_seller_price (актуальная цена с SPP/промо) → priceKopecks (базовая).
       // priceKopecks=0 трактуем как «нет данных»: иначе diff предложит
       // перезаписать пользовательский ввод (5990) нулём.
+      const marketingPriceRub = Number((product.metadata as Record<string, unknown> | null)?.priceWithSpp ?? 0);
+      if (marketingPriceRub > 0) return marketingPriceRub;
       return product.priceKopecks > 0 ? product.priceKopecks / 100 : null;
+    }
     case 'cost':
       return product.costKopecks > 0 ? product.costKopecks / 100 : null;
     case 'stock':
@@ -226,6 +238,20 @@ function getProductValue(
       return typeof product.salesPerMonth === 'number' ? product.salesPerMonth : null;
     case 'buyoutPct':
       return typeof product.buyoutPct === 'number' ? product.buyoutPct : null;
+    case 'discountPct': {
+      // Скидка = (basePrice - marketingPrice) / basePrice * 100
+      const meta = product.metadata as Record<string, unknown> | null;
+      const mktPrice = Number(meta?.priceWithSpp ?? 0);
+      const basePrice = product.priceKopecks > 0 ? product.priceKopecks / 100 : 0;
+      if (basePrice > 0 && mktPrice > 0 && mktPrice < basePrice) {
+        return Math.round(((basePrice - mktPrice) / basePrice) * 100 * 10) / 10;
+      }
+      return null;
+    }
+    case 'drrPct': {
+      const drr = (product as SyncOzonProduct & { drrPct?: number | null }).drrPct;
+      return typeof drr === 'number' ? drr : null;
+    }
     default:
       return null;
   }
@@ -254,12 +280,14 @@ function enabledFields(columnMap: OzonBlockSyncColumnMap): DiffField[] {
     'article',
     'name',
     'price',
+    'discountPct',
     'cost',
     'stock',
     'volumeL',
     'commissionPct',
-    'salesPerMonth',
     'buyoutPct',
+    'drrPct',
+    'salesPerMonth',
   ];
   return all.filter((f) => columnMap[f]);
 }

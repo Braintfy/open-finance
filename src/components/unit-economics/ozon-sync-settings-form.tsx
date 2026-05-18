@@ -48,8 +48,16 @@ const FIELD_DESCRIPTORS: FieldDescriptor[] = [
   },
   {
     key: 'price',
-    label: 'Цена',
-    source: 'unit_products.price ← /v5/product/info/prices',
+    label: 'Цена (актуальная)',
+    source: 'metadata.priceWithSpp ← marketing_seller_price (с учетом скидки)',
+    note: 'Актуальная цена покупателя с учетом СПП и промо. Если нет маркетинговой цены — базовая.',
+    category: 'core',
+  },
+  {
+    key: 'discountPct',
+    label: 'Скидка %',
+    source: '(Базовая цена - Актуальная) / Базовая × 100',
+    note: 'Рассчитывается автоматически из разницы между базовой и актуальной ценой.',
     category: 'core',
   },
   {
@@ -79,17 +87,24 @@ const FIELD_DESCRIPTORS: FieldDescriptor[] = [
     category: 'advanced',
   },
   {
-    key: 'salesPerMonth',
-    label: 'Продаж/мес',
-    source: 'COUNT(ozon_orders WHERE status=delivered AND order_created_at > 30d)',
-    note: 'Считается только при включённом стейдже «Заказы» в /settings/integrations.',
-    category: 'advanced',
-  },
-  {
     key: 'buyoutPct',
     label: 'Выкуп %',
     source: 'delivered / (delivered + cancelled + returned) за 90 дней',
     note: 'Требует ≥5 заказов в окне 90 дней, иначе пусто (статистически нерепрезентативно).',
+    category: 'advanced',
+  },
+  {
+    key: 'drrPct',
+    label: 'ДРР %',
+    source: 'Расход на рекламу / Выручка за 30 дней',
+    note: 'Рассчитывается на основе ozon_transactions (рекламных) и заказов за 30 дней.',
+    category: 'advanced',
+  },
+  {
+    key: 'salesPerMonth',
+    label: 'Продаж/мес',
+    source: 'COUNT(ozon_orders WHERE status=delivered AND order_created_at > 30d)',
+    note: 'Считается только при включённом стейдже «Заказы» в /settings/integrations.',
     category: 'advanced',
   },
 ];
@@ -397,7 +412,7 @@ export function OzonSyncSettingsForm({
           onAll={(v) => selectAll('core', v)}
         />
         <ColumnGroup
-          title="Расширенные (по умолчанию выкл)"
+          title="Расширенные (из аналитики)"
           fields={FIELD_DESCRIPTORS.filter((f) => f.category === 'advanced')}
           columnMap={value.columnMap}
           onChange={updateColumn}
