@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.18.2] - 2026-05-18
+
+Фиксы багов Ozon-аналитики (React-warning, краш perf-sync, отключённая granularity, UX KPI) + редизайн модалки привязок: two-level рендер полей, понятный label страницы «Аналитика Ozon», унифицированная категория и стабильная сортировка блоков.
+
+### Исправлено
+
+- **React key-in-spread warning в `ChartShell`** ([`src/components/blocks/chart-shell.tsx`](src/components/blocks/chart-shell.tsx)). `key` лежал внутри `props` объекта, который spread'ился в `<Line {...props} />`. React 18.3+ требует передавать `key` напрямую. Теперь `key` извлекается отдельно и передаётся как `<Bar key={key} {...props} />` / `<Area key={key} ...>` / `<Line key={key} ...>`. Warning исчез из консоли при рендере всех блоков-графиков (Ozon · Динамика, Cashflow chart и т.д.).
+- **Performance API sync крашился на `insert into "ozon_perf_campaigns"`** ([`src/lib/marketplaces/ozon/sync/perf-campaigns.ts`](src/lib/marketplaces/ozon/sync/perf-campaigns.ts)). Ozon отдаёт `"toDate": ""` для бессрочных кампаний; пустая строка отправлялась как значение в `date`-колонку PostgreSQL → `invalid input syntax for type date: ""` → **вся синхронизация рекламы падала на первой же кампании**. Симптомы каскадно: KPI/Топ рекламы/Кампании/Поисковые фразы показывают «нет данных», ДРР=0%, Состояние данных = ошибка. Фикс — pure-функция [`toDateOrNull`](src/lib/marketplaces/ozon/sync/date-utils.ts) нормализует `""`/`"   "`/не-строки в `null`, ISO datetime обрезается до `YYYY-MM-DD`. Тесты: 14 PASS в `scripts/test-ozon-perf-campaigns.ts`.
+
+### Добавлено
+
+- **Блок «Ozon · Динамика» — переключение granularity прямо в шапке блока** ([`src/lib/blocks/catalog/unit-ozon-chart.tsx`](src/lib/blocks/catalog/unit-ozon-chart.tsx)). Раньше дропдаун «по дням / неделям / месяцам» был задизаблен и менялся только в settings. Теперь — локальный `useState<Granularity>` (session-only, не пишет в config; перенастроить дефолт можно в settings блока). `useEffect` синхронизирует state при изменении `config.granularity` извне (например, после settings save).
+- **`showPerfStatus` добавлен в `OzonAccountSelector`** для блоков, использующих Performance API:
+  - `unit.ozon-chart` ([`unit-ozon-chart.tsx`](src/lib/blocks/catalog/unit-ozon-chart.tsx)) — реклама в overlay.
+  - `unit.ozon-ai-insights` ([`unit-ozon-ai-insights.tsx`](src/lib/blocks/catalog/unit-ozon-ai-insights.tsx)) — анализ ДРР/CPO требует perf-данных.
+
+### Изменено
+
+- **KPI SettingsForm — группы карточек** ([`src/lib/blocks/catalog/unit-ozon-kpi.tsx`](src/lib/blocks/catalog/unit-ozon-kpi.tsx)): тогглы разделены на «Основные» (Выручка, Заказы, Расход, ДРР — `grid-cols-2 sm:grid-cols-4`, solid border) и «Дополнительные» (Средний чек, Средний CPO — `grid-cols-2`, dashed border). Пользователь видит, что aov/cpo — опциональные карточки.
+- **Модалка привязок ячейки: two-level рендер полей** ([`src/components/unit-economics/unit-cell-binding-dialog.tsx`](src/components/unit-economics/unit-cell-binding-dialog.tsx)). Раньше все поля блока показывались плоским рядом одинаковых chips → для блоков с 7+ полями выглядело как большой массив. Теперь:
+  - **Главное поле `value`** — крупная кнопка во всю ширину блока с label слева (с иконкой `Link2`) и preview-значением справа (`font-mono`, выровнено `tabular-nums`). Primary CTA для одно-кликового связывания «общего» значения блока (например, `Выручка / период` для Ozon · KPI).
+  - **Остальные поля** — компактные мини-чипы под главным полем (`text-[10px]`, тонкий ring), для точечной привязки к конкретной метрике (orders, ads, drr, aov, cpo).
+- **Понятные label страниц в sidebar модалки** ([`src/app/api/blocks/sources/route.ts`](src/app/api/blocks/sources/route.ts)). Добавлен `'marketplaces-ozon-dashboard': 'Аналитика Ozon'` в `PAGE_LABELS` + сама страница в `DEFAULT_PAGE_KEYS` (чтобы появлялась в picker даже если у пользователя ещё нет save'нутого layout'а). Раньше отображалось как raw `marketplaces-ozon-das...`.
+- **Категория «Аналитика Ozon» для всех `unit.ozon-*` блоков** ([`sources/route.ts`](src/app/api/blocks/sources/route.ts)). Раньше: разнобой (`unit.ozon-analytics` → «Юнит-экономика», `unit.ozon-kpi` → «Маркетплейсы», `unit.ozon-ai-insights` → «AI»). Теперь все 10 блоков (KPI, Динамика, Топ рекламы, Остатки, Поисковые фразы, Кампании, Состояние данных, ABC, AI инсайты, Аналитика) под одной категорией → группируются вместе в picker'е.
+- **Стабильная сортировка блоков в модалке** ([`sources/route.ts`](src/app/api/blocks/sources/route.ts)). На сервере, перед отправкой JSON: `CATEGORY_ORDER` (аналитика → юнит-эконом → финансы → KPI → графики → таблицы → данные → вычисления → кэшфлоу → входящие → навигация → AI), потом — `label.localeCompare(b.label, 'ru')`. Локальные live-блоки текущей страницы в `unit-cell-binding-dialog.tsx` — аналогично, по label. До этого был случайный порядок появления в layout.
+
+### Audit
+
+- `pnpm typecheck` ✓
+- `pnpm build` ✓ (все 60+ routes собрались, нет регрессий)
+- **229 smoke-тестов PASS:** `test-ozon-perf-campaigns.ts` 14 (новый), `test-ozon-perf-client.ts` 42, `test-ozon-sync-diff.ts` 37, `test-ozon-upsert.ts` 71, `test-ozon-analytics.ts` 29, `test-unit-economics.ts` 36.
+
 ## [0.18.1] - 2026-05-18
 
 Hotfix Ozon-аналитики: SQL-запросы возвращали 500 из-за того, что `postgres.js` не сериализует `Date` в raw `sql\`...\``-template'ах.

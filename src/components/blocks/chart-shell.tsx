@@ -134,8 +134,9 @@ function renderSeries(s: ChartSeries, isCompare: boolean, compareSuffix?: string
   const key = isCompare ? `${s.key}__compare` : s.key;
   const label = isCompare ? `${s.label} (${compareSuffix ?? 'прошлый'})` : s.label;
   const yId = s.yAxisId ?? 'left';
+  // key передаём напрямую в JSX, чтобы не было React-warning'а
+  // про key внутри spread-props.
   const props = {
-    key,
     dataKey: key,
     yAxisId: yId,
     name: label,
@@ -147,7 +148,8 @@ function renderSeries(s: ChartSeries, isCompare: boolean, compareSuffix?: string
     isAnimationActive: false,
   } as const;
 
-  if (s.type === 'bar') return <Bar {...props} />;
-  if (s.type === 'area') return <Area type="monotone" {...props} strokeWidth={1.5} />;
-  return <Line type="monotone" {...props} strokeWidth={2} dot={false} />;
+  if (s.type === 'bar') return <Bar key={key} {...props} />;
+  if (s.type === 'area')
+    return <Area key={key} type="monotone" {...props} strokeWidth={1.5} />;
+  return <Line key={key} type="monotone" {...props} strokeWidth={2} dot={false} />;
 }

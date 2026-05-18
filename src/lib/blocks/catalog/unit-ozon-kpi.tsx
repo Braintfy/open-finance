@@ -295,34 +295,67 @@ function SettingsForm({ config, onChange }: BlockSettingsFormProps) {
           }
         />
       </div>
-      <div className="space-y-1.5">
+      <div className="space-y-2">
         <Label className="text-[11px] text-muted-foreground">Видимые карточки</Label>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-          {(
-            [
-              ['revenue', 'Выручка'],
-              ['orders', 'Заказы'],
-              ['ads', 'Расход'],
-              ['drr', 'ДРР'],
-              ['aov', 'Средний чек'],
-              ['cpo', 'CPO'],
-            ] as const
-          ).map(([key, label]) => (
-            <label
-              key={key}
-              className="flex items-center justify-between rounded-md border border-border/60 px-2 py-1.5 text-[12px]"
-            >
-              <span>{label}</span>
-              <Switch
-                checked={parsed.visibleCards[key]}
-                onCheckedChange={(on) =>
-                  patch({
-                    visibleCards: { ...parsed.visibleCards, [key]: on },
-                  })
-                }
-              />
-            </label>
-          ))}
+        <div className="space-y-2">
+          <div className="space-y-1">
+            <div className="text-[10px] uppercase tracking-wide text-muted-foreground/70">
+              Основные
+            </div>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {(
+                [
+                  ['revenue', 'Выручка'],
+                  ['orders', 'Заказы'],
+                  ['ads', 'Расход'],
+                  ['drr', 'ДРР'],
+                ] as const
+              ).map(([key, label]) => (
+                <label
+                  key={key}
+                  className="flex items-center justify-between rounded-md border border-border/60 px-2 py-1.5 text-[12px]"
+                >
+                  <span>{label}</span>
+                  <Switch
+                    checked={parsed.visibleCards[key]}
+                    onCheckedChange={(on) =>
+                      patch({
+                        visibleCards: { ...parsed.visibleCards, [key]: on },
+                      })
+                    }
+                  />
+                </label>
+              ))}
+            </div>
+          </div>
+          <div className="space-y-1">
+            <div className="text-[10px] uppercase tracking-wide text-muted-foreground/70">
+              Дополнительные
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {(
+                [
+                  ['aov', 'Средний чек'],
+                  ['cpo', 'Средний CPO'],
+                ] as const
+              ).map(([key, label]) => (
+                <label
+                  key={key}
+                  className="flex items-center justify-between rounded-md border border-dashed border-border/60 px-2 py-1.5 text-[12px]"
+                >
+                  <span>{label}</span>
+                  <Switch
+                    checked={parsed.visibleCards[key]}
+                    onCheckedChange={(on) =>
+                      patch({
+                        visibleCards: { ...parsed.visibleCards, [key]: on },
+                      })
+                    }
+                  />
+                </label>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
     </div>

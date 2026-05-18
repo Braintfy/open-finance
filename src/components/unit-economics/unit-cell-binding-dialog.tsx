@@ -98,9 +98,12 @@ export function UnitCellBindingDialog({
             liveValues[field === 'value' ? b.blockId : `${b.blockId}.${field}`] ?? null,
           format: undefined,
         })),
-      }));
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label, 'ru'));
     const remote = remotePages.map((page) => ({
       ...page,
+      // remotePages уже отсортированы серверным /api/blocks/sources
+      // по категории + label, но дополнительно фильтруем self.
       blocks: page.blocks.filter((b) => b.blockId !== selfBlockId),
     }));
     return liveBlocks.length > 0
@@ -257,43 +260,71 @@ export function UnitCellBindingDialog({
                       {page.pageLabel}
                     </span>
                   </div>
-                  {page.blocks.map((block) => (
-                    <div
-                      key={`${page.pageKey}:${block.blockId}`}
-                      className="border-b border-border/30 px-3 py-2 transition last:border-b-0 hover:bg-accent/20"
-                    >
-                      <div className="space-y-1.5">
-                        <div className="min-w-0">
-                          <div className="truncate text-xs font-medium text-foreground">
-                            {block.label}
+                  {page.blocks.map((block) => {
+                    // Главное поле блока = `value` (всегда сверху крупной кнопкой).
+                    // Остальные — компактными чипами под ним. Служебные label/raw
+                    // не показываем как привязываемые источники.
+                    const primaryField = block.fields.find((f) => f.name === 'value');
+                    const secondaryFields = block.fields.filter(
+                      (f) => f.name !== 'value' && f.name !== 'label' && f.name !== 'raw',
+                    );
+                    return (
+                      <div
+                        key={`${page.pageKey}:${block.blockId}`}
+                        className="border-b border-border/30 px-3 py-2 transition last:border-b-0 hover:bg-accent/20"
+                      >
+                        <div className="space-y-2">
+                          <div className="min-w-0">
+                            <div className="truncate text-xs font-medium text-foreground">
+                              {block.label}
+                            </div>
+                            <div className="text-[10px] text-muted-foreground">
+                              {block.category} · {block.typeLabel}
+                            </div>
                           </div>
-                          <div className="text-[10px] text-muted-foreground">
-                            {block.category} · {block.typeLabel}
-                          </div>
-                        </div>
-                        <div className="flex flex-wrap gap-1">
-                          {block.fields
-                            .filter((f) => f.name !== 'label' && f.name !== 'raw')
-                            .map((field) => {
-                              const preview = previewSourceValue(field);
-                              return (
-                                <button
-                                  key={field.name}
-                                  type="button"
-                                  onClick={() => pickField(block, field)}
-                                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] ring-1 ring-border/60 transition hover:bg-primary/10 hover:ring-primary/40"
-                                  title={`${field.label} = ${preview}`}
-                                >
-                                  <Link2 className="h-3 w-3 text-primary" />
-                                  <span className="font-medium text-primary">{field.label}</span>
-                                  <span className="text-muted-foreground">{preview}</span>
-                                </button>
-                              );
-                            })}
+                          {primaryField && (
+                            <button
+                              type="button"
+                              onClick={() => pickField(block, primaryField)}
+                              className="flex w-full items-center justify-between gap-2 rounded-md border border-primary/40 bg-primary/5 px-2.5 py-1.5 text-left text-[12px] transition hover:border-primary hover:bg-primary/10"
+                              title={`${primaryField.label} = ${previewSourceValue(primaryField)}`}
+                            >
+                              <div className="flex min-w-0 items-center gap-1.5">
+                                <Link2 className="h-3.5 w-3.5 shrink-0 text-primary" />
+                                <span className="truncate font-medium text-primary">
+                                  {primaryField.label}
+                                </span>
+                              </div>
+                              <span className="shrink-0 font-mono tabular-nums text-foreground/80">
+                                {previewSourceValue(primaryField)}
+                              </span>
+                            </button>
+                          )}
+                          {secondaryFields.length > 0 && (
+                            <div className="flex flex-wrap gap-1">
+                              {secondaryFields.map((field) => {
+                                const preview = previewSourceValue(field);
+                                return (
+                                  <button
+                                    key={field.name}
+                                    type="button"
+                                    onClick={() => pickField(block, field)}
+                                    className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] ring-1 ring-border/50 transition hover:bg-primary/5 hover:ring-primary/40"
+                                    title={`${field.label} = ${preview}`}
+                                  >
+                                    <span className="font-medium text-foreground/80">
+                                      {field.label}
+                                    </span>
+                                    <span className="text-muted-foreground">{preview}</span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </section>
               ))
             )}

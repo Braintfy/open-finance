@@ -306,6 +306,7 @@ function SettingsForm({ config, onChange }: BlockSettingsFormProps) {
         onChange={(id) =>
           onChange({ ...parsed, accountId: id } as unknown as Record<string, unknown>)
         }
+        showPerfStatus
       />
       <PeriodPicker
         value={{

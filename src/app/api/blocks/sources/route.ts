@@ -35,6 +35,7 @@ const DEFAULT_PAGE_KEYS = [
   'dashboard',
   'cashflow',
   'inbox',
+  'marketplaces-ozon-dashboard',
   'unit-economics-ozon',
   'unit-economics-ozon-multi',
   'unit-economics-yandex',
@@ -48,6 +49,7 @@ const PAGE_LABELS: Record<string, string> = {
   deadlines: 'Дедлайны',
   taxes: 'Налоги',
   settings: 'Настройки',
+  'marketplaces-ozon-dashboard': 'Аналитика Ozon',
   'unit-economics-ozon': 'Юнит-экономика · Ozon',
   'unit-economics-ozon-multi': 'Юнит-экономика · Ozon мульти',
   'unit-economics-yandex': 'Юнит-экономика · Яндекс',
@@ -71,20 +73,49 @@ const TYPE_LABELS: Record<string, { label: string; category: string }> = {
   'ai.micro-agent': { label: 'AI агент', category: 'AI' },
   'unit.ozon-calculator': { label: 'Ozon · калькулятор', category: 'Юнит-экономика' },
   'unit.ozon-multi-table': { label: 'Ozon · юнит-таблица', category: 'Юнит-экономика' },
-  'unit.ozon-analytics': { label: 'Ozon · аналитика', category: 'Юнит-экономика' },
-  'unit.ozon-kpi': { label: 'Ozon · KPI', category: 'Маркетплейсы' },
-  'unit.ozon-chart': { label: 'Ozon · Динамика', category: 'Маркетплейсы' },
-  'unit.ozon-top-ads': { label: 'Ozon · Топ рекламы', category: 'Маркетплейсы' },
-  'unit.ozon-stock-clusters': { label: 'Ozon · Остатки по складам', category: 'Маркетплейсы' },
-  'unit.ozon-search-phrases': { label: 'Ozon · Поисковые фразы', category: 'Маркетплейсы' },
-  'unit.ozon-campaigns': { label: 'Ozon · Кампании', category: 'Маркетплейсы' },
-  'unit.ozon-data-health': { label: 'Ozon · Состояние данных', category: 'Маркетплейсы' },
-  'unit.ozon-abc': { label: 'Ozon · ABC-анализ', category: 'Маркетплейсы' },
-  'unit.ozon-ai-insights': { label: 'Ozon · AI инсайты', category: 'AI' },
+  // Все аналитические Ozon-блоки объединены под общую категорию «Аналитика Ozon»
+  // для удобной группировки/сортировки в модалке привязок.
+  'unit.ozon-analytics': { label: 'Ozon · аналитика', category: 'Аналитика Ozon' },
+  'unit.ozon-kpi': { label: 'Ozon · KPI', category: 'Аналитика Ozon' },
+  'unit.ozon-chart': { label: 'Ozon · Динамика', category: 'Аналитика Ozon' },
+  'unit.ozon-top-ads': { label: 'Ozon · Топ рекламы', category: 'Аналитика Ozon' },
+  'unit.ozon-stock-clusters': { label: 'Ozon · Остатки по складам', category: 'Аналитика Ozon' },
+  'unit.ozon-search-phrases': { label: 'Ozon · Поисковые фразы', category: 'Аналитика Ozon' },
+  'unit.ozon-campaigns': { label: 'Ozon · Кампании', category: 'Аналитика Ozon' },
+  'unit.ozon-data-health': { label: 'Ozon · Состояние данных', category: 'Аналитика Ozon' },
+  'unit.ozon-abc': { label: 'Ozon · ABC-анализ', category: 'Аналитика Ozon' },
+  'unit.ozon-ai-insights': { label: 'Ozon · AI инсайты', category: 'Аналитика Ozon' },
   'unit.yandex-calculator': { label: 'Яндекс · калькулятор', category: 'Юнит-экономика' },
   'unit.my-store-table': { label: 'Мой магазин · таблица', category: 'Юнит-экономика' },
   'currency.rates': { label: 'Курсы валют', category: 'Финансы' },
 };
+
+/**
+ * Порядок категорий блоков в модалке привязок: аналитика впереди (это самое
+ * интересное для пользователя при настройке формул), затем юнит-экономика,
+ * финансы, KPI, графики/таблицы, и т.д.
+ */
+const CATEGORY_ORDER: readonly string[] = [
+  'Аналитика Ozon',
+  'Маркетплейсы',
+  'Юнит-экономика',
+  'Финансы',
+  'KPI',
+  'Графики',
+  'Таблицы',
+  'Данные',
+  'Вычисления',
+  'Кэшфлоу',
+  'Входящие',
+  'Навигация',
+  'AI',
+  'Другое',
+];
+
+function categoryRank(cat: string): number {
+  const i = CATEGORY_ORDER.indexOf(cat);
+  return i === -1 ? CATEGORY_ORDER.length : i;
+}
 
 function pageLabel(pageKey: string): string {
   if (PAGE_LABELS[pageKey]) return PAGE_LABELS[pageKey];
@@ -646,6 +677,12 @@ export async function GET() {
         ],
       } satisfies SourceBlock;
     }));
+    // Сортировка: по категории (CATEGORY_ORDER), потом по label.
+    blocks.sort((a, b) => {
+      const r = categoryRank(a.category) - categoryRank(b.category);
+      if (r !== 0) return r;
+      return a.label.localeCompare(b.label, 'ru');
+    });
     return { pageKey, pageLabel: pageLabel(pageKey), blocks };
   }));
 

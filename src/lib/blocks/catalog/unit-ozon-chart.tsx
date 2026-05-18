@@ -71,6 +71,14 @@ function RenderOzonChart({ instance }: BlockRenderProps) {
     customFrom: config.customFrom,
     customTo: config.customTo,
   });
+  // Локальное (session-only) переключение granularity без записи в config.
+  // Перенастроить дефолт можно в Settings блока → таб «Параметры».
+  const [granularity, setGranularity] = useState<OzonChartBlockConfig['granularity']>(
+    config.granularity,
+  );
+  useEffect(() => {
+    setGranularity(config.granularity);
+  }, [config.granularity]);
   const [data, setData] = useState<OzonTimeseriesResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -97,7 +105,7 @@ function RenderOzonChart({ instance }: BlockRenderProps) {
         accountId: config.accountId,
         from: range.from.toISOString(),
         to: range.to.toISOString(),
-        granularity: config.granularity,
+        granularity,
       });
       const res = await fetch(`/api/marketplaces/ozon/timeseries?${params}`);
       const json = await res.json();
@@ -118,7 +126,7 @@ function RenderOzonChart({ instance }: BlockRenderProps) {
     period.preset,
     period.customFrom,
     period.customTo,
-    config.granularity,
+    granularity,
   ]);
 
   useEffect(() => {
@@ -150,12 +158,11 @@ function RenderOzonChart({ instance }: BlockRenderProps) {
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <PeriodPicker value={period} onChange={setPeriod} compact />
         <select
-          value={config.granularity}
-          onChange={() => {
-            // granularity меняется только в настройках
-          }}
-          disabled
-          className="h-7 rounded-md border border-input bg-background px-2 text-[11px] opacity-50"
+          value={granularity}
+          onChange={(e) =>
+            setGranularity(e.target.value as OzonChartBlockConfig['granularity'])
+          }
+          className="h-7 rounded-md border border-input bg-background px-2 text-[11px] text-foreground hover:border-primary/40 focus:border-primary focus:outline-none"
         >
           <option value="day">по дням</option>
           <option value="week">по неделям</option>
@@ -212,6 +219,7 @@ function SettingsForm({ config, onChange }: BlockSettingsFormProps) {
       <OzonAccountSelector
         value={parsed.accountId}
         onChange={(id) => patch({ accountId: id })}
+        showPerfStatus
       />
       <div className="space-y-1.5">
         <Label className="text-[11px] text-muted-foreground">Период</Label>

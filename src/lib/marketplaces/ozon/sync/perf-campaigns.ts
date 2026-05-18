@@ -8,6 +8,7 @@ import { db } from '@/lib/db/client';
 import { ozonPerfCampaigns } from '@/lib/db/schema/marketplaces';
 import { listCampaigns } from '../performance/endpoints';
 import { runStageWithTiming, type StageContext, type StageResult } from './types';
+import { toDateOrNull } from './date-utils';
 
 function parseMoney(value: unknown): number | null {
   if (value === null || value === undefined) return null;
@@ -44,8 +45,8 @@ export async function syncPerfCampaignsStage(ctx: StageContext): Promise<StageRe
           paymentType: typeof c.paymentType === 'string' ? c.paymentType : null,
           dailyBudgetKopecks: parseMoney(c.dailyBudget),
           budgetKopecks: parseMoney(c.budget),
-          startDate: typeof c.fromDate === 'string' ? c.fromDate.slice(0, 10) : null,
-          endDate: typeof c.toDate === 'string' ? c.toDate.slice(0, 10) : null,
+          startDate: toDateOrNull(c.fromDate),
+          endDate: toDateOrNull(c.toDate),
           raw: c as Record<string, unknown>,
           syncedAt: new Date(),
         })
