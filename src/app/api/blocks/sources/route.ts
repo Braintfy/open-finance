@@ -485,13 +485,22 @@ async function fieldsForBlock(
   if (block.type === 'unit.ozon-analytics') {
     // Live-аналитика грузится клиентом из /api/marketplaces/analytics/ozon.
     // В sources фиксируем только метки полей для cross-block picker'а.
+    // Синхронизировано с useBlockValuePublisher в unit-ozon-analytics.tsx.
     return [
       { name: 'value', label: 'Выручка / период', value: null, format: 'money' },
       { name: 'revenue', label: 'Выручка / период', value: null, format: 'money' },
       { name: 'ads', label: 'Реклама / период', value: null, format: 'money' },
+      { name: 'totalCostRub', label: 'Себестоимость проданного', value: null, format: 'money' },
+      { name: 'totalProfitRub', label: 'Прибыль (выручка−себест)', value: null, format: 'money' },
       { name: 'drr', label: 'ДРР %', value: null, format: 'number' },
-      { name: 'orders', label: 'Заказы / период', value: null, format: 'number' },
+      { name: 'orders', label: 'Заказы доставлено', value: null, format: 'number' },
+      { name: 'cancelled', label: 'Заказы отменено', value: null, format: 'number' },
+      { name: 'returned', label: 'Заказы возврат', value: null, format: 'number' },
+      { name: 'qtyDelivered', label: 'Штук доставлено', value: null, format: 'number' },
       { name: 'productsWithSales', label: 'Товары с продажами', value: null, format: 'number' },
+      { name: 'rowsCount', label: 'Всего товаров', value: null, format: 'number' },
+      { name: 'stockTotal', label: 'Остатки (шт)', value: null, format: 'number' },
+      { name: 'avgBuyoutPct', label: 'Средний выкуп %', value: null, format: 'number' },
     ];
   }
   if (block.type === 'unit.ozon-kpi') {

@@ -118,18 +118,55 @@ function RenderOzonAnalytics({ instance }: BlockRenderProps) {
     [rows, activeFilter],
   );
 
+  const extendedTotals = useMemo(() => {
+    let totalCostRub = 0;
+    let stockTotal = 0;
+    let qtyDelivered = 0;
+    let buyoutSum = 0;
+    let buyoutCount = 0;
+    for (const r of rows) {
+      totalCostRub += r.costRub * r.qtyDelivered;
+      stockTotal += r.stockMarketplace + r.stockOwn;
+      qtyDelivered += r.qtyDelivered;
+      if (r.buyoutPct !== null) {
+        buyoutSum += r.buyoutPct;
+        buyoutCount += 1;
+      }
+    }
+    const revenueRub = response?.totals.revenueRub ?? 0;
+    return {
+      totalCostRub,
+      totalProfitRub: revenueRub - totalCostRub,
+      stockTotal,
+      qtyDelivered,
+      avgBuyoutPct: buyoutCount > 0 ? Math.round((buyoutSum / buyoutCount) * 10) / 10 : null,
+    };
+  }, [rows, response?.totals.revenueRub]);
+
   useBlockValuePublisher(instance.id, {
     value: (response?.totals.revenueRub ?? 0) * 100,
     revenue: (response?.totals.revenueRub ?? 0) * 100,
     ads: (response?.totals.adsRub ?? 0) * 100,
+    totalCostRub: extendedTotals.totalCostRub * 100,
+    totalProfitRub: extendedTotals.totalProfitRub * 100,
     drr: response?.totals.drrPct ?? 0,
     orders: response?.totals.delivered ?? 0,
+    cancelled: response?.totals.cancelled ?? 0,
+    returned: response?.totals.returned ?? 0,
+    qtyDelivered: extendedTotals.qtyDelivered,
     productsWithSales: response?.totals.productsWithSales ?? 0,
+    rowsCount: rows.length,
+    stockTotal: extendedTotals.stockTotal,
+    avgBuyoutPct: extendedTotals.avgBuyoutPct ?? 0,
     label: instance.appearance?.title ?? config.title,
-    __money: 'value,revenue,ads',
+    __money: 'value,revenue,ads,totalCostRub,totalProfitRub',
     __labels:
       'value=Выручка / период,revenue=Выручка / период,ads=Реклама / период,' +
-      'drr=ДРР %,orders=Заказы / период,productsWithSales=Товары с продажами',
+      'totalCostRub=Себестоимость проданного,totalProfitRub=Прибыль (выручка−себест),' +
+      'drr=ДРР %,orders=Заказы доставлено,cancelled=Заказы отменено,' +
+      'returned=Заказы возврат,qtyDelivered=Штук доставлено,' +
+      'productsWithSales=Товары с продажами,rowsCount=Всего товаров,' +
+      'stockTotal=Остатки (шт),avgBuyoutPct=Средний выкуп %',
   });
 
   const handleExport = useCallback(() => {
