@@ -26,20 +26,34 @@ export function OzonKeyHelp({
 
   if (variant === 'compact') {
     return (
-      <details
-        open={open}
-        onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
-        className="group rounded-md border border-border/60 bg-muted/30 text-[11px]"
-      >
-        <summary className="flex cursor-pointer items-center gap-1.5 px-2.5 py-1.5 text-muted-foreground hover:text-foreground">
-          <Info className="h-3 w-3" />
-          <span className="select-none">Как получить Client-Id и Api-Key</span>
-          <span className="ml-auto text-[10px]">{open ? 'свернуть' : 'показать'}</span>
-        </summary>
-        <div className="space-y-2 border-t border-border/60 px-2.5 py-2 leading-relaxed">
-          <StepsList compact />
-        </div>
-      </details>
+      <div className="space-y-1.5">
+        <details
+          open={open}
+          onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
+          className="group rounded-md border border-border/60 bg-muted/30 text-[11px]"
+        >
+          <summary className="flex cursor-pointer items-center gap-1.5 px-2.5 py-1.5 text-muted-foreground hover:text-foreground">
+            <Info className="h-3 w-3" />
+            <span className="select-none">Как получить Client-Id и Api-Key (Seller)</span>
+            <span className="ml-auto text-[10px]">{open ? 'свернуть' : 'показать'}</span>
+          </summary>
+          <div className="space-y-2 border-t border-border/60 px-2.5 py-2 leading-relaxed">
+            <StepsList compact />
+          </div>
+        </details>
+        <details className="group rounded-md border border-border/60 bg-muted/30 text-[11px]">
+          <summary className="flex cursor-pointer items-center gap-1.5 px-2.5 py-1.5 text-muted-foreground hover:text-foreground">
+            <Info className="h-3 w-3" />
+            <span className="select-none">
+              Как получить Client ID / Client Secret (Performance API — реклама)
+            </span>
+            <span className="ml-auto text-[10px]">показать</span>
+          </summary>
+          <div className="space-y-2 border-t border-border/60 px-2.5 py-2 leading-relaxed">
+            <PerfStepsList compact />
+          </div>
+        </details>
+      </div>
     );
   }
 
@@ -106,6 +120,46 @@ export function OzonKeyHelp({
         </a>
       </div>
     </details>
+  );
+}
+
+function PerfStepsList({ compact }: { compact?: boolean }) {
+  const items: Array<{ title: string; hint?: string }> = [
+    {
+      title: 'В ЛК Ozon → Настройки → Performance API',
+      hint: 'Раздел отдельный от Seller API, для рекламной аналитики.',
+    },
+    {
+      title: 'Создать новый ключ',
+      hint: 'Скопировать Client ID и Client Secret.',
+    },
+    {
+      title: 'Подключение',
+      hint: 'Performance API использует OAuth (token TTL 30 мин), приложение получает токен автоматически.',
+    },
+    {
+      title: 'Срок жизни ключа',
+      hint: 'Ключ Performance API действует 6 месяцев. После — перевыпустите и обновите тут.',
+    },
+  ];
+  return (
+    <ol
+      className={
+        'list-decimal pl-5 ' +
+        (compact
+          ? 'space-y-0.5 marker:text-muted-foreground'
+          : 'space-y-1.5 marker:text-muted-foreground')
+      }
+    >
+      {items.map((it, i) => (
+        <li key={i}>
+          <span className="font-medium">{it.title}</span>
+          {it.hint && !compact && (
+            <span className="block text-[11px] text-muted-foreground">{it.hint}</span>
+          )}
+        </li>
+      ))}
+    </ol>
   );
 }
 

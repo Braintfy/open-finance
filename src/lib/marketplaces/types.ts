@@ -30,7 +30,10 @@ export const OZON_FULL_STAGES = [
   'realization',
   'transactions',
   'turnover',
-] as const satisfies readonly Exclude<SyncJobKind, 'full'>[];
+  'perfCampaigns',
+  'perfSkuStats',
+  'perfPhrases',
+] as const;
 
 export type OzonStageKind = (typeof OZON_FULL_STAGES)[number];
 
@@ -49,6 +52,10 @@ export const DEFAULT_OZON_SYNC_SETTINGS: Required<
     | 'turnover'
     | 'autoSyncEnabled'
     | 'autoSyncCron'
+    | 'perfCampaigns'
+    | 'perfSkuStats'
+    | 'perfPhrases'
+    | 'perfWindowDays'
   >
 > = {
   products: true,
@@ -62,6 +69,10 @@ export const DEFAULT_OZON_SYNC_SETTINGS: Required<
   turnover: true,
   autoSyncEnabled: false,
   autoSyncCron: '0 6 * * *',
+  perfCampaigns: true,
+  perfSkuStats: true,
+  perfPhrases: false,
+  perfWindowDays: 30,
 };
 
 export const OzonSyncSettingsSchema = z
@@ -78,6 +89,10 @@ export const OzonSyncSettingsSchema = z
     autoSyncEnabled: z.boolean().optional(),
     autoSyncCron: z.string().max(64).optional(),
     autoSyncLastRunAt: z.string().optional(),
+    perfCampaigns: z.boolean().optional(),
+    perfSkuStats: z.boolean().optional(),
+    perfPhrases: z.boolean().optional(),
+    perfWindowDays: z.number().int().min(1).max(365).optional(),
   })
   .strict();
 
@@ -87,6 +102,10 @@ export const CreateAccountSchema = z
     name: z.string().min(1).max(200),
     clientId: z.string().min(1).max(200),
     apiKey: z.string().min(8).max(500),
+    /** Performance API Client ID (опциональный). */
+    perfClientId: z.string().min(1).max(200).optional(),
+    /** Performance API Client Secret (опциональный, до 500 символов). */
+    perfClientSecret: z.string().min(8).max(500).optional(),
     syncSettings: OzonSyncSettingsSchema.optional(),
   })
   .strict();
@@ -96,6 +115,8 @@ export const UpdateAccountSchema = z
     name: z.string().min(1).max(200).optional(),
     clientId: z.string().min(1).max(200).optional(),
     apiKey: z.string().min(8).max(500).optional(),
+    perfClientId: z.string().min(1).max(200).optional().nullable(),
+    perfClientSecret: z.string().min(8).max(500).optional().nullable(),
     status: z.enum(['active', 'error', 'disabled']).optional(),
     syncSettings: OzonSyncSettingsSchema.optional(),
   })
@@ -110,6 +131,13 @@ export type AccountPublic = {
   name: string;
   clientId: string;
   apiKeyMasked: string;
+  /** Performance API подключён (есть и client_id, и secret). */
+  perfConnected: boolean;
+  perfClientId: string | null;
+  perfSecretMasked: string | null;
+  perfStatus: string | null;
+  perfLastSyncAt: string | null;
+  perfLastSyncError: string | null;
   status: AccountStatus;
   syncSettings: OzonSyncSettings;
   companyInfo: Record<string, unknown>;

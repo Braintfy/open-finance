@@ -16,14 +16,23 @@ import {
 import { rublesToKopecks } from '@/lib/unit-economics/types';
 import type {
   ProductInfo,
-  PricesItem,
-  StocksItem,
   FbsPosting,
   FboPosting,
   RealizationRow,
   TransactionOperation,
   TurnoverRow,
 } from './types';
+import {
+  planUnitProductUpsertFromOzon,
+  type CombinedProduct,
+} from './upsert-plan';
+
+// Re-export для совместимости со старыми импортами
+export type { CombinedProduct } from './upsert-plan';
+export {
+  planUnitProductUpsertFromOzon,
+  type UnitProductUpsertPlan,
+} from './upsert-plan';
 
 export type UpsertContext = {
   tenantId: string;
@@ -32,68 +41,8 @@ export type UpsertContext = {
 };
 
 // ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function parseDimensions(info: ProductInfo): {
-  weightG: number | null;
-  dimsMm: { depth: number; width: number; height: number } | null;
-  volumeLx100: number;
-} {
-  const weightUnit = info.weight_unit ?? 'g';
-  const weight = info.weight ?? null;
-  const weightG =
-    weight === null
-      ? null
-      : weightUnit === 'kg'
-        ? Math.round(weight * 1000)
-        : weightUnit === 'lb'
-          ? Math.round(weight * 453.592)
-          : Math.round(weight);
-
-  const dimsUnit = info.dimension_unit ?? 'mm';
-  const toMm = (v: number | undefined) => {
-    if (!v) return null;
-    if (dimsUnit === 'cm') return v * 10;
-    if (dimsUnit === 'm') return v * 1000;
-    return v;
-  };
-  const d = toMm(info.depth);
-  const w = toMm(info.width);
-  const h = toMm(info.height);
-  const dimsMm = d && w && h ? { depth: d, width: w, height: h } : null;
-  const volumeLx100 = dimsMm
-    ? Math.round(((dimsMm.depth * dimsMm.width * dimsMm.height) / 1_000_000) * 100)
-    : 0;
-  return { weightG, dimsMm, volumeLx100 };
-}
-
-function parseMoneyRu(value: string | undefined): number {
-  if (!value) return 0;
-  const num = Number(value.replace(/\s/g, '').replace(',', '.'));
-  return Number.isFinite(num) ? num : 0;
-}
-
-// ---------------------------------------------------------------------------
 // unit_products — товары
 // ---------------------------------------------------------------------------
-
-export type CombinedProduct = {
-  info: ProductInfo;
-  prices?: PricesItem;
-  stocks?: StocksItem;
-  turnover?: TurnoverRow;
-};
-
-/**
- * Нормализует primary_image: с 2026-05 Ozon отдаёт массив URL.
- * Старый формат — строка. Возвращаем массив без пустых строк.
- */
-function normalizePrimaryImage(value: string | string[] | undefined): string[] {
-  if (!value) return [];
-  if (Array.isArray(value)) return value.filter((s) => typeof s === 'string' && s.length > 0);
-  return [value];
-}
 
 /**
  * Upsert одного товара. Идентификатор: (tenant_id, marketplace, article).
@@ -101,45 +50,23 @@ function normalizePrimaryImage(value: string | string[] | undefined): string[] {
  * раздувать схему unit_products.
  *
  * Возвращает true если запись upsert'нулась, false если skip (нет ключей).
+ *
+ * КРИТИЧЕСКОЕ ПРАВИЛО ИДЕМПОТЕНТНОСТИ:
+ * Стейджи sync вызывают эту функцию с **частичным** payload — `products` без
+ * prices/stocks, `prices` без dimensions, `stocks` без prices/dimensions.
+ * Если бы мы всегда писали все поля, поздние стейджи затирали бы данные
+ * ранних (например stocks-стейдж обнулял бы priceKopecks и volumeL).
+ * Поэтому в `onConflictDoUpdate.set` каждое поле обновляется только тогда,
+ * когда соответствующий payload фактически передан — иначе fallback на
+ * текущее значение в БД через `sql\`unit_products.x\``.
  */
 export async function upsertUnitProductFromOzon(
   ctx: UpsertContext,
   payload: CombinedProduct,
 ): Promise<boolean> {
-  const { info, prices, stocks, turnover } = payload;
-  // Skip без обязательных полей — у нас не на что мапить запись.
-  if (!info.id || !info.offer_id) return false;
-
-  const dims = parseDimensions(info);
-  const priceRub = parseMoneyRu(prices?.price?.price);
-  const priceWithSppRub = parseMoneyRu(prices?.price?.marketing_seller_price);
-  const stockMarketplace = (stocks?.stocks ?? [])
-    .filter((s) => s.type === 'fbo')
-    .reduce((sum, s) => sum + (s.present ?? 0), 0);
-  const stockOwn = (stocks?.stocks ?? [])
-    .filter((s) => s.type === 'fbs' || s.type === 'crossborder')
-    .reduce((sum, s) => sum + (s.present ?? 0), 0);
-
-  const primaryImages = normalizePrimaryImage(info.primary_image);
-  const images = info.images && info.images.length > 0 ? info.images : primaryImages;
-
-  const metadata = {
-    productId: info.id,
-    images,
-    primaryImage: primaryImages[0] ?? null,
-    weightG: dims.weightG,
-    dimensionsMm: dims.dimsMm,
-    priceWithSpp: priceWithSppRub,
-    commissions: {
-      fboPct: prices?.commissions?.sales_percent_fbo ?? null,
-      fbsPct: prices?.commissions?.sales_percent_fbs ?? null,
-      fboFulfillmentRub: prices?.commissions?.fbo_fulfillment_amount ?? null,
-    },
-    turnoverIdc: turnover?.idc ?? null,
-    turnoverDays: turnover?.turnover ?? null,
-    stockByType: stocks?.stocks ?? [],
-    syncedAt: new Date().toISOString(),
-  };
+  const plan = planUnitProductUpsertFromOzon(payload);
+  if (!plan) return false;
+  const { info } = payload;
 
   await db
     .insert(unitProducts)
@@ -147,36 +74,52 @@ export async function upsertUnitProductFromOzon(
       tenantId: ctx.tenantId,
       userId: ctx.userId,
       marketplace: 'ozon',
-      article: info.offer_id,
-      sku: String(info.id),
+      article: plan.insert.article,
+      sku: plan.insert.sku,
       barcode: info.barcode ?? info.barcodes?.[0] ?? null,
-      name: info.name ?? info.offer_id,
+      name: plan.insert.name,
       status: info.status?.state ?? null,
-      visibility: info.visible === false ? 'hidden' : 'visible',
-      stockMarketplace,
-      stockOwn,
-      priceKopecks: rublesToKopecks(priceRub),
+      visibility: plan.insert.visibility,
+      stockMarketplace: plan.insert.stockMarketplace,
+      stockOwn: plan.insert.stockOwn,
+      priceKopecks: plan.insert.priceKopecks,
       // costKopecks НЕ перезаписываем (себестоимость задаёт пользователь).
       // Если запись новая — будет 0; для существующей сохраним прежнее.
-      volumeL: dims.volumeLx100,
+      volumeL: plan.insert.volumeL,
       marketplaceAccountId: ctx.accountId,
-      metadata,
+      metadata: plan.metadataDelta,
     })
     .onConflictDoUpdate({
       target: [unitProducts.tenantId, unitProducts.marketplace, unitProducts.article],
       set: {
-        sku: String(info.id),
+        sku: plan.insert.sku,
         barcode: info.barcode ?? info.barcodes?.[0] ?? sql`unit_products.barcode`,
         name: info.name ?? sql`unit_products.name`,
         status: info.status?.state ?? sql`unit_products.status`,
-        visibility: info.visible === false ? 'hidden' : 'visible',
-        stockMarketplace,
-        stockOwn,
-        priceKopecks: rublesToKopecks(priceRub),
-        volumeL: dims.volumeLx100,
+        visibility:
+          plan.updates.visibility === 'fresh'
+            ? plan.insert.visibility
+            : sql`unit_products.visibility`,
+        stockMarketplace:
+          plan.updates.stockMarketplace === 'fresh'
+            ? plan.insert.stockMarketplace
+            : sql`unit_products.stock_marketplace`,
+        stockOwn:
+          plan.updates.stockOwn === 'fresh'
+            ? plan.insert.stockOwn
+            : sql`unit_products.stock_own`,
+        priceKopecks:
+          plan.updates.priceKopecks === 'fresh'
+            ? plan.insert.priceKopecks
+            : sql`unit_products.price_kopecks`,
+        volumeL:
+          plan.updates.volumeL === 'fresh'
+            ? plan.insert.volumeL
+            : sql`unit_products.volume_l_x100`,
         marketplaceAccountId: ctx.accountId,
-        // metadata мерджим с существующим, чтобы не затирать кастомные поля
-        metadata: sql`unit_products.metadata || ${JSON.stringify(metadata)}::jsonb`,
+        // metadata мерджим с существующим — JSONB `||` обновит только ключи
+        // верхнего уровня которые присутствуют в delta.
+        metadata: sql`unit_products.metadata || ${JSON.stringify(plan.metadataDelta)}::jsonb`,
         updatedAt: new Date(),
       },
     });

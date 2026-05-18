@@ -71,6 +71,16 @@ const TYPE_LABELS: Record<string, { label: string; category: string }> = {
   'ai.micro-agent': { label: 'AI агент', category: 'AI' },
   'unit.ozon-calculator': { label: 'Ozon · калькулятор', category: 'Юнит-экономика' },
   'unit.ozon-multi-table': { label: 'Ozon · юнит-таблица', category: 'Юнит-экономика' },
+  'unit.ozon-analytics': { label: 'Ozon · аналитика', category: 'Юнит-экономика' },
+  'unit.ozon-kpi': { label: 'Ozon · KPI', category: 'Маркетплейсы' },
+  'unit.ozon-chart': { label: 'Ozon · Динамика', category: 'Маркетплейсы' },
+  'unit.ozon-top-ads': { label: 'Ozon · Топ рекламы', category: 'Маркетплейсы' },
+  'unit.ozon-stock-clusters': { label: 'Ozon · Остатки по складам', category: 'Маркетплейсы' },
+  'unit.ozon-search-phrases': { label: 'Ozon · Поисковые фразы', category: 'Маркетплейсы' },
+  'unit.ozon-campaigns': { label: 'Ozon · Кампании', category: 'Маркетплейсы' },
+  'unit.ozon-data-health': { label: 'Ozon · Состояние данных', category: 'Маркетплейсы' },
+  'unit.ozon-abc': { label: 'Ozon · ABC-анализ', category: 'Маркетплейсы' },
+  'unit.ozon-ai-insights': { label: 'Ozon · AI инсайты', category: 'AI' },
   'unit.yandex-calculator': { label: 'Яндекс · калькулятор', category: 'Юнит-экономика' },
   'unit.my-store-table': { label: 'Мой магазин · таблица', category: 'Юнит-экономика' },
   'currency.rates': { label: 'Курсы валют', category: 'Финансы' },
@@ -439,6 +449,84 @@ async function fieldsForBlock(
       { name: 'avgRoi', label: 'Средний ROI', value: null, format: 'number' },
       { name: 'profitableCount', label: 'Прибыльных', value: null, format: 'number' },
       { name: 'lossCount', label: 'Убыточных', value: null, format: 'number' },
+    ];
+  }
+  if (block.type === 'unit.ozon-analytics') {
+    // Live-аналитика грузится клиентом из /api/marketplaces/analytics/ozon.
+    // В sources фиксируем только метки полей для cross-block picker'а.
+    return [
+      { name: 'value', label: 'Выручка / период', value: null, format: 'money' },
+      { name: 'revenue', label: 'Выручка / период', value: null, format: 'money' },
+      { name: 'ads', label: 'Реклама / период', value: null, format: 'money' },
+      { name: 'drr', label: 'ДРР %', value: null, format: 'number' },
+      { name: 'orders', label: 'Заказы / период', value: null, format: 'number' },
+      { name: 'productsWithSales', label: 'Товары с продажами', value: null, format: 'number' },
+    ];
+  }
+  if (block.type === 'unit.ozon-kpi') {
+    return [
+      { name: 'value', label: 'Выручка / период', value: null, format: 'money' },
+      { name: 'revenue', label: 'Выручка / период', value: null, format: 'money' },
+      { name: 'orders', label: 'Заказы / период', value: null, format: 'number' },
+      { name: 'ads', label: 'Расход на рекламу', value: null, format: 'money' },
+      { name: 'drr', label: 'ДРР %', value: null, format: 'number' },
+      { name: 'aov', label: 'Средний чек', value: null, format: 'money' },
+      { name: 'cpo', label: 'Средний CPO', value: null, format: 'money' },
+    ];
+  }
+  if (block.type === 'unit.ozon-chart') {
+    return [
+      { name: 'value', label: 'Сумма выручки', value: null, format: 'money' },
+      { name: 'totalRevenue', label: 'Сумма выручки', value: null, format: 'money' },
+      { name: 'totalAds', label: 'Сумма расхода', value: null, format: 'money' },
+    ];
+  }
+  if (block.type === 'unit.ozon-top-ads') {
+    return [
+      { name: 'value', label: 'Топ-N товаров', value: null, format: 'number' },
+      { name: 'totalAds', label: 'Расход всего', value: null, format: 'money' },
+      { name: 'avgDrr', label: 'Средний ДРР %', value: null, format: 'number' },
+    ];
+  }
+  if (block.type === 'unit.ozon-stock-clusters') {
+    return [
+      { name: 'value', label: 'Складов', value: null, format: 'number' },
+      { name: 'totalStock', label: 'Сумма остатков', value: null, format: 'number' },
+    ];
+  }
+  if (block.type === 'unit.ozon-search-phrases') {
+    return [
+      { name: 'value', label: 'Фраз', value: null, format: 'number' },
+      { name: 'totalExpense', label: 'Расход всего', value: null, format: 'money' },
+      { name: 'totalOrders', label: 'Заказы', value: null, format: 'number' },
+    ];
+  }
+  if (block.type === 'unit.ozon-campaigns') {
+    return [
+      { name: 'value', label: 'Кампаний', value: null, format: 'number' },
+      { name: 'runningCount', label: 'Активных', value: null, format: 'number' },
+      { name: 'totalExpense', label: 'Расход всего', value: null, format: 'money' },
+    ];
+  }
+  if (block.type === 'unit.ozon-data-health') {
+    return [
+      { name: 'value', label: 'Статус', value: null, format: 'text' },
+      { name: 'lastSyncAt', label: 'Последний sync', value: null, format: 'text' },
+      { name: 'perfConnected', label: 'Performance API', value: null, format: 'text' },
+    ];
+  }
+  if (block.type === 'unit.ozon-abc') {
+    return [
+      { name: 'value', label: 'Группа A (SKU)', value: null, format: 'number' },
+      { name: 'aRevenue', label: 'Выручка группы A', value: null, format: 'money' },
+      { name: 'bRevenue', label: 'Выручка группы B', value: null, format: 'money' },
+      { name: 'cRevenue', label: 'Выручка группы C', value: null, format: 'money' },
+    ];
+  }
+  if (block.type === 'unit.ozon-ai-insights') {
+    return [
+      { name: 'value', label: 'Инсайтов', value: null, format: 'number' },
+      { name: 'criticalCount', label: 'Критических', value: null, format: 'number' },
     ];
   }
   if (block.type === 'unit.my-store-table') {

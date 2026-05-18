@@ -61,6 +61,13 @@ type AccountPublic = {
   name: string;
   clientId: string;
   apiKeyMasked: string;
+  /** Performance API подключён (есть и client_id, и secret). */
+  perfConnected: boolean;
+  perfClientId: string | null;
+  perfSecretMasked: string | null;
+  perfStatus: string | null;
+  perfLastSyncAt: string | null;
+  perfLastSyncError: string | null;
   status: 'active' | 'error' | 'disabled';
   syncSettings: OzonSyncSettings;
   companyInfo: Record<string, unknown>;
@@ -116,6 +123,18 @@ const STAGE_LABELS: Record<OzonStageKind, { title: string; hint: string }> = {
   transactions: {
     title: 'Транзакции',
     hint: 'Детальные финансовые операции (для аналитики)',
+  },
+  perfCampaigns: {
+    title: 'Рекламные кампании (Performance API)',
+    hint: 'Список кампаний, бюджеты, статусы',
+  },
+  perfSkuStats: {
+    title: 'Статистика рекламы по товарам (Performance API)',
+    hint: 'Показы, клики, заказы, расход, CTR/CPC/CPO',
+  },
+  perfPhrases: {
+    title: 'Поисковые фразы (Performance API)',
+    hint: 'Расход и заказы по поисковым запросам',
   },
   turnover: {
     title: 'Оборачиваемость',
@@ -258,6 +277,9 @@ function AccountCard({
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
   const [showEditKey, setShowEditKey] = useState(false);
+  const [showEditPerf, setShowEditPerf] = useState(false);
+  const [testingPerf, setTestingPerf] = useState(false);
+  const [perfTestResult, setPerfTestResult] = useState<{ ok: boolean; message: string } | null>(null);
 
   // Apply server's syncSettings if account refreshes.
   useEffect(() => {
@@ -496,7 +518,7 @@ function AccountCard({
         <div className="space-y-4 p-3">
           <section>
             <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Авторизация
+              Авторизация · Seller API
             </div>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               <div>
@@ -517,6 +539,108 @@ function AccountCard({
                 </div>
               </div>
             </div>
+          </section>
+
+          <section>
+            <div className="mb-2 flex items-center justify-between">
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Авторизация · Performance API (реклама)
+              </div>
+              {account.perfConnected ? (
+                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
+                  <Check className="h-2.5 w-2.5" />
+                  Подключено
+                </span>
+              ) : (
+                <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
+                  Не подключено
+                </span>
+              )}
+            </div>
+            {account.perfConnected ? (
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <div>
+                  <Label className="text-[11px] text-muted-foreground">Client ID</Label>
+                  <Input
+                    value={account.perfClientId ?? ''}
+                    readOnly
+                    className="h-8 font-mono text-xs"
+                  />
+                </div>
+                <div>
+                  <Label className="text-[11px] text-muted-foreground">Client Secret</Label>
+                  <div className="flex items-center gap-1.5">
+                    <Input
+                      value={account.perfSecretMasked ?? '••••••••'}
+                      readOnly
+                      className="h-8 font-mono text-xs"
+                    />
+                    <Button size="sm" variant="outline" onClick={() => setShowEditPerf(true)}>
+                      Изменить
+                    </Button>
+                  </div>
+                </div>
+                <div className="sm:col-span-2 flex flex-wrap items-center gap-2 pt-1">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={testingPerf}
+                    onClick={async () => {
+                      setTestingPerf(true);
+                      setPerfTestResult(null);
+                      try {
+                        const res = await fetch(
+                          `/api/marketplaces/accounts/${account.id}/test-perf`,
+                          { method: 'POST' },
+                        );
+                        const data = await res.json();
+                        setPerfTestResult({
+                          ok: Boolean(data.ok),
+                          message: data.ok
+                            ? `Токен получен. TTL ~${data.expiresIn ?? '?'} сек.`
+                            : data.error ?? 'Тест не удался',
+                        });
+                      } catch (e) {
+                        setPerfTestResult({
+                          ok: false,
+                          message: e instanceof Error ? e.message : 'Network error',
+                        });
+                      } finally {
+                        setTestingPerf(false);
+                      }
+                    }}
+                  >
+                    {testingPerf && <Loader2 className="animate-spin" />}
+                    Тест Performance
+                  </Button>
+                  {account.perfLastSyncAt && (
+                    <span className="text-[10px] text-muted-foreground">
+                      Последний perf-sync: {new Date(account.perfLastSyncAt).toLocaleString('ru-RU')}
+                    </span>
+                  )}
+                  {perfTestResult && (
+                    <span
+                      className={
+                        'text-[10px] ' +
+                        (perfTestResult.ok ? 'text-emerald-700' : 'text-red-700')
+                      }
+                    >
+                      {perfTestResult.message}
+                    </span>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between rounded-md border border-dashed border-border/60 p-3">
+                <div className="text-[11px] text-muted-foreground">
+                  Подключите Performance API, чтобы получить рекламную аналитику
+                  (CTR/CPC/CPO, поисковые фразы, кампании).
+                </div>
+                <Button size="sm" variant="outline" onClick={() => setShowEditPerf(true)}>
+                  Подключить
+                </Button>
+              </div>
+            )}
           </section>
 
           <section>
@@ -688,6 +812,18 @@ function AccountCard({
           }}
         />
       )}
+
+      {showEditPerf && (
+        <EditPerfApiDialog
+          accountId={account.id}
+          currentClientId={account.perfClientId}
+          onClose={() => setShowEditPerf(false)}
+          onSaved={() => {
+            setShowEditPerf(false);
+            onChange();
+          }}
+        />
+      )}
     </Card>
   );
 }
@@ -841,6 +977,9 @@ function CreateAccountDialog({
   const [name, setName] = useState('Главный магазин');
   const [clientId, setClientId] = useState('');
   const [apiKey, setApiKey] = useState('');
+  const [showPerf, setShowPerf] = useState(false);
+  const [perfClientId, setPerfClientId] = useState('');
+  const [perfSecret, setPerfSecret] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -848,15 +987,20 @@ function CreateAccountDialog({
     setSubmitting(true);
     setError(null);
     try {
+      const body: Record<string, unknown> = {
+        marketplace: 'ozon',
+        name,
+        clientId: clientId.trim(),
+        apiKey: apiKey.trim(),
+      };
+      if (showPerf && perfClientId.trim() && perfSecret.trim()) {
+        body.perfClientId = perfClientId.trim();
+        body.perfClientSecret = perfSecret.trim();
+      }
       const res = await fetch('/api/marketplaces/accounts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          marketplace: 'ozon',
-          name,
-          clientId: clientId.trim(),
-          apiKey: apiKey.trim(),
-        }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (data.ok) {
@@ -892,7 +1036,7 @@ function CreateAccountDialog({
             />
           </div>
           <div>
-            <Label>Client-Id</Label>
+            <Label>Client-Id (Seller)</Label>
             <Input
               value={clientId}
               onChange={(e) => setClientId(e.target.value)}
@@ -901,7 +1045,7 @@ function CreateAccountDialog({
             />
           </div>
           <div>
-            <Label>Api-Key</Label>
+            <Label>Api-Key (Seller)</Label>
             <Input
               type="password"
               value={apiKey}
@@ -910,6 +1054,54 @@ function CreateAccountDialog({
               className="font-mono"
             />
           </div>
+
+          <div className="rounded-md border border-border/60 bg-muted/30 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <div className="text-sm font-medium">Performance API</div>
+                <div className="text-[11px] text-muted-foreground">
+                  Опционально — для рекламной аналитики (CTR/CPC/CPO/расход).
+                </div>
+              </div>
+              <Switch checked={showPerf} onCheckedChange={setShowPerf} />
+            </div>
+            {showPerf && (
+              <div className="mt-3 space-y-2.5">
+                <a
+                  href="https://seller.ozon.ru/app/settings/api-keys"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
+                >
+                  Создать Performance API ключ →
+                </a>
+                <div>
+                  <Label className="text-[11px]">Client ID (Performance)</Label>
+                  <Input
+                    value={perfClientId}
+                    onChange={(e) => setPerfClientId(e.target.value)}
+                    placeholder="12345-67890"
+                    className="h-8 font-mono text-xs"
+                  />
+                </div>
+                <div>
+                  <Label className="text-[11px]">Client Secret (Performance)</Label>
+                  <Input
+                    type="password"
+                    value={perfSecret}
+                    onChange={(e) => setPerfSecret(e.target.value)}
+                    placeholder="••••••••••••"
+                    className="h-8 font-mono text-xs"
+                  />
+                </div>
+                <div className="text-[10px] text-muted-foreground">
+                  Креды можно добавить позже. Без них блоки аналитики
+                  работают, но без рекламной части.
+                </div>
+              </div>
+            )}
+          </div>
+
           {error && (
             <Alert className="text-xs">
               <AlertDescription className="text-red-700 dark:text-red-300">
@@ -1002,6 +1194,135 @@ function EditApiKeyDialog({
             {saving && <Loader2 className="animate-spin" />}
             Сохранить
           </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * Диалог для редактирования Performance API кредов отдельно от Seller.
+ * Можно: задать новый client_id+secret, заменить secret, отключить совсем.
+ */
+function EditPerfApiDialog({
+  accountId,
+  currentClientId,
+  onClose,
+  onSaved,
+}: {
+  accountId: string;
+  currentClientId: string | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [perfClientId, setPerfClientId] = useState(currentClientId ?? '');
+  const [perfSecret, setPerfSecret] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit() {
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/marketplaces/accounts/${accountId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          perfClientId: perfClientId.trim(),
+          perfClientSecret: perfSecret.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (data.ok) onSaved();
+      else setError(data.error ?? 'Не удалось сохранить креды');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Network error');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function disconnect() {
+    if (!confirm('Отключить Performance API? Все рекламные данные останутся в БД до следующего sync.'))
+      return;
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/marketplaces/accounts/${accountId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ perfClientId: null, perfClientSecret: null }),
+      });
+      const data = await res.json();
+      if (data.ok) onSaved();
+      else setError(data.error ?? 'Не удалось отключить');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Network error');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Performance API</DialogTitle>
+          <DialogDescription>
+            Креды для рекламной аналитики Ozon (CTR/CPC/CPO/расход).
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <a
+            href="https://seller.ozon.ru/app/settings/api-keys"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
+          >
+            Создать Performance API ключ в ЛК Ozon →
+          </a>
+          <div>
+            <Label className="text-[11px]">Client ID</Label>
+            <Input
+              value={perfClientId}
+              onChange={(e) => setPerfClientId(e.target.value)}
+              placeholder="12345-67890"
+              className="h-8 font-mono text-xs"
+            />
+          </div>
+          <div>
+            <Label className="text-[11px]">Client Secret (новый)</Label>
+            <Input
+              type="password"
+              value={perfSecret}
+              onChange={(e) => setPerfSecret(e.target.value)}
+              placeholder="••••••••••••"
+              className="h-8 font-mono text-xs"
+            />
+          </div>
+          {error && (
+            <Alert className="text-xs">
+              <AlertDescription className="text-red-700 dark:text-red-300">
+                {error}
+              </AlertDescription>
+            </Alert>
+          )}
+        </div>
+        <DialogFooter className="flex items-center justify-between gap-2">
+          <Button variant="outline" onClick={disconnect} disabled={saving || !currentClientId}>
+            Отключить
+          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={onClose}>
+              Отмена
+            </Button>
+            <Button
+              onClick={submit}
+              disabled={!perfClientId.trim() || perfSecret.length < 8 || saving}
+            >
+              {saving && <Loader2 className="animate-spin" />}
+              Сохранить
+            </Button>
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>

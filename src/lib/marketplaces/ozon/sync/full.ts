@@ -8,13 +8,16 @@
 
 import {
   decryptAccountApiKey,
+  decryptAccountPerfSecret,
   finishSyncJob,
   getAccount,
   setSyncJobRunning,
   updateAccountLastSync,
+  updateAccountPerfStatus,
   updateSyncJobStage,
 } from '@/lib/marketplaces/queries';
 import { OzonClient } from '../client';
+import { OzonPerformanceClient } from '../performance/client';
 import { syncProductsStage } from './products';
 import { syncPricesStage } from './prices';
 import { syncStocksStage } from './stocks';
@@ -22,6 +25,9 @@ import { syncOrdersStage } from './orders';
 import { syncRealizationStage } from './realization';
 import { syncTransactionsStage } from './transactions';
 import { syncTurnoverStage } from './turnover';
+import { syncPerfCampaignsStage } from './perf-campaigns';
+import { syncPerfSkuStatsStage } from './perf-sku-stats';
+import { syncPerfPhrasesStage } from './perf-phrases';
 import type { StageContext, StageResult } from './types';
 import {
   OZON_FULL_STAGES,
@@ -41,7 +47,16 @@ const STAGE_RUNNERS: Record<OzonStageKind, (ctx: StageContext) => Promise<StageR
   realization: syncRealizationStage,
   transactions: syncTransactionsStage,
   turnover: syncTurnoverStage,
+  perfCampaigns: syncPerfCampaignsStage,
+  perfSkuStats: syncPerfSkuStatsStage,
+  perfPhrases: syncPerfPhrasesStage,
 };
+
+const PERF_STAGES: ReadonlySet<OzonStageKind> = new Set([
+  'perfCampaigns',
+  'perfSkuStats',
+  'perfPhrases',
+]);
 
 export type RunFullSyncArgs = {
   tenantId: string;
@@ -67,6 +82,17 @@ export async function runFullSync(args: RunFullSyncArgs): Promise<void> {
   const client = new OzonClient({ clientId: account.clientId, apiKey });
   const settings = { ...DEFAULT_OZON_SYNC_SETTINGS, ...(account.syncSettings ?? {}) };
 
+  // Опционально готовим Performance API клиент (если перф-креды есть).
+  let perfClient: OzonPerformanceClient | null = null;
+  const perfSecret = decryptAccountPerfSecret(account);
+  if (account.perfClientId && perfSecret) {
+    perfClient = new OzonPerformanceClient({
+      accountId: account.id,
+      clientId: account.perfClientId,
+      clientSecret: perfSecret,
+    });
+  }
+
   await setSyncJobRunning(args.jobId);
 
   const baseCtx = {
@@ -79,6 +105,8 @@ export async function runFullSync(args: RunFullSyncArgs): Promise<void> {
   let totalProcessed = 0;
   let anyFailure = false;
   let anySuccess = false;
+  let perfStageSucceeded = false;
+  let perfStageFailedMessage: string | null = null;
 
   const stagesToRun = args.onlyStage
     ? ([args.onlyStage] as OzonStageKind[])
@@ -86,12 +114,16 @@ export async function runFullSync(args: RunFullSyncArgs): Promise<void> {
 
   for (const stage of stagesToRun) {
     const enabled = (settings as Record<string, unknown>)[stage] !== false;
-    if (!enabled) {
+    const isPerfStage = PERF_STAGES.has(stage);
+    const skipPerfNoCreds = isPerfStage && !perfClient;
+
+    if (!enabled || skipPerfNoCreds) {
       const state: SyncStageState = {
         status: 'skipped',
         startedAt: new Date().toISOString(),
         finishedAt: new Date().toISOString(),
         durationMs: 0,
+        error: skipPerfNoCreds ? 'Performance API креды не подключены' : undefined,
       };
       await updateSyncJobStage({ jobId: args.jobId, stage, state });
       continue;
@@ -103,8 +135,14 @@ export async function runFullSync(args: RunFullSyncArgs): Promise<void> {
     };
     await updateSyncJobStage({ jobId: args.jobId, stage, state: runningState });
 
-    const result = await STAGE_RUNNERS[stage]({ ...baseCtx, client, settings });
+    const result = await STAGE_RUNNERS[stage]({ ...baseCtx, client, perfClient, settings });
     totalProcessed += result.itemsProcessed;
+
+    if (isPerfStage) {
+      if (result.ok) perfStageSucceeded = true;
+      else if (!perfStageFailedMessage)
+        perfStageFailedMessage = result.error ?? 'Performance API stage error';
+    }
 
     if (!result.ok) {
       anyFailure = true;
@@ -158,4 +196,15 @@ export async function runFullSync(args: RunFullSyncArgs): Promise<void> {
       totalErrors: errors.length,
     },
   });
+
+  // Отдельный perf-статус (UI его показывает в карточке аккаунта).
+  if (perfClient) {
+    await updateAccountPerfStatus({
+      tenantId: args.tenantId,
+      id: args.accountId,
+      status: perfStageSucceeded && !perfStageFailedMessage ? 'active' : 'error',
+      error: perfStageFailedMessage,
+      lastSyncAt: perfStageSucceeded ? new Date() : null,
+    });
+  }
 }

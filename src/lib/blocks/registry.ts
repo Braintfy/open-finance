@@ -18,6 +18,16 @@ import { AiMicroAgentBlock } from './catalog/ai-micro-agent';
 import { InboxChannelFeedBlock } from './catalog/inbox-channel-feed';
 import { UnitOzonCalculatorBlock } from './catalog/unit-ozon-calculator';
 import { UnitOzonMultiTableBlock } from './catalog/unit-ozon-multi-table';
+import { UnitOzonAnalyticsBlock } from './catalog/unit-ozon-analytics';
+import { UnitOzonKpiBlock } from './catalog/unit-ozon-kpi';
+import { UnitOzonChartBlock } from './catalog/unit-ozon-chart';
+import { UnitOzonTopAdsBlock } from './catalog/unit-ozon-top-ads';
+import { UnitOzonStockClustersBlock } from './catalog/unit-ozon-stock-clusters';
+import { UnitOzonSearchPhrasesBlock } from './catalog/unit-ozon-search-phrases';
+import { UnitOzonCampaignsBlock } from './catalog/unit-ozon-campaigns';
+import { UnitOzonDataHealthBlock } from './catalog/unit-ozon-data-health';
+import { UnitOzonAbcBlock } from './catalog/unit-ozon-abc';
+import { UnitOzonAiInsightsBlock } from './catalog/unit-ozon-ai-insights';
 import { UnitYandexCalculatorBlock } from './catalog/unit-yandex-calculator';
 import { UnitMyStoreTableBlock } from './catalog/unit-my-store-table';
 import { CurrencyRatesBlock } from './catalog/currency-rates';
@@ -91,6 +101,56 @@ const BLOCK_META: Record<
     recommendedFor: ['unit-economics-ozon-multi'],
     iconName: 'Table',
   },
+  'unit.ozon-analytics': {
+    tags: ['marketplace', 'analytics', 'ozon', 'tables'],
+    recommendedFor: ['unit-economics-ozon-multi', 'marketplaces-ozon-dashboard', 'dashboard'],
+    iconName: 'BarChart3',
+  },
+  'unit.ozon-kpi': {
+    tags: ['marketplace', 'analytics', 'ozon', 'kpi'],
+    recommendedFor: ['marketplaces-ozon-dashboard', 'dashboard'],
+    iconName: 'Activity',
+  },
+  'unit.ozon-chart': {
+    tags: ['marketplace', 'analytics', 'ozon', 'charts'],
+    recommendedFor: ['marketplaces-ozon-dashboard', 'dashboard'],
+    iconName: 'LineChart',
+  },
+  'unit.ozon-top-ads': {
+    tags: ['marketplace', 'analytics', 'ozon', 'ads', 'performance'],
+    recommendedFor: ['marketplaces-ozon-dashboard'],
+    iconName: 'Megaphone',
+  },
+  'unit.ozon-stock-clusters': {
+    tags: ['marketplace', 'analytics', 'ozon', 'inventory'],
+    recommendedFor: ['marketplaces-ozon-dashboard'],
+    iconName: 'Warehouse',
+  },
+  'unit.ozon-search-phrases': {
+    tags: ['marketplace', 'analytics', 'ozon', 'ads', 'performance'],
+    recommendedFor: ['marketplaces-ozon-dashboard'],
+    iconName: 'Search',
+  },
+  'unit.ozon-campaigns': {
+    tags: ['marketplace', 'analytics', 'ozon', 'ads', 'performance'],
+    recommendedFor: ['marketplaces-ozon-dashboard'],
+    iconName: 'Megaphone',
+  },
+  'unit.ozon-data-health': {
+    tags: ['marketplace', 'ozon', 'health', 'status'],
+    recommendedFor: ['marketplaces-ozon-dashboard'],
+    iconName: 'Activity',
+  },
+  'unit.ozon-abc': {
+    tags: ['marketplace', 'analytics', 'ozon', 'abc'],
+    recommendedFor: ['marketplaces-ozon-dashboard'],
+    iconName: 'PieChart',
+  },
+  'unit.ozon-ai-insights': {
+    tags: ['marketplace', 'analytics', 'ozon', 'ai'],
+    recommendedFor: ['marketplaces-ozon-dashboard'],
+    iconName: 'Sparkles',
+  },
   'unit.yandex-calculator': {
     tags: ['marketplace', 'unit-economics', 'yandex'],
     recommendedFor: ['unit-economics-yandex'],
@@ -137,6 +197,16 @@ const ALL_BLOCKS: BlockDef[] = [
   InboxChannelFeedBlock,
   UnitOzonCalculatorBlock,
   UnitOzonMultiTableBlock,
+  UnitOzonAnalyticsBlock,
+  UnitOzonKpiBlock,
+  UnitOzonChartBlock,
+  UnitOzonTopAdsBlock,
+  UnitOzonStockClustersBlock,
+  UnitOzonSearchPhrasesBlock,
+  UnitOzonCampaignsBlock,
+  UnitOzonDataHealthBlock,
+  UnitOzonAbcBlock,
+  UnitOzonAiInsightsBlock,
   UnitYandexCalculatorBlock,
   UnitMyStoreTableBlock,
   CurrencyRatesBlock,
@@ -311,6 +381,22 @@ export const DEFAULT_LAYOUTS: Record<string, PageLayout> = {
         w: 12,
         h: 12,
       },
+    ],
+    hiddenSections: [],
+  },
+  'marketplaces-ozon-dashboard': {
+    pageKey: 'marketplaces-ozon-dashboard',
+    blocks: [
+      { id: 'mp-ozon-kpi', type: 'unit.ozon-kpi', x: 0, y: 0, w: 12, h: 4 },
+      { id: 'mp-ozon-chart', type: 'unit.ozon-chart', x: 0, y: 4, w: 12, h: 6 },
+      { id: 'mp-ozon-analytics', type: 'unit.ozon-analytics', x: 0, y: 10, w: 12, h: 10 },
+      { id: 'mp-ozon-top-ads', type: 'unit.ozon-top-ads', x: 0, y: 20, w: 8, h: 6 },
+      { id: 'mp-ozon-data-health', type: 'unit.ozon-data-health', x: 8, y: 20, w: 4, h: 6 },
+      { id: 'mp-ozon-campaigns', type: 'unit.ozon-campaigns', x: 0, y: 26, w: 6, h: 6 },
+      { id: 'mp-ozon-search-phrases', type: 'unit.ozon-search-phrases', x: 6, y: 26, w: 6, h: 6 },
+      { id: 'mp-ozon-stock-clusters', type: 'unit.ozon-stock-clusters', x: 0, y: 32, w: 6, h: 5 },
+      { id: 'mp-ozon-abc', type: 'unit.ozon-abc', x: 6, y: 32, w: 6, h: 7 },
+      { id: 'mp-ozon-ai-insights', type: 'unit.ozon-ai-insights', x: 0, y: 39, w: 6, h: 6 },
     ],
     hiddenSections: [],
   },

@@ -50,7 +50,9 @@ export async function GET(req: NextRequest) {
     // Агрегаты из ozon_orders. Группируем по offer_id (lateral) — в items
     // JSONB лежат массивы; раскрываем через jsonb_array_elements.
     // НИЖЕ: явный tenant_id фильтр в обоих местах — обязательное правило.
-    const since30 = new Date(Date.now() - 30 * 24 * 3600 * 1000);
+    // postgres.js не сериализует Date в raw sql-template'ах — передаём ISO-строки.
+    const since30Iso = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+    const since90Iso = new Date(Date.now() - 90 * 24 * 3600 * 1000).toISOString();
     const accountConds = accountId
       ? sql`AND o.account_id = ${accountId}`
       : sql``;
@@ -77,11 +79,11 @@ export async function GET(req: NextRequest) {
         CROSS JOIN LATERAL jsonb_array_elements(o.items) AS it
         WHERE o.tenant_id = ${session.tenantId}
           ${accountConds}
-          AND o.order_created_at >= ${new Date(Date.now() - 90 * 24 * 3600 * 1000)}
+          AND o.order_created_at >= ${since90Iso}::timestamp
       )
       SELECT
         offer_id,
-        COUNT(*) FILTER (WHERE status = 'delivered' AND order_created_at >= ${since30}) AS delivered_30d,
+        COUNT(*) FILTER (WHERE status = 'delivered' AND order_created_at >= ${since30Iso}::timestamp) AS delivered_30d,
         COUNT(*) FILTER (WHERE status = 'delivered') AS delivered_90d,
         COUNT(*) FILTER (WHERE cancelled_at IS NOT NULL) AS cancelled_90d,
         COUNT(*) FILTER (WHERE returned_at IS NOT NULL) AS returned_90d

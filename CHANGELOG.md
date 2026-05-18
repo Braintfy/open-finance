@@ -1,5 +1,169 @@
 # Changelog
 
+## [0.18.1] - 2026-05-18
+
+Hotfix Ozon-аналитики: SQL-запросы возвращали 500 из-за того, что `postgres.js` не сериализует `Date` в raw `sql\`...\``-template'ах.
+
+### Исправлено
+
+- **`TypeError: The "string" argument must be of type string or an instance of Buffer or ArrayBuffer. Received an instance of Date`** — все routes Ozon-аналитики, принимающие `from`/`to`, теперь конвертируют `Date → ISO-строку` перед интерполяцией в `db.execute(sql\`...\`)` и кастят явно `::timestamp` / `::date` в SQL:
+  - `src/app/api/marketplaces/ozon/kpi/route.ts`
+  - `src/app/api/marketplaces/ozon/timeseries/route.ts`
+  - `src/app/api/marketplaces/ozon/top-ads/route.ts`
+  - `src/app/api/marketplaces/ozon/abc/route.ts`
+  - `src/app/api/marketplaces/ozon/campaigns/route.ts`
+  - `src/app/api/marketplaces/ozon/search-phrases/route.ts`
+  - `src/app/api/marketplaces/analytics/ozon/route.ts`
+  - `src/app/api/unit-economics/products/route.ts` (превентивно — там был тот же паттерн с 30/90-дневным окном).
+- Все эндпоинты теперь возвращают `400 Invalid date` вместо падения, если `from`/`to` не парсится.
+
+### Изменено
+
+- Раздел в sidebar и заголовок страницы `/marketplaces/ozon`: **«Ozon · Аналитика» → «Аналитика»** (`src/app/(app)/layout.tsx`, `src/app/(app)/marketplaces/ozon/marketplaces-ozon-client.tsx`). Блоки в каталоге сохраняют свои имена (`Ozon · KPI`, `Ozon · Аналитика` и т.д.) — это namespace в маркете блоков.
+
+### Audit
+
+- `pnpm typecheck`, `pnpm build`, `pnpm lint` — чисто.
+- `scripts/test-ozon-upsert.ts` 71 PASS, `test-ozon-sync-diff.ts` 37 PASS, `test-ozon-analytics.ts` 29 PASS, `test-ozon-perf-client.ts` 42 PASS, `test-period-picker.ts` 19 PASS — **198 PASS · 0 FAIL**.
+- Проверка против live-БД: `WHERE order_created_at >= 'YYYY-MM-DDTHH:MM:SS.000Z'::timestamp` — корректно возвращает 2405 строк за 30 дней (account `a37bfc90-…`).
+
+## [0.18.0] - 2026-05-17
+
+Полный rebuild Ozon-аналитики: 9 новых блоков + интеграция Performance API + критический фикс sync-обнуления.
+
+### Критический фикс (Phase 0)
+
+- **`upsertUnitProductFromOzon` больше не записывает 0 как «свежее»**:
+  - `hasPrices` теперь требует `priceRub > 0` (не просто наличие объекта `prices`). Пустой/нулевой prices payload — `updates.priceKopecks = 'keep'`.
+  - `commissions` в metadata пишутся только если есть хотя бы один НЕнулевой процент. Иначе JSONB `||` сохраняет существующие значения.
+  - 71 unit-тест в [`scripts/test-ozon-upsert.ts`](scripts/test-ozon-upsert.ts) (было 47).
+- **`getProductValue` в `ozon-sync-diff.ts`** возвращает `null` для `priceKopecks <= 0` / `volumeL <= 0` / `costKopecks <= 0`. Diff больше не предлагает «5990 → 0».
+- 37 unit-тестов в [`scripts/test-ozon-sync-diff.ts`](scripts/test-ozon-sync-diff.ts) (было 32, +5 на zero-as-no-data).
+- Скрипт [`scripts/prune-zero-ozon-fields.ts`](scripts/prune-zero-ozon-fields.ts) для diagnostics/cleanup после фикса (dry-run по умолчанию).
+
+### Performance API интеграция
+
+- **Схема БД расширена**: `marketplace_accounts` + `perf_client_id`, `perf_client_secret_enc`, `perf_status`, `perf_last_sync_at`, `perf_last_sync_error`. 3 новые таблицы: `ozon_perf_campaigns`, `ozon_perf_sku_stats`, `ozon_perf_phrases`.
+- **OzonPerformanceClient** ([`performance/client.ts`](src/lib/marketplaces/ozon/performance/client.ts)): OAuth `client_credentials` на `api-performance.ozon.ru`, токены кэшируются в Redis-like абстракции с TTL `expires_in - 60s`.
+- **Endpoints**: `listCampaigns`, `generateSkuStatsReport`, `waitForReport`, `downloadReport`, `parseCsv`, `parseSkuStatsRow`.
+- **3 sync-стейджа**: `perfCampaigns`, `perfSkuStats`, `perfPhrases`. Полная интеграция в `runFullSync` — пропускаются с `skipped` если у аккаунта нет perf-кредов.
+- **UI настроек**: Performance API секция в CreateAccountDialog (тогглер «У меня есть Performance API»), отдельный EditPerfApiDialog, в карточке аккаунта — статус + «Тест Performance» + «Изменить» / «Отключить».
+- **API**: `POST /api/marketplaces/accounts/[id]/test-perf` — пробный OAuth-запрос.
+- **On-demand слой** ([`performance/on-demand.ts`](src/lib/marketplaces/ozon/performance/on-demand.ts)): `mergeHistoricalAndOnDemand`, `periodIncludesToday`, `todayInMoscow`. Кэш 10 мин.
+- 42 unit-теста в [`scripts/test-ozon-perf-client.ts`](scripts/test-ozon-perf-client.ts).
+
+### Переиспользуемая инфраструктура
+
+- **`PeriodPicker`** ([`components/blocks/period-picker.tsx`](src/components/blocks/period-picker.tsx)): пресеты `today/yesterday/7d/14d/30d/mtd/custom`, pure-функции `resolvePeriod`, `getPreviousPeriod`, `describePeriod`. 19 unit-тестов в [`scripts/test-period-picker.ts`](scripts/test-period-picker.ts).
+- **`StatCard`** ([`components/blocks/stat-card.tsx`](src/components/blocks/stat-card.tsx)): KPI-карточка с delta, sparkline, цветовыми бейджами по `goodDirection`, форматами `rub`/`pct`/`int`/`days`. Использует `useBlockDensity`.
+- **`ChartShell`** ([`components/blocks/chart-shell.tsx`](src/components/blocks/chart-shell.tsx)): универсальная обёртка над Recharts — line/area/bar + compare-overlay прошлым периодом (пунктир).
+- **`OzonAccountSelector`** ([`components/marketplaces/ozon-account-selector.tsx`](src/components/marketplaces/ozon-account-selector.tsx)): селектор Ozon-аккаунта для SettingsForm с CTA-fallback и статусом Perf API.
+- **`@/lib/redis`** ([`src/lib/redis.ts`](src/lib/redis.ts)): `RedisLike` интерфейс + in-memory shim. Для Phase 2 (горизонтальный масштаб) — подключить ioredis.
+
+### Новые блоки (9 штук)
+
+1. **`unit.ozon-kpi`** — 6 KPI-карточек (Выручка / Заказы / Расход / ДРР / AOV / CPO) с delta и sparkline. API `/api/marketplaces/ozon/kpi`.
+2. **`unit.ozon-chart`** — time-series график (line / area / bar) с compare-overlay. API `/api/marketplaces/ozon/timeseries`.
+3. **`unit.ozon-top-ads`** — таблица топ-N товаров по рекламному расходу: CTR / CPC / CPO / ДРР. API `/api/marketplaces/ozon/top-ads`.
+4. **`unit.ozon-stock-clusters`** — распределение остатков по типу склада (FBO/FBS/CrossBorder). API `/api/marketplaces/ozon/stock-clusters`.
+5. **`unit.ozon-search-phrases`** — топ поисковых фраз с CTR / CPO. API `/api/marketplaces/ozon/search-phrases`.
+6. **`unit.ozon-campaigns`** — таблица рекламных кампаний с расходом / заказами / ДРР. API `/api/marketplaces/ozon/campaigns`.
+7. **`unit.ozon-data-health`** — статус Seller API + Performance API + последний sync + CTA. Без backend-API (использует `useMarketplaceAccounts`).
+8. **`unit.ozon-abc`** — ABC-анализ выручки (80/15/5%). API `/api/marketplaces/ozon/abc`.
+9. **`unit.ozon-ai-insights`** — rule-based инсайты по KPI + аналитике (тренд, ДРР, OOS-риски, реклама без продаж, топ-3). Без внешнего AI-вызова на MVP, но контракт совместим с переходом на `ai.micro-agent`. Pure-функция `generateInsights`.
+
+### Новая страница
+
+- **`/marketplaces/ozon`** — отдельная страница с дефолтным layout: KPI наверху, Chart посередине, Analytics-таблица, Top-Ads + Data-Health, Campaigns + Phrases, Stock-Clusters + ABC, AI Insights. Ссылка в боковой навигации.
+
+### Обновления существующих файлов
+
+- **`unit.ozon-analytics` SettingsForm**: добавлена секция «Синхронизация» с тогглерами 8 стейджей + кнопкой «Запустить синхронизацию». Performance стейджи disabled если нет perf-кредов.
+- **`/api/blocks/sources/route.ts`**: добавлены output-поля для всех 9 новых блоков (для cross-block формул).
+- **`registry.ts`**: 9 новых `BlockDef` + `BLOCK_META` + дефолтный layout для `marketplaces-ozon-dashboard`.
+- **Yoolip-упоминания** убраны из 4 .ts/.tsx файлов и MEMORY/START. Остались только историчные упоминания в CHANGELOG и PLAN.md (имя конкурента).
+
+### Документация
+
+- Новый файл [`docs/MARKETPLACES_OZON_PERFORMANCE.md`](docs/MARKETPLACES_OZON_PERFORMANCE.md): инструкция по получению Performance API ключа, описание endpoints, sync-окна, кэш-стратегия, troubleshooting.
+
+### Audit / Reliability
+
+- ✅ `pnpm typecheck` — 0 errors.
+- ✅ ~170 unit-тестов pass (71 upsert + 37 sync-diff + 29 analytics + 42 perf-client + 19 period-picker).
+- ✅ `tenant_id` во всех новых SQL-запросах.
+- ✅ `mountedRef` во всех новых `useEffect` с async-функциями.
+- ✅ Никогда не логируем `client_secret` / `perfClientSecret`.
+- ✅ Все Zod-схемы с `.default()` для backward-compat.
+- ✅ Performance API: rate-limit (10 RPS) + retry на 429/5xx + backoff с jitter.
+- ✅ Период в UTC ISO (PeriodPicker), Performance API даты в Europe/Moscow (`todayInMoscow`).
+- ✅ Старые аккаунты без `perfClientId` работают штатно — perf-стейджи пропускаются.
+
+## [0.17.2] - 2026-05-17
+
+Полный аудит Ozon-sync и новый Yoolip-style блок аналитики.
+
+**Что починили в существующем блоке `unit.ozon-multi-table`:**
+1. Sync больше не обнуляет «свои» значения. Раньше при поэтапной синхронизации
+   (стейджи `products` → `prices` → `stocks`) каждый поздний стейдж писал
+   `priceKopecks=0`, `volumeL=0` и т.п. для полей, которые он не приносит —
+   потому что в `onConflictDoUpdate.set` всегда стояли значения из текущего
+   payload'а. Теперь они условные: если payload не принёс это поле — fallback
+   на текущее значение в БД через `sql\`unit_products.x\``.
+2. Настройки sync теперь живут в **дефолтной табе «Параметры» Settings-диалога
+   блока** (через `BlockDef.SettingsForm`), а не в отдельной toolbar-кнопке.
+3. Добавлен **`stockSource`** в настройки sync — гибкий выбор источника
+   остатка: `mode-aware` (FBO→stockMarketplace, FBS→stockOwn — default),
+   `fbo` (всегда склады Ozon), `fbs` (всегда ваши склады), `sum` (legacy).
+
+**Новый блок `unit.ozon-analytics` (Yoolip-style):**
+Read-only таблица аналитики per-product за выбранный период: выручка, заказы,
+реклама, ДРР, остатки, дней остатков. SQL-агрегаты из `ozon_orders` (через
+LATERAL `jsonb_array_elements(items)`) и `ozon_transactions` (фильтр по
+operation_type ~ promot/advertis/marketing). Smart-фильтры: «с рекламой /
+ДРР>20% / мало остатков / нет остатков / без заказов / без рекламы /
+убыточные». Period picker (сегодня / вчера / 7д / 14д / 30д / MTD / custom),
+XLSX-экспорт, цветные баджи для ДРР и stock.
+
+### Added
+
+- **`planUnitProductUpsertFromOzon()`** — pure function ([upsert-plan.ts](src/lib/marketplaces/ozon/upsert-plan.ts)). Возвращает план upsert'а: `{insert, updates: {field: 'fresh'|'keep'}, metadataDeltaKeys, metadataDelta}`. Выделено из `upsert.ts` чтобы тестировать без env/db.
+- **Conditional set + sql-fallback в upsert** ([upsert.ts](src/lib/marketplaces/ozon/upsert.ts)) — для каждого поля (`priceKopecks`, `volumeL`, `stockMarketplace`, `stockOwn`, `visibility`) обновляется только если payload его принёс; иначе `sql\`unit_products.price_kopecks\`` и т.д. Metadata-merge тоже использует delta-объект, в который попадают только присутствующие части (commissions/dimensions/stockByType/turnover).
+- **47 smoke-тестов upsert** ([scripts/test-ozon-upsert.ts](scripts/test-ozon-upsert.ts)) — частичные payload'ы (products / prices / stocks / комбинации), skip без ключей, visibility, primary_image (string vs array), crossborder в FBS бакет.
+- **`OzonSyncSettingsForm`** ([ozon-sync-settings-form.tsx](src/components/unit-economics/ozon-sync-settings-form.tsx)) — извлечённый UI настроек sync (без Dialog-обёртки). Используется и в `BlockDef.SettingsForm` блока, и в legacy `OzonSyncSettingsDialog` (для «Edit settings» в preview).
+- **`stockSource`** в `SyncSettingsSchema` ([unit-ozon-multi-table.tsx](src/lib/blocks/catalog/unit-ozon-multi-table.tsx)) — 4 опции (`mode-aware`/`fbo`/`fbs`/`sum`), default `mode-aware`. UI в SettingsForm — radio с inline-подсказкой какой буфер реально подставится в текущем mode.
+- **`resolveStock()`** ([ozon-sync-diff.ts](src/components/unit-economics/ozon-sync-diff.ts)) — pure-helper, разветвляет логику остатка по stockSource × mode. `getProductValue` теперь принимает stockSource четвёртым параметром.
+- **+7 stockSource-тестов** ([scripts/test-ozon-sync-diff.ts](scripts/test-ozon-sync-diff.ts)) → итого 32 PASS.
+- **Блок `unit.ozon-analytics`** ([unit-ozon-analytics.tsx](src/lib/blocks/catalog/unit-ozon-analytics.tsx) + [unit-ozon-analytics-types.ts](src/lib/blocks/catalog/unit-ozon-analytics-types.ts)) — Yoolip-style read-only таблица per-product за период. BlockDef + `SettingsForm` + Render. Регистрация в [registry.ts](src/lib/blocks/registry.ts), теги `marketplace/analytics/ozon/yoolip`, иконка `BarChart3`.
+- **API `/api/marketplaces/analytics/ozon`** ([route.ts](src/app/api/marketplaces/analytics/ozon/route.ts)) — tenant-scoped, joins `ozon_orders` (LATERAL items) + `ozon_transactions` (фильтр promot/advertis/marketing) ← spine `unit_products`. Возвращает `rows` + `totals` (revenue/ads/drr/delivered/cancelled/returned/productsWithSales) + period. Cancelled+returned+delivered = total для buyout, drr=null если revenue=0.
+- **`ozon-analytics-table.tsx`** — таблица с сортировкой по любой колонке, баджами для ДРР (green<10 / ok<20 / warning<50 / danger≥50) и stock (danger=0 / danger<7d / warning<14d / ok<30d / good≥30d). 13 колонок (article/name/price/cost/margin/orders/qty/revenue/ads/drr/stock/days/buyout).
+- **`ozon-analytics-filters.ts`** — 8 smart-фильтров (`all`, `with-ads`, `high-drr`, `no-ads`, `low-stock`, `no-stock`, `no-orders`, `unprofitable`). Pure functions + counts.
+- **`ozon-analytics-settings-form.tsx`** — UI для нового блока (магазин / дефолтный период / дефолтный фильтр / видимые колонки по группам).
+- **Period picker в блоке** — сегодня / вчера / 7д / 14д / 30д / MTD / custom (с input[type=date] для произвольного диапазона). `resolvePeriod()` помощник в [unit-ozon-analytics-types.ts](src/lib/blocks/catalog/unit-ozon-analytics-types.ts).
+- **Totals header** — 5 карточек: выручка / реклама / ДРР / заказы / товары с продажами.
+- **XLSX-экспорт** через `xlsx` (уже в стеке) с именем `ozon-analytics_YYYY-MM-DD_YYYY-MM-DD.xlsx`.
+- **29 smoke-тестов analytics** ([scripts/test-ozon-analytics.ts](scripts/test-ozon-analytics.ts)) — все 8 фильтров, config schema, resolvePeriod все пресеты.
+- **Поля блока в `/api/blocks/sources`** ([route.ts](src/app/api/blocks/sources/route.ts)) — `revenue/ads/drr/orders/productsWithSales` для cross-block биндингов (live-значения грузятся клиентом, в sources только labels).
+
+### Fixed
+
+- **Sync clobbering bug** — поэтапная синхронизация перезаписывала уже загруженные данные нулями. Проявлялось как «preview показывает все нули» в `unit.ozon-multi-table` после обновления через диалог-настроек (см. PR-комментарий пользователя со скриншотом). Корневая причина: безусловный set всех полей в onConflictDoUpdate; теперь — conditional set с sql-fallback. Покрыто 47 тестами.
+- **Отсутствие Settings-tab в блоке Ozon юнит-таблицы** — раньше настройки sync открывались только через toolbar-кнопку («Настройки Ozon»). Теперь — стандартный механизм через `BlockDef.SettingsForm` → таб «Параметры» Settings-диалога. Тоlbar-кнопка убрана. Диалог `OzonSyncSettingsDialog` сохранён в виде back-compat обёртки (используется из preview «Edit settings»).
+- **Неправильная FBO/FBS семантика остатка** — `buildSyncDiff` суммировал stockMarketplace+stockOwn независимо от mode блока. Теперь — `resolveStock()` с 4 политиками (default `mode-aware` — FBO→stockMarketplace, FBS→stockOwn).
+
+### Audit / Reliability
+
+- `pnpm typecheck` ✓ · `pnpm build` ✓
+- `pnpm tsx scripts/test-ozon-upsert.ts` → **47/47 PASS**
+- `pnpm tsx scripts/test-ozon-sync-diff.ts` → **32/32 PASS** (25 предыдущих + 7 stockSource)
+- `pnpm tsx scripts/test-ozon-analytics.ts` → **29/29 PASS** (8 фильтров + config schema + resolvePeriod)
+- **Итого 108 smoke-тестов** проходят.
+- `mountedRef` в новом блоке `unit.ozon-analytics` защищает setState после unmount.
+- Deleted-account fallback в обоих SettingsForm (sync для multi-table, analytics для нового блока) — если сохранённый accountId не существует, автоматически переключается на первый доступный.
+- Backward-compat: старые конфиги блока `unit.ozon-multi-table` без `sync.stockSource` корректно получают default `mode-aware` через Zod `.default()`. Покрыто в [scripts/test-ozon-analytics.ts](scripts/test-ozon-analytics.ts) #12.
+- tenant_id фильтрация явно присутствует в новом analytics-API (`unitProducts.tenantId`, `ozonOrders.tenant_id`, `ozonTransactions.tenant_id`).
+- JSONB injection safety — все динамические данные (offer_id, price, qty, sku) идут как `it->>'offerId'` и параметризованные значения, без конкатенации SQL.
+
 ## [0.17.1] - 2026-05-17
 
 Робастность Ozon-синхронизации и продвинутая интеграция Ozon с блоком

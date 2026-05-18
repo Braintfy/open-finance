@@ -15,6 +15,7 @@ import {
   Sparkles,
   Calculator,
   Store,
+  BarChart3,
 } from 'lucide-react';
 import { auth } from '@/lib/auth';
 import { LogoutButton } from '@/components/logout-button';
@@ -56,6 +57,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     { key: 'inbox', href: '/inbox', label: 'Входящие', icon: Inbox },
     { key: 'cashflow', href: '/cashflow', label: 'Денежный поток', icon: Wallet },
     { key: 'unit-economics', href: '/unit-economics', label: 'Юнит-экономика', icon: Calculator },
+    { key: 'marketplaces-ozon', href: '/marketplaces/ozon', label: 'Аналитика', icon: BarChart3 },
     { key: 'boards', href: '/boards', label: 'Мои доски', icon: LayoutGrid },
     { key: 'marketplace', href: '/marketplace', label: 'Маркет блоков', icon: Store },
     { key: 'deadlines', href: '/deadlines', label: 'Дедлайны', icon: Calendar },

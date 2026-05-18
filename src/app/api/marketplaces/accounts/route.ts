@@ -79,6 +79,8 @@ export async function POST(req: Request) {
       name: body.name,
       clientId: body.clientId,
       apiKey: body.apiKey,
+      perfClientId: body.perfClientId ?? null,
+      perfClientSecret: body.perfClientSecret ?? null,
       syncSettings: body.syncSettings,
     });
     return NextResponse.json({ ok: true, account: toPublicAccount(account) });

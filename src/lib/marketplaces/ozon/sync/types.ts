@@ -3,11 +3,18 @@
 // возвращает StageResult (для записи в ozon_sync_jobs.stages JSONB).
 
 import type { OzonClient } from '../client';
+import type { OzonPerformanceClient } from '../performance/client';
 import type { OzonSyncSettings } from '@/lib/db/schema/marketplaces';
 import type { UpsertContext } from '../upsert';
 
 export type StageContext = UpsertContext & {
   client: OzonClient;
+  /**
+   * Performance API клиент. null если у аккаунта нет perf-кредов.
+   * perf-стейджи (perfCampaigns/perfSkuStats/perfPhrases) пропускаются
+   * с status='skipped' если perfClient отсутствует.
+   */
+  perfClient: OzonPerformanceClient | null;
   settings: OzonSyncSettings;
   /** Callback для inline progress reporting (не обязателен). */
   onProgress?: (processed: number, total?: number) => void;

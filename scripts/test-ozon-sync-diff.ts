@@ -27,6 +27,7 @@ function defaultSync(over: Partial<OzonBlockSyncSettings> = {}): OzonBlockSyncSe
     conflictPolicy: 'fill-empty',
     matchBy: 'article',
     treatZeroAsEmpty: true,
+    stockSource: 'mode-aware',
     columnMap: {
       article: true,
       name: true,
@@ -232,6 +233,201 @@ console.log('\n# buildSyncDiff — match & policy');
   const diff = buildSyncDiff({ currentRows: rows, ozonProducts: products, sync, mode: 'fbo' });
   expect(diff.totals.newRows === 0, 'matchBy=article игнорирует регистр/пробелы');
   expect(diff.totals.updatedRows === 1, 'updatedRows=1');
+}
+
+// ============================================================================
+// stockSource tests — mode-aware/fbo/fbs/sum branching
+// ============================================================================
+
+console.log('\n# buildSyncDiff — stockSource');
+
+// 11. mode-aware (default) + mode=fbo → берём stockMarketplace
+{
+  const sync = defaultSync({ conflictPolicy: 'overwrite', stockSource: 'mode-aware' });
+  const rows = [row('S1', { stock: 0 }, '')];
+  const products = [
+    product({ article: 'S1', stockMarketplace: 100, stockOwn: 25 }),
+  ];
+  const diff = buildSyncDiff({ currentRows: rows, ozonProducts: products, sync, mode: 'fbo' });
+  expect(
+    diff.changes.some((c) => c.field === 'stock' && c.after === 100),
+    'mode-aware + mode=fbo → stockMarketplace (100)',
+  );
+}
+
+// 12. mode-aware + mode=fbs → берём stockOwn
+{
+  const sync = defaultSync({ conflictPolicy: 'overwrite', stockSource: 'mode-aware' });
+  const rows = [row('S2', { stock: 0 }, '')];
+  const products = [
+    product({ article: 'S2', stockMarketplace: 100, stockOwn: 25 }),
+  ];
+  const diff = buildSyncDiff({ currentRows: rows, ozonProducts: products, sync, mode: 'fbs' });
+  expect(
+    diff.changes.some((c) => c.field === 'stock' && c.after === 25),
+    'mode-aware + mode=fbs → stockOwn (25)',
+  );
+}
+
+// 13. stockSource=fbo всегда даёт stockMarketplace, даже при mode=fbs
+{
+  const sync = defaultSync({ conflictPolicy: 'overwrite', stockSource: 'fbo' });
+  const rows = [row('S3', { stock: 0 }, '')];
+  const products = [
+    product({ article: 'S3', stockMarketplace: 77, stockOwn: 999 }),
+  ];
+  const diff = buildSyncDiff({ currentRows: rows, ozonProducts: products, sync, mode: 'fbs' });
+  expect(
+    diff.changes.some((c) => c.field === 'stock' && c.after === 77),
+    'stockSource=fbo при mode=fbs → всё равно 77 (FBO)',
+  );
+}
+
+// 14. stockSource=fbs всегда даёт stockOwn, даже при mode=fbo
+{
+  const sync = defaultSync({ conflictPolicy: 'overwrite', stockSource: 'fbs' });
+  const rows = [row('S4', { stock: 0 }, '')];
+  const products = [
+    product({ article: 'S4', stockMarketplace: 999, stockOwn: 88 }),
+  ];
+  const diff = buildSyncDiff({ currentRows: rows, ozonProducts: products, sync, mode: 'fbo' });
+  expect(
+    diff.changes.some((c) => c.field === 'stock' && c.after === 88),
+    'stockSource=fbs при mode=fbo → всё равно 88 (FBS)',
+  );
+}
+
+// 15. stockSource=sum даёт сумму FBO + FBS
+{
+  const sync = defaultSync({ conflictPolicy: 'overwrite', stockSource: 'sum' });
+  const rows = [row('S5', { stock: 0 }, '')];
+  const products = [
+    product({ article: 'S5', stockMarketplace: 12, stockOwn: 34 }),
+  ];
+  const diff = buildSyncDiff({ currentRows: rows, ozonProducts: products, sync, mode: 'fbo' });
+  expect(
+    diff.changes.some((c) => c.field === 'stock' && c.after === 46),
+    'stockSource=sum → 12+34=46',
+  );
+}
+
+// 16. stockSource не влияет когда в columnMap.stock=false (smoke)
+{
+  const sync = defaultSync({
+    conflictPolicy: 'overwrite',
+    stockSource: 'sum',
+    columnMap: {
+      article: false,
+      name: false,
+      price: true,
+      cost: false,
+      stock: false,
+      volumeL: false,
+      commissionPct: false,
+      salesPerMonth: false,
+      buyoutPct: false,
+    },
+  });
+  const rows = [row('S6', { price: 10, stock: 0 }, '')];
+  const products = [
+    product({ article: 'S6', priceKopecks: 100000, stockMarketplace: 999, stockOwn: 999 }),
+  ];
+  const diff = buildSyncDiff({ currentRows: rows, ozonProducts: products, sync, mode: 'fbo' });
+  expect(
+    !diff.changes.some((c) => c.field === 'stock'),
+    'stock в columnMap=false → нет stock changes',
+  );
+  expect(
+    diff.changes.some((c) => c.field === 'price' && c.after === 1000),
+    'price изменён несмотря на stockSource',
+  );
+}
+
+// ----- Phase 0 fix: zero-as-no-data для price/volume/cost ---------------
+
+console.log('\n# Phase 0: priceKopecks/volumeL=0 не предлагает перезапись');
+
+// 17. priceKopecks=0 + row.price=5990 + overwrite → НЕ должно быть update
+{
+  const sync = defaultSync({ conflictPolicy: 'overwrite' });
+  const rows = [row('Z1', { price: 5990, stock: 10, volumeL: 1.2 }, 'Старая запись')];
+  const products = [
+    product({ article: 'Z1', priceKopecks: 0, stockMarketplace: 10, volumeL: 120 }),
+  ];
+  const diff = buildSyncDiff({ currentRows: rows, ozonProducts: products, sync, mode: 'fbo' });
+  expect(
+    !diff.changes.some((c) => c.field === 'price'),
+    'price=0 в БД НЕ перезаписывает 5990 у пользователя',
+  );
+}
+
+// 18. volumeL=0 + row.volumeL=0.42 + overwrite → НЕ перезаписывать
+{
+  const sync = defaultSync({ conflictPolicy: 'overwrite' });
+  const rows = [row('Z2', { price: 100, stock: 1, volumeL: 0.42 }, '')];
+  const products = [
+    product({ article: 'Z2', priceKopecks: 10000, stockMarketplace: 1, volumeL: 0 }),
+  ];
+  const diff = buildSyncDiff({ currentRows: rows, ozonProducts: products, sync, mode: 'fbo' });
+  expect(
+    !diff.changes.some((c) => c.field === 'volumeL'),
+    'volumeL=0 в БД НЕ перезаписывает 0.42 у пользователя',
+  );
+}
+
+// 19. cost=0 в БД → не перезаписывает row.cost
+{
+  const sync = defaultSync({
+    conflictPolicy: 'overwrite',
+    columnMap: {
+      article: false,
+      name: false,
+      price: false,
+      cost: true,
+      stock: false,
+      volumeL: false,
+      commissionPct: false,
+      salesPerMonth: false,
+      buyoutPct: false,
+    },
+  });
+  const rows = [row('Z3', { cost: 400 }, '')];
+  const products = [product({ article: 'Z3', costKopecks: 0 })];
+  const diff = buildSyncDiff({ currentRows: rows, ozonProducts: products, sync, mode: 'fbo' });
+  expect(!diff.changes.some((c) => c.field === 'cost'), 'cost=0 не перезаписывает 400');
+}
+
+// 20. Если price>0 в БД — нормально приходит "fresh"
+{
+  const sync = defaultSync({ conflictPolicy: 'overwrite' });
+  const rows = [row('Z4', { price: 5990, stock: 10 }, '')];
+  const products = [
+    product({
+      article: 'Z4',
+      priceKopecks: 599000, // 5990 ₽
+      stockMarketplace: 10,
+      volumeL: 100,
+    }),
+  ];
+  const diff = buildSyncDiff({ currentRows: rows, ozonProducts: products, sync, mode: 'fbo' });
+  expect(
+    !diff.changes.some((c) => c.field === 'price'),
+    'price=5990 НЕ меняется (одинаково)',
+  );
+}
+
+// 21. priceKopecks>0 другое значение → update должен быть
+{
+  const sync = defaultSync({ conflictPolicy: 'overwrite' });
+  const rows = [row('Z5', { price: 1000, stock: 10 }, '')];
+  const products = [
+    product({ article: 'Z5', priceKopecks: 200000, stockMarketplace: 10 }),
+  ];
+  const diff = buildSyncDiff({ currentRows: rows, ozonProducts: products, sync, mode: 'fbo' });
+  expect(
+    diff.changes.some((c) => c.field === 'price' && c.after === 2000 && c.action === 'update'),
+    'price=1000 -> 2000 update',
+  );
 }
 
 console.log(`\n## ${passed} PASS · ${failed} FAIL\n`);

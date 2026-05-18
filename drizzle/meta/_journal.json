@@ -8,6 +8,13 @@
       "when": 1778431358337,
       "tag": "0000_abnormal_queen_noir",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1778971605615,
+      "tag": "0001_smart_george_stacy",
+      "breakpoints": true
     }
   ]
 }

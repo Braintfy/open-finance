@@ -108,6 +108,8 @@ export async function createAccount(input: {
   name: string;
   clientId: string;
   apiKey: string;
+  perfClientId?: string | null;
+  perfClientSecret?: string | null;
   syncSettings?: OzonSyncSettings;
 }): Promise<MarketplaceAccount> {
   const payload: NewMarketplaceAccount = {
@@ -117,6 +119,11 @@ export async function createAccount(input: {
     name: input.name,
     clientId: input.clientId,
     apiKeyEnc: encryptSecret(input.apiKey),
+    perfClientId: input.perfClientId ?? null,
+    perfClientSecretEnc:
+      input.perfClientSecret && input.perfClientId
+        ? encryptSecret(input.perfClientSecret)
+        : null,
     status: 'active',
     syncSettings: { ...DEFAULT_OZON_SYNC_SETTINGS, ...(input.syncSettings ?? {}) },
   };
@@ -131,6 +138,10 @@ export async function updateAccount(args: {
     name?: string;
     clientId?: string;
     apiKey?: string;
+    /** Передать null чтобы отвязать Performance API. */
+    perfClientId?: string | null;
+    /** Передать null чтобы стереть Performance secret. */
+    perfClientSecret?: string | null;
     status?: AccountStatus;
     syncSettings?: OzonSyncSettings;
     companyInfo?: Record<string, unknown>;
@@ -141,6 +152,19 @@ export async function updateAccount(args: {
   if (args.patch.clientId !== undefined) updates.clientId = args.patch.clientId;
   if (args.patch.apiKey !== undefined) {
     updates.apiKeyEnc = encryptSecret(args.patch.apiKey);
+  }
+  if (args.patch.perfClientId !== undefined) {
+    updates.perfClientId = args.patch.perfClientId;
+    // Если отключаем Performance API — стираем секрет.
+    if (args.patch.perfClientId === null) {
+      updates.perfClientSecretEnc = null;
+      updates.perfStatus = null;
+    }
+  }
+  if (args.patch.perfClientSecret !== undefined) {
+    updates.perfClientSecretEnc = args.patch.perfClientSecret
+      ? encryptSecret(args.patch.perfClientSecret)
+      : null;
   }
   if (args.patch.status !== undefined) updates.status = args.patch.status;
   if (args.patch.syncSettings !== undefined) {
@@ -160,6 +184,38 @@ export async function updateAccount(args: {
     )
     .returning();
   return row ?? null;
+}
+
+/** Расшифровать Performance Client Secret. Только серверный код. */
+export function decryptAccountPerfSecret(
+  account: MarketplaceAccount,
+): string | null {
+  if (!account.perfClientSecretEnc) return null;
+  return decryptSecret(account.perfClientSecretEnc);
+}
+
+/** Обновить perf-статус после успешного теста / sync. */
+export async function updateAccountPerfStatus(args: {
+  tenantId: string;
+  id: string;
+  status: 'active' | 'error';
+  error?: string | null;
+  lastSyncAt?: Date | null;
+}): Promise<void> {
+  await db
+    .update(marketplaceAccounts)
+    .set({
+      perfStatus: args.status,
+      perfLastSyncError: args.error ?? null,
+      perfLastSyncAt: args.lastSyncAt ?? null,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(marketplaceAccounts.tenantId, args.tenantId),
+        eq(marketplaceAccounts.id, args.id),
+      ),
+    );
 }
 
 export async function deleteAccount(args: {
@@ -189,6 +245,16 @@ export function toPublicAccount(account: MarketplaceAccount): AccountPublic {
     name: account.name,
     clientId: account.clientId,
     apiKeyMasked: maskSecret(account.apiKeyEnc),
+    perfConnected: Boolean(account.perfClientId && account.perfClientSecretEnc),
+    perfClientId: account.perfClientId ?? null,
+    perfSecretMasked: account.perfClientSecretEnc
+      ? maskSecret(account.perfClientSecretEnc)
+      : null,
+    perfStatus: account.perfStatus ?? null,
+    perfLastSyncAt: account.perfLastSyncAt
+      ? account.perfLastSyncAt.toISOString()
+      : null,
+    perfLastSyncError: account.perfLastSyncError ?? null,
     status: account.status,
     syncSettings: account.syncSettings,
     companyInfo: account.companyInfo,

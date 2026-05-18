@@ -15,7 +15,6 @@ import {
   CheckCircle2,
   GripVertical,
   MoreVertical,
-  Settings as SettingsIcon,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -38,7 +37,7 @@ import {
   useSortable,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import type { BlockDef, BlockRenderProps } from '../types';
+import type { BlockDef, BlockRenderProps, BlockSettingsFormProps } from '../types';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -66,6 +65,7 @@ import { migrateOzonRaw } from '@/lib/unit-economics/ozon/migrate';
 import { ClusterSelector } from '@/components/unit-economics/cluster-selector';
 import { OzonSyncButton } from '@/components/unit-economics/ozon-sync-button';
 import { OzonSyncSettingsDialog } from '@/components/unit-economics/ozon-sync-settings-dialog';
+import { OzonSyncSettingsForm } from '@/components/unit-economics/ozon-sync-settings-form';
 import { OzonSyncPreviewDialog } from '@/components/unit-economics/ozon-sync-preview-dialog';
 import {
   buildSyncDiff,
@@ -148,6 +148,16 @@ const SyncSettingsSchema = z.object({
   matchBy:          z.enum(['article', 'sku']).default('article'),
   columnMap:        SyncColumnMapSchema.default(SyncColumnMapSchema.parse({})),
   treatZeroAsEmpty: z.boolean().default(true),
+  /**
+   * Откуда брать остаток в колонку Stock:
+   *   mode-aware — FBO склады при mode=fbo, FBS склады при mode=fbs (по умолчанию);
+   *   fbo        — всегда склады Ozon FBO;
+   *   fbs        — всегда ваши склады (FBS + cross-border);
+   *   sum        — сумма всех остатков.
+   * Mode-aware — наиболее интуитивная политика, чтобы остатки в блоке
+   * соответствовали выбранной схеме продаж.
+   */
+  stockSource:      z.enum(['mode-aware', 'fbo', 'fbs', 'sum']).default('mode-aware'),
 });
 
 const ConfigSchema = z.object({
@@ -786,14 +796,6 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
             disabled={importing}
           >
             <Upload /> Импорт XLSX
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setSyncSettingsOpen(true)}
-            title="Настройки синхронизации с Ozon: магазин, политика конфликтов, какие колонки заполнять"
-          >
-            <SettingsIcon /> Настройки Ozon
           </Button>
           <OzonSyncButton
             accountId={config.sync.accountId}
@@ -1549,6 +1551,27 @@ function NumberParam({
   );
 }
 
+/**
+ * Settings-tab формы блока: рендерится движком блок-грида в табе «Параметры»
+ * Settings-диалога. Состоит из настроек синхронизации с Ozon
+ * (см. OzonSyncSettingsForm) и пробрасывает blockMode из config.global.mode,
+ * чтобы UI мог показывать «mode-aware» подсказки.
+ */
+function UnitOzonMultiTableSettingsForm({ config, onChange }: BlockSettingsFormProps) {
+  const parsed = parseConfig(config);
+  const blockMode = parsed.global.mode;
+  return (
+    <OzonSyncSettingsForm
+      value={parsed.sync}
+      blockMode={blockMode}
+      onChange={(nextSync) => {
+        const next: Config = { ...parsed, sync: nextSync };
+        onChange(next as unknown as Record<string, unknown>);
+      }}
+    />
+  );
+}
+
 export const UnitOzonMultiTableBlock: BlockDef = {
   type: 'unit.ozon-multi-table',
   displayName: 'Ozon · Юнит-таблица',
@@ -1561,6 +1584,7 @@ export const UnitOzonMultiTableBlock: BlockDef = {
   pages: ['unit-economics-ozon-multi'],
   configSchema: ConfigSchema,
   defaultConfig: () => ConfigSchema.parse({}),
+  SettingsForm: UnitOzonMultiTableSettingsForm,
   Render: RenderOzonMultiTable,
 };
 

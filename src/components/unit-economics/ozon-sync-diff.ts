@@ -31,6 +31,14 @@ export type OzonBlockSyncSettings = {
   matchBy: 'article' | 'sku';
   columnMap: OzonBlockSyncColumnMap;
   treatZeroAsEmpty: boolean;
+  /**
+   * Источник остатка для колонки Stock:
+   *   - 'mode-aware' — следовать global.mode блока (FBO→stockMarketplace, FBS→stockOwn);
+   *   - 'fbo'        — всегда брать stockMarketplace (склады Ozon);
+   *   - 'fbs'        — всегда брать stockOwn (ваши склады + cross-border);
+   *   - 'sum'        — суммировать обе ветки (legacy-поведение).
+   */
+  stockSource: 'mode-aware' | 'fbo' | 'fbs' | 'sum';
 };
 
 export type SyncRowSnapshot = {
@@ -154,11 +162,37 @@ function getRowValue(row: SyncRowSnapshot, field: DiffField): string | number | 
   return null;
 }
 
+/**
+ * Резолверит число штук на остатке для записи в Stock-колонку блока в
+ * зависимости от stockSource и текущего режима блока. См. подробности в
+ * описании поля `OzonBlockSyncSettings.stockSource`.
+ */
+export function resolveStock(
+  product: SyncOzonProduct,
+  mode: 'fbo' | 'fbs',
+  stockSource: OzonBlockSyncSettings['stockSource'],
+): number {
+  const fbo = product.stockMarketplace ?? 0;
+  const fbs = product.stockOwn ?? 0;
+  switch (stockSource) {
+    case 'fbo':
+      return fbo;
+    case 'fbs':
+      return fbs;
+    case 'sum':
+      return fbo + fbs;
+    case 'mode-aware':
+    default:
+      return mode === 'fbo' ? fbo : fbs;
+  }
+}
+
 /** Целевое значение поля из продукта Ozon (в «human» юнитах, не в копейках). */
 function getProductValue(
   field: DiffField,
   product: SyncOzonProduct,
   mode: 'fbo' | 'fbs',
+  stockSource: OzonBlockSyncSettings['stockSource'],
 ): string | number | null {
   switch (field) {
     case 'article':
@@ -166,14 +200,20 @@ function getProductValue(
     case 'name':
       return product.name ?? '';
     case 'price':
-      return product.priceKopecks / 100;
+      // priceKopecks=0 трактуем как «нет данных»: иначе diff предложит
+      // перезаписать пользовательский ввод (5990) нулём.
+      return product.priceKopecks > 0 ? product.priceKopecks / 100 : null;
     case 'cost':
-      return product.costKopecks / 100;
+      return product.costKopecks > 0 ? product.costKopecks / 100 : null;
     case 'stock':
-      return (product.stockMarketplace ?? 0) + (product.stockOwn ?? 0);
-    case 'volumeL':
+      return resolveStock(product, mode, stockSource);
+    case 'volumeL': {
       // в БД хранится x100 (например 1.5л → 150). Делим на 100 для блока.
-      return (product.volumeL ?? 0) / 100;
+      // volumeL=0 трактуем как «не заполнено в Ozon» — не перезаписываем
+      // пользовательский ввод.
+      const v = product.volumeL ?? 0;
+      return v > 0 ? v / 100 : null;
+    }
     case 'commissionPct': {
       const commissions = (product.metadata?.commissions ?? null) as
         | { fboPct?: number | null; fbsPct?: number | null }
@@ -281,7 +321,7 @@ export function buildSyncDiff(opts: BuildDiffOptions): SyncDiff {
       };
       let newRow = baseRow;
       for (const field of fields) {
-        const after = getProductValue(field, product, mode);
+        const after = getProductValue(field, product, mode, sync.stockSource);
         if (after === null) continue;
         newRow = applyChange(newRow, field, after);
         changes.push({
@@ -332,7 +372,7 @@ export function buildSyncDiff(opts: BuildDiffOptions): SyncDiff {
     let rowSkippedCells = 0;
     for (const field of fields) {
       const before = getRowValue(existing, field);
-      const after = getProductValue(field, product, mode);
+      const after = getProductValue(field, product, mode, sync.stockSource);
       if (after === null || after === undefined) continue;
       // Для article/name skip если ничего не изменилось.
       const stringBefore = before === null ? '' : String(before);
