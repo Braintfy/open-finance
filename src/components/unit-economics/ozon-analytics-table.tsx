@@ -5,11 +5,10 @@
 
 'use client';
 
-import { useMemo } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { ArrowDown, ArrowUp, ArrowDownUp } from 'lucide-react';
 import type { OzonAnalyticsRow } from '@/lib/blocks/catalog/unit-ozon-analytics-types';
 import { cn } from '@/lib/utils';
-import { autoColumnWidth } from '@/lib/blocks/auto-column-width';
 
 export type TableColumnKey =
   | 'article'
@@ -37,28 +36,28 @@ type ColumnDef = {
   /** Подсказка под заголовком (опционально). */
   hint?: string;
   align: 'left' | 'right';
-  /** Минимальная ширина в пикселях (для авторасчёта). */
+  /** Минимальная ширина в пикселях. */
   minPx: number;
-  /** Максимальная ширина в пикселях (cap). */
-  maxPx: number;
+  /** Дефолтная ширина в пикселях. */
+  defaultPx: number;
   /** Можно ли сортировать. */
   sortable: boolean;
 };
 
 export const COLUMN_DEFS: ColumnDef[] = [
-  { key: 'article', label: 'Артикул', align: 'left', minPx: 80, maxPx: 200, sortable: true },
-  { key: 'name', label: 'Название', align: 'left', minPx: 160, maxPx: 360, sortable: true },
-  { key: 'priceRub', label: 'Цена', align: 'right', minPx: 70, maxPx: 130, sortable: true },
-  { key: 'costRub', label: 'Себест.', align: 'right', minPx: 70, maxPx: 130, sortable: true },
-  { key: 'marginRub', label: 'Маржа', hint: 'price − cost', align: 'right', minPx: 70, maxPx: 130, sortable: true },
-  { key: 'delivered', label: 'Заказы', align: 'right', minPx: 60, maxPx: 100, sortable: true },
-  { key: 'qtyDelivered', label: 'Штук', align: 'right', minPx: 56, maxPx: 100, sortable: true },
-  { key: 'revenueRub', label: 'Выручка', align: 'right', minPx: 90, maxPx: 160, sortable: true },
-  { key: 'adsRub', label: 'Реклама', align: 'right', minPx: 80, maxPx: 140, sortable: true },
-  { key: 'drrPct', label: 'ДРР', hint: '%', align: 'right', minPx: 60, maxPx: 100, sortable: true },
-  { key: 'stock', label: 'Остаток', align: 'right', minPx: 70, maxPx: 120, sortable: true },
-  { key: 'daysOfStock', label: 'Дней', hint: 'хватит остатка', align: 'right', minPx: 60, maxPx: 100, sortable: true },
-  { key: 'buyoutPct', label: 'Выкуп', hint: '%', align: 'right', minPx: 60, maxPx: 100, sortable: true },
+  { key: 'article', label: 'Артикул', align: 'left', minPx: 80, defaultPx: 140, sortable: true },
+  { key: 'name', label: 'Название', align: 'left', minPx: 120, defaultPx: 220, sortable: true },
+  { key: 'priceRub', label: 'Цена', align: 'right', minPx: 70, defaultPx: 90, sortable: true },
+  { key: 'costRub', label: 'Себест.', align: 'right', minPx: 70, defaultPx: 90, sortable: true },
+  { key: 'marginRub', label: 'Маржа', hint: 'price − cost', align: 'right', minPx: 70, defaultPx: 90, sortable: true },
+  { key: 'delivered', label: 'Заказы', align: 'right', minPx: 56, defaultPx: 72, sortable: true },
+  { key: 'qtyDelivered', label: 'Штук', align: 'right', minPx: 50, defaultPx: 64, sortable: true },
+  { key: 'revenueRub', label: 'Выручка', align: 'right', minPx: 80, defaultPx: 110, sortable: true },
+  { key: 'adsRub', label: 'Реклама', align: 'right', minPx: 70, defaultPx: 100, sortable: true },
+  { key: 'drrPct', label: 'ДРР', hint: '%', align: 'right', minPx: 56, defaultPx: 72, sortable: true },
+  { key: 'stock', label: 'Остаток', align: 'right', minPx: 60, defaultPx: 80, sortable: true },
+  { key: 'daysOfStock', label: 'Дней', hint: 'хватит остатка', align: 'right', minPx: 50, defaultPx: 64, sortable: true },
+  { key: 'buyoutPct', label: 'Выкуп', hint: '%', align: 'right', minPx: 56, defaultPx: 72, sortable: true },
 ];
 
 function getCellValue(
@@ -187,40 +186,53 @@ export function OzonAnalyticsTable({
 
   const sorted = useMemo(() => sortRows(rows, sort), [rows, sort]);
 
-  // Авторасчёт ширин: измеряем заголовок (uppercase, bold) и
-  // форматированные значения — берём максимум, клипаем к min/max каждой
-  // колонки. Пересчитывается при изменении набора колонок и rows.
-  const widths = useMemo(() => {
-    const out: Record<TableColumnKey, number> = {} as Record<TableColumnKey, number>;
-    for (const col of columns) {
-      const samples = sorted.map((row) => {
-        const v = getCellValue(row, col.key);
-        if (v === null) return '';
-        if (typeof v === 'number') {
-          // Денежные / процент колонки имеют суффикс — учитываем его длину.
-          switch (col.key) {
-            case 'priceRub':
-            case 'costRub':
-            case 'marginRub':
-            case 'revenueRub':
-            case 'adsRub':
-              return Math.round(v).toLocaleString('ru-RU') + ' ₽';
-            case 'drrPct':
-            case 'buyoutPct':
-              return v.toFixed(v >= 100 ? 0 : 1) + '%';
-            default:
-              return v.toLocaleString('ru-RU');
-          }
-        }
-        return String(v);
-      });
-      out[col.key] = autoColumnWidth(col.label, samples, {
-        min: col.minPx,
-        max: col.maxPx,
-      });
-    }
-    return out;
-  }, [columns, sorted]);
+  // Column widths state: initialized from defaultPx, user can resize via drag.
+  const [colWidths, setColWidths] = useState<Record<string, number>>(() => {
+    const init: Record<string, number> = {};
+    for (const col of COLUMN_DEFS) init[col.key] = col.defaultPx;
+    return init;
+  });
+
+  // --- Drag-to-resize logic ---
+  const resizingRef = useRef<{
+    key: string;
+    startX: number;
+    startW: number;
+    minW: number;
+  } | null>(null);
+
+  const handleResizeStart = useCallback(
+    (e: React.MouseEvent, key: TableColumnKey) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const col = COLUMN_DEFS.find((c) => c.key === key);
+      if (!col) return;
+      resizingRef.current = {
+        key,
+        startX: e.clientX,
+        startW: colWidths[key] ?? col.defaultPx,
+        minW: col.minPx,
+      };
+      const onMove = (ev: MouseEvent) => {
+        if (!resizingRef.current) return;
+        const delta = ev.clientX - resizingRef.current.startX;
+        const newW = Math.max(resizingRef.current.minW, resizingRef.current.startW + delta);
+        setColWidths((prev) => ({ ...prev, [resizingRef.current!.key]: newW }));
+      };
+      const onUp = () => {
+        resizingRef.current = null;
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+    },
+    [colWidths],
+  );
 
   function toggleSort(key: TableColumnKey) {
     if (sort.key === key) {
@@ -230,25 +242,25 @@ export function OzonAnalyticsTable({
     }
   }
 
+  const totalWidth = columns.reduce((sum, col) => sum + (colWidths[col.key] ?? col.defaultPx), 0);
+
   return (
     <div className="relative w-full overflow-auto">
-      <table className="w-full border-collapse text-[12px]">
+      <table className="border-collapse text-[12px]" style={{ width: `${totalWidth}px`, tableLayout: 'fixed' }}>
         <thead className="sticky top-0 z-10 bg-card">
           <tr>
             {columns.map((col) => {
               const active = sort.key === col.key;
+              const w = colWidths[col.key] ?? col.defaultPx;
               return (
                 <th
                   key={col.key}
                   className={cn(
-                    'select-none border-b border-border/60 px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider',
+                    'relative select-none whitespace-nowrap border-b border-border/60 px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider',
                     col.align === 'right' ? 'text-right' : 'text-left',
                     col.sortable ? 'cursor-pointer hover:bg-accent/30' : '',
                   )}
-                  style={{
-                    width: `${widths[col.key]}px`,
-                    minWidth: `${widths[col.key]}px`,
-                  }}
+                  style={{ width: `${w}px` }}
                   onClick={col.sortable ? () => toggleSort(col.key) : undefined}
                   title={col.hint}
                 >
@@ -265,6 +277,11 @@ export function OzonAnalyticsTable({
                         <ArrowDownUp className="h-3 w-3 opacity-40" />
                       ))}
                   </span>
+                  {/* Resize handle */}
+                  <span
+                    className="absolute right-0 top-0 bottom-0 w-[5px] cursor-col-resize hover:bg-primary/20"
+                    onMouseDown={(e) => handleResizeStart(e, col.key)}
+                  />
                 </th>
               );
             })}
@@ -293,11 +310,15 @@ export function OzonAnalyticsTable({
                     let extraClass = '';
                     switch (col.key) {
                       case 'article':
-                        body = row.article ?? '—';
+                        body = (
+                          <span className="block truncate" title={row.article ?? undefined}>
+                            {row.article ?? '—'}
+                          </span>
+                        );
                         break;
                       case 'name':
                         body = (
-                          <span className="truncate" title={row.name}>
+                          <span className="block truncate" title={row.name}>
                             {row.name || '—'}
                           </span>
                         );
@@ -328,7 +349,7 @@ export function OzonAnalyticsTable({
                         body = (
                           <span
                             className={cn(
-                              'rounded-md px-1.5 py-0.5 text-[11px] font-medium',
+                              'inline-block rounded-md px-1.5 py-0.5 text-[11px] font-medium',
                               TONE_BG[dt],
                               TONE_CLASSES[dt],
                             )}
@@ -341,7 +362,7 @@ export function OzonAnalyticsTable({
                         body = (
                           <span
                             className={cn(
-                              'rounded-md px-1.5 py-0.5 text-[11px] font-medium',
+                              'inline-block rounded-md px-1.5 py-0.5 text-[11px] font-medium',
                               TONE_BG[st],
                               TONE_CLASSES[st],
                             )}
@@ -362,7 +383,7 @@ export function OzonAnalyticsTable({
                       <td
                         key={col.key}
                         className={cn(
-                          'border-b border-border/30 px-2 py-1 align-middle tabular-nums',
+                          'whitespace-nowrap overflow-hidden border-b border-border/30 px-2 py-1 align-middle tabular-nums',
                           col.align === 'right' ? 'text-right' : 'text-left',
                           extraClass,
                         )}

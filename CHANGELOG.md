@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.18.4] - 2026-05-18
+
+Блок «Ozon · Аналитика»: ручной ресайз колонок, публикация данных для связей, актуальная цена.
+
+### Исправлено
+
+- **Цена в аналитике показывала raw стоимость без скидок** (`src/app/api/marketplaces/analytics/ozon/route.ts`). Теперь API читает `metadata.priceWithSpp` (marketing_seller_price — актуальная цена для покупателя с учётом SPP/промо), с fallback на `priceKopecks` если маркетинговая цена отсутствует.
+- **Модалка связей не показывала данные из Ozon-аналитики** (`src/lib/blocks/catalog/unit-ozon-analytics.tsx`). Блок не вызывал `useBlockValuePublisher`. Добавлен publish totals: выручка, реклама, ДРР, заказы, товары с продажами. Поля доступны для cross-block формул.
+
+### Изменено
+
+- **Таблица Ozon-аналитики: drag-to-resize колонок + nowrap** (`src/components/unit-economics/ozon-analytics-table.tsx`). Заменён autoColumnWidth на фиксированные ширины с ручным ресайзом (как в `unit.ozon-multi-table`). Все ячейки `whitespace-nowrap` + `overflow-hidden` + `truncate` для текста. `table-layout: fixed`, горизонтальный scroll при переполнении.
+
 ## [0.18.3] - 2026-05-18
 
 Стабилизация Ozon sync: numeric payload цен/комиссий не падает, Performance API больше не получает «Некорректный период», XLSX-импорт цен переехал в настройки блока с инструкционной модалкой, таблицы Ozon аналитики получили автоматические ширины колонок, четыре проблемных аналитических блока публикуют значения и показывают честные статусы.

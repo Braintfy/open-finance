@@ -6,6 +6,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useBlockValuePublisher } from '@/lib/blocks/values';
 import { BarChart3, Download, Loader2, RefreshCw } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import type { BlockDef, BlockRenderProps, BlockSettingsFormProps } from '../types';
@@ -116,6 +117,20 @@ function RenderOzonAnalytics({ instance }: BlockRenderProps) {
     () => applyAnalyticsFilter(rows, activeFilter),
     [rows, activeFilter],
   );
+
+  useBlockValuePublisher(instance.id, {
+    value: (response?.totals.revenueRub ?? 0) * 100,
+    revenue: (response?.totals.revenueRub ?? 0) * 100,
+    ads: (response?.totals.adsRub ?? 0) * 100,
+    drr: response?.totals.drrPct ?? 0,
+    orders: response?.totals.delivered ?? 0,
+    productsWithSales: response?.totals.productsWithSales ?? 0,
+    label: instance.appearance?.title ?? config.title,
+    __money: 'value,revenue,ads',
+    __labels:
+      'value=Выручка / период,revenue=Выручка / период,ads=Реклама / период,' +
+      'drr=ДРР %,orders=Заказы / период,productsWithSales=Товары с продажами',
+  });
 
   const handleExport = useCallback(() => {
     if (filteredRows.length === 0) return;

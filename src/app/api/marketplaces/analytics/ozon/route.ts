@@ -87,6 +87,7 @@ export async function GET(req: NextRequest) {
       stock_own: number;
       price_kopecks: number;
       cost_kopecks: number;
+      marketing_price_rub: number | string | null;
       delivered: number;
       cancelled: number;
       returned: number;
@@ -148,6 +149,7 @@ export async function GET(req: NextRequest) {
         ${unitProducts.stockOwn} AS stock_own,
         ${unitProducts.priceKopecks} AS price_kopecks,
         ${unitProducts.costKopecks} AS cost_kopecks,
+        (${unitProducts.metadata}->>'priceWithSpp')::numeric AS marketing_price_rub,
         COALESCE(ao.delivered, 0)::int AS delivered,
         COALESCE(ao.cancelled, 0)::int AS cancelled,
         COALESCE(ao.returned, 0)::int AS returned,
@@ -184,6 +186,10 @@ export async function GET(req: NextRequest) {
       const daysOfStock =
         velocity > 0 ? Math.round((stockTotal / velocity) * 10) / 10 : null;
 
+      const marketingPrice = Number(r.marketing_price_rub ?? 0);
+      const basePrice = Number(r.price_kopecks ?? 0) / 100;
+      const priceRub = marketingPrice > 0 ? marketingPrice : basePrice;
+
       return {
         productId: r.productId,
         article: r.article,
@@ -191,7 +197,7 @@ export async function GET(req: NextRequest) {
         name: r.name,
         stockMarketplace: Number(r.stock_marketplace ?? 0),
         stockOwn: Number(r.stock_own ?? 0),
-        priceRub: Number(r.price_kopecks ?? 0) / 100,
+        priceRub,
         costRub: Number(r.cost_kopecks ?? 0) / 100,
         delivered,
         cancelled,
