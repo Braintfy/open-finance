@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { z } from 'zod';
-import { Search, AlertCircle, Info } from 'lucide-react';
+import { Search, AlertCircle, Info, RefreshCw } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import {
   PeriodPicker,
@@ -186,6 +186,15 @@ function RenderOzonSearchPhrases({ instance }: BlockRenderProps) {
     <Card className="flex h-full flex-col overflow-hidden p-0">
       <div className="flex flex-wrap items-center gap-2 border-b border-border/40 px-3 py-2">
         <PeriodPicker value={period} onChange={setPeriod} compact />
+        <button
+          type="button"
+          onClick={() => fetchData()}
+          disabled={loading}
+          className="ml-auto inline-flex items-center gap-1 rounded-md border border-border/60 px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
+          title="Обновить данные"
+        >
+          <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
+        </button>
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
         {emptyKind ? (
@@ -194,6 +203,7 @@ function RenderOzonSearchPhrases({ instance }: BlockRenderProps) {
             loading={loading}
             error={error}
             perfError={currentAccount?.perfLastSyncError ?? null}
+            onRefresh={fetchData}
           />
         ) : !data ? (
           <div className="flex h-full items-center justify-center text-center text-[12px] text-muted-foreground">
@@ -258,11 +268,13 @@ function SearchPhrasesEmptyState({
   loading,
   error,
   perfError,
+  onRefresh,
 }: {
   kind: 'no-account' | 'no-perf' | 'perf-error' | 'error' | 'limited';
   loading: boolean;
   error: string | null;
   perfError: string | null;
+  onRefresh?: () => void;
 }) {
   if (loading && kind === 'limited') {
     return (
@@ -299,13 +311,31 @@ function SearchPhrasesEmptyState({
         <AlertCircle className="h-5 w-5" />
         Ошибка Performance API при последней синхронизации
         {perfError && <span className="text-[11px] opacity-80">{perfError}</span>}
+        {onRefresh && (
+          <button
+            type="button"
+            onClick={onRefresh}
+            className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-[11px] font-medium text-foreground hover:bg-accent"
+          >
+            <RefreshCw className="h-3 w-3" /> Попробовать снова
+          </button>
+        )}
       </div>
     );
   }
   if (kind === 'error') {
     return (
-      <div className="flex h-full items-center justify-center text-center text-[12px] text-rose-700 dark:text-rose-300">
+      <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-[12px] text-rose-700 dark:text-rose-300">
         {error ?? 'Не удалось получить данные'}
+        {onRefresh && (
+          <button
+            type="button"
+            onClick={onRefresh}
+            className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-[11px] font-medium text-foreground hover:bg-accent"
+          >
+            <RefreshCw className="h-3 w-3" /> Обновить
+          </button>
+        )}
       </div>
     );
   }

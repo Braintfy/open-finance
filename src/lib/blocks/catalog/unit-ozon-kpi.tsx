@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { z } from 'zod';
-import { Activity, AlertTriangle } from 'lucide-react';
+import { Activity, AlertTriangle, RefreshCw } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
@@ -133,10 +133,26 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
             Реклама ≈
           </span>
         )}
+        <button
+          type="button"
+          onClick={() => fetchData()}
+          disabled={loading}
+          className="ml-auto inline-flex items-center gap-1 rounded-md border border-border/60 px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
+          title="Обновить данные"
+        >
+          <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
+        </button>
       </div>
       {error ? (
-        <div className="flex flex-1 items-center justify-center text-center text-[12px] text-muted-foreground">
+        <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center text-[12px] text-muted-foreground">
           {error}
+          <button
+            type="button"
+            onClick={() => fetchData()}
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-[11px] font-medium text-foreground hover:bg-accent"
+          >
+            <RefreshCw className="h-3 w-3" /> Обновить
+          </button>
         </div>
       ) : (
         <div className="grid flex-1 grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-4">
