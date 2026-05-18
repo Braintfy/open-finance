@@ -205,11 +205,13 @@ function RenderOzonTopAds({ instance }: BlockRenderProps) {
           ? 'no-perf'
           : error
             ? 'error'
-            : currentAccount.perfStatus === 'error'
-              ? 'perf-error'
-              : data && data.rows.length === 0
-                ? 'no-data'
-                : null;
+            : data && data.rows.length > 0
+              ? null
+              : currentAccount.perfStatus === 'error'
+                ? 'perf-error'
+                : data && data.rows.length === 0
+                  ? 'no-data'
+                  : null;
 
   return (
     <Card className="flex h-full flex-col overflow-hidden p-0">

@@ -118,6 +118,11 @@ function RenderOzonAnalytics({ instance }: BlockRenderProps) {
     [rows, activeFilter],
   );
 
+  const periodDays = useMemo(() => {
+    const period = resolvePeriod(periodPreset, customFrom, customTo);
+    return Math.max(1, Math.round((period.to.getTime() - period.from.getTime()) / (24 * 3600 * 1000)));
+  }, [periodPreset, customFrom, customTo]);
+
   const extendedTotals = useMemo(() => {
     let totalCostRub = 0;
     let stockTotal = 0;
@@ -176,11 +181,14 @@ function RenderOzonAnalytics({ instance }: BlockRenderProps) {
     const header = columns.map((c) => c.label);
     const body = sorted.map((row) =>
       columns.map((col) => {
+        const totalRev = response?.totals.revenueRub ?? 0;
         switch (col.key) {
           case 'article':
             return row.article ?? '';
           case 'name':
             return row.name;
+          case 'sku':
+            return row.sku ?? '';
           case 'priceRub':
             return row.priceRub;
           case 'costRub':
@@ -191,6 +199,14 @@ function RenderOzonAnalytics({ instance }: BlockRenderProps) {
             return row.delivered;
           case 'qtyDelivered':
             return row.qtyDelivered;
+          case 'cancelled':
+            return row.cancelled;
+          case 'returned':
+            return row.returned;
+          case 'returnPct': {
+            const total = row.delivered + row.returned;
+            return total > 0 ? +((row.returned / total) * 100).toFixed(1) : '';
+          }
           case 'revenueRub':
             return row.revenueRub;
           case 'adsRub':
@@ -203,6 +219,22 @@ function RenderOzonAnalytics({ instance }: BlockRenderProps) {
             return row.daysOfStock ?? '';
           case 'buyoutPct':
             return row.buyoutPct ?? '';
+          case 'views':
+            return row.views;
+          case 'clicks':
+            return row.clicks;
+          case 'ctr':
+            return row.views > 0 ? +((row.clicks / row.views) * 100).toFixed(2) : '';
+          case 'cartAdds':
+            return row.cartAdds;
+          case 'cpc':
+            return row.clicks > 0 ? +(row.adsRub / row.clicks).toFixed(2) : '';
+          case 'cpm':
+            return row.views > 0 ? +((row.adsRub / row.views) * 1000).toFixed(2) : '';
+          case 'salesPerDay':
+            return periodDays > 0 ? +(row.qtyDelivered / periodDays).toFixed(1) : '';
+          case 'salesShare':
+            return totalRev > 0 ? +((row.revenueRub / totalRev) * 100).toFixed(1) : '';
           default:
             return '';
         }
@@ -215,7 +247,7 @@ function RenderOzonAnalytics({ instance }: BlockRenderProps) {
     const period = resolvePeriod(periodPreset, customFrom, customTo);
     const fname = `ozon-analytics_${period.from.toISOString().slice(0, 10)}_${period.to.toISOString().slice(0, 10)}.xlsx`;
     XLSX.writeFile(wb, fname);
-  }, [filteredRows, sort, config.visibleColumns, periodPreset, customFrom, customTo]);
+  }, [filteredRows, sort, config.visibleColumns, periodPreset, customFrom, customTo, periodDays, response]);
 
   return (
     <Card className="flex h-full flex-col overflow-hidden p-0">
@@ -356,6 +388,8 @@ function RenderOzonAnalytics({ instance }: BlockRenderProps) {
             enabledColumns={config.visibleColumns}
             sort={sort}
             onSortChange={setSort}
+            totalRevenue={response?.totals.revenueRub ?? 0}
+            periodDays={periodDays}
           />
         )}
       </div>

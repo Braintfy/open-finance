@@ -32,7 +32,7 @@ const COLUMN_GROUPS: Array<{
 }> = [
   {
     title: 'Идентификаторы',
-    keys: ['article', 'name'],
+    keys: ['article', 'name', 'sku'],
   },
   {
     title: 'Цена и маржа',
@@ -40,11 +40,11 @@ const COLUMN_GROUPS: Array<{
   },
   {
     title: 'Продажи',
-    keys: ['delivered', 'qtyDelivered', 'revenueRub', 'buyoutPct'],
+    keys: ['delivered', 'qtyDelivered', 'cancelled', 'returned', 'returnPct', 'revenueRub', 'buyoutPct', 'salesPerDay', 'salesShare'],
   },
   {
     title: 'Реклама',
-    keys: ['adsRub', 'drrPct'],
+    keys: ['adsRub', 'drrPct', 'views', 'clicks', 'ctr', 'cartAdds', 'cpc', 'cpm'],
   },
   {
     title: 'Склад',

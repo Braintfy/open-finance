@@ -176,11 +176,13 @@ function RenderOzonSearchPhrases({ instance }: BlockRenderProps) {
         ? 'no-perf'
         : error
           ? 'error'
-          : currentAccount.perfStatus === 'error'
-            ? 'perf-error'
-            : data && data.rows.length === 0
-              ? 'limited'
-              : null;
+          : data && data.rows.length > 0
+            ? null
+            : currentAccount.perfStatus === 'error'
+              ? 'perf-error'
+              : data && data.rows.length === 0
+                ? 'limited'
+                : null;
 
   return (
     <Card className="flex h-full flex-col overflow-hidden p-0">

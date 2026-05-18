@@ -50,7 +50,9 @@ export function buildPerfPeriod(windowDays: number, now: Date = new Date()): Per
     MIN_PERF_WINDOW_DAYS,
     Math.min(MAX_PERF_WINDOW_DAYS, Math.floor(Number.isFinite(windowDays) ? windowDays : 30)),
   );
-  const dateTo = moscowDateString(now);
+  // Ozon Performance API отдаёт данные только за завершённые дни.
+  // dateTo = вчера по MSC, иначе 400 «Некорректный период».
+  const dateTo = shiftIsoDate(moscowDateString(now), -1);
   const dateFrom = shiftIsoDate(dateTo, -(clamped - 1));
   return { dateFrom, dateTo, windowDays: clamped };
 }

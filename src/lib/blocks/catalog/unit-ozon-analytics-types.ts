@@ -28,6 +28,9 @@ export type OzonAnalyticsRow = {
   drrPct: number | null;
   buyoutPct: number | null;
   daysOfStock: number | null;
+  views: number;
+  clicks: number;
+  cartAdds: number;
 };
 
 export type OzonAnalyticsPeriodPreset =
@@ -56,6 +59,7 @@ export const OZON_ANALYTICS_PERIOD_PRESETS: Array<{
 export const DEFAULT_VISIBLE_COLUMNS: TableColumnKey[] = [
   'article',
   'name',
+  'sku',
   'priceRub',
   'delivered',
   'revenueRub',
@@ -63,6 +67,7 @@ export const DEFAULT_VISIBLE_COLUMNS: TableColumnKey[] = [
   'drrPct',
   'stock',
   'daysOfStock',
+  'buyoutPct',
 ];
 
 export const OzonAnalyticsBlockConfigSchema = z.object({
@@ -91,17 +96,29 @@ export const OzonAnalyticsBlockConfigSchema = z.object({
       z.enum([
         'article',
         'name',
+        'sku',
         'priceRub',
         'costRub',
         'marginRub',
         'delivered',
         'qtyDelivered',
+        'cancelled',
+        'returned',
+        'returnPct',
         'revenueRub',
         'adsRub',
         'drrPct',
         'stock',
         'daysOfStock',
         'buyoutPct',
+        'views',
+        'clicks',
+        'ctr',
+        'cartAdds',
+        'cpc',
+        'cpm',
+        'salesPerDay',
+        'salesShare',
       ]),
     )
     .default(DEFAULT_VISIBLE_COLUMNS),

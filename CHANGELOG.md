@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.18.10] - 2025-05-19
+
+Ozon Аналитика: исправление синхронизации Performance API + 12 новых колонок.
+
+### Исправлено
+
+- **`buildPerfPeriod()` — dateTo = вчера** (`src/lib/marketplaces/ozon/sync/perf-period.ts`). Root cause: Ozon Performance API отклоняет незавершённые дни (400 «Некорректный период»). Теперь `dateTo = shiftIsoDate(today, -1)`.
+
+### Добавлено
+
+- **12 новых колонок** в блоке `unit.ozon-analytics`:
+  - **Идентификаторы:** `SKU` — кликабельная ссылка на ozon.ru/product/{sku}
+  - **Продажи:** `Отмены`, `Возвраты`, `% возвратов`, `Прод/день` (среднее за период), `Доля %` (от общей выручки)
+  - **Реклама:** `Показы`, `Клики`, `CTR`, `В корзину` (из рекламы), `CPC` (₽/клик), `CPM` (₽/1000 показов)
+- **Данные `views`, `clicks`, `cartAdds`** теперь подтягиваются из `ozon_perf_sku_stats` в API route (perf source) или возвращаются как 0 (tx fallback).
+- **Группировка колонок в настройках** обновлена: Реклама включает показы/клики/CTR/CPC/CPM, Продажи — отмены/возвраты/долю.
+- **XLSX-экспорт** поддерживает все новые колонки.
+- **Props `totalRevenue` / `periodDays`** в `OzonAnalyticsTable` для расчётных колонок (salesPerDay, salesShare).
+
+## [0.18.9] - 2025-05-19
+
+Ozon Performance: исправления отображения данных и авто-retry sync.
+
+### Исправлено
+
+- **Блоки Top Ads / Campaigns / Search Phrases показывали perf-error даже при наличии данных** — логика `emptyKind` теперь приоритетно показывает загруженные данные из локальных таблиц; `perf-error` отображается только когда данных реально нет.
+- **Колонки РЕКЛАМА и ДРР в Ozon Аналитике показывали «—»** (`/api/marketplaces/analytics/ozon`). Теперь primary source для per-SKU рекламы — `ozon_perf_sku_stats` (Performance API), fallback на `ozon_transactions` (эвристика). Добавлен `adsSource` в response.
+
+### Добавлено
+
+- **Auto-retry sync при 400 от Ozon Performance API** (`perf-sku-stats.ts`). Если запрошенный период отклоняется (30d), sync автоматически пробует 14d → 7d. При успехе — warning в результат, данные сохраняются для меньшего окна.
+
 ## [0.18.8] - 2025-05-19
 
 Кнопка обновления данных в блоках Ozon Performance.

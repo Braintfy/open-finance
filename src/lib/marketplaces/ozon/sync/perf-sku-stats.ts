@@ -16,9 +16,13 @@ import {
   parseCsv,
   parseSkuStatsRow,
 } from '../performance/endpoints';
+import { OzonPerfApiError } from '../performance/client';
 import { rublesToKopecks } from '@/lib/unit-economics/types';
 import { runStageWithTiming, type StageContext, type StageResult } from './types';
-import { buildPerfPeriod, describePeriod } from './perf-period';
+import { buildPerfPeriod, describePeriod, type PerfPeriod } from './perf-period';
+
+/** Окна для auto-retry при 400 от Performance API (desc порядок). */
+const RETRY_WINDOWS = [30, 14, 7] as const;
 
 export async function syncPerfSkuStatsStage(ctx: StageContext): Promise<StageResult> {
   return runStageWithTiming(async () => {
@@ -29,23 +33,52 @@ export async function syncPerfSkuStatsStage(ctx: StageContext): Promise<StageRes
         error: 'Performance API не подключён для этого аккаунта',
       };
     }
-    const period = buildPerfPeriod(ctx.settings.perfWindowDays ?? 30);
 
-    // 1) Запрос на генерацию.
-    let uuid: string;
-    try {
-      uuid = await generateSkuStatsReport(ctx.perfClient, {
-        dateFrom: period.dateFrom,
-        dateTo: period.dateTo,
-      });
-    } catch (e) {
-      // Прокидываем период в сообщение — иначе пользователь видит
-      // голое «Некорректный период» без понимания какие даты ушли.
-      const msg = e instanceof Error ? e.message : String(e);
+    const requestedWindow = ctx.settings.perfWindowDays ?? 30;
+    // Строим список окон для попытки: запрошенное + fallback'и меньше.
+    const windows: number[] = RETRY_WINDOWS.filter((w) => w <= requestedWindow);
+    if (!windows.includes(requestedWindow)) {
+      windows.unshift(requestedWindow);
+    }
+
+    // 1) Запрос на генерацию с auto-retry уменьшенного окна при 400.
+    let uuid: string | null = null;
+    let period: PerfPeriod = buildPerfPeriod(requestedWindow);
+    const warnings: string[] = [];
+
+    for (const windowDays of windows) {
+      period = buildPerfPeriod(windowDays);
+      try {
+        uuid = await generateSkuStatsReport(ctx.perfClient, {
+          dateFrom: period.dateFrom,
+          dateTo: period.dateTo,
+        });
+        if (windowDays < requestedWindow) {
+          warnings.push(
+            `Ozon отклонил период ${requestedWindow}d, успешно с ${windowDays}d (${describePeriod(period)})`,
+          );
+        }
+        break;
+      } catch (e) {
+        // Retry только на 400 (некорректный период); другие ошибки — сразу выход.
+        const is400 = e instanceof OzonPerfApiError && e.status === 400;
+        if (!is400 || windowDays === windows[windows.length - 1]) {
+          const msg = e instanceof Error ? e.message : String(e);
+          return {
+            itemsProcessed: 0,
+            ok: false,
+            error: `${msg} — период ${describePeriod(period)}`,
+          };
+        }
+        // Продолжаем с меньшим окном.
+      }
+    }
+
+    if (!uuid) {
       return {
         itemsProcessed: 0,
         ok: false,
-        error: `${msg} — период ${describePeriod(period)}`,
+        error: `Performance API: не удалось получить отчёт ни с одним окном`,
       };
     }
 
@@ -112,7 +145,7 @@ export async function syncPerfSkuStatsStage(ctx: StageContext): Promise<StageRes
     // perf-sync через side-effect перфокеннадо здесь нет — оркестратор сам
     // позовёт updateAccountLastSync.
 
-    return { itemsProcessed: processed, itemsTotal: rows.length };
+    return { itemsProcessed: processed, itemsTotal: rows.length, warnings };
   });
 }
 

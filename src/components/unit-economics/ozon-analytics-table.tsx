@@ -13,17 +13,29 @@ import { cn } from '@/lib/utils';
 export type TableColumnKey =
   | 'article'
   | 'name'
+  | 'sku'
   | 'priceRub'
   | 'costRub'
   | 'marginRub'
   | 'delivered'
   | 'qtyDelivered'
+  | 'cancelled'
+  | 'returned'
+  | 'returnPct'
   | 'revenueRub'
   | 'adsRub'
   | 'drrPct'
   | 'stock'
   | 'daysOfStock'
-  | 'buyoutPct';
+  | 'buyoutPct'
+  | 'views'
+  | 'clicks'
+  | 'ctr'
+  | 'cartAdds'
+  | 'cpc'
+  | 'cpm'
+  | 'salesPerDay'
+  | 'salesShare';
 
 export type TableSort = {
   key: TableColumnKey;
@@ -47,28 +59,43 @@ type ColumnDef = {
 export const COLUMN_DEFS: ColumnDef[] = [
   { key: 'article', label: 'Артикул', align: 'left', minPx: 80, defaultPx: 140, sortable: true },
   { key: 'name', label: 'Название', align: 'left', minPx: 120, defaultPx: 220, sortable: true },
+  { key: 'sku', label: 'SKU', align: 'left', minPx: 80, defaultPx: 120, sortable: true },
   { key: 'priceRub', label: 'Цена', align: 'right', minPx: 70, defaultPx: 90, sortable: true },
   { key: 'costRub', label: 'Себест.', align: 'right', minPx: 70, defaultPx: 90, sortable: true },
   { key: 'marginRub', label: 'Маржа', hint: 'price − cost', align: 'right', minPx: 70, defaultPx: 90, sortable: true },
   { key: 'delivered', label: 'Заказы', align: 'right', minPx: 56, defaultPx: 72, sortable: true },
   { key: 'qtyDelivered', label: 'Штук', align: 'right', minPx: 50, defaultPx: 64, sortable: true },
+  { key: 'cancelled', label: 'Отмены', align: 'right', minPx: 56, defaultPx: 72, sortable: true },
+  { key: 'returned', label: 'Возвраты', align: 'right', minPx: 56, defaultPx: 72, sortable: true },
+  { key: 'returnPct', label: '% возвр.', hint: 'returned / (del+ret)', align: 'right', minPx: 56, defaultPx: 72, sortable: true },
   { key: 'revenueRub', label: 'Выручка', align: 'right', minPx: 80, defaultPx: 110, sortable: true },
-  { key: 'adsRub', label: 'Реклама', align: 'right', minPx: 70, defaultPx: 100, sortable: true },
+  { key: 'adsRub', label: 'Расход', hint: 'рекламный бюджет', align: 'right', minPx: 70, defaultPx: 100, sortable: true },
   { key: 'drrPct', label: 'ДРР', hint: '%', align: 'right', minPx: 56, defaultPx: 72, sortable: true },
   { key: 'stock', label: 'Остаток', align: 'right', minPx: 60, defaultPx: 80, sortable: true },
   { key: 'daysOfStock', label: 'Дней', hint: 'хватит остатка', align: 'right', minPx: 50, defaultPx: 64, sortable: true },
   { key: 'buyoutPct', label: 'Выкуп', hint: '%', align: 'right', minPx: 56, defaultPx: 72, sortable: true },
+  { key: 'views', label: 'Показы', hint: 'рекламные', align: 'right', minPx: 60, defaultPx: 80, sortable: true },
+  { key: 'clicks', label: 'Клики', hint: 'рекламные', align: 'right', minPx: 56, defaultPx: 72, sortable: true },
+  { key: 'ctr', label: 'CTR', hint: '% клик/показы', align: 'right', minPx: 50, defaultPx: 64, sortable: true },
+  { key: 'cartAdds', label: 'В корзину', hint: 'из рекламы', align: 'right', minPx: 56, defaultPx: 80, sortable: true },
+  { key: 'cpc', label: 'CPC', hint: '₽ за клик', align: 'right', minPx: 56, defaultPx: 72, sortable: true },
+  { key: 'cpm', label: 'CPM', hint: '₽ за 1000 показов', align: 'right', minPx: 56, defaultPx: 72, sortable: true },
+  { key: 'salesPerDay', label: 'Прод/день', hint: 'среднее', align: 'right', minPx: 56, defaultPx: 72, sortable: true },
+  { key: 'salesShare', label: 'Доля %', hint: 'от общей выручки', align: 'right', minPx: 56, defaultPx: 72, sortable: true },
 ];
 
 function getCellValue(
   row: OzonAnalyticsRow,
   key: TableColumnKey,
+  ctx?: { totalRevenue?: number; periodDays?: number },
 ): number | string | null {
   switch (key) {
     case 'article':
       return row.article ?? '';
     case 'name':
       return row.name;
+    case 'sku':
+      return row.sku ?? '';
     case 'priceRub':
       return row.priceRub;
     case 'costRub':
@@ -79,6 +106,14 @@ function getCellValue(
       return row.delivered;
     case 'qtyDelivered':
       return row.qtyDelivered;
+    case 'cancelled':
+      return row.cancelled;
+    case 'returned':
+      return row.returned;
+    case 'returnPct': {
+      const total = row.delivered + row.returned;
+      return total > 0 ? (row.returned / total) * 100 : null;
+    }
     case 'revenueRub':
       return row.revenueRub;
     case 'adsRub':
@@ -91,6 +126,26 @@ function getCellValue(
       return row.daysOfStock;
     case 'buyoutPct':
       return row.buyoutPct;
+    case 'views':
+      return row.views;
+    case 'clicks':
+      return row.clicks;
+    case 'ctr':
+      return row.views > 0 ? (row.clicks / row.views) * 100 : null;
+    case 'cartAdds':
+      return row.cartAdds;
+    case 'cpc':
+      return row.clicks > 0 ? row.adsRub / row.clicks : null;
+    case 'cpm':
+      return row.views > 0 ? (row.adsRub / row.views) * 1000 : null;
+    case 'salesPerDay': {
+      const days = ctx?.periodDays ?? 1;
+      return days > 0 ? row.qtyDelivered / days : 0;
+    }
+    case 'salesShare': {
+      const total = ctx?.totalRevenue ?? 0;
+      return total > 0 ? (row.revenueRub / total) * 100 : null;
+    }
     default:
       return null;
   }
@@ -173,11 +228,15 @@ export function OzonAnalyticsTable({
   enabledColumns,
   sort,
   onSortChange,
+  totalRevenue = 0,
+  periodDays = 1,
 }: {
   rows: OzonAnalyticsRow[];
   enabledColumns: TableColumnKey[];
   sort: TableSort;
   onSortChange: (sort: TableSort) => void;
+  totalRevenue?: number;
+  periodDays?: number;
 }) {
   const columns = useMemo(
     () => COLUMN_DEFS.filter((c) => enabledColumns.includes(c.key)),
@@ -303,6 +362,12 @@ export function OzonAnalyticsTable({
               const stock = row.stockMarketplace + row.stockOwn;
               const dt = drrTone(row.drrPct);
               const st = stockTone(row.daysOfStock, stock);
+              const ctrVal = row.views > 0 ? (row.clicks / row.views) * 100 : null;
+              const cpcVal = row.clicks > 0 ? row.adsRub / row.clicks : null;
+              const cpmVal = row.views > 0 ? (row.adsRub / row.views) * 1000 : null;
+              const returnPctVal = (row.delivered + row.returned) > 0 ? (row.returned / (row.delivered + row.returned)) * 100 : null;
+              const salesPerDayVal = periodDays > 0 ? row.qtyDelivered / periodDays : 0;
+              const salesShareVal = totalRevenue > 0 ? (row.revenueRub / totalRevenue) * 100 : null;
               return (
                 <tr key={row.productId} className="hover:bg-accent/20">
                   {columns.map((col) => {
@@ -323,6 +388,19 @@ export function OzonAnalyticsTable({
                           </span>
                         );
                         break;
+                      case 'sku':
+                        body = row.sku ? (
+                          <a
+                            href={`https://www.ozon.ru/product/${row.sku}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-600 hover:underline dark:text-blue-400"
+                            title="Открыть на Ozon"
+                          >
+                            {row.sku}
+                          </a>
+                        ) : '—';
+                        break;
                       case 'priceRub':
                         body = row.priceRub > 0 ? formatRub(row.priceRub) : '—';
                         break;
@@ -338,6 +416,15 @@ export function OzonAnalyticsTable({
                         break;
                       case 'qtyDelivered':
                         body = formatInt(row.qtyDelivered);
+                        break;
+                      case 'cancelled':
+                        body = row.cancelled > 0 ? formatInt(row.cancelled) : '—';
+                        break;
+                      case 'returned':
+                        body = row.returned > 0 ? formatInt(row.returned) : '—';
+                        break;
+                      case 'returnPct':
+                        body = formatPct(returnPctVal);
                         break;
                       case 'revenueRub':
                         body = row.revenueRub > 0 ? formatRub(row.revenueRub) : '—';
@@ -377,6 +464,30 @@ export function OzonAnalyticsTable({
                         break;
                       case 'buyoutPct':
                         body = formatPct(row.buyoutPct);
+                        break;
+                      case 'views':
+                        body = row.views > 0 ? formatInt(row.views) : '—';
+                        break;
+                      case 'clicks':
+                        body = row.clicks > 0 ? formatInt(row.clicks) : '—';
+                        break;
+                      case 'ctr':
+                        body = formatPct(ctrVal);
+                        break;
+                      case 'cartAdds':
+                        body = row.cartAdds > 0 ? formatInt(row.cartAdds) : '—';
+                        break;
+                      case 'cpc':
+                        body = cpcVal !== null ? formatRub(cpcVal, false) : '—';
+                        break;
+                      case 'cpm':
+                        body = cpmVal !== null ? formatRub(cpmVal) : '—';
+                        break;
+                      case 'salesPerDay':
+                        body = salesPerDayVal > 0 ? salesPerDayVal.toFixed(1) : '—';
+                        break;
+                      case 'salesShare':
+                        body = formatPct(salesShareVal);
                         break;
                     }
                     return (

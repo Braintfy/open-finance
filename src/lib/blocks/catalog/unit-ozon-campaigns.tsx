@@ -187,11 +187,13 @@ function RenderOzonCampaigns({ instance }: BlockRenderProps) {
           ? 'no-perf'
           : error
             ? 'error'
-            : currentAccount.perfStatus === 'error'
-              ? 'perf-error'
-              : data && data.rows.length === 0
-                ? 'no-campaigns'
-                : null;
+            : data && data.rows.length > 0
+              ? null
+              : currentAccount.perfStatus === 'error'
+                ? 'perf-error'
+                : data && data.rows.length === 0
+                  ? 'no-campaigns'
+                  : null;
 
   return (
     <Card className="flex h-full flex-col overflow-hidden p-0">

@@ -46,6 +46,9 @@ function row(over: Partial<OzonAnalyticsRow>): OzonAnalyticsRow {
     drrPct: over.drrPct ?? null,
     buyoutPct: over.buyoutPct ?? null,
     daysOfStock: over.daysOfStock ?? null,
+    views: over.views ?? 0,
+    clicks: over.clicks ?? 0,
+    cartAdds: over.cartAdds ?? 0,
   };
 }
 

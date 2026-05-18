@@ -8,7 +8,7 @@ import { sql } from 'drizzle-orm';
 import { auth } from '@/lib/auth';
 import { db } from '@/lib/db/client';
 import { unitProducts } from '@/lib/db/schema/unit-economics';
-import { ozonOrders, ozonTransactions } from '@/lib/db/schema/marketplaces';
+import { ozonOrders, ozonTransactions, ozonPerfSkuStats } from '@/lib/db/schema/marketplaces';
 import type { OzonAnalyticsRow } from '@/lib/blocks/catalog/unit-ozon-analytics-types';
 
 // Re-export для существующих импортов API-роуты.
@@ -27,6 +27,7 @@ export type OzonAnalyticsResponse = {
     productsWithSales: number;
   };
   period: { from: string; to: string };
+  adsSource: 'performance' | 'transactions-heuristic' | 'none';
 };
 
 /**
@@ -74,9 +75,64 @@ export async function GET(req: NextRequest) {
 
     const accountCondOrders = accountId ? sql`AND o.account_id = ${accountId}` : sql``;
     const accountCondTx = accountId ? sql`AND tx.account_id = ${accountId}` : sql``;
+    const accountCondPerf = accountId ? sql`AND ps.account_id = ${accountId}` : sql``;
     const accountCondUp = accountId
       ? sql`AND ${unitProducts.marketplaceAccountId} = ${accountId}`
       : sql``;
+
+    // Определяем источник рекламных данных: perf_sku_stats (primary) → transactions (fallback).
+    type AdsCheckRow = { cnt: number };
+    const perfCheck = await db.execute<AdsCheckRow>(sql`
+      SELECT COUNT(*)::int AS cnt FROM ${ozonPerfSkuStats} ps
+      WHERE ps.tenant_id = ${session.tenantId}
+        ${accountCondPerf}
+        AND ps.date >= ${fromIso}::date
+        AND ps.date < ${toIso}::date
+      LIMIT 1
+    `);
+    const perfCheckRows: AdsCheckRow[] = Array.isArray(perfCheck)
+      ? (perfCheck as AdsCheckRow[])
+      : (((perfCheck as unknown) as { rows: AdsCheckRow[] }).rows ?? []);
+    const hasPerfData = (perfCheckRows[0]?.cnt ?? 0) > 0;
+
+    // CTE для рекламных данных зависит от источника.
+    const adsCte = hasPerfData
+      ? sql`
+      agg_ads AS (
+        SELECT
+          ps.sku,
+          SUM(ps.expense_kopecks) AS ads_kopecks,
+          SUM(ps.views) AS perf_views,
+          SUM(ps.clicks) AS perf_clicks,
+          SUM(ps.cart_adds) AS perf_cart_adds
+        FROM ${ozonPerfSkuStats} ps
+        WHERE ps.tenant_id = ${session.tenantId}
+          ${accountCondPerf}
+          AND ps.date >= ${fromIso}::date
+          AND ps.date < ${toIso}::date
+        GROUP BY ps.sku
+      )`
+      : sql`
+      agg_ads AS (
+        SELECT
+          tx.sku,
+          SUM(ABS(tx.amount_kopecks)) AS ads_kopecks,
+          0::bigint AS perf_views,
+          0::bigint AS perf_clicks,
+          0::bigint AS perf_cart_adds
+        FROM ${ozonTransactions} tx
+        WHERE tx.tenant_id = ${session.tenantId}
+          ${accountCondTx}
+          AND tx.operation_date >= ${fromIso}::timestamp
+          AND tx.operation_date < ${toIso}::timestamp
+          AND tx.sku IS NOT NULL
+          AND ${ADS_FILTER_SQL}
+        GROUP BY tx.sku
+      )`;
+
+    let adsSource: 'performance' | 'transactions-heuristic' | 'none' = hasPerfData
+      ? 'performance'
+      : 'none';
 
     type Raw = {
       productId: string;
@@ -94,6 +150,9 @@ export async function GET(req: NextRequest) {
       qty_delivered: number | string;
       revenue_kopecks: number | string;
       ads_kopecks: number | string;
+      perf_views: number | string;
+      perf_clicks: number | string;
+      perf_cart_adds: number | string;
     };
 
     const rawResult = await db.execute<Raw>(sql`
@@ -127,19 +186,7 @@ export async function GET(req: NextRequest) {
         WHERE offer_id IS NOT NULL AND offer_id <> ''
         GROUP BY offer_id
       ),
-      agg_ads AS (
-        SELECT
-          tx.sku,
-          SUM(ABS(tx.amount_kopecks)) AS ads_kopecks
-        FROM ${ozonTransactions} tx
-        WHERE tx.tenant_id = ${session.tenantId}
-          ${accountCondTx}
-          AND tx.operation_date >= ${fromIso}::timestamp
-          AND tx.operation_date < ${toIso}::timestamp
-          AND tx.sku IS NOT NULL
-          AND ${ADS_FILTER_SQL}
-        GROUP BY tx.sku
-      )
+      ${adsCte}
       SELECT
         ${unitProducts.id}::text AS "productId",
         ${unitProducts.article} AS article,
@@ -155,7 +202,10 @@ export async function GET(req: NextRequest) {
         COALESCE(ao.returned, 0)::int AS returned,
         COALESCE(ao.qty_delivered, 0) AS qty_delivered,
         COALESCE(ao.revenue_rub * 100, 0) AS revenue_kopecks,
-        COALESCE(ad.ads_kopecks, 0) AS ads_kopecks
+        COALESCE(ad.ads_kopecks, 0) AS ads_kopecks,
+        COALESCE(ad.perf_views, 0) AS perf_views,
+        COALESCE(ad.perf_clicks, 0) AS perf_clicks,
+        COALESCE(ad.perf_cart_adds, 0) AS perf_cart_adds
       FROM ${unitProducts}
       LEFT JOIN agg_orders ao ON ao.offer_id = ${unitProducts.article}
       LEFT JOIN agg_ads ad ON ad.sku = ${unitProducts.sku}
@@ -208,6 +258,9 @@ export async function GET(req: NextRequest) {
         drrPct,
         buyoutPct,
         daysOfStock,
+        views: Number(r.perf_views ?? 0),
+        clicks: Number(r.perf_clicks ?? 0),
+        cartAdds: Number(r.perf_cart_adds ?? 0),
       };
     });
 
@@ -236,11 +289,17 @@ export async function GET(req: NextRequest) {
         ? (totals.adsRub / totals.revenueRub) * 100
         : null;
 
+    // Если не perf и есть ads данные → значит из транзакций.
+    if (!hasPerfData && totals.adsRub > 0) {
+      adsSource = 'transactions-heuristic';
+    }
+
     return NextResponse.json({
       ok: true,
       rows,
       totals,
       period: { from: from.toISOString(), to: to.toISOString() },
+      adsSource,
     } satisfies OzonAnalyticsResponse);
   } catch (e) {
     console.error('[ozon-analytics] GET failed:', e);
