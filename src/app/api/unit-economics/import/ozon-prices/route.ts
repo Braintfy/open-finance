@@ -57,23 +57,40 @@ export async function POST(req: NextRequest) {
 
   const upsertRows = parsed.rows
     .filter((r) => r.article || r.sku || r.name)
-    .map((r) => ({
-      tenantId: session.tenantId!,
-      userId: session.userId!,
-      marketplace: 'ozon' as const,
-      article: r.article,
-      sku: r.sku,
-      barcode: r.barcode,
-      name: r.name,
-      status: r.status,
-      visibility: r.visibility,
-      stockMarketplace: r.stockMarketplace,
-      stockOwn: r.stockOwn,
-      priceKopecks: rublesToKopecks(r.price),
-      costKopecks: rublesToKopecks(r.cost),
-      volumeL: Math.round(r.volumeL * 100),
-      metadata: { raw: r.raw, volumetricWeightKg: r.volumetricWeightKg },
-    }));
+    .map((r) => {
+      const commissions: Record<string, number> = {};
+      if (typeof r.fboCommissionPct === 'number' && r.fboCommissionPct > 0)
+        commissions.fboPct = r.fboCommissionPct;
+      if (typeof r.fbsCommissionPct === 'number' && r.fbsCommissionPct > 0)
+        commissions.fbsPct = r.fbsCommissionPct;
+      const metadata: Record<string, unknown> = {
+        raw: r.raw,
+        volumetricWeightKg: r.volumetricWeightKg,
+      };
+      if (r.oldPrice > 0) metadata.oldPrice = r.oldPrice;
+      if (r.minPrice > 0) metadata.minPrice = r.minPrice;
+      if (r.vatPct > 0) metadata.vatPct = r.vatPct;
+      if (Object.keys(commissions).length > 0) metadata.commissions = commissions;
+      if (typeof r.acquiringPct === 'number' && r.acquiringPct > 0)
+        metadata.acquiringPct = r.acquiringPct;
+      return {
+        tenantId: session.tenantId!,
+        userId: session.userId!,
+        marketplace: 'ozon' as const,
+        article: r.article,
+        sku: r.sku,
+        barcode: r.barcode,
+        name: r.name,
+        status: r.status,
+        visibility: r.visibility,
+        stockMarketplace: r.stockMarketplace,
+        stockOwn: r.stockOwn,
+        priceKopecks: rublesToKopecks(r.price),
+        costKopecks: rublesToKopecks(r.cost),
+        volumeL: Math.round(r.volumeL * 100),
+        metadata,
+      };
+    });
 
   const { inserted } = await bulkUpsertUnitProducts(upsertRows);
 

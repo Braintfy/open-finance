@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.18.3] - 2026-05-18
+
+Стабилизация Ozon sync: numeric payload цен/комиссий не падает, Performance API больше не получает «Некорректный период», XLSX-импорт цен переехал в настройки блока с инструкционной модалкой, таблицы Ozon аналитики получили автоматические ширины колонок, четыре проблемных аналитических блока публикуют значения и показывают честные статусы.
+
+### Исправлено
+
+- **`prices: value.replace is not a function` при sync цен Ozon** ([`src/lib/marketplaces/ozon/upsert-plan.ts`](src/lib/marketplaces/ozon/upsert-plan.ts), [`src/lib/marketplaces/ozon/types.ts`](src/lib/marketplaces/ozon/types.ts)). Lenient-клиент возвращал `price.price` / `marketing_seller_price` числом (Ozon отдаёт смешанные типы), а `parseMoneyRu` ожидал строго `string | undefined` и падал на `.replace`. `parseMoneyRu` теперь принимает `unknown` и обрабатывает `string`/`number`/`null`/`undefined`/мусор. Zod-схема `PriceMoneySchema` ослаблена через `z.union([z.string(), z.number()])` для всех денежных полей. Покрыто 12 новыми тестами в [`scripts/test-ozon-upsert.ts`](scripts/test-ozon-upsert.ts) (`92 PASS`).
+- **`Ozon Perf 400 «Некорректный период»`** ([`src/lib/marketplaces/ozon/sync/perf-sku-stats.ts`](src/lib/marketplaces/ozon/sync/perf-sku-stats.ts)). UTC-дата уезжала в завтра по Москве около полуночи + окно могло превышать лимит async-отчёта. Новый pure-helper [`buildPerfPeriod`](src/lib/marketplaces/ozon/sync/perf-period.ts) считает диапазон по MSC-календарю, ограничивает `[1, 62]` дня (документированный лимит), не уходит в будущее. Ошибки от Perf API теперь логируются с фактическим диапазоном — пользователю видно «период `YYYY-MM-DD…YYYY-MM-DD (Nd, MSC)`», а не голое 400. Smoke-тест [`scripts/test-ozon-perf-period.ts`](scripts/test-ozon-perf-period.ts) — 20 PASS.
+- **«Ozon · Кампании» показывал 0 расхода для всех кампаний** ([`src/app/api/marketplaces/ozon/campaigns/route.ts`](src/app/api/marketplaces/ozon/campaigns/route.ts)). `perf-sku-stats` сейчас не разбивает отчёт по `campaign_id`, а API фильтровал `campaign_id IS NOT NULL`. Добавлен fallback `summary`: возвращаем total expense/orders/drr по аккаунту + флаг `statsAreAccountWide`, чтобы блок честно показал «расход — суммарный по аккаунту» вместо пустых строк.
+- **XLSX импорт цен Ozon путал «Цена до скидки» с действующей** ([`src/lib/unit-economics/import/ozon-price-template.ts`](src/lib/unit-economics/import/ozon-price-template.ts)). Старый matcher `Цена` ловил первую же подходящую колонку, включая зачёркнутую. Парсер переписан на двухступенчатый exact-match → substring fallback с приоритетом `Текущая цена (со скидкой)` → `Новая цена (со скидкой)`. Добавлены отдельные поля `oldPrice`, `minPrice`, `vatPct`, `fboCommissionPct`, `fbsCommissionPct`, `acquiringPct` в `OzonImportRow` и в metadata `unit_products` (см. [`route`](src/app/api/unit-economics/import/ozon-prices/route.ts)). Строки-подсказки Ozon без артикула пропускаются. Тест на реальном шаблоне `Шаблон для обновления цен_18.05.26.xlsx` — 38 PASS.
+
+### Добавлено
+
+- **Секция «Импорт XLSX» в настройках блока `unit.ozon-multi-table`** ([`src/components/unit-economics/ozon-import-section.tsx`](src/components/unit-economics/ozon-import-section.tsx)). Две кнопки `Импорт цен` / `Импорт товаров`, инструкционный `Dialog` (как заполнить шаблон, какие колонки читаются, что мы НЕ отправляем цены обратно в Ozon), баннер результата с количеством распознанных строк и колонок. Старая toolbar-кнопка `Импорт XLSX` и сопутствующие баннеры из блока убраны.
+- **Pure-helper `buildPerfPeriod`** ([`src/lib/marketplaces/ozon/sync/perf-period.ts`](src/lib/marketplaces/ozon/sync/perf-period.ts)) — расчёт MSC-окна для Performance API с защитой от будущей даты и clamp до 62 дней. Документированный лимит async-отчёта Ozon.
+- **Адаптивные ширины колонок таблиц** ([`src/lib/blocks/auto-column-width.ts`](src/lib/blocks/auto-column-width.ts)). Общий SSR-safe helper через `canvas.measureText`: измеряет заголовок (uppercase/bold) и самые длинные форматированные значения, клипает к min/max каждой колонки. Применён в [`ozon-analytics-table`](src/components/unit-economics/ozon-analytics-table.tsx), [`unit-ozon-top-ads`](src/lib/blocks/catalog/unit-ozon-top-ads.tsx), [`unit-ozon-campaigns`](src/lib/blocks/catalog/unit-ozon-campaigns.tsx), [`unit-ozon-search-phrases`](src/lib/blocks/catalog/unit-ozon-search-phrases.tsx).
+- **`useBlockValuePublisher` в четырёх аналитических блоках** (Top Ads, Campaigns, Search Phrases, Data Health). Теперь можно привязываться к `totalExpenseRub` / `totalOrders` / `avgDrrPct` / `perfConnected` / `sellerErrorMessage` etc. — поля синхронизированы с [`/api/blocks/sources`](src/app/api/blocks/sources/route.ts).
+
+### Изменено
+
+- **Четыре «сломанных» аналитических блока получили честные empty/error states.**
+  - `unit.ozon-top-ads` / `unit.ozon-campaigns` / `unit.ozon-search-phrases` — разные UI для `no-account`, `no-perf`, `perf-error`, `error`, `no-data`, `limited`. Больше не показывают «Нет данных. Подключите Performance API» когда Performance уже подключён, но просто нет данных за период.
+  - `unit.ozon-search-phrases` теперь сообщает, что Ozon Performance API не отдаёт стабильный отчёт «поисковые фразы» — это не баг подключения, а ограничение API (sync-stage помечен `TODO real implementation` в [`perf-phrases.ts`](src/lib/marketplaces/ozon/sync/perf-phrases.ts)).
+  - `unit.ozon-data-health` показывает `useMarketplaceAccounts().error` отдельной красной карточкой с кнопкой «Повторить», отличает «нет ни одного аккаунта» от «не выбран в этом блоке».
+- **«Ozon · Кампании» отображает badge «Расход — суммарный по аккаунту»**, если Performance API не разбил отчёт по `campaign_id`, и помечает курсивом ячейки `Расход = 0` с tooltip «Нет данных perf-sync для этой кампании».
+
+### Audit
+
+- `pnpm typecheck` ✓
+- `pnpm build` ✓ (60+ routes, нет регрессий, единственный error был `useBlockValuePublisher` после early return в Data Health — поправлен).
+- **150 smoke-тестов PASS:** `test-ozon-upsert.ts` (92), `test-ozon-perf-period.ts` (20, новый), `test-unit-economics.ts` (38, включая реальный XLSX-шаблон).
+- Финальный осмотр: каждый из четырёх «проблемных» блоков теперь имеет 5+ различимых состояний (loading / no-account / no-perf / perf-error / api-error / limited / data), таблицы Ozon аналитики не уходят за viewport, привязки в Settings → Bindings не падают на новые поля.
+
 ## [0.18.2] - 2026-05-18
 
 Фиксы багов Ozon-аналитики (React-warning, краш perf-sync, отключённая granularity, UX KPI) + редизайн модалки привязок: two-level рендер полей, понятный label страницы «Аналитика Ozon», унифицированная категория и стабильная сортировка блоков.

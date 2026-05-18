@@ -16,6 +16,7 @@ import {
 import { Card } from '@/components/ui/card';
 import { OzonAccountSelector } from '@/components/marketplaces/ozon-account-selector';
 import { useMarketplaceAccounts } from '@/lib/marketplaces/use-accounts';
+import { useBlockValuePublisher } from '@/lib/blocks/values';
 import type {
   BlockDef,
   BlockRenderProps,
@@ -42,13 +43,65 @@ function formatRelativeTime(iso: string | null): string {
 
 function RenderOzonDataHealth({ instance }: BlockRenderProps) {
   const config = useMemo(() => parseConfig(instance.config), [instance.config]);
-  const { accounts, loading } = useMarketplaceAccounts({ marketplace: 'ozon' });
+  const { accounts, loading, error, reload } = useMarketplaceAccounts({ marketplace: 'ozon' });
   const account = accounts.find((a) => a.id === config.accountId);
+
+  // Hook должен вызываться безусловно — поэтому считаем диагностику здесь,
+  // даже если account ещё не выбран. При отсутствии account публикуем 0/-1.
+  const sellerOk = !!account && account.status === 'active' && account.lastSyncStatus !== 'error';
+  const perfOk = !!account && account.perfConnected && account.perfStatus !== 'error';
+  const hoursSinceSync = account?.lastSyncAt
+    ? (Date.now() - new Date(account.lastSyncAt).getTime()) / 1000 / 60 / 60
+    : Infinity;
+  const stale = hoursSinceSync > 24;
+  useBlockValuePublisher(instance.id, {
+    sellerOk: sellerOk ? 1 : 0,
+    perfOk: perfOk ? 1 : 0,
+    perfConnected: account?.perfConnected ? 1 : 0,
+    sellerHoursSinceSync: Number.isFinite(hoursSinceSync) ? hoursSinceSync : -1,
+    stale: stale ? 1 : 0,
+    sellerLastSyncStatus: account?.lastSyncStatus ?? '',
+    perfStatus: account?.perfStatus ?? '',
+    sellerErrorMessage: account?.lastSyncError ?? '',
+    perfErrorMessage: account?.perfLastSyncError ?? '',
+  });
 
   if (loading) {
     return (
       <Card className="flex h-full items-center justify-center text-[12px] text-muted-foreground">
         Загрузка…
+      </Card>
+    );
+  }
+
+  if (error) {
+    return (
+      <Card className="flex h-full flex-col items-center justify-center gap-2 p-3 text-center text-[12px] text-rose-700 dark:text-rose-300">
+        <AlertTriangle className="h-5 w-5" />
+        Не удалось загрузить статус интеграций
+        <span className="text-[11px] opacity-80">{error}</span>
+        <button
+          type="button"
+          onClick={() => reload()}
+          className="mt-1 inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
+        >
+          <RefreshCw className="h-3 w-3" /> Повторить
+        </button>
+      </Card>
+    );
+  }
+
+  if (accounts.length === 0) {
+    return (
+      <Card className="flex h-full flex-col items-center justify-center gap-2 p-3 text-center text-[12px] text-muted-foreground">
+        <AlertTriangle className="h-5 w-5" />
+        Ни один Ozon-магазин не подключён
+        <Link
+          href="/settings/integrations"
+          className="text-[11px] text-primary hover:underline"
+        >
+          Подключить в Настройках → Интеграции →
+        </Link>
       </Card>
     );
   }
@@ -61,13 +114,6 @@ function RenderOzonDataHealth({ instance }: BlockRenderProps) {
       </Card>
     );
   }
-
-  const sellerOk = account.status === 'active' && account.lastSyncStatus !== 'error';
-  const perfOk = account.perfConnected && account.perfStatus !== 'error';
-  const hoursSinceSync = account.lastSyncAt
-    ? (Date.now() - new Date(account.lastSyncAt).getTime()) / 1000 / 60 / 60
-    : Infinity;
-  const stale = hoursSinceSync > 24;
 
   return (
     <Card className="flex h-full flex-col overflow-hidden p-3">

@@ -513,10 +513,15 @@ async function fieldsForBlock(
     ];
   }
   if (block.type === 'unit.ozon-top-ads') {
+    // Поля синхронизированы с useBlockValuePublisher в unit-ozon-top-ads.tsx.
     return [
-      { name: 'value', label: 'Топ-N товаров', value: null, format: 'number' },
-      { name: 'totalAds', label: 'Расход всего', value: null, format: 'money' },
-      { name: 'avgDrr', label: 'Средний ДРР %', value: null, format: 'number' },
+      { name: 'value', label: 'Расход на рекламу', value: null, format: 'money' },
+      { name: 'totalExpenseRub', label: 'Расход на рекламу', value: null, format: 'money' },
+      { name: 'totalOrders', label: 'Заказы', value: null, format: 'number' },
+      { name: 'totalClicks', label: 'Клики', value: null, format: 'number' },
+      { name: 'totalViews', label: 'Показы', value: null, format: 'number' },
+      { name: 'avgDrrPct', label: 'Средний ДРР %', value: null, format: 'number' },
+      { name: 'rowCount', label: 'Товаров в топе', value: null, format: 'number' },
     ];
   }
   if (block.type === 'unit.ozon-stock-clusters') {
@@ -526,24 +531,42 @@ async function fieldsForBlock(
     ];
   }
   if (block.type === 'unit.ozon-search-phrases') {
+    // Синхронизированы с useBlockValuePublisher в unit-ozon-search-phrases.tsx.
     return [
       { name: 'value', label: 'Фраз', value: null, format: 'number' },
-      { name: 'totalExpense', label: 'Расход всего', value: null, format: 'money' },
+      { name: 'phrasesCount', label: 'Количество фраз', value: null, format: 'number' },
+      { name: 'totalExpenseRub', label: 'Расход на рекламу', value: null, format: 'money' },
       { name: 'totalOrders', label: 'Заказы', value: null, format: 'number' },
+      { name: 'totalClicks', label: 'Клики', value: null, format: 'number' },
+      { name: 'totalViews', label: 'Показы', value: null, format: 'number' },
+      { name: 'avgCtrPct', label: 'Средний CTR %', value: null, format: 'number' },
     ];
   }
   if (block.type === 'unit.ozon-campaigns') {
+    // Синхронизированы с useBlockValuePublisher в unit-ozon-campaigns.tsx.
     return [
       { name: 'value', label: 'Кампаний', value: null, format: 'number' },
-      { name: 'runningCount', label: 'Активных', value: null, format: 'number' },
-      { name: 'totalExpense', label: 'Расход всего', value: null, format: 'money' },
+      { name: 'campaignsCount', label: 'Кампаний всего', value: null, format: 'number' },
+      { name: 'activeCampaignsCount', label: 'Активных', value: null, format: 'number' },
+      { name: 'totalExpenseRub', label: 'Расход на рекламу', value: null, format: 'money' },
+      { name: 'totalOrders', label: 'Заказы', value: null, format: 'number' },
+      { name: 'totalOrdersRub', label: 'Выручка с рекламы', value: null, format: 'money' },
+      { name: 'avgDrrPct', label: 'Средний ДРР %', value: null, format: 'number' },
     ];
   }
   if (block.type === 'unit.ozon-data-health') {
+    // Синхронизированы с useBlockValuePublisher в unit-ozon-data-health.tsx.
     return [
-      { name: 'value', label: 'Статус', value: null, format: 'text' },
-      { name: 'lastSyncAt', label: 'Последний sync', value: null, format: 'text' },
-      { name: 'perfConnected', label: 'Performance API', value: null, format: 'text' },
+      { name: 'value', label: 'Seller API OK', value: null, format: 'number' },
+      { name: 'sellerOk', label: 'Seller API OK', value: null, format: 'number' },
+      { name: 'perfOk', label: 'Performance API OK', value: null, format: 'number' },
+      { name: 'perfConnected', label: 'Performance API подключён', value: null, format: 'number' },
+      { name: 'sellerHoursSinceSync', label: 'Часов с прошлого Seller sync', value: null, format: 'number' },
+      { name: 'stale', label: 'Данные устарели (>24ч)', value: null, format: 'number' },
+      { name: 'sellerLastSyncStatus', label: 'Статус Seller sync', value: null, format: 'text' },
+      { name: 'perfStatus', label: 'Статус Performance sync', value: null, format: 'text' },
+      { name: 'sellerErrorMessage', label: 'Ошибка Seller API', value: null, format: 'text' },
+      { name: 'perfErrorMessage', label: 'Ошибка Performance API', value: null, format: 'text' },
     ];
   }
   if (block.type === 'unit.ozon-abc') {

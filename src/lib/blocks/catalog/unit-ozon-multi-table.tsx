@@ -9,10 +9,8 @@ import {
   Trash2,
   Copy,
   RotateCcw,
-  Upload,
   Table as TableIcon,
   AlertTriangle,
-  CheckCircle2,
   GripVertical,
   MoreVertical,
 } from 'lucide-react';
@@ -66,6 +64,7 @@ import { ClusterSelector } from '@/components/unit-economics/cluster-selector';
 import { OzonSyncButton } from '@/components/unit-economics/ozon-sync-button';
 import { OzonSyncSettingsDialog } from '@/components/unit-economics/ozon-sync-settings-dialog';
 import { OzonSyncSettingsForm } from '@/components/unit-economics/ozon-sync-settings-form';
+import { OzonImportSection } from '@/components/unit-economics/ozon-import-section';
 import { OzonSyncPreviewDialog } from '@/components/unit-economics/ozon-sync-preview-dialog';
 import {
   buildSyncDiff,
@@ -381,10 +380,8 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
   const liveValues = useAllBlockValuesFlat();
   const { settings } = useFormatSettings();
   const showKopecks = settings.showKopecks;
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [importing, setImporting] = useState(false);
-  const [importMessage, setImportMessage] = useState<string | null>(null);
-  const [importError, setImportError] = useState<string | null>(null);
+  // Импорт XLSX вынесен в SettingsForm (см. OzonImportSection). После
+  // commit'а sync-button заново подтянет данные из БД.
 
   // Sync workflow state
   const [syncSettingsOpen, setSyncSettingsOpen] = useState(false);
@@ -622,37 +619,8 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
   });
 
   // ----- Import -----
-  async function onImportFile(file: File, commit: boolean) {
-    setImporting(true);
-    setImportMessage(null);
-    setImportError(null);
-    try {
-      const fd = new FormData();
-      fd.set('file', file);
-      fd.set('commit', commit ? 'true' : 'false');
-      const res = await fetch('/api/unit-economics/import/ozon-prices', { method: 'POST', body: fd });
-      const data = await res.json();
-      if (!data.ok) {
-        setImportError(data.error ?? 'Не удалось распарсить файл');
-        return;
-      }
-      if (commit) {
-        setImportMessage(`Импортировано: ${data.inserted} из ${data.totalRows}`);
-        // После импорта XLSX — собираем diff (по тем же правилам политики),
-        // чтобы пользователь увидел превью и решил применять ли.
-        await buildDiffAndOpenPreview(config.sync.accountId);
-      } else {
-        setImportMessage(`Найдено товаров: ${data.totalRows}. Распознано колонок: ${
-          Object.keys(data.recognizedColumns ?? {}).length
-        }. Нажмите «Применить» чтобы сохранить.`);
-        // remember preview by creating ephemeral file in a re-trigger: simplest approach — just trust user to re-pick file.
-      }
-    } catch (e) {
-      setImportError((e as Error).message);
-    } finally {
-      setImporting(false);
-    }
-  }
+  // Импорт XLSX переехал в SettingsForm; сам блок только перечитывает diff
+  // после внешнего sync (OzonSyncButton.onCompleted).
 
   /**
    * После завершения серверной sync-job'ы (sync API дёрнул Ozon → обновил unit_products)
@@ -778,25 +746,8 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
           <span className="text-[10px] text-muted-foreground">v{OZON_TARIFF_VERSION}</span>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".xlsx,.xls"
-            className="hidden"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) onImportFile(f, true);
-              e.target.value = '';
-            }}
-          />
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={importing}
-          >
-            <Upload /> Импорт XLSX
-          </Button>
+          {/* Импорт XLSX переехал в настройки блока (таб «Параметры» → секция
+              «Импорт XLSX»). Здесь оставлены только sync и быстрые «+N». */}
           <OzonSyncButton
             accountId={config.sync.accountId}
             labelIdle={diffBuilding ? 'Готовим превью…' : 'Синхронизировать'}
@@ -817,18 +768,6 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
         </div>
       </div>
 
-      {importMessage && (
-        <div className="flex items-start gap-2 border-b border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[11px] text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200">
-          <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <span>{importMessage}</span>
-        </div>
-      )}
-      {importError && (
-        <div className="flex items-start gap-2 border-b border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
-          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <span>{importError}</span>
-        </div>
-      )}
       {diffError && (
         <div className="flex items-start gap-2 border-b border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -845,14 +784,13 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
         {computed.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 p-12 text-center text-xs text-muted-foreground">
             <p>Здесь будут товары и расчёт юнит-экономики.</p>
-            <div className="flex gap-2">
-              <Button size="sm" onClick={() => addRows(1)}>
-                <Plus /> Добавить товар
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => fileInputRef.current?.click()}>
-                <Upload /> Импорт XLSX
-              </Button>
-            </div>
+            <Button size="sm" onClick={() => addRows(1)}>
+              <Plus /> Добавить товар
+            </Button>
+            <p className="mt-1 text-[11px]">
+              Чтобы загрузить XLSX-шаблон Ozon — откройте настройки блока,
+              секция «Импорт XLSX».
+            </p>
           </div>
         ) : (
           <div className="min-w-full text-[11px]" style={{ minWidth: `${totalRowWidth}px` }}>
@@ -1561,14 +1499,17 @@ function UnitOzonMultiTableSettingsForm({ config, onChange }: BlockSettingsFormP
   const parsed = parseConfig(config);
   const blockMode = parsed.global.mode;
   return (
-    <OzonSyncSettingsForm
-      value={parsed.sync}
-      blockMode={blockMode}
-      onChange={(nextSync) => {
-        const next: Config = { ...parsed, sync: nextSync };
-        onChange(next as unknown as Record<string, unknown>);
-      }}
-    />
+    <div className="space-y-4">
+      <OzonImportSection />
+      <OzonSyncSettingsForm
+        value={parsed.sync}
+        blockMode={blockMode}
+        onChange={(nextSync) => {
+          const next: Config = { ...parsed, sync: nextSync };
+          onChange(next as unknown as Record<string, unknown>);
+        }}
+      />
+    </div>
   );
 }
 

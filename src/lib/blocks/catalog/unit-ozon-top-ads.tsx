@@ -15,6 +15,9 @@ import {
   type PeriodValue,
 } from '@/components/blocks/period-picker';
 import { OzonAccountSelector } from '@/components/marketplaces/ozon-account-selector';
+import { useMarketplaceAccounts } from '@/lib/marketplaces/use-accounts';
+import { useBlockValuePublisher } from '@/lib/blocks/values';
+import { autoColumnWidth } from '@/lib/blocks/auto-column-width';
 import type {
   BlockDef,
   BlockRenderProps,
@@ -73,6 +76,11 @@ function RenderOzonTopAds({ instance }: BlockRenderProps) {
     dir: 'desc',
   });
   const mountedRef = useRef(true);
+  const { accounts } = useMarketplaceAccounts({ marketplace: 'ozon' });
+  const currentAccount = useMemo(
+    () => accounts.find((a) => a.id === config.accountId) ?? null,
+    [accounts, config.accountId],
+  );
 
   useEffect(() => {
     mountedRef.current = true;
@@ -135,6 +143,48 @@ function RenderOzonTopAds({ instance }: BlockRenderProps) {
     });
   }, [data, sort]);
 
+  // Summary для публикации значений и привязок других блоков.
+  const summary = useMemo(() => {
+    if (!data || data.rows.length === 0) {
+      return { expenseRub: 0, orders: 0, clicks: 0, views: 0, drrPct: null as number | null };
+    }
+    const totalExpense = data.rows.reduce((a, b) => a + b.expenseRub, 0);
+    const totalOrders = data.rows.reduce((a, b) => a + b.orders, 0);
+    const totalClicks = data.rows.reduce((a, b) => a + b.clicks, 0);
+    const totalViews = data.rows.reduce((a, b) => a + b.views, 0);
+    const totalOrdersRub = data.rows.reduce((a, b) => a + (b.ordersRub ?? 0), 0);
+    return {
+      expenseRub: totalExpense,
+      orders: totalOrders,
+      clicks: totalClicks,
+      views: totalViews,
+      drrPct: totalOrdersRub > 0 ? (totalExpense / totalOrdersRub) * 100 : null,
+    };
+  }, [data]);
+
+  useBlockValuePublisher(instance.id, {
+    totalExpenseRub: summary.expenseRub,
+    totalOrders: summary.orders,
+    totalClicks: summary.clicks,
+    totalViews: summary.views,
+    avgDrrPct: summary.drrPct,
+    rowCount: rows.length,
+  });
+
+  // Авторасчёт ширин — как в ozon-analytics-table.
+  const columnWidths = useMemo(() => {
+    const productSamples = rows.map((r) => `${r.name ?? r.sku}\n${r.article ?? r.sku}`);
+    return {
+      product: autoColumnWidth('Товар', productSamples, { min: 140, max: 320 }),
+      expense: autoColumnWidth('Расход', rows.map((r) => fmtRub(r.expenseRub)), { min: 80, max: 130 }),
+      drr: autoColumnWidth('ДРР', rows.map((r) => fmtPct(r.drrPct)), { min: 60, max: 100 }),
+      orders: autoColumnWidth('Заказы', rows.map((r) => String(r.orders)), { min: 60, max: 100 }),
+      ctr: autoColumnWidth('CTR', rows.map((r) => fmtPct(r.ctrPct)), { min: 60, max: 100 }),
+      cpc: autoColumnWidth('CPC', rows.map((r) => fmtRubOrDash(r.cpcRub)), { min: 60, max: 110 }),
+      cpo: autoColumnWidth('CPO', rows.map((r) => fmtRubOrDash(r.cpoRub)), { min: 60, max: 110 }),
+    };
+  }, [rows]);
+
   function toggleSort(key: SortKey) {
     setSort((prev) =>
       prev.key === key
@@ -143,33 +193,52 @@ function RenderOzonTopAds({ instance }: BlockRenderProps) {
     );
   }
 
+  // Структурированный empty state: разделяем «нет аккаунта» / «нет perf»
+  // / «ошибка» / «нет данных», чтобы пользователь не подумал, что просто
+  // некорректно настроена интеграция.
+  const emptyKind: 'no-account' | 'no-perf' | 'perf-error' | 'error' | 'no-data' | null =
+    !config.accountId
+      ? 'no-account'
+      : !currentAccount
+        ? 'no-account'
+        : !currentAccount.perfConnected
+          ? 'no-perf'
+          : error
+            ? 'error'
+            : currentAccount.perfStatus === 'error'
+              ? 'perf-error'
+              : data && data.rows.length === 0
+                ? 'no-data'
+                : null;
+
   return (
     <Card className="flex h-full flex-col overflow-hidden p-0">
       <div className="flex flex-wrap items-center gap-2 border-b border-border/40 px-3 py-2">
         <PeriodPicker value={period} onChange={setPeriod} compact />
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
-        {error ? (
+        {emptyKind ? (
+          <TopAdsEmptyState
+            kind={emptyKind}
+            loading={loading}
+            error={error}
+            perfError={currentAccount?.perfLastSyncError ?? null}
+          />
+        ) : !data ? (
           <div className="flex h-full items-center justify-center text-center text-[12px] text-muted-foreground">
-            {error}
-          </div>
-        ) : !data || data.rows.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-[12px] text-muted-foreground">
-            <AlertCircle className="h-5 w-5" />
-            {loading
-              ? 'Загрузка…'
-              : 'Нет рекламных данных. Подключите Performance API в '}
-            {!loading && (
-              <Link
-                href="/settings/integrations"
-                className="text-primary hover:underline"
-              >
-                Настройках → Интеграции
-              </Link>
-            )}
+            Загрузка…
           </div>
         ) : (
-          <table className="w-full min-w-[700px] text-[11px]">
+          <table className="w-full text-[11px]" style={{ tableLayout: 'fixed' }}>
+            <colgroup>
+              <col style={{ width: `${columnWidths.product}px` }} />
+              <col style={{ width: `${columnWidths.expense}px` }} />
+              <col style={{ width: `${columnWidths.drr}px` }} />
+              <col style={{ width: `${columnWidths.orders}px` }} />
+              <col style={{ width: `${columnWidths.ctr}px` }} />
+              <col style={{ width: `${columnWidths.cpc}px` }} />
+              <col style={{ width: `${columnWidths.cpo}px` }} />
+            </colgroup>
             <thead className="sticky top-0 z-10 bg-muted/60 backdrop-blur">
               <tr className="text-left text-muted-foreground">
                 <th className="px-2 py-1.5 font-medium">Товар</th>
@@ -215,8 +284,10 @@ function RenderOzonTopAds({ instance }: BlockRenderProps) {
               {rows.map((r) => (
                 <tr key={r.sku} className="hover:bg-accent/20">
                   <td className="px-2 py-1.5">
-                    <div className="font-medium">{r.name ?? r.sku}</div>
-                    <div className="font-mono text-[10px] text-muted-foreground">
+                    <div className="truncate font-medium" title={r.name ?? r.sku}>
+                      {r.name ?? r.sku}
+                    </div>
+                    <div className="truncate font-mono text-[10px] text-muted-foreground">
                       {r.article ?? r.sku}
                     </div>
                   </td>
@@ -235,6 +306,74 @@ function RenderOzonTopAds({ instance }: BlockRenderProps) {
         )}
       </div>
     </Card>
+  );
+}
+
+function TopAdsEmptyState({
+  kind,
+  loading,
+  error,
+  perfError,
+}: {
+  kind: 'no-account' | 'no-perf' | 'perf-error' | 'error' | 'no-data';
+  loading: boolean;
+  error: string | null;
+  perfError: string | null;
+}) {
+  if (loading && kind === 'no-data') {
+    return (
+      <div className="flex h-full items-center justify-center text-center text-[12px] text-muted-foreground">
+        Загрузка…
+      </div>
+    );
+  }
+  if (kind === 'no-account') {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-[12px] text-muted-foreground">
+        <AlertCircle className="h-5 w-5" />
+        Выберите Ozon-магазин в настройках блока
+      </div>
+    );
+  }
+  if (kind === 'no-perf') {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-[12px] text-muted-foreground">
+        <AlertCircle className="h-5 w-5" />
+        Для этого магазина не подключён Performance API
+        <Link
+          href="/settings/integrations"
+          className="text-[11px] text-primary hover:underline"
+        >
+          Подключить в Настройках → Интеграции →
+        </Link>
+      </div>
+    );
+  }
+  if (kind === 'perf-error') {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-[12px] text-rose-700 dark:text-rose-300">
+        <AlertCircle className="h-5 w-5" />
+        Ошибка Performance API при последней синхронизации
+        {perfError && <span className="text-[11px] opacity-80">{perfError}</span>}
+      </div>
+    );
+  }
+  if (kind === 'error') {
+    return (
+      <div className="flex h-full items-center justify-center text-center text-[12px] text-rose-700 dark:text-rose-300">
+        {error ?? 'Не удалось получить данные'}
+      </div>
+    );
+  }
+  // no-data
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-[12px] text-muted-foreground">
+      <AlertCircle className="h-5 w-5" />
+      Нет рекламных данных за выбранный период
+      <span className="text-[11px] opacity-70">
+        Попробуйте увеличить диапазон или дождитесь Performance-sync.
+      </span>
+    </div>
   );
 }
 

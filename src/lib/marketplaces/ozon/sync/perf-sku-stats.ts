@@ -18,10 +18,7 @@ import {
 } from '../performance/endpoints';
 import { rublesToKopecks } from '@/lib/unit-economics/types';
 import { runStageWithTiming, type StageContext, type StageResult } from './types';
-
-function formatDateIso(d: Date): string {
-  return d.toISOString().slice(0, 10);
-}
+import { buildPerfPeriod, describePeriod } from './perf-period';
 
 export async function syncPerfSkuStatsStage(ctx: StageContext): Promise<StageResult> {
   return runStageWithTiming(async () => {
@@ -32,15 +29,25 @@ export async function syncPerfSkuStatsStage(ctx: StageContext): Promise<StageRes
         error: 'Performance API не подключён для этого аккаунта',
       };
     }
-    const days = ctx.settings.perfWindowDays ?? 30;
-    const to = new Date();
-    const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
+    const period = buildPerfPeriod(ctx.settings.perfWindowDays ?? 30);
 
     // 1) Запрос на генерацию.
-    const uuid = await generateSkuStatsReport(ctx.perfClient, {
-      dateFrom: formatDateIso(from),
-      dateTo: formatDateIso(to),
-    });
+    let uuid: string;
+    try {
+      uuid = await generateSkuStatsReport(ctx.perfClient, {
+        dateFrom: period.dateFrom,
+        dateTo: period.dateTo,
+      });
+    } catch (e) {
+      // Прокидываем период в сообщение — иначе пользователь видит
+      // голое «Некорректный период» без понимания какие даты ушли.
+      const msg = e instanceof Error ? e.message : String(e);
+      return {
+        itemsProcessed: 0,
+        ok: false,
+        error: `${msg} — период ${describePeriod(period)}`,
+      };
+    }
 
     // 2) Ждём готовности (до ~10 мин).
     const link = await waitForReport(ctx.perfClient, uuid, {
@@ -61,7 +68,7 @@ export async function syncPerfSkuStatsStage(ctx: StageContext): Promise<StageRes
       const parsed = parseSkuStatsRow(raw);
       if (!parsed.sku) continue;
       // Если date отсутствует — упаковываем под "today" (на крайний случай).
-      const day = parsed.date && parsed.date.length >= 10 ? parsed.date.slice(0, 10) : formatDateIso(to);
+      const day = parsed.date && parsed.date.length >= 10 ? parsed.date.slice(0, 10) : period.dateTo;
 
       await db
         .insert(ozonPerfSkuStats)

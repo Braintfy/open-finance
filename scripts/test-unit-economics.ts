@@ -357,15 +357,19 @@ console.log('\n# Store formula: маржа и циклы');
 
 console.log('\n# XLSX парсер');
 {
-  const xlsxPath =
-    process.argv[2] ?? path.join(process.cwd(), 'Цены товаров_14.05.2026.xlsx');
-  if (!fs.existsSync(xlsxPath)) {
-    console.log(`  SKIP  XLSX (нет файла ${xlsxPath})`);
+  const candidates = [
+    process.argv[2],
+    path.join(process.cwd(), 'Шаблон для обновления цен_18.05.26.xlsx'),
+    path.join(process.cwd(), 'Цены товаров_14.05.2026.xlsx'),
+  ].filter(Boolean) as string[];
+  const xlsxPath = candidates.find((p) => fs.existsSync(p));
+  if (!xlsxPath) {
+    console.log(`  SKIP  XLSX (нет ни одного шаблона: ${candidates.join(', ')})`);
   } else {
     const buf = fs.readFileSync(xlsxPath);
     const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
     const result = parseOzonPriceTemplate(ab);
-    expect(result.totalRows > 0, `XLSX: распознано строк (${result.totalRows} > 0)`);
+    expect(result.totalRows > 0, `XLSX: распознано строк (${result.totalRows} > 0) — ${path.basename(xlsxPath)}`);
     expect(
       Object.keys(result.recognizedColumns).length >= 3,
       `XLSX: распознано колонок ≥ 3 (${Object.keys(result.recognizedColumns).length})`,
@@ -374,9 +378,25 @@ console.log('\n# XLSX парсер');
       result.warnings.every((w) => typeof w === 'string'),
       'XLSX: warnings — массив строк',
     );
+    // Регрессия: «Цена» больше НЕ должна биндиться к «Цена до скидки».
+    if (result.recognizedColumns.price) {
+      const priceHeader = String(result.recognizedColumns.price);
+      expect(
+        priceHeader.toLowerCase().includes('со скидкой') ||
+          priceHeader.toLowerCase().includes('текущая цена') ||
+          priceHeader.toLowerCase().includes('новая цена') ||
+          priceHeader.toLowerCase().includes('действующая'),
+        `XLSX: price -> "${priceHeader}" — это «текущая/новая цена», не «цена до скидки»`,
+      );
+    }
     if (result.rows.length > 0) {
       const sample = result.rows[0];
-      console.log(`  INFO  первая строка: article="${sample.article}", name="${sample.name}", stockMP=${sample.stockMarketplace}`);
+      console.log(
+        `  INFO  первая строка: article="${sample.article}", name="${sample.name.slice(0, 40)}", price=${sample.price}, oldPrice=${sample.oldPrice}, cost=${sample.cost}, vat=${sample.vatPct}, fbo=${sample.fboCommissionPct}, fbs=${sample.fbsCommissionPct}`,
+      );
+      // Хотя бы одна строка должна иметь price > 0 в реалистичном шаблоне.
+      const anyPrice = result.rows.some((r) => r.price > 0);
+      expect(anyPrice, 'XLSX: хотя бы у одной строки price > 0');
     }
   }
 }

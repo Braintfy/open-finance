@@ -105,16 +105,21 @@ export const ProductInfoListResponseSchema = z.object({
 
 // ---- /v5/product/info/prices --------------------------------------------
 
+// Ozon в разных версиях/ответах отдаёт денежные поля то строкой, то числом.
+// Парсер `parseMoneyRu` принимает оба формата, но Zod-схема должна
+// валидировать запрос без падений — поэтому union.
+const MoneyValueSchema = z.union([z.string(), z.number()]).optional();
+
 const PriceMoneySchema = z
   .object({
-    price: z.string().optional(),
-    old_price: z.string().optional(),
-    min_price: z.string().optional(),
+    price: MoneyValueSchema,
+    old_price: MoneyValueSchema,
+    min_price: MoneyValueSchema,
     currency_code: z.string().optional(),
     auto_action_enabled: z.string().optional(),
-    marketing_price: z.string().optional(),
+    marketing_price: MoneyValueSchema,
     /** Цена с СПП — после маркетинговых акций Ozon. */
-    marketing_seller_price: z.string().optional(),
+    marketing_seller_price: MoneyValueSchema,
   })
   .passthrough();
 

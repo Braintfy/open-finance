@@ -5,10 +5,11 @@
 
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { ArrowDown, ArrowUp, ArrowDownUp } from 'lucide-react';
 import type { OzonAnalyticsRow } from '@/lib/blocks/catalog/unit-ozon-analytics-types';
 import { cn } from '@/lib/utils';
+import { autoColumnWidth } from '@/lib/blocks/auto-column-width';
 
 export type TableColumnKey =
   | 'article'
@@ -36,26 +37,28 @@ type ColumnDef = {
   /** Подсказка под заголовком (опционально). */
   hint?: string;
   align: 'left' | 'right';
-  /** Ширина в rem. Sum всех ширин ≈ ширина таблицы. */
-  width: number;
+  /** Минимальная ширина в пикселях (для авторасчёта). */
+  minPx: number;
+  /** Максимальная ширина в пикселях (cap). */
+  maxPx: number;
   /** Можно ли сортировать. */
   sortable: boolean;
 };
 
 export const COLUMN_DEFS: ColumnDef[] = [
-  { key: 'article', label: 'Артикул', align: 'left', width: 8, sortable: true },
-  { key: 'name', label: 'Название', align: 'left', width: 14, sortable: true },
-  { key: 'priceRub', label: 'Цена', align: 'right', width: 6, sortable: true },
-  { key: 'costRub', label: 'Себест.', align: 'right', width: 6, sortable: true },
-  { key: 'marginRub', label: 'Маржа', hint: 'price − cost', align: 'right', width: 6, sortable: true },
-  { key: 'delivered', label: 'Заказы', align: 'right', width: 5, sortable: true },
-  { key: 'qtyDelivered', label: 'Штук', align: 'right', width: 5, sortable: true },
-  { key: 'revenueRub', label: 'Выручка', align: 'right', width: 7, sortable: true },
-  { key: 'adsRub', label: 'Реклама', align: 'right', width: 7, sortable: true },
-  { key: 'drrPct', label: 'ДРР', hint: '%', align: 'right', width: 5, sortable: true },
-  { key: 'stock', label: 'Остаток', align: 'right', width: 6, sortable: true },
-  { key: 'daysOfStock', label: 'Дней', hint: 'хватит остатка', align: 'right', width: 5, sortable: true },
-  { key: 'buyoutPct', label: 'Выкуп', hint: '%', align: 'right', width: 5, sortable: true },
+  { key: 'article', label: 'Артикул', align: 'left', minPx: 80, maxPx: 200, sortable: true },
+  { key: 'name', label: 'Название', align: 'left', minPx: 160, maxPx: 360, sortable: true },
+  { key: 'priceRub', label: 'Цена', align: 'right', minPx: 70, maxPx: 130, sortable: true },
+  { key: 'costRub', label: 'Себест.', align: 'right', minPx: 70, maxPx: 130, sortable: true },
+  { key: 'marginRub', label: 'Маржа', hint: 'price − cost', align: 'right', minPx: 70, maxPx: 130, sortable: true },
+  { key: 'delivered', label: 'Заказы', align: 'right', minPx: 60, maxPx: 100, sortable: true },
+  { key: 'qtyDelivered', label: 'Штук', align: 'right', minPx: 56, maxPx: 100, sortable: true },
+  { key: 'revenueRub', label: 'Выручка', align: 'right', minPx: 90, maxPx: 160, sortable: true },
+  { key: 'adsRub', label: 'Реклама', align: 'right', minPx: 80, maxPx: 140, sortable: true },
+  { key: 'drrPct', label: 'ДРР', hint: '%', align: 'right', minPx: 60, maxPx: 100, sortable: true },
+  { key: 'stock', label: 'Остаток', align: 'right', minPx: 70, maxPx: 120, sortable: true },
+  { key: 'daysOfStock', label: 'Дней', hint: 'хватит остатка', align: 'right', minPx: 60, maxPx: 100, sortable: true },
+  { key: 'buyoutPct', label: 'Выкуп', hint: '%', align: 'right', minPx: 60, maxPx: 100, sortable: true },
 ];
 
 function getCellValue(
@@ -184,6 +187,41 @@ export function OzonAnalyticsTable({
 
   const sorted = useMemo(() => sortRows(rows, sort), [rows, sort]);
 
+  // Авторасчёт ширин: измеряем заголовок (uppercase, bold) и
+  // форматированные значения — берём максимум, клипаем к min/max каждой
+  // колонки. Пересчитывается при изменении набора колонок и rows.
+  const widths = useMemo(() => {
+    const out: Record<TableColumnKey, number> = {} as Record<TableColumnKey, number>;
+    for (const col of columns) {
+      const samples = sorted.map((row) => {
+        const v = getCellValue(row, col.key);
+        if (v === null) return '';
+        if (typeof v === 'number') {
+          // Денежные / процент колонки имеют суффикс — учитываем его длину.
+          switch (col.key) {
+            case 'priceRub':
+            case 'costRub':
+            case 'marginRub':
+            case 'revenueRub':
+            case 'adsRub':
+              return Math.round(v).toLocaleString('ru-RU') + ' ₽';
+            case 'drrPct':
+            case 'buyoutPct':
+              return v.toFixed(v >= 100 ? 0 : 1) + '%';
+            default:
+              return v.toLocaleString('ru-RU');
+          }
+        }
+        return String(v);
+      });
+      out[col.key] = autoColumnWidth(col.label, samples, {
+        min: col.minPx,
+        max: col.maxPx,
+      });
+    }
+    return out;
+  }, [columns, sorted]);
+
   function toggleSort(key: TableColumnKey) {
     if (sort.key === key) {
       onSortChange({ key, dir: sort.dir === 'asc' ? 'desc' : 'asc' });
@@ -207,7 +245,10 @@ export function OzonAnalyticsTable({
                     col.align === 'right' ? 'text-right' : 'text-left',
                     col.sortable ? 'cursor-pointer hover:bg-accent/30' : '',
                   )}
-                  style={{ width: `${col.width}rem`, minWidth: `${col.width}rem` }}
+                  style={{
+                    width: `${widths[col.key]}px`,
+                    minWidth: `${widths[col.key]}px`,
+                  }}
                   onClick={col.sortable ? () => toggleSort(col.key) : undefined}
                   title={col.hint}
                 >

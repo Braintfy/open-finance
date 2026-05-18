@@ -16,12 +16,25 @@ export type OzonImportRow = {
   visibility: string | null;
   stockMarketplace: number;
   stockOwn: number;
-  /** Цена в рублях (float) */
+  /** Действующая цена в рублях. Если есть «Новая цена (со скидкой)» — берём её,
+   *  иначе fallback на «Текущую цену со скидкой», иначе на «Цену до скидки». */
   price: number;
-  /** Себестоимость в рублях */
+  /** Цена до скидки (зачёркнутая цена в карточке Ozon). */
+  oldPrice: number;
+  /** Минимальная цена (для авто-акций). */
+  minPrice: number;
+  /** Себестоимость в рублях. Если есть «Новая себестоимость» — берём её. */
   cost: number;
+  /** НДС в процентах (например 5, 10, 20). */
+  vatPct: number;
   volumeL: number;
   volumetricWeightKg: number;
+  /** Комиссия Ozon, FBO % (если есть в шаблоне). */
+  fboCommissionPct: number | null;
+  /** Комиссия Ozon, FBS % (если есть в шаблоне). */
+  fbsCommissionPct: number | null;
+  /** Эквайринг %. */
+  acquiringPct: number | null;
   /** Все исходные ячейки этой строки (для metadata) */
   raw: Record<string, string | number | null>;
 };
@@ -38,6 +51,12 @@ export type OzonImportResult = {
  * Карта логических ключей -> возможные заголовки в шаблоне Ozon.
  * Сравнение case-insensitive, по подстроке (после нормализации пробелов).
  */
+// Карта логических ключей → варианты заголовков Ozon-шаблона.
+//
+// КРИТИЧНО: порядок вариантов = приоритет. Для price сначала ищем «Новая
+// цена (со скидкой)», иначе «Текущая цена (со скидкой)», иначе «Цена до
+// скидки». Раньше использовался слишком общий matcher `Цена`, который
+// схватывал «Цена до скидки» и игнорировал актуальную «Текущую цену».
 const COLUMN_MAP: Record<string, string[]> = {
   article: ['Артикул'],
   sku: ['SKU', 'СКЮ'],
@@ -47,10 +66,37 @@ const COLUMN_MAP: Record<string, string[]> = {
   visibility: ['Видимость на OZON', 'Видимость'],
   stockMarketplace: ['На складе Ozon', 'Остаток на складе Ozon', 'На складе OZON'],
   stockOwn: ['На моих складах', 'На моих складе', 'Мои склады'],
-  price: ['Цена', 'Текущая цена', 'Действующая цена'],
-  cost: ['Себестоимость', 'Закупочная цена'],
+  // ВАЖНО: «Текущая цена (со скидкой)» — реальное значение на момент
+  // скачивания шаблона, а «Новая цена (со скидкой)» — пустые ячейки для
+  // отправки обратно в Ozon. Мы импортируем ТЕКУЩИЕ данные, поэтому
+  // «Текущая…» имеет приоритет; «Новая…» используем только если в шаблоне
+  // нет колонки «Текущая…».
+  price: [
+    'Текущая цена (со скидкой), руб.',
+    'Текущая цена (со скидкой)',
+    'Цена с учетом акции или стратегии, руб.',
+    'Действующая цена',
+    'Текущая цена',
+    'Новая цена (со скидкой), руб.',
+    'Новая цена (со скидкой)',
+  ],
+  oldPrice: [
+    'Цена до скидки, руб.',
+    'Цена до скидки',
+    'Новая цена до скидки, руб.',
+  ],
+  minPrice: [
+    'Минимальная цена, руб.',
+    'Минимальная цена',
+    'Новая минимальная цена, руб.',
+  ],
+  cost: ['Себестоимость', 'Закупочная цена', 'Новая себестоимость'],
+  vatPct: ['НДС, %', 'НДС', 'Новый НДС, %'],
   volumeL: ['Объем, л', 'Объём, л', 'Объем, литров'],
   volumetricWeightKg: ['Объемный вес, кг', 'Объёмный вес, кг'],
+  fboCommissionPct: ['Вознаграждение Ozon, FBO, %', 'Вознаграждение Ozon, FBO'],
+  fbsCommissionPct: ['Вознаграждение Ozon, FBS, %', 'Вознаграждение Ozon, FBS'],
+  acquiringPct: ['Эквайринг'],
 };
 
 function normalize(value: string): string {
@@ -87,20 +133,44 @@ function buildColumnIndex(headers: string[]): {
   const columnIndex: Record<string, number> = {};
   const recognized: Record<string, string> = {};
   const matchedHeaderIdxs = new Set<number>();
+  const normalizedHeaders = headers.map((h) => normalize(h));
 
+  // Шаг 1: exact-match для каждого логического ключа в порядке приоритета.
+  // Гарантирует, что «Текущая цена (со скидкой), руб.» не подменится «Цена
+  // до скидки, руб.» при substring-поиске.
   for (const [logical, candidates] of Object.entries(COLUMN_MAP)) {
-    for (let i = 0; i < headers.length; i++) {
-      const normalized = normalize(headers[i]);
-      if (!normalized) continue;
-      const hit = candidates.find((c) => normalized === normalize(c) || normalized.includes(normalize(c)));
-      if (hit && columnIndex[logical] === undefined) {
-        columnIndex[logical] = i;
-        recognized[logical] = headers[i];
-        matchedHeaderIdxs.add(i);
+    for (const candidate of candidates) {
+      const targetNorm = normalize(candidate);
+      const exactIdx = normalizedHeaders.findIndex(
+        (h, i) => h === targetNorm && !matchedHeaderIdxs.has(i),
+      );
+      if (exactIdx >= 0) {
+        columnIndex[logical] = exactIdx;
+        recognized[logical] = headers[exactIdx];
+        matchedHeaderIdxs.add(exactIdx);
         break;
       }
     }
   }
+
+  // Шаг 2: substring fallback только для непокрытых ключей.
+  for (const [logical, candidates] of Object.entries(COLUMN_MAP)) {
+    if (columnIndex[logical] !== undefined) continue;
+    for (const candidate of candidates) {
+      const targetNorm = normalize(candidate);
+      const idx = normalizedHeaders.findIndex(
+        (h, i) =>
+          h.length > 0 && !matchedHeaderIdxs.has(i) && h.includes(targetNorm),
+      );
+      if (idx >= 0) {
+        columnIndex[logical] = idx;
+        recognized[logical] = headers[idx];
+        matchedHeaderIdxs.add(idx);
+        break;
+      }
+    }
+  }
+
   const unrecognized = headers
     .map((h, i) => ({ h, i }))
     .filter(({ h, i }) => h && !matchedHeaderIdxs.has(i))
@@ -186,7 +256,7 @@ export function parseOzonPriceTemplate(buffer: ArrayBuffer): OzonImportResult {
     warnings.push('Не найдена колонка «Название товара».');
   }
 
-  const SKIP_MARKERS = new Set(['нередактируемое', 'обязательное', 'пример', 'example']);
+  const SKIP_MARKERS = new Set(['нередактируемое', 'обязательное', 'пример', 'example', 'редактируемое']);
   const dataRows = rows
     .slice(headerIndex + 1)
     .filter((row) => Array.isArray(row) && row.some((c) => c !== null && c !== ''))
@@ -194,7 +264,19 @@ export function parseOzonPriceTemplate(buffer: ArrayBuffer): OzonImportResult {
       // Ozon в строке 1-2 после заголовка часто кладёт служебные подсказки типа
       // «Нередактируемое» / «Обязательное» — пропускаем такие строки.
       const marker = String(row[0] ?? '').toLowerCase().trim();
-      return !SKIP_MARKERS.has(marker);
+      if (SKIP_MARKERS.has(marker)) return false;
+      // Строка-подсказка: artикул/sku/barcode/name пустые, но в других
+      // ячейках длинный поясняющий текст. Пропускаем такие строки.
+      const articleIdx = columnIndex.article;
+      const skuIdx = columnIndex.sku;
+      const barcodeIdx = columnIndex.barcode;
+      const nameIdx = columnIndex.name;
+      const hasArticle = articleIdx !== undefined && parseString(row[articleIdx]).length > 0;
+      const hasSku = skuIdx !== undefined && parseString(row[skuIdx]).length > 0;
+      const hasBarcode = barcodeIdx !== undefined && parseString(row[barcodeIdx]).length > 0;
+      const hasName = nameIdx !== undefined && parseString(row[nameIdx]).length > 0;
+      if (!hasArticle && !hasSku && !hasBarcode && !hasName) return false;
+      return true;
     });
 
   const out: OzonImportRow[] = dataRows.map((row) => {
@@ -206,6 +288,12 @@ export function parseOzonPriceTemplate(buffer: ArrayBuffer): OzonImportResult {
     headers.forEach((h, i) => {
       if (h) raw[h] = (row[i] ?? null) as string | number | null;
     });
+    // Опциональные комиссии/эквайринг могут отсутствовать в шаблоне — в
+    // этом случае пишем `null`, чтобы downstream не путал нулевую комиссию
+    // с «нет данных» (важно для metadata.commissions merge).
+    const fboPctRaw = parseNumber(get('fboCommissionPct'));
+    const fbsPctRaw = parseNumber(get('fbsCommissionPct'));
+    const acqPctRaw = parseNumber(get('acquiringPct'));
     return {
       article: parseString(get('article')) || null,
       sku: parseString(get('sku')) || null,
@@ -216,9 +304,15 @@ export function parseOzonPriceTemplate(buffer: ArrayBuffer): OzonImportResult {
       stockMarketplace: Math.round(parseNumber(get('stockMarketplace'))),
       stockOwn: Math.round(parseNumber(get('stockOwn'))),
       price: parseNumber(get('price')),
+      oldPrice: parseNumber(get('oldPrice')),
+      minPrice: parseNumber(get('minPrice')),
       cost: parseNumber(get('cost')),
+      vatPct: parseNumber(get('vatPct')),
       volumeL: parseNumber(get('volumeL')),
       volumetricWeightKg: parseNumber(get('volumetricWeightKg')),
+      fboCommissionPct: columnIndex.fboCommissionPct !== undefined ? fboPctRaw : null,
+      fbsCommissionPct: columnIndex.fbsCommissionPct !== undefined ? fbsPctRaw : null,
+      acquiringPct: columnIndex.acquiringPct !== undefined ? acqPctRaw : null,
       raw,
     };
   });

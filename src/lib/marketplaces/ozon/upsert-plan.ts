@@ -46,8 +46,21 @@ export function parseDimensions(info: ProductInfo): {
   return { weightG, dimsMm, volumeLx100 };
 }
 
-export function parseMoneyRu(value: string | undefined): number {
-  if (!value) return 0;
+/**
+ * Парсер денежного значения от Ozon. Семантически прозрачен для трёх форматов:
+ *   - строка "1 234,56" / "1234.56" / "" → Number или 0;
+ *   - number 1234.56 → как есть;
+ *   - null/undefined/любой не-string-нечисло → 0.
+ *
+ * Раньше принимал только `string | undefined` и падал `value.replace is not
+ * a function`, когда Ozon отдавал price как число (это случается, если
+ * lenient-клиент вернул raw payload без zod-coerce'а).
+ */
+export function parseMoneyRu(value: unknown): number {
+  if (value === null || value === undefined) return 0;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  if (typeof value !== 'string') return 0;
+  if (value.length === 0) return 0;
   const num = Number(value.replace(/\s/g, '').replace(',', '.'));
   return Number.isFinite(num) ? num : 0;
 }

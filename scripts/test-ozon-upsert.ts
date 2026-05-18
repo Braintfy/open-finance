@@ -3,7 +3,10 @@
 // уже загруженные значения через conditional set + sql fallback.
 // Запуск: pnpm tsx scripts/test-ozon-upsert.ts
 
-import { planUnitProductUpsertFromOzon } from '../src/lib/marketplaces/ozon/upsert-plan';
+import {
+  planUnitProductUpsertFromOzon,
+  parseMoneyRu,
+} from '../src/lib/marketplaces/ozon/upsert-plan';
 import type {
   ProductInfo,
   PricesItem,
@@ -389,6 +392,69 @@ console.log('\n=== Late stage stocks does NOT clobber price/dims (full scenario)
   });
   expect(planB !== null && planB.updates.priceKopecks === 'keep', 'B: prices keep (stocks stage)');
   expect(planB !== null && planB.updates.volumeL === 'keep', 'B: volume keep (stocks stage)');
+}
+
+// ----- parseMoneyRu: numeric/null/whitespace payloads --------------------
+// Регрессия: Ozon отдаёт price числом (lenient client пропускает raw), а
+// старый parseMoneyRu падал на `value.replace is not a function`.
+
+console.log('\n=== parseMoneyRu: tolerant unknown input ===');
+{
+  expect(parseMoneyRu('1500') === 1500, 'string integer');
+  expect(parseMoneyRu('1 500,75') === 1500.75, 'string with space + comma');
+  expect(parseMoneyRu('1500.5') === 1500.5, 'string with dot');
+  expect(parseMoneyRu('') === 0, 'empty string -> 0');
+  expect(parseMoneyRu('  ') === 0, 'whitespace string -> 0 (NaN after parse)');
+  expect(parseMoneyRu(undefined) === 0, 'undefined -> 0');
+  expect(parseMoneyRu(null) === 0, 'null -> 0');
+  expect(parseMoneyRu(1500) === 1500, 'number integer');
+  expect(parseMoneyRu(1500.75) === 1500.75, 'number float');
+  expect(parseMoneyRu(0) === 0, 'numeric zero -> 0');
+  expect(parseMoneyRu(Number.NaN) === 0, 'NaN -> 0');
+  expect(parseMoneyRu(Number.POSITIVE_INFINITY) === 0, '+Infinity -> 0');
+  expect(parseMoneyRu({}) === 0, 'object -> 0');
+  expect(parseMoneyRu([]) === 0, 'array -> 0');
+  expect(parseMoneyRu(true) === 0, 'boolean -> 0');
+}
+
+console.log('\n=== Numeric price payload (Ozon variant) ===');
+{
+  const plan = planUnitProductUpsertFromOzon({
+    info: makeInfo({ weight: undefined, depth: undefined, width: undefined, height: undefined }),
+    prices: {
+      offer_id: 'SKU-001',
+      product_id: 12345,
+      price: {
+        price: 1500 as unknown as string,
+        marketing_seller_price: 1450 as unknown as string,
+        currency_code: 'RUB',
+      },
+    } as PricesItem,
+  });
+  expect(plan !== null, 'numeric price plan built');
+  if (plan) {
+    expect(plan.updates.priceKopecks === 'fresh', 'numeric price -> fresh');
+    expect(plan.insert.priceKopecks === 150_000, 'numeric 1500 rub -> 150000 kop');
+    expect(plan.metadataDelta.priceWithSpp === 1450, 'numeric SPP stored as rub');
+  }
+}
+
+console.log('\n=== Mixed numeric/string price ===');
+{
+  const plan = planUnitProductUpsertFromOzon({
+    info: makeInfo({ weight: undefined, depth: undefined, width: undefined, height: undefined }),
+    prices: {
+      offer_id: 'SKU-001',
+      product_id: 12345,
+      price: {
+        price: '1 500,5' as unknown as string,
+        marketing_seller_price: 1400 as unknown as string,
+        currency_code: 'RUB',
+      },
+    } as PricesItem,
+  });
+  expect(plan !== null && plan.insert.priceKopecks === 150_050, 'string "1 500,5" -> 150050 kop');
+  expect(plan !== null && plan.metadataDelta.priceWithSpp === 1400, 'numeric SPP 1400 rub');
 }
 
 console.log(`\n\nResults: ${passed} passed, ${failed} failed`);

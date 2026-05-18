@@ -27,6 +27,16 @@ export type OzonCampaignsResponse = {
     ordersRub: number;
     drrPct: number | null;
   }>;
+  /** Суммарный расход / ордера по всем perf_sku_stats за период (включая campaign_id=null). */
+  summary: {
+    expenseRub: number;
+    orders: number;
+    ordersRub: number;
+    drrPct: number | null;
+    /** True если у кампаний нет распределения stats per campaignId
+     *  (Ozon Performance API не разбил отчёт по кампаниям). */
+    statsAreAccountWide: boolean;
+  };
 };
 
 export async function GET(req: NextRequest) {
@@ -63,7 +73,8 @@ export async function GET(req: NextRequest) {
       .from(ozonPerfCampaigns)
       .where(and(...campaignConds));
 
-    // Агрегаты расхода/заказов per campaignId.
+    // Per-campaign агрегаты — могут быть пустыми, если sync не разбивал
+    // отчёт по кампаниям (campaign_id=null в stats).
     type AggRow = {
       campaign_id: string;
       expense_kopecks: number;
@@ -98,6 +109,33 @@ export async function GET(req: NextRequest) {
       ]),
     );
 
+    // Account-wide totals (включая строки с campaign_id=null) — нужны как
+    // fallback и для summary, если Ozon отчёт пришёл без campaign_id.
+    type TotalRow = {
+      expense_kopecks: number;
+      orders: number;
+      orders_kopecks: number;
+    };
+    const totalResult = await db.execute<TotalRow>(sql`
+      SELECT
+        COALESCE(SUM(s.expense_kopecks), 0) AS expense_kopecks,
+        COALESCE(SUM(s.orders), 0) AS orders,
+        COALESCE(SUM(s.orders_kopecks), 0) AS orders_kopecks
+      FROM ${ozonPerfSkuStats} s
+      WHERE s.tenant_id = ${session.tenantId}
+        ${accountCondStats}
+        AND s.date >= ${fromIso}::date
+        AND s.date < ${toIso}::date
+    `);
+    const totals: TotalRow[] = Array.isArray(totalResult)
+      ? (totalResult as TotalRow[])
+      : (((totalResult as unknown) as { rows: TotalRow[] }).rows ?? []);
+    const totalAgg = totals[0] ?? { expense_kopecks: 0, orders: 0, orders_kopecks: 0 };
+    const summaryExpenseRub = Number(totalAgg.expense_kopecks ?? 0) / 100;
+    const summaryOrders = Number(totalAgg.orders ?? 0);
+    const summaryOrdersRub = Number(totalAgg.orders_kopecks ?? 0) / 100;
+    const statsAreAccountWide = aggByCampaign.size === 0 && summaryExpenseRub > 0;
+
     const rows: OzonCampaignsResponse['rows'] = campaigns.map((c) => {
       const agg = aggByCampaign.get(c.campaignId);
       const expenseRub = (agg?.expense_kopecks ?? 0) / 100;
@@ -118,7 +156,17 @@ export async function GET(req: NextRequest) {
     });
 
     rows.sort((a, b) => b.expenseRub - a.expenseRub);
-    return NextResponse.json({ ok: true, rows });
+    return NextResponse.json({
+      ok: true,
+      rows,
+      summary: {
+        expenseRub: summaryExpenseRub,
+        orders: summaryOrders,
+        ordersRub: summaryOrdersRub,
+        drrPct: summaryOrdersRub > 0 ? (summaryExpenseRub / summaryOrdersRub) * 100 : null,
+        statsAreAccountWide,
+      },
+    } satisfies OzonCampaignsResponse);
   } catch (e) {
     console.error('[marketplaces] GET /ozon/campaigns failed:', e);
     return NextResponse.json(

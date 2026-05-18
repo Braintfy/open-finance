@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { z } from 'zod';
-import { Search, AlertCircle } from 'lucide-react';
+import { Search, AlertCircle, Info } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import {
   PeriodPicker,
@@ -14,6 +14,9 @@ import {
   type PeriodValue,
 } from '@/components/blocks/period-picker';
 import { OzonAccountSelector } from '@/components/marketplaces/ozon-account-selector';
+import { useMarketplaceAccounts } from '@/lib/marketplaces/use-accounts';
+import { useBlockValuePublisher } from '@/lib/blocks/values';
+import { autoColumnWidth } from '@/lib/blocks/auto-column-width';
 import type {
   BlockDef,
   BlockRenderProps,
@@ -46,6 +49,11 @@ function RenderOzonSearchPhrases({ instance }: BlockRenderProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
+  const { accounts } = useMarketplaceAccounts({ marketplace: 'ozon' });
+  const currentAccount = useMemo(
+    () => accounts.find((a) => a.id === config.accountId) ?? null,
+    [accounts, config.accountId],
+  );
 
   useEffect(() => {
     mountedRef.current = true;
@@ -96,29 +104,112 @@ function RenderOzonSearchPhrases({ instance }: BlockRenderProps) {
     fetchData();
   }, [fetchData]);
 
+  // Публикуем агрегаты для привязок.
+  const rows = data?.rows ?? [];
+  const totals = useMemo(() => {
+    const views = rows.reduce((a, b) => a + b.views, 0);
+    const clicks = rows.reduce((a, b) => a + b.clicks, 0);
+    const orders = rows.reduce((a, b) => a + b.orders, 0);
+    const expense = rows.reduce((a, b) => a + b.expenseRub, 0);
+    return { views, clicks, orders, expense };
+  }, [rows]);
+  useBlockValuePublisher(instance.id, {
+    totalViews: totals.views,
+    totalClicks: totals.clicks,
+    totalOrders: totals.orders,
+    totalExpenseRub: totals.expense,
+    avgCtrPct: totals.views > 0 ? (totals.clicks / totals.views) * 100 : null,
+    phrasesCount: rows.length,
+  });
+
+  const widths = useMemo(
+    () => ({
+      phrase: autoColumnWidth('Фраза', rows.map((r) => r.phrase), { min: 180, max: 360 }),
+      views: autoColumnWidth(
+        'Показы',
+        rows.map((r) => r.views.toLocaleString('ru-RU')),
+        { min: 80, max: 120 },
+      ),
+      clicks: autoColumnWidth(
+        'Клики',
+        rows.map((r) => r.clicks.toLocaleString('ru-RU')),
+        { min: 70, max: 110 },
+      ),
+      ctr: autoColumnWidth(
+        'CTR',
+        rows.map((r) => (r.ctrPct !== null ? r.ctrPct.toFixed(1) + '%' : '—')),
+        { min: 60, max: 100 },
+      ),
+      orders: autoColumnWidth('Заказы', rows.map((r) => String(r.orders)), {
+        min: 70,
+        max: 110,
+      }),
+      expense: autoColumnWidth(
+        'Расход',
+        rows.map((r) => Math.round(r.expenseRub).toLocaleString('ru-RU') + ' ₽'),
+        { min: 80, max: 130 },
+      ),
+      cpo: autoColumnWidth(
+        'CPO',
+        rows.map((r) => (r.cpoRub !== null ? Math.round(r.cpoRub) + ' ₽' : '—')),
+        { min: 70, max: 110 },
+      ),
+    }),
+    [rows],
+  );
+
+  // Структурированный empty state. КРИТИЧНО: «Поисковые фразы» —
+  // Performance API не отдаёт стабильный отчёт «search-phrases». Sync stage
+  // помечен TODO. Поэтому даже при подключённом Performance API данные могут
+  // быть пусты. Показываем это как `limited`, не как ошибку.
+  const emptyKind:
+    | 'no-account'
+    | 'no-perf'
+    | 'perf-error'
+    | 'error'
+    | 'limited'
+    | null = !config.accountId
+    ? 'no-account'
+    : !currentAccount
+      ? 'no-account'
+      : !currentAccount.perfConnected
+        ? 'no-perf'
+        : error
+          ? 'error'
+          : currentAccount.perfStatus === 'error'
+            ? 'perf-error'
+            : data && data.rows.length === 0
+              ? 'limited'
+              : null;
+
   return (
     <Card className="flex h-full flex-col overflow-hidden p-0">
       <div className="flex flex-wrap items-center gap-2 border-b border-border/40 px-3 py-2">
         <PeriodPicker value={period} onChange={setPeriod} compact />
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
-        {error ? (
+        {emptyKind ? (
+          <SearchPhrasesEmptyState
+            kind={emptyKind}
+            loading={loading}
+            error={error}
+            perfError={currentAccount?.perfLastSyncError ?? null}
+          />
+        ) : !data ? (
           <div className="flex h-full items-center justify-center text-center text-[12px] text-muted-foreground">
-            {error}
-          </div>
-        ) : !data || data.rows.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-[12px] text-muted-foreground">
-            <AlertCircle className="h-5 w-5" />
-            {loading ? 'Загрузка…' : 'Нет данных. Поисковые фразы требуют Performance API.'}
-            <Link
-              href="/settings/integrations"
-              className="text-[11px] text-primary hover:underline"
-            >
-              Подключить Performance API →
-            </Link>
+            Загрузка…
           </div>
         ) : (
-          <table className="w-full text-[11px]">
+          <table className="w-full text-[11px]" style={{ tableLayout: 'fixed' }}>
+            <colgroup>
+              <col style={{ width: `${widths.phrase}px` }} />
+              <col style={{ width: `${widths.views}px` }} />
+              <col style={{ width: `${widths.clicks}px` }} />
+              <col style={{ width: `${widths.ctr}px` }} />
+              <col style={{ width: `${widths.orders}px` }} />
+              <col style={{ width: `${widths.expense}px` }} />
+              <col style={{ width: `${widths.cpo}px` }} />
+            </colgroup>
             <thead className="sticky top-0 bg-muted/60 backdrop-blur">
               <tr className="text-left text-muted-foreground">
                 <th className="px-2 py-1.5 font-medium">Фраза</th>
@@ -133,8 +224,8 @@ function RenderOzonSearchPhrases({ instance }: BlockRenderProps) {
             <tbody className="divide-y divide-border/40">
               {data.rows.map((r, i) => (
                 <tr key={`${r.phrase}_${i}`} className="hover:bg-accent/20">
-                  <td className="px-2 py-1.5 font-medium" title={r.phrase}>
-                    <span className="line-clamp-1">{r.phrase}</span>
+                  <td className="truncate px-2 py-1.5 font-medium" title={r.phrase}>
+                    {r.phrase}
                   </td>
                   <td className="px-2 py-1.5 text-right tabular-nums">
                     {r.views.toLocaleString('ru-RU')}
@@ -159,6 +250,83 @@ function RenderOzonSearchPhrases({ instance }: BlockRenderProps) {
         )}
       </div>
     </Card>
+  );
+}
+
+function SearchPhrasesEmptyState({
+  kind,
+  loading,
+  error,
+  perfError,
+}: {
+  kind: 'no-account' | 'no-perf' | 'perf-error' | 'error' | 'limited';
+  loading: boolean;
+  error: string | null;
+  perfError: string | null;
+}) {
+  if (loading && kind === 'limited') {
+    return (
+      <div className="flex h-full items-center justify-center text-center text-[12px] text-muted-foreground">
+        Загрузка…
+      </div>
+    );
+  }
+  if (kind === 'no-account') {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-[12px] text-muted-foreground">
+        <AlertCircle className="h-5 w-5" />
+        Выберите Ozon-магазин в настройках блока
+      </div>
+    );
+  }
+  if (kind === 'no-perf') {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-[12px] text-muted-foreground">
+        <AlertCircle className="h-5 w-5" />
+        Для этого магазина не подключён Performance API
+        <Link
+          href="/settings/integrations"
+          className="text-[11px] text-primary hover:underline"
+        >
+          Подключить в Настройках → Интеграции →
+        </Link>
+      </div>
+    );
+  }
+  if (kind === 'perf-error') {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-[12px] text-rose-700 dark:text-rose-300">
+        <AlertCircle className="h-5 w-5" />
+        Ошибка Performance API при последней синхронизации
+        {perfError && <span className="text-[11px] opacity-80">{perfError}</span>}
+      </div>
+    );
+  }
+  if (kind === 'error') {
+    return (
+      <div className="flex h-full items-center justify-center text-center text-[12px] text-rose-700 dark:text-rose-300">
+        {error ?? 'Не удалось получить данные'}
+      </div>
+    );
+  }
+  // limited — Ozon Performance API не отдаёт стабильный CSV-отчёт
+  // «search-phrases» без личного обращения. Это не баг и не ошибка
+  // подключения, поэтому не пугаем пользователя «нет данных».
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-[12px] text-muted-foreground">
+      <Info className="h-5 w-5 text-sky-700 dark:text-sky-400" />
+      <span className="font-medium text-foreground">
+        Поисковые фразы — ограниченная поддержка
+      </span>
+      <span className="max-w-xs text-[11px]">
+        Ozon Performance API не предоставляет стабильный отчёт «поисковые
+        фразы» без индивидуального доступа. Данные отображаются только если
+        вы запустили sync с расширенными правами.
+      </span>
+      <span className="text-[10px] opacity-70">
+        Когда отчёт появится в API — блок начнёт работать автоматически.
+      </span>
+    </div>
   );
 }
 
