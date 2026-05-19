@@ -42,6 +42,8 @@ export const OzonKpiBlockConfigSchema = z.object({
     .default('7d'),
   customFrom: z.string().nullable().default(null),
   customTo: z.string().nullable().default(null),
+  /** Режим сравнения для delta-бейджей. previous = предыдущий период (default), week-ago = тот же период неделю назад. */
+  compareMode: z.enum(['previous', 'week-ago']).default('previous'),
   visibleCards: VisibleCardsSchema.default({}),
 });
 
@@ -56,6 +58,52 @@ function deltaPercent(current: number, previous: number): number {
   return ((current - previous) / previous) * 100;
 }
 
+function formatForTooltip(value: number, kind: 'rub' | 'int' | 'pct'): string {
+  if (!Number.isFinite(value)) return '—';
+  if (kind === 'rub') {
+    return new Intl.NumberFormat('ru-RU', {
+      style: 'currency',
+      currency: 'RUB',
+      maximumFractionDigits: 0,
+    }).format(value);
+  }
+  if (kind === 'pct') {
+    return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 1 }).format(value) + '%';
+  }
+  return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(value);
+}
+
+function buildDeltaTooltip(
+  metric: string,
+  current: number,
+  previous: number,
+  baselineLabel: string,
+  kind: 'rub' | 'int' | 'pct',
+): string {
+  const diff = current - previous;
+  const sign = diff > 0 ? '+' : '';
+  return (
+    `${metric}: ${formatForTooltip(current, kind)} ` +
+    `(vs ${baselineLabel.toLowerCase()}: ${formatForTooltip(previous, kind)}, ` +
+    `разница ${sign}${formatForTooltip(diff, kind)})`
+  );
+}
+
+type CompareMode = 'previous' | 'week-ago';
+
+const COMPARE_OPTIONS: Array<{ value: CompareMode; label: string; description: string }> = [
+  {
+    value: 'previous',
+    label: 'Прошлый период',
+    description: 'Сравнение с предыдущим отрезком той же длины (напр. 7д ↔ предыдущие 7д).',
+  },
+  {
+    value: 'week-ago',
+    label: 'Неделя назад',
+    description: 'Сравнение с той же датой неделю назад (день-к-дню, учитывает weekly seasonality).',
+  },
+];
+
 function RenderOzonKpi({ instance }: BlockRenderProps) {
   const config = useMemo(() => parseConfig(instance.config), [instance.config]);
   const [period, setPeriod] = useState<PeriodValue>({
@@ -63,6 +111,7 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
     customFrom: config.customFrom,
     customTo: config.customTo,
   });
+  const [compareMode, setCompareMode] = useState<CompareMode>(config.compareMode);
   const [data, setData] = useState<OzonKpiResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -90,6 +139,7 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
         accountId: config.accountId,
         from: range.from.toISOString(),
         to: range.to.toISOString(),
+        compareMode,
       });
       const res = await fetch(`/api/marketplaces/ozon/kpi?${params}`);
       const json = await res.json();
@@ -107,7 +157,7 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
     } finally {
       if (mountedRef.current) setLoading(false);
     }
-  }, [config.accountId, period.preset, period.customFrom, period.customTo]);
+  }, [config.accountId, period.preset, period.customFrom, period.customTo, compareMode]);
 
   useEffect(() => {
     fetchData();
@@ -127,6 +177,23 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
     <Card className="flex h-full flex-col overflow-hidden p-3">
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <PeriodPicker value={period} onChange={setPeriod} compact />
+        <div
+          className="inline-flex items-center gap-1 text-[11px] text-muted-foreground"
+          title="Бейджи ↗/↘ справа от каждой метрики показывают изменение относительно этого baseline'а."
+        >
+          <span className="hidden sm:inline">Сравнить с:</span>
+          <select
+            value={compareMode}
+            onChange={(e) => setCompareMode(e.target.value as CompareMode)}
+            className="rounded-md border border-border/60 bg-background px-1.5 py-0.5 text-[11px] hover:bg-accent focus:outline-none focus:ring-1 focus:ring-ring"
+          >
+            {COMPARE_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value} title={opt.description}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </div>
         {data?.adsSource === 'transactions-heuristic' && (
           <span
             className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950 dark:text-amber-300"
@@ -181,7 +248,14 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
               delta={
                 data && {
                   value: deltaPercent(data.current.revenueRub, data.previous.revenueRub),
-                  label: 'vs прошлый период',
+                  label: `vs ${data.compareLabel}`,
+                  tooltip: buildDeltaTooltip(
+                    'Выручка',
+                    data.current.revenueRub,
+                    data.previous.revenueRub,
+                    data.compareLabel,
+                    'rub',
+                  ),
                   goodDirection: 'up',
                 }
               }
@@ -198,7 +272,14 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
               delta={
                 data && {
                   value: deltaPercent(data.current.orders, data.previous.orders),
-                  label: 'vs прошлый период',
+                  label: `vs ${data.compareLabel}`,
+                  tooltip: buildDeltaTooltip(
+                    'Заказы',
+                    data.current.orders,
+                    data.previous.orders,
+                    data.compareLabel,
+                    'int',
+                  ),
                   goodDirection: 'up',
                 }
               }
@@ -215,7 +296,14 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
               delta={
                 data && {
                   value: deltaPercent(data.current.adsRub, data.previous.adsRub),
-                  label: 'vs прошлый период',
+                  label: `vs ${data.compareLabel}`,
+                  tooltip: buildDeltaTooltip(
+                    'Расход на рекламу',
+                    data.current.adsRub,
+                    data.previous.adsRub,
+                    data.compareLabel,
+                    'rub',
+                  ),
                   goodDirection: 'down',
                 }
               }
@@ -246,7 +334,14 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
                   ? {
                       value: data.current.drrPct - data.previous.drrPct,
                       suffix: 'п.п.',
-                      label: 'vs прошлый',
+                      label: `vs ${data.compareLabel}`,
+                      tooltip: buildDeltaTooltip(
+                        'ДРР',
+                        data.current.drrPct,
+                        data.previous.drrPct,
+                        data.compareLabel,
+                        'pct',
+                      ),
                       goodDirection: 'down',
                     }
                   : null
@@ -265,7 +360,14 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
                 data && data.current.aovRub !== null && data.previous.aovRub !== null
                   ? {
                       value: deltaPercent(data.current.aovRub, data.previous.aovRub),
-                      label: 'vs прошлый',
+                      label: `vs ${data.compareLabel}`,
+                      tooltip: buildDeltaTooltip(
+                        'Средний чек',
+                        data.current.aovRub,
+                        data.previous.aovRub,
+                        data.compareLabel,
+                        'rub',
+                      ),
                       goodDirection: 'up',
                     }
                   : null
@@ -283,7 +385,14 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
                 data && data.current.cpoRub !== null && data.previous.cpoRub !== null
                   ? {
                       value: deltaPercent(data.current.cpoRub, data.previous.cpoRub),
-                      label: 'vs прошлый',
+                      label: `vs ${data.compareLabel}`,
+                      tooltip: buildDeltaTooltip(
+                        'Средний CPO',
+                        data.current.cpoRub,
+                        data.previous.cpoRub,
+                        data.compareLabel,
+                        'rub',
+                      ),
                       goodDirection: 'down',
                     }
                   : null
@@ -327,6 +436,20 @@ function SettingsForm({ config, onChange }: BlockSettingsFormProps) {
             })
           }
         />
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-[11px] text-muted-foreground">Сравнение по умолчанию</Label>
+        <select
+          value={parsed.compareMode}
+          onChange={(e) => patch({ compareMode: e.target.value as 'previous' | 'week-ago' })}
+          className="w-full rounded-md border border-border/60 bg-background px-2 py-1.5 text-[12px] hover:bg-accent focus:outline-none focus:ring-1 focus:ring-ring"
+        >
+          {COMPARE_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label} — {opt.description}
+            </option>
+          ))}
+        </select>
       </div>
       <div className="space-y-2">
         <Label className="text-[11px] text-muted-foreground">Видимые карточки</Label>

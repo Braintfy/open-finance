@@ -348,9 +348,27 @@ function RenderOzonAnalytics({ instance }: BlockRenderProps) {
         <>
           <div className="grid grid-cols-2 gap-px border-b border-border/40 bg-border/40 sm:grid-cols-5">
             <Totals label="Выручка" value={formatRub(response.totals.revenueRub)} />
-            <Totals label="Реклама" value={formatRub(response.totals.adsRub)} />
+            <Totals
+              label="Реклама"
+              value={formatRub(response.totals.adsRub)}
+              subtitle={
+                response.totals.adsCpoRub > 0
+                  ? `CPC: ${formatRub(response.totals.adsCpcRub)} · CPO: ${formatRub(response.totals.adsCpoRub)}`
+                  : undefined
+              }
+              subtitleTitle="CPC/CPM — per-SKU из Search Promo. CPO — агрегат по магазину (Оплата за заказ), распределён по SKU пропорционально выручке."
+            />
             <Totals label="ДРР" value={formatPct(response.totals.drrPct)} tone={response.totals.drrPct !== null && response.totals.drrPct > 20 ? 'warning' : 'neutral'} />
-            <Totals label="Заказы" value={response.totals.delivered.toLocaleString('ru-RU')} />
+            <Totals
+              label="Заказы"
+              value={response.totals.delivered.toLocaleString('ru-RU')}
+              subtitle={
+                response.totals.deliveredFbo + response.totals.deliveredFbs > 0
+                  ? `ФБО: ${response.totals.deliveredFbo.toLocaleString('ru-RU')} · ФБС: ${response.totals.deliveredFbs.toLocaleString('ru-RU')}`
+                  : undefined
+              }
+              subtitleTitle="ФБО — со склада Ozon. ФБС — со склада продавца. Сумма может быть меньше «Заказы» если ozon_orders ещё не синхронизированы."
+            />
             <Totals label="Товары с продажами" value={`${response.totals.productsWithSales} / ${rows.length}`} />
           </div>
           {/* Source badges: показывают откуда взяты числа (Seller analytics vs legacy postings). */}
@@ -426,10 +444,14 @@ function Totals({
   label,
   value,
   tone,
+  subtitle,
+  subtitleTitle,
 }: {
   label: string;
   value: string;
   tone?: 'neutral' | 'warning';
+  subtitle?: string;
+  subtitleTitle?: string;
 }) {
   return (
     <div className="bg-card p-2">
@@ -442,6 +464,14 @@ function Totals({
       >
         {value}
       </div>
+      {subtitle && (
+        <div
+          className="mt-0.5 text-[10px] text-muted-foreground/80 tabular-nums"
+          title={subtitleTitle}
+        >
+          {subtitle}
+        </div>
+      )}
     </div>
   );
 }

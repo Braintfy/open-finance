@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.18.16] - 2026-05-19
+
+Доделка отображения после v0.18.15: CPO расход теперь учитывается в блоке Аналитика (с распределением по SKU пропорционально выручке), разделение заказов на ФБО/ФБС, selector «Сравнить с» в KPI блоке (Прошлый период / Неделя назад) с tooltip'ами на delta-бейджах.
+
+### Fixed
+
+- **Блок Аналитика игнорировал CPO расход** — `src/app/api/marketplaces/analytics/ozon/route.ts`. После v0.18.15 KPI/timeseries уже суммировали CPC + CPO, но аналитика читала только `ozon_perf_sku_stats` → totals.adsRub = 0 → ДРР = "—" когда у магазина только CPO кампании. Добавлен CTE `cpo_total` из `ozon_perf_cpo_daily`, totals.adsRub теперь = CPC + CPO.
+
+### Added
+
+- **Распределение CPO по SKU** — CPO агрегат по магазину делится на SKU пропорционально выручке (`adsCpoAllocRub = cpoTotal * (row.revenueRub / totalRevenue)`). В таблице рядом с расходом/ДРР появляется бейдж `≅` с tooltip «оценка». Per-row `adsRub = adsCpcRub + adsCpoAllocRub`, ДРР пересчитан.
+- **Разделение заказов ФБО/ФБС** — `OzonAnalyticsRow.deliveredFbo` / `.deliveredFbs` + колонки в таблице (по умолчанию видимы). Считается из `ozon_orders.scheme IN ('fbo','fbs')`. Под totals «Заказы» subtitle `ФБО: X · ФБС: Y`.
+- **Subtitle в totals «Реклама»** — `CPC: X₽ · CPO: Y₽` если CPO > 0, с tooltip про распределение.
+- **Selector «Сравнить с» в KPI блоке** — `src/lib/blocks/catalog/unit-ozon-kpi.tsx`. Опции: «Прошлый период» (предыдущий отрезок той же длины) / «Неделя назад» (день-к-дню, weekly seasonality). Передаётся в `compareMode` query param. Default в SettingsForm.
+- **Tooltip на delta-бейджах StatCard** — `src/components/blocks/stat-card.tsx:24` поле `delta.tooltip`. Hover на «↘ -49%» показывает «Выручка: 13 195₽ (vs прошлый период: 26 000₽, разница -12 805₽)».
+
+### Changed
+
+- **`OzonAnalyticsResponse` + `OzonAnalyticsRow`** — новые поля `adsCpcRub`, `adsCpoRub`, `adsCpoAllocRub`, `adsHasCpo`, `deliveredFbo`, `deliveredFbs`, `hasCpoExpense`. Redis-кэш bump через `CACHE_VERSION = 'v2'`.
+- **`OzonKpiResponse`** — добавлены поля `compareMode`, `compareLabel`, `previousRange`. Логика `prevFrom/prevTo` зависит от `compareMode` query param.
+- **Default visible columns Аналитики** — добавлены `deliveredFbo`, `deliveredFbs` в начало (после `delivered`).
+
 ## [0.18.15] - 2026-05-19
 
 Полная переделка Performance API integration: smart routing CPC/CPO кампаний, правильный endpoint для дневной разбивки, новая таблица для CPO кампаний, KPI/timeseries суммируют CPC + CPO.

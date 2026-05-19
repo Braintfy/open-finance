@@ -40,7 +40,7 @@ const COLUMN_GROUPS: Array<{
   },
   {
     title: 'Продажи',
-    keys: ['delivered', 'qtyDelivered', 'cancelled', 'returned', 'returnPct', 'revenueRub', 'buyoutPct', 'salesPerDay', 'salesShare'],
+    keys: ['delivered', 'deliveredFbo', 'deliveredFbs', 'qtyDelivered', 'cancelled', 'returned', 'returnPct', 'revenueRub', 'buyoutPct', 'salesPerDay', 'salesShare'],
   },
   {
     title: 'Реклама',

@@ -21,6 +21,8 @@ export type StatCardDelta = {
   goodDirection?: 'up' | 'down';
   /** Подпись delta: «vs прошлый период», «vs вчера» и т.д. */
   label?: string;
+  /** Tooltip (HTML title) для подробного объяснения бейджа. */
+  tooltip?: string;
 };
 
 export type StatCardProps = {
@@ -115,6 +117,7 @@ export function StatCard({
               'flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-medium ' +
               deltaTone
             }
+            title={delta.tooltip ?? delta.label}
           >
             <DeltaIcon delta={delta} />
             {Math.abs(delta.value).toFixed(1)}

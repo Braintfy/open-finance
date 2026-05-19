@@ -20,11 +20,22 @@ export type OzonAnalyticsRow = {
   priceRub: number;
   costRub: number;
   delivered: number;
+  /** Доставленные FBO-заказы (со склада Ozon). */
+  deliveredFbo: number;
+  /** Доставленные FBS-заказы (со склада продавца). */
+  deliveredFbs: number;
   cancelled: number;
   returned: number;
   qtyDelivered: number;
   revenueRub: number;
+  /** Общий расход на рекламу: adsCpcRub + adsCpoAllocRub. */
   adsRub: number;
+  /** CPC/CPM расход per-SKU (из ozon_perf_sku_stats). */
+  adsCpcRub: number;
+  /** CPO расход распределён на этот SKU пропорционально выручке (≅ оценка). */
+  adsCpoAllocRub: number;
+  /** true если adsCpoAllocRub > 0. UI показывает бейдж ≅ на рекламе/ДРР. */
+  adsHasCpo: boolean;
   drrPct: number | null;
   buyoutPct: number | null;
   daysOfStock: number | null;
@@ -62,6 +73,8 @@ export const DEFAULT_VISIBLE_COLUMNS: TableColumnKey[] = [
   'sku',
   'priceRub',
   'delivered',
+  'deliveredFbo',
+  'deliveredFbs',
   'revenueRub',
   'adsRub',
   'drrPct',
@@ -101,6 +114,8 @@ export const OzonAnalyticsBlockConfigSchema = z.object({
         'costRub',
         'marginRub',
         'delivered',
+        'deliveredFbo',
+        'deliveredFbs',
         'qtyDelivered',
         'cancelled',
         'returned',

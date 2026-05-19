@@ -283,6 +283,35 @@ Open Finance = настраиваемый Lego-конструктор интер
 - **Тесты:** 29 PASS в [`scripts/test-ozon-analytics.ts`](scripts/test-ozon-analytics.ts) — все 8 фильтров, config schema (включая backward-compat), `resolvePeriod` все пресеты. Запуск `pnpm tsx scripts/test-ozon-analytics.ts`.
 - **`JobErrorsBlock`** в `/settings/integrations` — раскрываемый список ошибок job'a с stage-badge. Info-tooltip для «schema mismatch» сообщений (после lenient-mode они = warnings).
 
+### Аналитика блока: CPO + FBO/FBS + compareMode (v0.18.16)
+
+**Блок Аналитика (`unit-ozon-analytics`)** — `src/app/api/marketplaces/analytics/ozon/route.ts`:
+- **CPO в totals**: отдельный CTE-запрос `SUM(expense_kopecks) FROM ozon_perf_cpo_daily` → `cpoTotalRub`. Прибавляется к `totals.adsRub`.
+- **CPO per-SKU распределение** (Node, не SQL): `adsCpoAllocRub = cpoTotalRub * (row.revenueRub / totalRevenueForAlloc)`. Если выручки нет — CPO остаётся только в totals. Per-row `drrPct` пересчитан с учётом CPO.
+- **FBO/FBS из ozon_orders.scheme**: CTE `agg_scheme` всегда работает над `ozon_orders` независимо от primary source (`analytics-api` или `orders-fallback`). LEFT JOIN по `offer_id`. Если `ozon_orders` ещё не синхронизирован — обе колонки = 0.
+- **`OzonAnalyticsResponse`** теперь имеет: `totals.adsCpcRub`, `totals.adsCpoRub`, `totals.deliveredFbo`, `totals.deliveredFbs`, `hasCpoExpense`.
+- **`OzonAnalyticsRow`** теперь: `adsCpcRub`, `adsCpoAllocRub`, `adsHasCpo`, `deliveredFbo`, `deliveredFbs`. `adsRub = adsCpcRub + adsCpoAllocRub`.
+- **Cache bump**: `CACHE_VERSION = 'v2'` в ключе Redis `analytics:ozon:v2:...` — иначе старые блоки получат stale данные без новых полей.
+- **UI бейдж `≅`**: рядом с `adsRub`/`drrPct` в таблице если `adsHasCpo`. Tooltip: «CPC: X + CPO: Y (распределён по выручке)». Цвет `bg-blue-100`.
+- **Totals subtitle**: `«Реклама»` → `CPC: X · CPO: Y` (если CPO > 0). `«Заказы»` → `ФБО: A · ФБС: B`.
+- **Default visible columns** теперь включают `deliveredFbo`, `deliveredFbs` сразу после `delivered`.
+
+**KPI блок (`unit-ozon-kpi`)** — compareMode:
+- **Config schema**: `compareMode: 'previous' | 'week-ago'` (default `previous`).
+- **Selector**: `<select>` рядом с `PeriodPicker`. Опции «Прошлый период» / «Неделя назад».
+- **`KPI route`** — query param `compareMode`. Логика prev:
+  - `previous`: `prevFrom = from - length, prevTo = from`.
+  - `week-ago`: `prevFrom = from - 7d, prevTo = to - 7d`.
+- **Response** добавил `compareMode`, `compareLabel` (для UI), `previousRange` (для отладки).
+- **Tooltip на delta-бейджах** — `StatCardDelta.tooltip` (новое поле в `src/components/blocks/stat-card.tsx`). Каждый бейдж получает tooltip типа `«Выручка: 13 195₽ (vs прошлый период: 26 000₽, разница -12 805₽)»`. Helper `buildDeltaTooltip()` в `unit-ozon-kpi.tsx`.
+
+**ВАЖНО**: при изменении формы `OzonAnalyticsRow` нужно обновлять:
+1. `src/lib/blocks/catalog/unit-ozon-analytics-types.ts` (тип + visibleColumns enum).
+2. `src/components/unit-economics/ozon-analytics-table.tsx` (TableColumnKey + COLUMN_DEFS + getCellValue + render switch).
+3. `src/components/unit-economics/ozon-analytics-settings-form.tsx` (COLUMN_GROUPS).
+4. `scripts/test-ozon-analytics.ts` (test row factory).
+Иначе TS error на required field.
+
 ### Performance API: multi-endpoint smart routing (v0.18.15) — ВАЖНО
 
 **Корневая разгадка**: `/api/client/campaign` НЕ возвращает `paymentType` (всегда null) — фильтровать кампании надо по **`adv_object_type`**:

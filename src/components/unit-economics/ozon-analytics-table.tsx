@@ -18,6 +18,8 @@ export type TableColumnKey =
   | 'costRub'
   | 'marginRub'
   | 'delivered'
+  | 'deliveredFbo'
+  | 'deliveredFbs'
   | 'qtyDelivered'
   | 'cancelled'
   | 'returned'
@@ -64,12 +66,14 @@ export const COLUMN_DEFS: ColumnDef[] = [
   { key: 'costRub', label: 'Себест.', align: 'right', minPx: 70, defaultPx: 90, sortable: true },
   { key: 'marginRub', label: 'Маржа', hint: 'price − cost', align: 'right', minPx: 70, defaultPx: 90, sortable: true },
   { key: 'delivered', label: 'Заказы', align: 'right', minPx: 56, defaultPx: 72, sortable: true },
+  { key: 'deliveredFbo', label: 'ФБО', hint: 'со склада Ozon', align: 'right', minPx: 50, defaultPx: 64, sortable: true },
+  { key: 'deliveredFbs', label: 'ФБС', hint: 'со склада продавца', align: 'right', minPx: 50, defaultPx: 64, sortable: true },
   { key: 'qtyDelivered', label: 'Штук', align: 'right', minPx: 50, defaultPx: 64, sortable: true },
   { key: 'cancelled', label: 'Отмены', align: 'right', minPx: 56, defaultPx: 72, sortable: true },
   { key: 'returned', label: 'Возвраты', align: 'right', minPx: 56, defaultPx: 72, sortable: true },
   { key: 'returnPct', label: '% возвр.', hint: 'returned / (del+ret)', align: 'right', minPx: 56, defaultPx: 72, sortable: true },
   { key: 'revenueRub', label: 'Выручка', align: 'right', minPx: 80, defaultPx: 110, sortable: true },
-  { key: 'adsRub', label: 'Расход', hint: 'рекламный бюджет', align: 'right', minPx: 70, defaultPx: 100, sortable: true },
+  { key: 'adsRub', label: 'Расход', hint: 'рекламный бюджет (CPC + CPO ≅)', align: 'right', minPx: 70, defaultPx: 110, sortable: true },
   { key: 'drrPct', label: 'ДРР', hint: '%', align: 'right', minPx: 56, defaultPx: 72, sortable: true },
   { key: 'stock', label: 'Остаток', align: 'right', minPx: 60, defaultPx: 80, sortable: true },
   { key: 'daysOfStock', label: 'Дней', hint: 'хватит остатка', align: 'right', minPx: 50, defaultPx: 64, sortable: true },
@@ -104,6 +108,10 @@ function getCellValue(
       return row.priceRub - row.costRub;
     case 'delivered':
       return row.delivered;
+    case 'deliveredFbo':
+      return row.deliveredFbo;
+    case 'deliveredFbs':
+      return row.deliveredFbs;
     case 'qtyDelivered':
       return row.qtyDelivered;
     case 'cancelled':
@@ -414,6 +422,12 @@ export function OzonAnalyticsTable({
                       case 'delivered':
                         body = formatInt(row.delivered);
                         break;
+                      case 'deliveredFbo':
+                        body = formatInt(row.deliveredFbo);
+                        break;
+                      case 'deliveredFbs':
+                        body = formatInt(row.deliveredFbs);
+                        break;
                       case 'qtyDelivered':
                         body = formatInt(row.qtyDelivered);
                         break;
@@ -430,18 +444,40 @@ export function OzonAnalyticsTable({
                         body = row.revenueRub > 0 ? formatRub(row.revenueRub) : '—';
                         break;
                       case 'adsRub':
-                        body = row.adsRub > 0 ? formatRub(row.adsRub) : '—';
+                        body = row.adsRub > 0 ? (
+                          <span className="inline-flex items-center gap-1">
+                            {formatRub(row.adsRub)}
+                            {row.adsHasCpo && (
+                              <span
+                                className="inline-flex h-4 items-center rounded-sm bg-blue-100 px-1 text-[9px] font-medium text-blue-800 dark:bg-blue-950/40 dark:text-blue-300"
+                                title={`CPC: ${formatRub(row.adsCpcRub)} + CPO: ${formatRub(row.adsCpoAllocRub)} (распределён пропорционально выручке)`}
+                              >
+                                ≅
+                              </span>
+                            )}
+                          </span>
+                        ) : '—';
                         break;
                       case 'drrPct':
                         body = (
-                          <span
-                            className={cn(
-                              'inline-block rounded-md px-1.5 py-0.5 text-[11px] font-medium',
-                              TONE_BG[dt],
-                              TONE_CLASSES[dt],
+                          <span className="inline-flex items-center gap-1">
+                            <span
+                              className={cn(
+                                'inline-block rounded-md px-1.5 py-0.5 text-[11px] font-medium',
+                                TONE_BG[dt],
+                                TONE_CLASSES[dt],
+                              )}
+                            >
+                              {formatPct(row.drrPct)}
+                            </span>
+                            {row.adsHasCpo && (
+                              <span
+                                className="inline-flex h-4 items-center rounded-sm bg-blue-100 px-1 text-[9px] font-medium text-blue-800 dark:bg-blue-950/40 dark:text-blue-300"
+                                title="ДРР включает CPO-расход (распределён пропорционально выручке — оценка)"
+                              >
+                                ≅
+                              </span>
                             )}
-                          >
-                            {formatPct(row.drrPct)}
                           </span>
                         );
                         break;

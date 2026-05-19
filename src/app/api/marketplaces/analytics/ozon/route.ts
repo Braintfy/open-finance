@@ -12,6 +12,7 @@ import {
   ozonOrders,
   ozonTransactions,
   ozonPerfSkuStats,
+  ozonPerfCpoDaily,
   ozonAnalyticsDaily,
 } from '@/lib/db/schema/marketplaces';
 import type { OzonAnalyticsRow } from '@/lib/blocks/catalog/unit-ozon-analytics-types';
@@ -25,8 +26,17 @@ export type OzonAnalyticsResponse = {
   rows: OzonAnalyticsRow[];
   totals: {
     revenueRub: number;
+    /** Суммарный расход на рекламу (CPC per-SKU + CPO агрегат по магазину). */
     adsRub: number;
+    /** CPC/CPM per-SKU расход (из ozon_perf_sku_stats). */
+    adsCpcRub: number;
+    /** CPO расход (из ozon_perf_cpo_daily). Агрегат по магазину, не разносится по SKU. */
+    adsCpoRub: number;
     delivered: number;
+    /** Доставленные FBO-заказы. */
+    deliveredFbo: number;
+    /** Доставленные FBS-заказы. */
+    deliveredFbs: number;
     cancelled: number;
     returned: number;
     drrPct: number | null;
@@ -36,10 +46,15 @@ export type OzonAnalyticsResponse = {
   adsSource: 'performance' | 'transactions-heuristic' | 'none';
   /** Источник данных продаж: 'analytics-api' = ozon_analytics_daily, 'orders-fallback' = ozon_orders. */
   ordersSource: 'analytics-api' | 'orders-fallback';
+  /** Есть CPO расход в периоде (влияет на UI бейдж ≅). */
+  hasCpoExpense: boolean;
 };
 
 /** TTL Redis-кэша для аналитики, секунды. Sync переписывает данные не чаще раза в час. */
 const ANALYTICS_CACHE_TTL_SEC = 3600;
+
+/** Bump ключ кэша при изменении формы response (v0.18.16 — +CPO/FBO/FBS). */
+const CACHE_VERSION = 'v2';
 
 /**
  * Эвристика для классификации транзакций Ozon как «рекламные».
@@ -86,7 +101,7 @@ export async function GET(req: NextRequest) {
 
     // Redis-кэш: блок аналитики переоткрывается часто, sync переписывает данные
     // максимум раз в час. Ключ зависит от tenant + accountId + период.
-    const cacheKey = `analytics:ozon:${session.tenantId}:${accountId ?? 'all'}:${fromIso}:${toIso}`;
+    const cacheKey = `analytics:ozon:${CACHE_VERSION}:${session.tenantId}:${accountId ?? 'all'}:${fromIso}:${toIso}`;
     try {
       const cached = await getRedis().get(cacheKey);
       if (cached) {
@@ -99,10 +114,29 @@ export async function GET(req: NextRequest) {
     const accountCondOrders = accountId ? sql`AND o.account_id = ${accountId}` : sql``;
     const accountCondTx = accountId ? sql`AND tx.account_id = ${accountId}` : sql``;
     const accountCondPerf = accountId ? sql`AND ps.account_id = ${accountId}` : sql``;
+    const accountCondCpo = accountId ? sql`AND cd.account_id = ${accountId}` : sql``;
     const accountCondAnalytics = accountId ? sql`AND ad.account_id = ${accountId}` : sql``;
+    const accountCondScheme = accountId ? sql`AND o2.account_id = ${accountId}` : sql``;
     const accountCondUp = accountId
       ? sql`AND ${unitProducts.marketplaceAccountId} = ${accountId}`
       : sql``;
+
+    // CPO расход (агрегат по магазину за период).
+    // CPO не имеет per-SKU detail, поэтому берём одним числом и распределяем
+    // по SKU пропорционально выручке на Node.
+    type CpoTotalRow = { ads_kopecks: number };
+    const cpoResult = await db.execute<CpoTotalRow>(sql`
+      SELECT COALESCE(SUM(cd.expense_kopecks), 0)::bigint AS ads_kopecks
+      FROM ${ozonPerfCpoDaily} cd
+      WHERE cd.tenant_id = ${session.tenantId}
+        ${accountCondCpo}
+        AND cd.date >= ${fromIso}::date
+        AND cd.date < ${toIso}::date
+    `);
+    const cpoTotalRows: CpoTotalRow[] = Array.isArray(cpoResult)
+      ? (cpoResult as CpoTotalRow[])
+      : (((cpoResult as unknown) as { rows: CpoTotalRow[] }).rows ?? []);
+    const cpoTotalRub = Number(cpoTotalRows[0]?.ads_kopecks ?? 0) / 100;
 
     // Определяем источник рекламных данных: perf_sku_stats (primary) → transactions (fallback).
     type AdsCheckRow = { cnt: number };
@@ -191,6 +225,8 @@ export async function GET(req: NextRequest) {
       cost_kopecks: number;
       marketing_price_rub: number | string | null;
       delivered: number;
+      delivered_fbo: number | string;
+      delivered_fbs: number | string;
       cancelled: number;
       returned: number;
       qty_delivered: number | string;
@@ -200,6 +236,36 @@ export async function GET(req: NextRequest) {
       perf_clicks: number | string;
       perf_cart_adds: number | string;
     };
+
+    // FBO/FBS разделение всегда из ozon_orders (независимо от primary source).
+    // Объединяем по offer_id — это поле есть во всех схемах.
+    const schemeCte = sql`
+      agg_scheme AS (
+        SELECT
+          (it->>'offerId')::text AS offer_id,
+          COUNT(DISTINCT o2.id) FILTER (
+            WHERE o2.scheme = 'fbo'
+              AND o2.cancelled_at IS NULL
+              AND o2.returned_at IS NULL
+              AND lower(o2.status) NOT LIKE '%cancel%'
+              AND lower(o2.status) NOT LIKE '%return%'
+          ) AS delivered_fbo,
+          COUNT(DISTINCT o2.id) FILTER (
+            WHERE o2.scheme = 'fbs'
+              AND o2.cancelled_at IS NULL
+              AND o2.returned_at IS NULL
+              AND lower(o2.status) NOT LIKE '%cancel%'
+              AND lower(o2.status) NOT LIKE '%return%'
+          ) AS delivered_fbs
+        FROM ${ozonOrders} o2
+        CROSS JOIN LATERAL jsonb_array_elements(o2.items) AS it
+        WHERE o2.tenant_id = ${session.tenantId}
+          ${accountCondScheme}
+          AND o2.order_created_at >= ${fromIso}::timestamp
+          AND o2.order_created_at < ${toIso}::timestamp
+          AND COALESCE(it->>'offerId', '') <> ''
+        GROUP BY (it->>'offerId')::text
+      )`;
 
     // CTE для продаж зависит от источника:
     //  - analytics-api (после v0.18.13): ozon_analytics_daily, JOIN по SKU.
@@ -323,7 +389,8 @@ export async function GET(req: NextRequest) {
 
     const rawResult = await db.execute<Raw>(sql`
       WITH ${ordersCte},
-      ${adsCte}
+      ${adsCte},
+      ${schemeCte}
       SELECT
         ${unitProducts.id}::text AS "productId",
         ${unitProducts.article} AS article,
@@ -335,6 +402,8 @@ export async function GET(req: NextRequest) {
         ${unitProducts.costKopecks} AS cost_kopecks,
         (${unitProducts.metadata}->>'priceWithSpp')::numeric AS marketing_price_rub,
         COALESCE(ao.delivered, 0)::int AS delivered,
+        COALESCE(sch.delivered_fbo, 0)::int AS delivered_fbo,
+        COALESCE(sch.delivered_fbs, 0)::int AS delivered_fbs,
         ${cancelledExpr} AS cancelled,
         ${returnedExpr} AS returned,
         COALESCE(ao.qty_delivered, 0) AS qty_delivered,
@@ -345,6 +414,7 @@ export async function GET(req: NextRequest) {
         COALESCE(ad.perf_cart_adds, 0) AS perf_cart_adds
       FROM ${unitProducts}
       ${ordersJoin}
+      LEFT JOIN agg_scheme sch ON sch.offer_id = ${unitProducts.article}
       LEFT JOIN LATERAL (
         SELECT
           SUM(ad.ads_kopecks) AS ads_kopecks,
@@ -369,11 +439,34 @@ export async function GET(req: NextRequest) {
       ? (rawResult as Raw[])
       : (((rawResult as unknown) as { rows: Raw[] }).rows ?? []);
 
-    const rows: OzonAnalyticsRow[] = aggregateRows.map((r) => {
+    // Сначала собираем CPC per-SKU rows и totalRevenue — это нужно для распределения CPO.
+    type Intermediate = {
+      productId: string;
+      article: string | null;
+      sku: string | null;
+      name: string;
+      stockMarketplace: number;
+      stockOwn: number;
+      priceRub: number;
+      costRub: number;
+      delivered: number;
+      deliveredFbo: number;
+      deliveredFbs: number;
+      cancelled: number;
+      returned: number;
+      qtyDelivered: number;
+      revenueRub: number;
+      adsCpcRub: number;
+      buyoutPct: number | null;
+      daysOfStock: number | null;
+      views: number;
+      clicks: number;
+      cartAdds: number;
+    };
+
+    const intermediate: Intermediate[] = aggregateRows.map((r) => {
       const revenueRub = Number(r.revenue_kopecks ?? 0) / 100;
-      const adsRub = Number(r.ads_kopecks ?? 0) / 100;
-      const drrPct =
-        revenueRub > 0 && adsRub > 0 ? (adsRub / revenueRub) * 100 : null;
+      const adsCpcRub = Number(r.ads_kopecks ?? 0) / 100;
       const delivered = Number(r.delivered ?? 0);
       const cancelled = Number(r.cancelled ?? 0);
       const returned = Number(r.returned ?? 0);
@@ -399,12 +492,13 @@ export async function GET(req: NextRequest) {
         priceRub,
         costRub: Number(r.cost_kopecks ?? 0) / 100,
         delivered,
+        deliveredFbo: Number(r.delivered_fbo ?? 0),
+        deliveredFbs: Number(r.delivered_fbs ?? 0),
         cancelled,
         returned,
         qtyDelivered,
         revenueRub,
-        adsRub,
-        drrPct,
+        adsCpcRub,
         buyoutPct,
         daysOfStock,
         views: Number(r.perf_views ?? 0),
@@ -413,11 +507,54 @@ export async function GET(req: NextRequest) {
       };
     });
 
+    // Распределяем CPO по SKU пропорционально выручке.
+    // Если выручки нет (productsWithSales=0) — CPO не разносится (остаётся в totals).
+    const totalRevenueForAlloc = intermediate.reduce((s, r) => s + r.revenueRub, 0);
+    const hasCpoExpense = cpoTotalRub > 0;
+
+    const rows: OzonAnalyticsRow[] = intermediate.map((r) => {
+      const adsCpoAllocRub =
+        hasCpoExpense && totalRevenueForAlloc > 0 && r.revenueRub > 0
+          ? cpoTotalRub * (r.revenueRub / totalRevenueForAlloc)
+          : 0;
+      const adsRub = r.adsCpcRub + adsCpoAllocRub;
+      const drrPct = r.revenueRub > 0 && adsRub > 0 ? (adsRub / r.revenueRub) * 100 : null;
+      return {
+        productId: r.productId,
+        article: r.article,
+        sku: r.sku,
+        name: r.name,
+        stockMarketplace: r.stockMarketplace,
+        stockOwn: r.stockOwn,
+        priceRub: r.priceRub,
+        costRub: r.costRub,
+        delivered: r.delivered,
+        deliveredFbo: r.deliveredFbo,
+        deliveredFbs: r.deliveredFbs,
+        cancelled: r.cancelled,
+        returned: r.returned,
+        qtyDelivered: r.qtyDelivered,
+        revenueRub: r.revenueRub,
+        adsRub,
+        adsCpcRub: r.adsCpcRub,
+        adsCpoAllocRub,
+        adsHasCpo: adsCpoAllocRub > 0,
+        drrPct,
+        buyoutPct: r.buyoutPct,
+        daysOfStock: r.daysOfStock,
+        views: r.views,
+        clicks: r.clicks,
+        cartAdds: r.cartAdds,
+      };
+    });
+
     const totals = rows.reduce(
       (acc, r) => {
         acc.revenueRub += r.revenueRub;
-        acc.adsRub += r.adsRub;
+        acc.adsCpcRub += r.adsCpcRub;
         acc.delivered += r.delivered;
+        acc.deliveredFbo += r.deliveredFbo;
+        acc.deliveredFbs += r.deliveredFbs;
         acc.cancelled += r.cancelled;
         acc.returned += r.returned;
         if (r.revenueRub > 0) acc.productsWithSales += 1;
@@ -426,21 +563,31 @@ export async function GET(req: NextRequest) {
       {
         revenueRub: 0,
         adsRub: 0,
+        adsCpcRub: 0,
+        adsCpoRub: 0,
         delivered: 0,
+        deliveredFbo: 0,
+        deliveredFbs: 0,
         cancelled: 0,
         returned: 0,
         drrPct: null as number | null,
         productsWithSales: 0,
       },
     );
+    totals.adsCpoRub = cpoTotalRub;
+    totals.adsRub = totals.adsCpcRub + cpoTotalRub;
     totals.drrPct =
       totals.revenueRub > 0 && totals.adsRub > 0
         ? (totals.adsRub / totals.revenueRub) * 100
         : null;
 
     // Если не perf и есть ads данные → значит из транзакций.
-    if (!hasPerfData && totals.adsRub > 0) {
+    if (!hasPerfData && totals.adsCpcRub > 0) {
       adsSource = 'transactions-heuristic';
+    }
+    // CPO source = performance (из ozon_perf_cpo_daily).
+    if (cpoTotalRub > 0 && adsSource === 'none') {
+      adsSource = 'performance';
     }
 
     const payload: OzonAnalyticsResponse = {
@@ -450,6 +597,7 @@ export async function GET(req: NextRequest) {
       period: { from: from.toISOString(), to: to.toISOString() },
       adsSource,
       ordersSource,
+      hasCpoExpense,
     };
 
     // Запись в кэш — best-effort.

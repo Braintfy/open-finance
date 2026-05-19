@@ -19,6 +19,9 @@ import {
 
 export const runtime = 'nodejs';
 
+/** Режим сравнения для delta-бейджей. */
+export type CompareMode = 'previous' | 'week-ago';
+
 export type OzonKpiResponse = {
   ok: true;
   current: {
@@ -41,6 +44,12 @@ export type OzonKpiResponse = {
   byDay: Array<{ date: string; revenueRub: number; orders: number; adsRub: number }>;
   /** Источник рекламных данных (для бейджа "приблизительно"). */
   adsSource: 'performance' | 'transactions-heuristic' | 'none';
+  /** Режим сравнения (echo из query). */
+  compareMode: CompareMode;
+  /** Человеческий label для UI tooltip'а: "Прошлый период" / "Неделя назад". */
+  compareLabel: string;
+  /** Диапазон previous (для отладки/tooltip). ISO. */
+  previousRange: { from: string; to: string };
 };
 
 type DayAgg = {
@@ -231,9 +240,19 @@ export async function GET(req: NextRequest) {
     if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime())) {
       return NextResponse.json({ ok: false, error: 'Invalid date' }, { status: 400 });
     }
+    const compareMode: CompareMode =
+      url.searchParams.get('compareMode') === 'week-ago' ? 'week-ago' : 'previous';
     const lengthMs = to.getTime() - from.getTime();
-    const prevFrom = new Date(from.getTime() - lengthMs);
-    const prevTo = new Date(from.getTime());
+    // previous: эталонный вариант — сдвиг на длину выбранного периода назад.
+    // week-ago: сдвиг на 7 дней назад (день-к-дню, учитывает weekly seasonality).
+    const shiftMs = compareMode === 'week-ago' ? 7 * 24 * 3600 * 1000 : lengthMs;
+    const prevFrom = new Date(from.getTime() - shiftMs);
+    const prevTo =
+      compareMode === 'week-ago'
+        ? new Date(to.getTime() - shiftMs)
+        : new Date(from.getTime());
+    const compareLabel =
+      compareMode === 'week-ago' ? 'Неделя назад' : 'Прошлый период';
 
     const [current, previous] = await Promise.all([
       getAggregateForRange({ tenantId: session.tenantId, accountId, from, to }),
@@ -270,6 +289,9 @@ export async function GET(req: NextRequest) {
         adsRub: d.ads_kopecks / 100,
       })),
       adsSource: current.adsSource,
+      compareMode,
+      compareLabel,
+      previousRange: { from: prevFrom.toISOString(), to: prevTo.toISOString() },
     };
 
     return NextResponse.json(response);
