@@ -283,6 +283,13 @@ Open Finance = настраиваемый Lego-конструктор интер
 - **Тесты:** 29 PASS в [`scripts/test-ozon-analytics.ts`](scripts/test-ozon-analytics.ts) — все 8 фильтров, config schema (включая backward-compat), `resolvePeriod` все пресеты. Запуск `pnpm tsx scripts/test-ozon-analytics.ts`.
 - **`JobErrorsBlock`** в `/settings/integrations` — раскрываемый список ошибок job'a с stage-badge. Info-tooltip для «schema mismatch» сообщений (после lenient-mode они = warnings).
 
+### Ozon Analytics / Performance API root-cause fixes (v0.18.11)
+- **НЕ путать `product_id` и Ozon SKU.** `unit_products.article` = seller `offer_id`; `unit_products.sku` должен быть реальным Ozon SKU (`ProductInfo.sources[].sku`, `PricesItem.sku`, `StocksItem.sku`). `product_id` хранится только в `metadata.productId`. Баг v0.18.10: `sku = String(info.id)` давал неверные ссылки `ozon.ru/product/{sku}` и ломал join рекламы.
+- **Analytics ads join должен быть backward-compatible.** `/api/marketplaces/analytics/ozon` матчится через lateral aggregate по `unit_products.sku`, legacy `metadata.productId`, `offer_id` и raw `Артикул`; не делать прямой `LEFT JOIN agg_ads ON a OR b OR c` без агрегирования — можно задвоить строки товара.
+- **Отмены/возвраты считать не только по датам.** `ozon_orders.cancelled_at`/`returned_at` могут быть null; API аналитики дополнительно учитывает `lower(status) LIKE '%cancel%'/'%return%'`.
+- **`ozon_perf_sku_stats` с `campaign_id NULL` может дублироваться.** Postgres unique index не дедупит `NULL`, поэтому `perfSkuStats` перед записью очищает агрегаты текущего окна `(tenant, account, date range, campaign_id IS NULL)`.
+- **Performance period retry:** при 400 «Некорректный период» `perfSkuStats` пробует окна 30/14/7 и лаг завершённого дня 1/2/3/4/7. Официальные Ozon docs недоступны через tool (403), подтверждён общий async-flow: UUID report → wait → download.
+
 ## Marketplace Integrations / Ozon Seller API (v0.17.0)
 ### Ключевые файлы
 - `src/lib/db/schema/marketplaces.ts` + `drizzle/init/07-marketplaces.sql` — таблицы `marketplace_accounts` (подключённые магазины, api_key зашифрован AES-256-GCM), `ozon_sync_jobs` (история job'ов с per-stage `stages JSONB`), `ozon_orders`, `ozon_realization`, `ozon_transactions`. `unit_products.marketplace_account_id uuid NULL` — связь синхронизированного товара с источником.

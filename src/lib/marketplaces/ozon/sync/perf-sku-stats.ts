@@ -23,6 +23,7 @@ import { buildPerfPeriod, describePeriod, type PerfPeriod } from './perf-period'
 
 /** Окна для auto-retry при 400 от Performance API (desc порядок). */
 const RETRY_WINDOWS = [30, 14, 7] as const;
+const RETRY_END_LAGS = [1, 2, 3, 4, 7] as const;
 
 export async function syncPerfSkuStatsStage(ctx: StageContext): Promise<StageResult> {
   return runStageWithTiming(async () => {
@@ -46,23 +47,27 @@ export async function syncPerfSkuStatsStage(ctx: StageContext): Promise<StageRes
     let period: PerfPeriod = buildPerfPeriod(requestedWindow);
     const warnings: string[] = [];
 
-    for (const windowDays of windows) {
-      period = buildPerfPeriod(windowDays);
+    const attempts = windows.flatMap((windowDays) =>
+      RETRY_END_LAGS.map((lagDays) => ({ windowDays, lagDays })),
+    );
+
+    for (const [index, attempt] of attempts.entries()) {
+      period = buildPerfPeriod(attempt.windowDays, new Date(), attempt.lagDays);
       try {
         uuid = await generateSkuStatsReport(ctx.perfClient, {
           dateFrom: period.dateFrom,
           dateTo: period.dateTo,
         });
-        if (windowDays < requestedWindow) {
+        if (attempt.windowDays < requestedWindow || attempt.lagDays > 1) {
           warnings.push(
-            `Ozon отклонил период ${requestedWindow}d, успешно с ${windowDays}d (${describePeriod(period)})`,
+            `Ozon отклонил часть периодов, успешно с ${attempt.windowDays}d / лаг ${attempt.lagDays}d (${describePeriod(period)})`,
           );
         }
         break;
       } catch (e) {
         // Retry только на 400 (некорректный период); другие ошибки — сразу выход.
         const is400 = e instanceof OzonPerfApiError && e.status === 400;
-        if (!is400 || windowDays === windows[windows.length - 1]) {
+        if (!is400 || index === attempts.length - 1) {
           const msg = e instanceof Error ? e.message : String(e);
           return {
             itemsProcessed: 0,
@@ -91,6 +96,15 @@ export async function syncPerfSkuStatsStage(ctx: StageContext): Promise<StageRes
     // 3) Скачиваем CSV.
     const csv = await downloadReport(ctx.perfClient, link);
     const rows = parseCsv(csv);
+
+    await db.execute(sql`
+      DELETE FROM ${ozonPerfSkuStats}
+      WHERE tenant_id = ${ctx.tenantId}
+        AND account_id = ${ctx.accountId}
+        AND date >= ${period.dateFrom}::date
+        AND date <= ${period.dateTo}::date
+        AND campaign_id IS NULL
+    `);
 
     // 4) Upsert по (account, date, sku, campaign_id=null).
     // Группируем по (sku, date) — для перф-данных по дням пишем агрегат
@@ -148,6 +162,3 @@ export async function syncPerfSkuStatsStage(ctx: StageContext): Promise<StageRes
     return { itemsProcessed: processed, itemsTotal: rows.length, warnings };
   });
 }
-
-// Suppress unused warning if sql is removed; keep import for future use.
-void sql;

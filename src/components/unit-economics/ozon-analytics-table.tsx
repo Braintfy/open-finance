@@ -418,10 +418,10 @@ export function OzonAnalyticsTable({
                         body = formatInt(row.qtyDelivered);
                         break;
                       case 'cancelled':
-                        body = row.cancelled > 0 ? formatInt(row.cancelled) : '—';
+                        body = formatInt(row.cancelled);
                         break;
                       case 'returned':
-                        body = row.returned > 0 ? formatInt(row.returned) : '—';
+                        body = formatInt(row.returned);
                         break;
                       case 'returnPct':
                         body = formatPct(returnPctVal);
@@ -466,16 +466,16 @@ export function OzonAnalyticsTable({
                         body = formatPct(row.buyoutPct);
                         break;
                       case 'views':
-                        body = row.views > 0 ? formatInt(row.views) : '—';
+                        body = formatInt(row.views);
                         break;
                       case 'clicks':
-                        body = row.clicks > 0 ? formatInt(row.clicks) : '—';
+                        body = formatInt(row.clicks);
                         break;
                       case 'ctr':
                         body = formatPct(ctrVal);
                         break;
                       case 'cartAdds':
-                        body = row.cartAdds > 0 ? formatInt(row.cartAdds) : '—';
+                        body = formatInt(row.cartAdds);
                         break;
                       case 'cpc':
                         body = cpcVal !== null ? formatRub(cpcVal, false) : '—';

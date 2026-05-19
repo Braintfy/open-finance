@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.18.11] - 2026-05-19
+
+Ozon Аналитика: root-cause фикс SKU, рекламы и отмен.
+
+### Fixed
+
+- **SKU в аналитике больше не равен `product_id`** — `unit_products.sku` теперь обновляется только реальным Ozon SKU из `ProductInfo.sources[]`, `/v5/product/info/prices.sku` или `/v4/product/info/stocks.sku`; `product_id` сохранён отдельно в `metadata.productId`.
+- **Реклама из `ozon_perf_sku_stats` не теряется из-за старого SKU-маппинга** — `/api/marketplaces/analytics/ozon` матчится по реальному SKU, legacy `metadata.productId`, `offer_id` и raw `Артикул`, без задвоения строк.
+- **Отмены/возвраты в аналитике считаются по статусам** — помимо `cancelled_at`/`returned_at`, API учитывает `status LIKE cancel/return`.
+- **Нули в колонках отмен/возвратов/показов/кликов/корзины отображаются как `0`**, а не как `—`.
+- **Performance sync устойчивее к 400 «Некорректный период»** — `perfSkuStats` пробует окна с лагом завершённого дня 1/2/3/4/7 и очищает старые агрегаты окна перед записью, чтобы не копить дубли при `campaign_id IS NULL`.
+
+### Changed
+
+- **Smoke-тесты Ozon upsert расширены** — добавлена проверка, что `product_id` и реальный Ozon SKU не смешиваются.
+
 ## [0.18.10] - 2025-05-19
 
 Ozon Аналитика: исправление синхронизации Performance API + 12 новых колонок.

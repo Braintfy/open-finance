@@ -81,13 +81,29 @@ console.log('\n=== Stage products (info only) ===');
     expect(plan.updates.priceKopecks === 'keep', 'price update = keep (no prices)');
     expect(plan.updates.stockMarketplace === 'keep', 'stockFbo update = keep (no stocks)');
     expect(plan.updates.stockOwn === 'keep', 'stockFbs update = keep (no stocks)');
+    expect(plan.updates.sku === 'keep', 'sku update = keep when real Ozon SKU is absent');
     expect(plan.updates.volumeL === 'fresh', 'volume update = fresh (dims came with info)');
+    expect(plan.insert.sku === '12345', 'fallback sku = product_id only when real SKU is absent');
     expect(plan.insert.volumeL > 0, 'volume calculated from dims');
     expect(plan.metadataDeltaKeys.includes('dimensionsMm'), 'metadata has dims');
     expect(plan.metadataDeltaKeys.includes('images'), 'metadata has images');
     expect(!plan.metadataDeltaKeys.includes('priceWithSpp'), 'metadata NO priceWithSpp (no prices)');
     expect(!plan.metadataDeltaKeys.includes('commissions'), 'metadata NO commissions (no prices)');
     expect(!plan.metadataDeltaKeys.includes('stockByType'), 'metadata NO stockByType (no stocks)');
+  }
+}
+
+console.log('\n=== Real Ozon SKU from product sources ===');
+{
+  const plan = planUnitProductUpsertFromOzon({
+    info: makeInfo({ sources: [{ sku: 987654321, source: 'fbo' }] }),
+  });
+  expect(plan !== null, 'plan built');
+  if (plan) {
+    expect(plan.insert.sku === '987654321', 'unit_products.sku = real Ozon SKU');
+    expect(plan.updates.sku === 'fresh', 'sku update = fresh when real Ozon SKU present');
+    expect(plan.metadataDelta.ozonSku === 987654321, 'metadata has ozonSku');
+    expect(plan.metadataDelta.productId === 12345, 'metadata keeps productId separately');
   }
 }
 

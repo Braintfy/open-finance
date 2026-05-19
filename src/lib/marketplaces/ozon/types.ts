@@ -140,6 +140,7 @@ const CommissionSchema = z
 export const PricesItemSchema = z
   .object({
     product_id: z.number(),
+    sku: z.number().optional(),
     offer_id: z.string().optional(),
     price: PriceMoneySchema.optional(),
     commissions: CommissionSchema.optional(),
@@ -169,6 +170,7 @@ export const PricesResponseSchema = z.object({
 export const StocksItemSchema = z
   .object({
     product_id: z.number().optional(),
+    sku: z.number().optional(),
     offer_id: z.string().optional(),
     stocks: z
       .array(

@@ -5,8 +5,8 @@
 // 1. Ozon Performance API считает «период» по календарю Москвы (UTC+3). Если
 //    мы строим окно `new Date()` на UTC-машинке, около полуночи `dateTo`
 //    может попасть на завтра по MSC и Ozon вернёт 400 «Некорректный период».
-// 2. Для async-отчётов Ozon не принимает «будущий день», поэтому `dateTo`
-//    ограничиваем сегодняшним днём в MSC (включительно).
+// 2. Для async-отчётов Ozon не принимает незавершённые дни, поэтому `dateTo`
+//    строим как today(MSC) - completeDayLag.
 // 3. Окно у `all_sku_promo/products/generate` максимум ~62 дня — больше
 //    запрашивать смысла нет, отчёт всё равно режется. Ограничиваем сверху.
 
@@ -41,18 +41,21 @@ export function shiftIsoDate(iso: string, deltaDays: number): string {
 
 /**
  * Строит безопасное окно для Performance API.
- * - `dateTo` — сегодня в MSC (включительно), даже если `windowDays` намекает в будущее.
+ * - `dateTo` — today(MSC) - completeDayLag, чтобы не цеплять незавершённый день.
  * - `dateFrom` — `dateTo - (windowDays - 1)`, чтобы окно реально было `windowDays`.
  * - Ограничивает окно `[MIN_PERF_WINDOW_DAYS, MAX_PERF_WINDOW_DAYS]`.
  */
-export function buildPerfPeriod(windowDays: number, now: Date = new Date()): PerfPeriod {
+export function buildPerfPeriod(
+  windowDays: number,
+  now: Date = new Date(),
+  completeDayLag = 1,
+): PerfPeriod {
   const clamped = Math.max(
     MIN_PERF_WINDOW_DAYS,
     Math.min(MAX_PERF_WINDOW_DAYS, Math.floor(Number.isFinite(windowDays) ? windowDays : 30)),
   );
-  // Ozon Performance API отдаёт данные только за завершённые дни.
-  // dateTo = вчера по MSC, иначе 400 «Некорректный период».
-  const dateTo = shiftIsoDate(moscowDateString(now), -1);
+  const lag = Math.max(1, Math.floor(Number.isFinite(completeDayLag) ? completeDayLag : 1));
+  const dateTo = shiftIsoDate(moscowDateString(now), -lag);
   const dateFrom = shiftIsoDate(dateTo, -(clamped - 1));
   return { dateFrom, dateTo, windowDays: clamped };
 }

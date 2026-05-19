@@ -92,7 +92,7 @@ export async function upsertUnitProductFromOzon(
     .onConflictDoUpdate({
       target: [unitProducts.tenantId, unitProducts.marketplace, unitProducts.article],
       set: {
-        sku: plan.insert.sku,
+        sku: plan.updates.sku === 'fresh' ? plan.insert.sku : sql`unit_products.sku`,
         barcode: info.barcode ?? info.barcodes?.[0] ?? sql`unit_products.barcode`,
         name: info.name ?? sql`unit_products.name`,
         status: info.status?.state ?? sql`unit_products.status`,

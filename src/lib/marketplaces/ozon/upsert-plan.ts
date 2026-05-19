@@ -95,6 +95,7 @@ export type UnitProductUpsertPlan = {
    * оставляются на текущее значение из БД через `sql\`unit_products.X\``.
    */
   updates: {
+    sku: 'fresh' | 'keep';
     priceKopecks: 'fresh' | 'keep';
     volumeL: 'fresh' | 'keep';
     stockMarketplace: 'fresh' | 'keep';
@@ -144,6 +145,11 @@ export function planUnitProductUpsertFromOzon(
   const hasPriceValue = priceRub > 0;
   const hasPriceWithSpp = priceWithSppRub > 0;
   const hasStocks = Boolean(stocks);
+  const ozonSku =
+    info.sources?.find((s) => typeof s.sku === 'number' && s.sku > 0)?.sku ??
+    prices?.sku ??
+    stocks?.sku ??
+    null;
   const hasDims = dims.dimsMm !== null;
   const hasWeight = dims.weightG !== null;
   const hasVisible = typeof info.visible === 'boolean';
@@ -162,6 +168,7 @@ export function planUnitProductUpsertFromOzon(
     productId: info.id,
     syncedAt: new Date().toISOString(),
   };
+  if (ozonSku) metadataDelta.ozonSku = ozonSku;
   if (hasImages) {
     metadataDelta.images = images;
     metadataDelta.primaryImage = primaryImages[0] ?? null;
@@ -187,7 +194,7 @@ export function planUnitProductUpsertFromOzon(
   return {
     insert: {
       article: info.offer_id,
-      sku: String(info.id),
+      sku: ozonSku ? String(ozonSku) : String(info.id),
       name: info.name ?? info.offer_id,
       visibility: info.visible === false ? 'hidden' : 'visible',
       stockMarketplace: hasStocks ? stockMarketplace : 0,
@@ -196,6 +203,7 @@ export function planUnitProductUpsertFromOzon(
       volumeL: hasDims ? dims.volumeLx100 : 0,
     },
     updates: {
+      sku: ozonSku ? 'fresh' : 'keep',
       priceKopecks: hasPriceValue ? 'fresh' : 'keep',
       volumeL: hasDims ? 'fresh' : 'keep',
       stockMarketplace: hasStocks ? 'fresh' : 'keep',

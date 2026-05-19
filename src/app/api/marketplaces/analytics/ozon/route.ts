@@ -101,6 +101,8 @@ export async function GET(req: NextRequest) {
       agg_ads AS (
         SELECT
           ps.sku,
+          MIN(ps.raw->>'offer_id') FILTER (WHERE COALESCE(ps.raw->>'offer_id', '') <> '') AS offer_id,
+          MIN(ps.raw->>'Артикул') FILTER (WHERE COALESCE(ps.raw->>'Артикул', '') <> '') AS article_raw,
           SUM(ps.expense_kopecks) AS ads_kopecks,
           SUM(ps.views) AS perf_views,
           SUM(ps.clicks) AS perf_clicks,
@@ -116,6 +118,8 @@ export async function GET(req: NextRequest) {
       agg_ads AS (
         SELECT
           tx.sku,
+          NULL::text AS offer_id,
+          NULL::text AS article_raw,
           SUM(ABS(tx.amount_kopecks)) AS ads_kopecks,
           0::bigint AS perf_views,
           0::bigint AS perf_clicks,
@@ -164,6 +168,7 @@ export async function GET(req: NextRequest) {
           o.delivered_at,
           o.cancelled_at,
           o.returned_at,
+          (it->>'sku')::text AS item_sku,
           (it->>'offerId')::text AS offer_id,
           COALESCE(NULLIF(it->>'price', '')::numeric, 0) AS item_price_rub,
           COALESCE(NULLIF(it->>'quantity', '')::numeric, 0) AS item_qty
@@ -178,8 +183,8 @@ export async function GET(req: NextRequest) {
         SELECT
           offer_id,
           COUNT(DISTINCT id) FILTER (WHERE status = 'delivered') AS delivered,
-          COUNT(DISTINCT id) FILTER (WHERE cancelled_at IS NOT NULL) AS cancelled,
-          COUNT(DISTINCT id) FILTER (WHERE returned_at IS NOT NULL) AS returned,
+          COUNT(DISTINCT id) FILTER (WHERE cancelled_at IS NOT NULL OR lower(status) LIKE '%cancel%') AS cancelled,
+          COUNT(DISTINCT id) FILTER (WHERE returned_at IS NOT NULL OR lower(status) LIKE '%return%') AS returned,
           SUM(item_qty) FILTER (WHERE status = 'delivered') AS qty_delivered,
           SUM(item_qty * item_price_rub) FILTER (WHERE status = 'delivered') AS revenue_rub
         FROM order_items
@@ -208,7 +213,19 @@ export async function GET(req: NextRequest) {
         COALESCE(ad.perf_cart_adds, 0) AS perf_cart_adds
       FROM ${unitProducts}
       LEFT JOIN agg_orders ao ON ao.offer_id = ${unitProducts.article}
-      LEFT JOIN agg_ads ad ON ad.sku = ${unitProducts.sku}
+      LEFT JOIN LATERAL (
+        SELECT
+          SUM(ad.ads_kopecks) AS ads_kopecks,
+          SUM(ad.perf_views) AS perf_views,
+          SUM(ad.perf_clicks) AS perf_clicks,
+          SUM(ad.perf_cart_adds) AS perf_cart_adds
+        FROM agg_ads ad
+        WHERE
+          ad.sku = ${unitProducts.sku}
+          OR ad.sku = (${unitProducts.metadata}->>'productId')
+          OR ad.offer_id = ${unitProducts.article}
+          OR ad.article_raw = ${unitProducts.article}
+      ) ad ON TRUE
       WHERE ${unitProducts.tenantId} = ${session.tenantId}
         AND ${unitProducts.marketplace} = 'ozon'
         ${accountCondUp}

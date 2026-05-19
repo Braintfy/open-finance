@@ -44,6 +44,7 @@ export async function syncPricesStage(ctx: StageContext): Promise<StageResult> {
           id: item.product_id,
           name: existingRow?.name ?? '',
           offer_id: item.offer_id ?? '',
+          sources: item.sku ? [{ sku: item.sku, source: 'prices' }] : undefined,
         };
         await upsertUnitProductFromOzon(ctx, { info, prices: item });
         processed += 1;
