@@ -5,7 +5,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { z } from 'zod';
-import { LineChart as LineIcon } from 'lucide-react';
+import { AlertTriangle, LineChart as LineIcon } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
@@ -17,6 +17,7 @@ import {
   type PeriodValue,
 } from '@/components/blocks/period-picker';
 import { OzonAccountSelector } from '@/components/marketplaces/ozon-account-selector';
+import { OzonSyncSection } from '@/components/unit-economics/ozon-sync-section';
 import type {
   BlockDef,
   BlockRenderProps,
@@ -168,6 +169,24 @@ function RenderOzonChart({ instance }: BlockRenderProps) {
           <option value="week">по неделям</option>
           <option value="month">по месяцам</option>
         </select>
+        {data?.ordersSource === 'orders-fallback' && (
+          <span
+            className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+            title="Цифры считаются по postings (legacy). Запустите sync «Аналитика продаж (Seller API)» — без него возможно расхождение с кабинетом Ozon на 20-60%."
+          >
+            <AlertTriangle className="h-2.5 w-2.5" />
+            Postings (legacy)
+          </span>
+        )}
+        {data?.adsSource === 'transactions-heuristic' && (
+          <span
+            className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+            title="Расход на рекламу взят из транзакций (эвристика). Подключите Performance API для точных цифр."
+          >
+            <AlertTriangle className="h-2.5 w-2.5" />
+            Реклама ≈
+          </span>
+        )}
       </div>
       <div className="min-h-0 flex-1">
         {error ? (
@@ -293,6 +312,11 @@ function SettingsForm({ config, onChange }: BlockSettingsFormProps) {
           ))}
         </div>
       </div>
+      <OzonSyncSection
+        accountId={parsed.accountId}
+        showPreflightWarning={false}
+        title="Синхронизация данных"
+      />
     </div>
   );
 }

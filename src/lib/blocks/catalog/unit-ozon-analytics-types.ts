@@ -15,6 +15,12 @@ export type OzonAnalyticsRow = {
   article: string | null;
   sku: string | null;
   name: string;
+  /**
+   * URL основного изображения товара (из metadata.primaryImage,
+   * сохранённого при sync через `info.primary_image` Ozon).
+   * null если изображение ещё не синхронизировано.
+   */
+  primaryImage: string | null;
   stockMarketplace: number;
   stockOwn: number;
   priceRub: number;
@@ -137,6 +143,16 @@ export const OzonAnalyticsBlockConfigSchema = z.object({
       ]),
     )
     .default(DEFAULT_VISIBLE_COLUMNS),
+  /**
+   * Показывать миниатюру товара (28×28) слева от названия в колонке `name`.
+   * По умолчанию выключено — экономит горизонтальное место.
+   * Источник изображения — metadata.primaryImage из Ozon (sync).
+   */
+  showProductImage: z.boolean().default(false),
+  /** Цветная подсветка ячейки ДРР (фон + цвет по тоне). Default on. */
+  showDrrColor: z.boolean().default(true),
+  /** Цветная подсветка ячейки «Остаток» и «Дней». Default on. */
+  showStockColor: z.boolean().default(true),
 });
 
 export type OzonAnalyticsBlockConfig = z.infer<typeof OzonAnalyticsBlockConfigSchema>;

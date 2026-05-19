@@ -268,13 +268,51 @@ export async function getMediaStatistics(
  * Распарсить CSV в массив записей. Учитывает кавычки и `;`-разделитель.
  * Pure-function, тестируется отдельно.
  */
+/**
+ * Сигнатуры реальных колонок Ozon Performance CSV. parseCsv ищет первую
+ * строку файла, в которой ХОТЯ БЫ ОДНА ячейка совпадает с этими алиасами.
+ * Это нужно потому, что Ozon CSV ВСЕГДА начинается с метастрок:
+ *   "Кампания 123 (CPC)";"01.05.2026-31.05.2026"
+ *   ""
+ *   sku;"Название товара";"Цена товара, ₽";Показы;Клики;"CTR (%)";...
+ * Брать line[0] как header — баг, который тихо съедал ВСЕ строки sync'а.
+ */
+const CSV_HEADER_SIGNALS = [
+  'sku',
+  'артикул',
+  'id товара',
+  'product id',
+  'дата',
+  'date',
+  'день',
+  'расход',
+  'expense',
+  'spent',
+  'показы',
+  'клики',
+];
+
+/**
+ * Возвращает индекс первой строки CSV, которая выглядит как заголовок:
+ * содержит хотя бы одну ячейку из CSV_HEADER_SIGNALS. Если ни одна
+ * строка не подходит — возвращает 0 (fallback на старое поведение).
+ */
+export function detectHeaderIndex(lines: string[]): number {
+  for (let i = 0; i < lines.length; i += 1) {
+    const cells = parseCsvLine(lines[i]).map((c) => c.trim().toLowerCase());
+    if (cells.some((c) => CSV_HEADER_SIGNALS.includes(c))) return i;
+  }
+  return 0;
+}
+
 export function parseCsv(text: string): Array<Record<string, string>> {
   // Простой парсер: split строки и split по `;` с поддержкой кавычек.
   const lines = text.split(/\r?\n/).filter((l) => l.length > 0);
   if (lines.length === 0) return [];
-  const header = parseCsvLine(lines[0]);
+  const headerIdx = detectHeaderIndex(lines);
+  const header = parseCsvLine(lines[headerIdx]);
   const rows: Array<Record<string, string>> = [];
-  for (let i = 1; i < lines.length; i += 1) {
+  for (let i = headerIdx + 1; i < lines.length; i += 1) {
     const cells = parseCsvLine(lines[i]);
     if (cells.length === 0) continue;
     const row: Record<string, string> = {};
@@ -327,6 +365,23 @@ function parseCsvLine(line: string): string[] {
 }
 
 /**
+ * Нормализует дату Ozon в ISO `YYYY-MM-DD`. Поддерживает оба формата,
+ * которые встречаются в CSV-отчётах Performance API:
+ *  - ISO `2026-05-19` (включая `2026-05-19T...`)
+ *  - RU `19.05.2026`
+ * Возвращает null если строка не похожа ни на один.
+ */
+export function normalizeDate(value: string | undefined | null): string | null {
+  if (!value) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  if (/^\d{4}-\d{2}-\d{2}/.test(raw)) return raw.slice(0, 10);
+  const ru = raw.match(/^(\d{2})\.(\d{2})\.(\d{4})/);
+  if (ru) return `${ru[3]}-${ru[2]}-${ru[1]}`;
+  return null;
+}
+
+/**
  * Парсит число в формате RU («1 234,56» → 1234.56). Безопасно для пустых
  * и нечисловых значений (возвращает 0).
  */
@@ -342,7 +397,15 @@ export function parseRuNumber(value: string | undefined | null): number {
  * заказ» или другой формат). Должна найтись хотя бы одна из колонок SKU.
  */
 export function isSkuStatsHeader(row: Record<string, string>): boolean {
-  const aliases = ['sku', 'артикул', 'id товара', 'product id'];
+  const aliases = [
+    'sku',
+    'sku товара',
+    'sku product',
+    'артикул',
+    'артикул товара',
+    'id товара',
+    'product id',
+  ];
   for (const k of Object.keys(row)) {
     if (aliases.includes(k.trim().toLowerCase())) return true;
   }
@@ -366,16 +429,35 @@ export function parseSkuStatsRow(row: Record<string, string>): {
   ordersRub: number;
   expenseRub: number;
 } {
+  // Ищем колонку: exact match (case-insensitive) → prefix match (по началу
+  // ключа). Prefix важен потому что Ozon добавляет уточнения: «Расход, ₽, с
+  // НДС», «Заказы, ₽», «Дата отчёта (UTC)» — exact алиасов слишком много.
   const findKey = (...names: string[]): string => {
+    const keys = Object.keys(row);
+    const lowKeys = keys.map((k) => k.trim().toLowerCase());
     for (const n of names) {
-      for (const k of Object.keys(row)) {
-        if (k.trim().toLowerCase() === n.toLowerCase()) return k;
-      }
+      const nl = n.toLowerCase();
+      const eqIdx = lowKeys.indexOf(nl);
+      if (eqIdx !== -1) return keys[eqIdx];
+    }
+    for (const n of names) {
+      const nl = n.toLowerCase();
+      const pfxIdx = lowKeys.findIndex((k) => k.startsWith(nl));
+      if (pfxIdx !== -1) return keys[pfxIdx];
     }
     return '';
   };
   const get = (...names: string[]) => row[findKey(...names)] ?? '';
-  const skuRaw = get('sku', 'SKU', 'Артикул', 'ID товара', 'Product ID').trim();
+  const skuRaw = get(
+    'sku',
+    'SKU',
+    'sku товара',
+    'SKU товара',
+    'Артикул',
+    'Артикул товара',
+    'ID товара',
+    'Product ID',
+  ).trim();
   // Ozon SKU всегда числовой. Защита от случайно прочитанных названий
   // кампаний (например `rm-nnm-60-5`) в позиции SKU.
   const sku = /^\d+$/.test(skuRaw) ? skuRaw : '';
@@ -389,7 +471,16 @@ export function parseSkuStatsRow(row: Record<string, string>): {
   return {
     sku,
     campaignId: campaignIdRaw && /^\d+$/.test(campaignIdRaw) ? campaignIdRaw : null,
-    date: (get('date', 'Дата') || null) as string | null,
+    date: normalizeDate(
+      get(
+        'date',
+        'Дата',
+        'День',
+        'Дата отчёта',
+        'Дата отчета',
+        'Дата статистики',
+      ),
+    ),
     views: Math.round(parseRuNumber(get('views', 'Показы'))),
     clicks: Math.round(parseRuNumber(get('clicks', 'Клики'))),
     cartAdds: Math.round(
@@ -443,17 +534,28 @@ export function parseCpoDailyRow(row: Record<string, string>): {
   ordersReco: number;
   status: string;
 } | null {
+  // Тот же подход что в parseSkuStatsRow: exact → prefix match (см. коммент
+  // в parseSkuStatsRow про «Расход, ₽, с НДС»).
   const findKey = (...names: string[]): string => {
+    const keys = Object.keys(row);
+    const lowKeys = keys.map((k) => k.trim().toLowerCase());
     for (const n of names) {
-      for (const k of Object.keys(row)) {
-        if (k.trim().toLowerCase() === n.toLowerCase()) return k;
-      }
+      const nl = n.toLowerCase();
+      const eqIdx = lowKeys.indexOf(nl);
+      if (eqIdx !== -1) return keys[eqIdx];
+    }
+    for (const n of names) {
+      const nl = n.toLowerCase();
+      const pfxIdx = lowKeys.findIndex((k) => k.startsWith(nl));
+      if (pfxIdx !== -1) return keys[pfxIdx];
     }
     return '';
   };
   const get = (...names: string[]) => row[findKey(...names)] ?? '';
-  const date = (get('date', 'Дата') || '').trim().slice(0, 10);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const date = normalizeDate(
+    get('date', 'Дата', 'День', 'Дата отчёта', 'Дата отчета'),
+  );
+  if (!date) return null;
 
   return {
     date,

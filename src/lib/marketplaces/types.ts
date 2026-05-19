@@ -10,6 +10,7 @@ import type {
   SyncJobKind,
   SyncJobStatus,
   SyncStageState,
+  SyncSummary,
 } from '@/lib/db/schema/marketplaces';
 
 export type {
@@ -19,6 +20,7 @@ export type {
   SyncJobKind,
   SyncJobStatus,
   SyncStageState,
+  SyncSummary,
 };
 
 /** Список всех стейджей в порядке выполнения для полной синхронизации. */
@@ -159,7 +161,7 @@ export type AccountPublic = {
   lastSyncAt: string | null;
   lastSyncStatus: string | null;
   lastSyncError: string | null;
-  lastSyncSummary: Record<string, unknown>;
+  lastSyncSummary: SyncSummary;
   createdAt: string;
   updatedAt: string;
 };

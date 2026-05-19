@@ -25,6 +25,7 @@ import {
   type AnalyticsFilterId,
 } from '@/components/unit-economics/ozon-analytics-filters';
 import { OzonAnalyticsSettingsForm } from '@/components/unit-economics/ozon-analytics-settings-form';
+import { useMarketplaceAccounts } from '@/lib/marketplaces/use-accounts';
 import {
   OZON_ANALYTICS_PERIOD_PRESETS,
   OzonAnalyticsBlockConfigSchema,
@@ -50,6 +51,17 @@ function formatPct(value: number | null): string {
 
 function RenderOzonAnalytics({ instance }: BlockRenderProps) {
   const config = useMemo(() => parseConfig(instance.config), [instance.config]);
+  const { accounts } = useMarketplaceAccounts({ marketplace: 'ozon' });
+  const account = accounts.find((a) => a.id === config.accountId);
+  // Silent failure detection: perfSkuStats/perfCpoDaily запустились,
+  // получили строки от Ozon, но parser записал 0 → надо сказать прямо.
+  const perfStages = ['perfSkuStats', 'perfCpoDaily'] as const;
+  const silentFailure = account
+    ? perfStages.some((name) => {
+        const s = account.lastSyncSummary?.stages?.[name];
+        return s?.ok === true && (s.itemsTotal ?? 0) > 0 && (s.itemsProcessed ?? 0) === 0;
+      })
+    : false;
 
   const [activeFilter, setActiveFilter] = useState<AnalyticsFilterId>(config.defaultFilter);
   const [periodPreset, setPeriodPreset] = useState<OzonAnalyticsPeriodPreset>(config.periodPreset);
@@ -380,6 +392,51 @@ function RenderOzonAnalytics({ instance }: BlockRenderProps) {
               </span>
             </div>
           )}
+          {response.adsSource === 'transactions-heuristic' && (
+            <div className="flex flex-wrap items-center gap-1.5 border-b border-border/40 bg-amber-50 px-3 py-1 text-[10px] text-amber-700 dark:bg-amber-950/30 dark:text-amber-300">
+              <span className="font-medium">Реклама из транзакций (эвристика).</span>
+              <span className="text-amber-700/80 dark:text-amber-400/70">
+                Подключите Performance API и запустите sync «Статистика рекламы по товарам».
+              </span>
+            </div>
+          )}
+          {response.adsSource === 'none' && response.totals.revenueRub > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5 border-b border-border/40 bg-rose-50 px-3 py-1 text-[10px] text-rose-700 dark:bg-rose-950/30 dark:text-rose-300">
+              {silentFailure ? (
+                <>
+                  <span className="font-medium">
+                    Sync завершился, но Performance отчёты не записаны.
+                  </span>
+                  <span className="text-rose-700/80 dark:text-rose-400/70">
+                    Откройте Settings → Синхронизация — там видны warnings из последнего
+                    sync (CSV-формат / парсер / пустой отчёт). Запустите{' '}
+                    <code className="rounded bg-rose-100 px-1 dark:bg-rose-900/40">
+                      pnpm tsx scripts/debug-ozon-perf-csv.ts {config.accountId}
+                    </code>{' '}
+                    для диагностики.
+                  </span>
+                </>
+              ) : account?.perfConnected ? (
+                <>
+                  <span className="font-medium">
+                    Performance API подключён, но синхронизации ещё не было.
+                  </span>
+                  <span className="text-rose-700/80 dark:text-rose-400/70">
+                    Откройте Settings → Синхронизация и запустите стейджи
+                    perfCampaigns + perfSkuStats + perfCpoDaily.
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span className="font-medium">Расход на рекламу не загружен.</span>
+                  <span className="text-rose-700/80 dark:text-rose-400/70">
+                    Подключите Performance API в Settings → Интеграции и запустите
+                    sync — без него ДРР и колонка «Расход» не считаются.
+                  </span>
+                </>
+              )}
+            </div>
+          )}
         </>
       )}
 
@@ -433,6 +490,9 @@ function RenderOzonAnalytics({ instance }: BlockRenderProps) {
             onSortChange={setSort}
             totalRevenue={response?.totals.revenueRub ?? 0}
             periodDays={periodDays}
+            showProductImage={config.showProductImage}
+            showDrrColor={config.showDrrColor}
+            showStockColor={config.showStockColor}
           />
         )}
       </div>

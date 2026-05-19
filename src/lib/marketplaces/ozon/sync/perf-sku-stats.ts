@@ -173,13 +173,19 @@ export async function syncPerfSkuStatsStage(ctx: StageContext): Promise<StageRes
 
         // Защита: если в заголовке нет колонки SKU — это не CPC отчёт.
         if (rows.length > 0 && !isSkuStatsHeader(rows[0])) {
+          // Diagnostic: первые 5 ключей + первые 200 символов raw CSV,
+          // чтобы понять что Ozon вернул вместо ожидаемого формата.
+          const firstKeys = Object.keys(rows[0]).slice(0, 5).join(' | ');
+          const csvPreview = csv.slice(0, 200).replace(/\n/g, '\\n');
           warnings.push(
-            `Кампания ${campaignId}: CSV без колонки SKU (возможно, баннерная). Пропуск.`,
+            `Кампания ${campaignId}: CSV без колонки SKU (возможно, баннерная или CPO).
+Первые ключи: ${firstKeys}. Превью CSV: ${csvPreview}`,
           );
           continue;
         }
 
         // 3.4) Upsert всех валидных строк.
+        const processedBeforeCampaign = processed;
         for (const raw of rows) {
           const parsed = parseSkuStatsRow(raw);
           if (!parsed.sku) continue;
@@ -226,6 +232,17 @@ export async function syncPerfSkuStatsStage(ctx: StageContext): Promise<StageRes
             });
           processed += 1;
           ctx.onProgress?.(processed, totalRows);
+        }
+        // Diagnostic: если CSV не пустой, но ни одной валидной row не получено
+        // (всё в parsed.sku === '' или ключи не нашлись) — добавляем warning
+        // с примером ключей и превью, иначе пользователь видит «sync ok с 0
+        // записей» без объяснения.
+        if (processed === processedBeforeCampaign && rows.length > 0) {
+          const firstKeys = Object.keys(rows[0]).slice(0, 6).join(' | ');
+          const csvPreview = csv.slice(0, 200).replace(/\n/g, '\\n');
+          warnings.push(
+            `Кампания ${campaignId}: ${rows.length} строк CSV, но ни одного валидного SKU. Ключи: ${firstKeys}. Превью: ${csvPreview}`,
+          );
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);

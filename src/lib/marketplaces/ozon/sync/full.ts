@@ -120,6 +120,18 @@ export async function runFullSync(args: RunFullSyncArgs): Promise<void> {
   let anySuccess = false;
   let perfStageSucceeded = false;
   let perfStageFailedMessage: string | null = null;
+  // Собираем per-stage метрики для lastSyncSummary — UI читает оттуда
+  // быстрее, чем из ozon_sync_jobs.
+  const stageSummary: Record<
+    string,
+    {
+      ok: boolean;
+      itemsProcessed: number;
+      itemsTotal?: number;
+      warnings?: string[];
+      error?: string;
+    }
+  > = {};
 
   const stagesToRun = args.onlyStage
     ? ([args.onlyStage] as OzonStageKind[])
@@ -142,6 +154,11 @@ export async function runFullSync(args: RunFullSyncArgs): Promise<void> {
         error: skipPerfNoCreds ? 'Performance API креды не подключены' : undefined,
       };
       await updateSyncJobStage({ jobId: args.jobId, stage, state });
+      stageSummary[stage] = {
+        ok: true,
+        itemsProcessed: 0,
+        error: skipPerfNoCreds ? 'Performance API креды не подключены' : undefined,
+      };
       continue;
     }
 
@@ -179,8 +196,16 @@ export async function runFullSync(args: RunFullSyncArgs): Promise<void> {
       finishedAt: new Date().toISOString(),
       durationMs: result.durationMs,
       error: result.error,
+      warnings: result.warnings && result.warnings.length > 0 ? result.warnings : undefined,
     };
     await updateSyncJobStage({ jobId: args.jobId, stage, state: finishedState });
+    stageSummary[stage] = {
+      ok: result.ok,
+      itemsProcessed: result.itemsProcessed,
+      itemsTotal: result.itemsTotal,
+      warnings: result.warnings && result.warnings.length > 0 ? result.warnings : undefined,
+      error: result.error,
+    };
   }
 
   const jobStatus: SyncJobStatus = anyFailure
@@ -203,10 +228,11 @@ export async function runFullSync(args: RunFullSyncArgs): Promise<void> {
     error: errors.length > 0 ? errors[0].message : undefined,
     summary: {
       stages: Object.fromEntries(
-        stagesToRun.map((s) => [
-          s,
-          { ok: !errors.some((e) => e.stage === s), itemsProcessed: 0 },
-        ]),
+        stagesToRun.map((s) => {
+          const entry = stageSummary[s];
+          if (entry) return [s, entry];
+          return [s, { ok: !errors.some((e) => e.stage === s), itemsProcessed: 0 }];
+        }),
       ),
       totalItems: totalProcessed,
       totalErrors: errors.length,

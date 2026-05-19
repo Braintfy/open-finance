@@ -1,30 +1,34 @@
 // PURPOSE: SettingsForm для блока unit.ozon-analytics. Магазин, период,
-// видимые колонки, дефолтный фильтр + секция «Синхронизация» (запустить
-// sync с выбранными стейджами).
+// видимые колонки, дефолтный фильтр + секция «Внешний вид» (миниатюры
+// товаров, цветовая индикация) + секция «Синхронизация» (shared компонент).
 
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import {
   AlertTriangle,
+  Eye,
+  Image as ImageIcon,
   Link as LinkIcon,
   Loader2,
-  RefreshCw,
+  Paintbrush,
   ShoppingBag,
-  Zap,
 } from 'lucide-react';
 import Link from 'next/link';
-import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { useMarketplaceAccounts } from '@/lib/marketplaces/use-accounts';
-import type { OzonAnalyticsBlockConfig, OzonAnalyticsPeriodPreset } from '@/lib/blocks/catalog/unit-ozon-analytics-types';
+import type {
+  OzonAnalyticsBlockConfig,
+  OzonAnalyticsPeriodPreset,
+} from '@/lib/blocks/catalog/unit-ozon-analytics-types';
 import { OZON_ANALYTICS_PERIOD_PRESETS } from '@/lib/blocks/catalog/unit-ozon-analytics-types';
 import { COLUMN_DEFS, type TableColumnKey } from './ozon-analytics-table';
 import {
   ANALYTICS_FILTERS,
   type AnalyticsFilterId,
 } from './ozon-analytics-filters';
+import { OzonSyncSection } from './ozon-sync-section';
 
 const COLUMN_GROUPS: Array<{
   title: string;
@@ -198,7 +202,44 @@ export function OzonAnalyticsSettingsForm({
         </div>
       </section>
 
-      <SyncSection accountId={value.accountId} />
+      {/* Секция «Внешний вид» — миниатюры товаров и цветовая индикация. */}
+      <section className="space-y-1.5">
+        <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          <span className="inline-flex items-center gap-1.5">
+            <Paintbrush className="h-3 w-3" />
+            Внешний вид
+          </span>
+        </div>
+        <div className="space-y-1 rounded border border-border/60 bg-card">
+          <ToggleRow
+            icon={<ImageIcon className="h-3.5 w-3.5" />}
+            label="Миниатюры товаров"
+            hint="Иконка 28×28 слева от названия. Источник — primary_image из Ozon. По умолчанию выключено для компактности."
+            checked={value.showProductImage}
+            onChange={(on) => onChange({ ...value, showProductImage: on })}
+          />
+          <ToggleRow
+            icon={<Eye className="h-3.5 w-3.5" />}
+            label="Цветовая подсветка ДРР"
+            hint="Зелёный <10% / нейтральный <20% / оранжевый <50% / красный ≥50%."
+            checked={value.showDrrColor}
+            onChange={(on) => onChange({ ...value, showDrrColor: on })}
+          />
+          <ToggleRow
+            icon={<Eye className="h-3.5 w-3.5" />}
+            label="Цветовая подсветка остатков"
+            hint="Красный <7 дней / оранжевый <14 / нейтральный <30 / зелёный ≥30."
+            checked={value.showStockColor}
+            onChange={(on) => onChange({ ...value, showStockColor: on })}
+          />
+        </div>
+      </section>
+
+      <OzonSyncSection
+        accountId={value.accountId}
+        showPreflightWarning={false}
+        title="Синхронизация данных"
+      />
 
       <section className="space-y-1.5" id="visible-columns-section">
         <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -241,163 +282,27 @@ export function OzonAnalyticsSettingsForm({
   );
 }
 
-type StageKey =
-  | 'products'
-  | 'prices'
-  | 'stocks'
-  | 'orders'
-  | 'transactions'
-  | 'perfCampaigns'
-  | 'perfSkuStats'
-  | 'perfPhrases';
-
-const STAGE_OPTIONS: Array<{ key: StageKey; label: string; perf?: boolean }> = [
-  { key: 'products', label: 'Каталог товаров' },
-  { key: 'prices', label: 'Цены и комиссии' },
-  { key: 'stocks', label: 'Остатки' },
-  { key: 'orders', label: 'Заказы' },
-  { key: 'transactions', label: 'Транзакции' },
-  { key: 'perfCampaigns', label: 'Рекламные кампании', perf: true },
-  { key: 'perfSkuStats', label: 'Статистика рекламы по товарам', perf: true },
-  { key: 'perfPhrases', label: 'Поисковые фразы', perf: true },
-];
-
-function SyncSection({ accountId }: { accountId: string | null }) {
-  const { accounts } = useMarketplaceAccounts({ marketplace: 'ozon' });
-  const account = accounts.find((a) => a.id === accountId);
-  const [enabledStages, setEnabledStages] = useState<Record<StageKey, boolean>>(() => ({
-    products: true,
-    prices: true,
-    stocks: true,
-    orders: true,
-    transactions: false,
-    perfCampaigns: true,
-    perfSkuStats: true,
-    perfPhrases: false,
-  }));
-  const [running, setRunning] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-
-  async function runSync() {
-    if (!accountId) {
-      setErrorMessage('Сначала выберите магазин');
-      return;
-    }
-    setRunning(true);
-    setMessage(null);
-    setErrorMessage(null);
-    try {
-      // Только включённые стейджи. Поле `stages` будет применено как override.
-      const stages = Object.keys(enabledStages)
-        .filter((k) => enabledStages[k as StageKey])
-        .reduce<Record<string, boolean>>((acc, k) => {
-          acc[k] = true;
-          return acc;
-        }, {});
-      const res = await fetch(`/api/marketplaces/accounts/${accountId}/sync`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ kind: 'full', stages }),
-      });
-      const data = await res.json();
-      if (data.ok) {
-        setMessage('Синхронизация запущена. Прогресс — на странице Интеграции.');
-      } else {
-        setErrorMessage(data.error ?? 'Не удалось запустить sync');
-      }
-    } catch (e) {
-      setErrorMessage(e instanceof Error ? e.message : 'Network error');
-    } finally {
-      setRunning(false);
-    }
-  }
-
+function ToggleRow({
+  icon,
+  label,
+  hint,
+  checked,
+  onChange,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  hint?: string;
+  checked: boolean;
+  onChange: (on: boolean) => void;
+}) {
   return (
-    <section className="space-y-1.5">
-      <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-        <span className="inline-flex items-center gap-1.5">
-          <Zap className="h-3 w-3" />
-          Синхронизация
-        </span>
+    <div className="flex items-center gap-2 px-2 py-2">
+      <div className="text-muted-foreground">{icon}</div>
+      <div className="min-w-0 flex-1">
+        <div className="text-[12px] font-medium">{label}</div>
+        {hint && <div className="mt-0.5 text-[11px] text-muted-foreground">{hint}</div>}
       </div>
-      {!account ? (
-        <div className="rounded border border-border/60 bg-muted/20 p-2 text-[11px] text-muted-foreground">
-          Выберите магазин чтобы запустить синхронизацию.
-        </div>
-      ) : (
-        <div className="space-y-2 rounded border border-border/60 bg-card p-2">
-          <div className="text-[11px] text-muted-foreground">
-            Выберите какие данные синхронизировать. Performance API стейджи
-            работают только если у магазина подключены perf-креды.
-            {!account.perfConnected && (
-              <>
-                {' '}
-                <Link
-                  href="/settings/integrations"
-                  className="text-primary hover:underline"
-                >
-                  Подключить Performance API →
-                </Link>
-              </>
-            )}
-          </div>
-          <div className="divide-y divide-border/40">
-            {STAGE_OPTIONS.map((opt) => {
-              const disabled = opt.perf && !account.perfConnected;
-              return (
-                <div
-                  key={opt.key}
-                  className="flex items-center gap-2 py-1.5 first:pt-0 last:pb-0"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[12px] font-medium">
-                      {opt.label}
-                      {opt.perf && (
-                        <span className="ml-1 rounded-full bg-violet-100 px-1.5 text-[9px] font-medium text-violet-700 dark:bg-violet-950 dark:text-violet-300">
-                          Performance
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  <Switch
-                    checked={enabledStages[opt.key] && !disabled}
-                    disabled={disabled}
-                    onCheckedChange={(on) =>
-                      setEnabledStages({ ...enabledStages, [opt.key]: on })
-                    }
-                  />
-                </div>
-              );
-            })}
-          </div>
-          <div className="flex flex-wrap items-center gap-2 border-t border-border/40 pt-2">
-            <Button size="sm" variant="default" onClick={runSync} disabled={running}>
-              {running ? (
-                <Loader2 className="h-3 w-3 animate-spin" />
-              ) : (
-                <RefreshCw className="h-3 w-3" />
-              )}
-              Запустить синхронизацию
-            </Button>
-            {account.lastSyncAt && (
-              <span className="text-[10px] text-muted-foreground">
-                Последний sync: {new Date(account.lastSyncAt).toLocaleString('ru-RU')}
-              </span>
-            )}
-          </div>
-          {message && (
-            <div className="rounded bg-emerald-50 px-2 py-1 text-[11px] text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
-              {message}
-            </div>
-          )}
-          {errorMessage && (
-            <div className="rounded bg-rose-50 px-2 py-1 text-[11px] text-rose-700 dark:bg-rose-950 dark:text-rose-300">
-              {errorMessage}
-            </div>
-          )}
-        </div>
-      )}
-    </section>
+      <Switch checked={checked} onCheckedChange={onChange} />
+    </div>
   );
 }

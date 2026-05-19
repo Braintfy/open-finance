@@ -291,7 +291,7 @@ export function toPublicAccount(account: MarketplaceAccount): AccountPublic {
     lastSyncAt: account.lastSyncAt ? account.lastSyncAt.toISOString() : null,
     lastSyncStatus: account.lastSyncStatus,
     lastSyncError: account.lastSyncError,
-    lastSyncSummary: account.lastSyncSummary as unknown as Record<string, unknown>,
+    lastSyncSummary: account.lastSyncSummary,
     createdAt: account.createdAt.toISOString(),
     updatedAt: account.updatedAt.toISOString(),
   };

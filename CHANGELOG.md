@@ -1,5 +1,63 @@
 # Changelog
 
+## [0.18.18] - 2026-05-19
+
+Root-cause фикс «реклама/ДРР не отображаются в блоке Аналитики», который не сдавался 15 сессий. Sync завершался `success` с `itemsTotal=409`, но `itemsProcessed=0` — Performance CSV-парсер брал метастроки кампании как header'ы и тихо отбрасывал все данные. Делаем парсер robust + warnings persistence + наглядные UI-баннеры.
+
+### Fixed
+
+- **`parseCsv` Performance API брал `lines[0]` как header — а Ozon кладёт туда метадату кампании (`"Кампания N (CPC)";"01.05.2026-31.05.2026"` + пустая строка), реальный header идёт 3-й строкой.** `isSkuStatsHeader` не находил `sku` в data-row → весь CSV `continue`-skipped, `processed=0` несмотря на `itemsTotal>0`. `src/lib/marketplaces/ozon/performance/endpoints.ts`: новый `detectHeaderIndex(lines)` ищет строку с известной колонкой (`sku|артикул|дата|расход|показы|клики`), `parseCsv` стартует data-loop с `headerIdx + 1`. Backward-compat: для plain CSV без метастрок fallback на line[0].
+- **Колонки Ozon с уточнениями (`"Расход, ₽, с НДС"`, `"Заказы, ₽"`) не находились по точному алиасу `"Расход"`.** `parseSkuStatsRow`/`parseCpoDailyRow:findKey` теперь поддерживает **prefix match** (exact → startsWith). Алиасы даты расширены: `'date', 'Дата', 'День', 'Дата отчёта', 'Дата отчета', 'Дата статистики'`.
+- **CPO даты в RU-формате (`19.05.2026`) ронялись regex'ом `/^\d{4}-\d{2}-\d{2}$/`.** Новый `normalizeDate()` понимает ISO `2026-05-19` и RU `19.05.2026`, применён в обоих parser'ах.
+- **Warnings из стейджей не сохранялись в БД.** `SyncStageState.warnings?: string[]` (`src/lib/db/schema/marketplaces.ts`), `full.ts` пробрасывает `result.warnings` в `ozon_sync_jobs.stages.<stage>.warnings` И в `marketplace_accounts.last_sync_summary.stages.<stage>.warnings`. UI читает оттуда, без отдельного запроса к sync_jobs.
+- **`lastSyncSummary.stages` записывал `{ok, itemsProcessed: 0}` константой.** Теперь — реальные `{ok, itemsProcessed, itemsTotal, warnings, error}` из каждого стейджа.
+- **Misleading banner в Аналитике** — для `adsSource='none'` показывал «Подключите Performance API» даже когда API подключён, sync прошёл, но парсер сломан. Разделён на 3 кейса: (1) `!perfConnected` → «Подключите Performance API», (2) `silentFailure` (sync ok + Total>0 + Processed=0) → «Sync завершился, но Performance отчёты не записаны» с подсказкой про debug-script, (3) иначе → «Performance подключён, sync ещё не было».
+
+### Added
+
+- **Auto-debug warnings в `perf-sku-stats.ts`/`perf-cpo-daily.ts`** — если CSV спарсен (`rows.length > 0`) но ни одной валидной row не получилось, в warnings пишутся: первые 5-6 ключей CSV + первые 200 символов raw CSV (превью). Видно прямо в UI «Что записал последний sync».
+- **`SilentFailureBanner` + `SyncSummaryGrid`** в `OzonSyncSection` (`src/components/unit-economics/ozon-sync-section.tsx`). Красный baner если хотя бы один стейдж `ok=true && itemsTotal>0 && itemsProcessed=0` с раскрывающимся списком warnings (первые 5). Таблица «что записал последний sync» — стейдж, processed, total, статус (ok/silent/error).
+- **`scripts/debug-ozon-perf-csv.ts`** — standalone CLI для диагностики формата CSV. Запуск: `pnpm tsx scripts/debug-ozon-perf-csv.ts <accountId>`. Печатает первые 10 строк raw CSV, результат `detectHeaderIndex`, ключи первой data-row, `isSkuStatsHeader`/`isCpoDailyHeader`, парс первой строки. Read-only, без миграций.
+- **9 новых тестов CSV-парсера** в `scripts/test-ozon-analytics.ts`: `normalizeDate` (3 формата), Ozon CSV с метастроками, plain CSV без метастрок, CPO RU-формат, prefix-match колонок, не-числовой SKU отбрасывается, пустой CSV. Всего 67 PASS / 0 FAIL.
+
+### Changed
+
+- **`SyncStageState`** — добавлено опциональное поле `warnings?: string[]` (JSONB, миграция не нужна).
+- **`SyncSummary.stages[name]`** — добавлены поля `itemsTotal`, `warnings`.
+- **`AccountPublic.lastSyncSummary`** — типизировано как `SyncSummary` (раньше `Record<string, unknown>`).
+- **`isSkuStatsHeader`** — добавлены алиасы `'sku товара'`, `'sku product'`, `'Артикул товара'`.
+
+## [0.18.17] - 2026-05-19
+
+Fix данных в блоках «Ozon · Динамика» и «Ozon · KPI» (переход на тот же primary-source, что и Аналитика), починка per-product матча рекламы в Аналитике, мини-картинки товаров (toggle, по умолчанию off), shared SyncSection для всех трёх Ozon-блоков.
+
+### Fixed
+
+- **Динамика/KPI игнорировали `ozon_analytics_daily` и считали по постингам с `status = 'delivered'`** — `src/app/api/marketplaces/ozon/timeseries/route.ts`, `src/app/api/marketplaces/ozon/kpi/route.ts`. На коротких окнах (7д/14д) почти все заказы в пути (`awaiting_deliver`/`delivering`), строгий filter отсекал их → провал на графике, расхождение с Seller-кабинетом на 20-60%. Переписаны на двухуровневый источник как в `/analytics/ozon` (v0.18.13): primary `ozon_analytics_daily` → fallback `ozon_orders` с broader-фильтром (`cancelled_at IS NULL AND returned_at IS NULL AND status NOT LIKE '%cancel%|%return%'`).
+- **Per-product реклама в Аналитике пустая для legacy-товаров** — `src/app/api/marketplaces/analytics/ozon/route.ts:agg_ads`. До v0.18.11 `unit_products.sku = String(info.id)` (product_id), после — реальный Ozon SKU. Legacy-записи не находили рекламу через прямой join (`ozon_perf_sku_stats.sku` всегда реальный Ozon SKU). Добавлен 5-й match-ключ `ad.sku = unit_products.metadata->>'ozonSku'` (бэкап-путь к Ozon SKU из metadata). Totals «Реклама» считались правильно, а per-row были нули — теперь сходятся.
+- **Debug-warning при 0 совпадениях** — если у магазина есть `ozon_perf_sku_stats > 0`, но через все 5 match-ключей ничего не найдено, в логи пишется `console.warn` с sample `ad.sku` vs `unit_products.{article,sku,productId}` для диагностики.
+
+### Added
+
+- **Мини-картинки товаров в таблице Аналитики (toggle, off by default)** — `OzonAnalyticsRow.primaryImage` (URL из `unit_products.metadata->>'primaryImage'`) прокинут в response (cache `v3`). Config `showProductImage: boolean (default false)`. Рендер `<img>` 28×28 слева от названия в колонке `name` (не отдельная колонка). Fallback `<ImageOff/>` плейсхолдер если URL пустой или onError. Lazy-loaded, `referrerPolicy="no-referrer"` для CDN-совместимости.
+- **Config-флаги `showDrrColor` / `showStockColor`** — цветовая подсветка ДРР и остатков отключаемая (по умолчанию on). Полезно когда юзер не любит «цветную» таблицу.
+- **Секция «Внешний вид» в `OzonAnalyticsSettingsForm`** — три переключателя (миниатюры товаров / цвет ДРР / цвет остатков) с подсказками что они делают.
+- **Shared компонент `OzonSyncSection`** — `src/components/unit-economics/ozon-sync-section.tsx`. Выделен из `ozon-analytics-settings-form` чтобы переиспользовать sync UI во всех трёх Ozon-блоках. Содержит 10 стейджей с tooltip'ами и бейджами «Performance»/«Рекомендуется». Подключён к `unit-ozon-analytics`, `unit-ozon-chart`, `unit-ozon-kpi`.
+- **Стейдж `analyticsData` явно в `STAGE_OPTIONS`** — раньше его не было в UI-настройках sync (хотя он критичен для точности цифр). Помечен бейджем «Рекомендуется».
+- **Amber-бейджи fallback-source в Динамике и KPI** — при `ordersSource === 'orders-fallback'` показывается компактный badge «Postings (legacy)» с tooltip объясняющим почему цифры могут расходиться с Seller-кабинетом и как фиксить (запустить sync `analyticsData`).
+- **Дополнительные баннеры в шапке Аналитики** — при `adsSource === 'transactions-heuristic'` (эвристика) или `adsSource === 'none' + revenue > 0` (реклама не загружена) показывается амбер-плашка с инструкцией подключить Performance API.
+- **Manual SQL backfill `drizzle/init/11-marketplaces-sku-backfill.sql`** — пересчитывает `unit_products.sku = metadata->>'ozonSku'` для legacy записей. Опционально (5-й match-ключ покрывает миссматч и без миграции). Команда: `docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev < drizzle/init/11-marketplaces-sku-backfill.sql`.
+
+### Changed
+
+- **`OzonAnalyticsResponse`** — добавлено поле `primaryImage` на каждой row. Cache key bump `v2 → v3` (старые ключи инвалидируются TTL).
+- **`OzonAnalyticsBlockConfigSchema`** — три новых поля (`showProductImage`, `showDrrColor`, `showStockColor`). Backward-compat через `.default()`, старые сохранённые блоки получают дефолты при парсинге.
+- **`OzonTimeseriesResponse` / `OzonKpiResponse`** — добавлено поле `ordersSource: 'analytics-api' | 'orders-fallback'`.
+
+### Tests
+
+- `scripts/test-ozon-analytics.ts` — 37 PASS (было 29). Добавлены проверки `primaryImage` на row, дефолтных и кастомных значений `showProductImage`/`showDrrColor`/`showStockColor`.
+
 ## [0.18.16] - 2026-05-19
 
 Доделка отображения после v0.18.15: CPO расход теперь учитывается в блоке Аналитика (с распределением по SKU пропорционально выручке), разделение заказов на ФБО/ФБС, selector «Сравнить с» в KPI блоке (Прошлый период / Неделя назад) с tooltip'ами на delta-бейджах.

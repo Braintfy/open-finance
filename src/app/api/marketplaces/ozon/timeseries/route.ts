@@ -1,5 +1,13 @@
 // PURPOSE: Time-series Ozon (выручка/заказы/реклама/ДРР по дням или неделям/месяцам).
 // Tenant-scoped. Используется блоком unit.ozon-chart.
+//
+// Источник продаж — двухуровневый (как в /analytics/ozon после v0.18.13):
+//   - primary: ozon_analytics_daily (Seller `/v1/analytics/data`) —
+//     родной аналитический endpoint Ozon, цифры совпадают с Seller-кабинетом.
+//   - fallback: ozon_orders с broader-фильтром (не cancelled/returned) —
+//     используется только когда analytics_daily пустая за выбранный период.
+//
+// Реклама — UNION CPC/CPM (per-SKU) + CPO (агрегат по магазину).
 
 import { NextResponse, type NextRequest } from 'next/server';
 import { sql } from 'drizzle-orm';
@@ -10,6 +18,7 @@ import {
   ozonPerfSkuStats,
   ozonPerfCpoDaily,
   ozonTransactions,
+  ozonAnalyticsDaily,
 } from '@/lib/db/schema/marketplaces';
 
 export const runtime = 'nodejs';
@@ -28,6 +37,8 @@ export type OzonTimeseriesResponse = {
     aovRub: number | null;
   }>;
   adsSource: 'performance' | 'transactions-heuristic' | 'none';
+  /** Источник продаж: 'analytics-api' = ozon_analytics_daily, 'orders-fallback' = ozon_orders. */
+  ordersSource: 'analytics-api' | 'orders-fallback';
 };
 
 function parseGranularity(s: string | null): Granularity {
@@ -61,7 +72,7 @@ export async function GET(req: NextRequest) {
     const fromIso = from.toISOString();
     const toIso = to.toISOString();
 
-    const granLit = sql.raw(`'${gran}'`); // безопасно: gran проверен на whitelist выше
+    const granLit = sql.raw(`'${gran}'`); // gran проверен на whitelist выше
 
     const accountCondOrders = accountId
       ? sql`AND o.account_id = ${accountId}`
@@ -70,40 +81,86 @@ export async function GET(req: NextRequest) {
       ? sql`AND ps.account_id = ${accountId}`
       : sql``;
     const accountCondTx = accountId ? sql`AND tx.account_id = ${accountId}` : sql``;
+    const accountCondAnalytics = accountId
+      ? sql`AND ad.account_id = ${accountId}`
+      : sql``;
+    const accountCondCpo = accountId
+      ? sql`AND cd.account_id = ${accountId}`
+      : sql``;
+
+    // Определяем источник продаж: ozon_analytics_daily (primary) → ozon_orders (legacy).
+    type CheckRow = { cnt: number };
+    const analyticsCheck = await db.execute<CheckRow>(sql`
+      SELECT COUNT(*)::int AS cnt FROM ${ozonAnalyticsDaily} ad
+      WHERE ad.tenant_id = ${session.tenantId}
+        ${accountCondAnalytics}
+        AND ad.date >= ${fromIso}::date
+        AND ad.date < ${toIso}::date
+      LIMIT 1
+    `);
+    const analyticsCheckRows: CheckRow[] = Array.isArray(analyticsCheck)
+      ? (analyticsCheck as CheckRow[])
+      : (((analyticsCheck as unknown) as { rows: CheckRow[] }).rows ?? []);
+    const hasAnalyticsData = (analyticsCheckRows[0]?.cnt ?? 0) > 0;
+    const ordersSource: 'analytics-api' | 'orders-fallback' = hasAnalyticsData
+      ? 'analytics-api'
+      : 'orders-fallback';
 
     type Row = { bucket: string; revenue: number; orders: number };
-    const ordersResult = await db.execute<Row>(sql`
-      WITH order_items AS (
-        SELECT
-          o.id,
-          date_trunc(${granLit}, o.order_created_at AT TIME ZONE 'UTC') AS bucket,
-          COALESCE(NULLIF(it->>'price', '')::numeric, 0) AS price_rub,
-          COALESCE(NULLIF(it->>'quantity', '')::numeric, 0) AS qty
-        FROM ${ozonOrders} o
-        CROSS JOIN LATERAL jsonb_array_elements(o.items) AS it
-        WHERE o.tenant_id = ${session.tenantId}
-          ${accountCondOrders}
-          AND o.order_created_at >= ${fromIso}::timestamp
-          AND o.order_created_at < ${toIso}::timestamp
-          AND o.status = 'delivered'
-      )
-      SELECT
-        to_char(bucket, 'YYYY-MM-DD') AS bucket,
-        COALESCE(SUM(price_rub * qty), 0) AS revenue,
-        COUNT(DISTINCT id) AS orders
-      FROM order_items
-      GROUP BY bucket
-      ORDER BY bucket
-    `);
+    const ordersResult = await db.execute<Row>(
+      hasAnalyticsData
+        ? sql`
+          SELECT
+            to_char(date_trunc(${granLit}, ad.date::timestamp), 'YYYY-MM-DD') AS bucket,
+            COALESCE(SUM(ad.revenue_kopecks), 0)::numeric / 100 AS revenue,
+            COALESCE(SUM(ad.ordered_units), 0)::int AS orders
+          FROM ${ozonAnalyticsDaily} ad
+          WHERE ad.tenant_id = ${session.tenantId}
+            ${accountCondAnalytics}
+            AND ad.date >= ${fromIso}::date
+            AND ad.date < ${toIso}::date
+          GROUP BY 1
+          ORDER BY 1
+        `
+        : sql`
+          WITH order_items AS (
+            SELECT
+              o.id,
+              o.status,
+              o.cancelled_at,
+              o.returned_at,
+              date_trunc(${granLit}, o.order_created_at AT TIME ZONE 'UTC') AS bucket,
+              COALESCE(NULLIF(it->>'price', '')::numeric, 0) AS price_rub,
+              COALESCE(NULLIF(it->>'quantity', '')::numeric, 0) AS qty
+            FROM ${ozonOrders} o
+            CROSS JOIN LATERAL jsonb_array_elements(o.items) AS it
+            WHERE o.tenant_id = ${session.tenantId}
+              ${accountCondOrders}
+              AND o.order_created_at >= ${fromIso}::timestamp
+              AND o.order_created_at < ${toIso}::timestamp
+              -- delivered = всё кроме явно отменённого/возвращённого
+              -- (включая awaiting_deliver/delivering). На коротком окне строгий
+              -- 'delivered' даёт провал — заказы ещё в пути.
+              AND o.cancelled_at IS NULL
+              AND o.returned_at IS NULL
+              AND lower(o.status) NOT LIKE '%cancel%'
+              AND lower(o.status) NOT LIKE '%return%'
+          )
+          SELECT
+            to_char(bucket, 'YYYY-MM-DD') AS bucket,
+            COALESCE(SUM(price_rub * qty), 0) AS revenue,
+            COUNT(DISTINCT id) AS orders
+          FROM order_items
+          GROUP BY bucket
+          ORDER BY bucket
+        `,
+    );
     const ordersRows: Row[] = Array.isArray(ordersResult)
       ? (ordersResult as Row[])
       : (((ordersResult as unknown) as { rows: Row[] }).rows ?? []);
 
     // Реклама: UNION CPC/CPM (per-SKU) + CPO (агрегат по магазину).
     type AdsRow = { bucket: string; ads_kopecks: number };
-    const accountCondCpo = accountId
-      ? sql`AND cd.account_id = ${accountId}`
-      : sql``;
     const perfResult = await db.execute<AdsRow>(sql`
       WITH cpc_daily AS (
         SELECT
@@ -214,6 +271,7 @@ export async function GET(req: NextRequest) {
       granularity: gran,
       points,
       adsSource,
+      ordersSource,
     };
     return NextResponse.json(response);
   } catch (e) {

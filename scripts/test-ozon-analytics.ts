@@ -13,6 +13,15 @@ import {
   DEFAULT_VISIBLE_COLUMNS,
   type OzonAnalyticsRow,
 } from '../src/lib/blocks/catalog/unit-ozon-analytics-types';
+import {
+  detectHeaderIndex,
+  parseCsv,
+  isSkuStatsHeader,
+  isCpoDailyHeader,
+  parseSkuStatsRow,
+  parseCpoDailyRow,
+  normalizeDate,
+} from '../src/lib/marketplaces/ozon/performance/endpoints';
 
 let passed = 0;
 let failed = 0;
@@ -33,6 +42,7 @@ function row(over: Partial<OzonAnalyticsRow>): OzonAnalyticsRow {
     article: over.article ?? 'SKU',
     sku: over.sku ?? null,
     name: over.name ?? 'Товар',
+    primaryImage: over.primaryImage ?? null,
     stockMarketplace: over.stockMarketplace ?? 0,
     stockOwn: over.stockOwn ?? 0,
     priceRub: over.priceRub ?? 0,
@@ -137,12 +147,35 @@ console.log('\n# OzonAnalyticsBlockConfigSchema');
   expect(cfg.defaultFilter === 'all', 'default filter = all');
   expect(cfg.accountId === null, 'default accountId = null');
   expect(cfg.visibleColumns.length === DEFAULT_VISIBLE_COLUMNS.length, 'default visibleColumns matches');
+  expect(cfg.showProductImage === false, 'default showProductImage = false');
+  expect(cfg.showDrrColor === true, 'default showDrrColor = true');
+  expect(cfg.showStockColor === true, 'default showStockColor = true');
 }
 
 // 12. backward compat — unknown keys в config не ломают парсинг (через passthrough или ignore)
 {
   const cfg = OzonAnalyticsBlockConfigSchema.parse({ legacyField: 'x', periodPreset: '7d' });
   expect(cfg.periodPreset === '7d', 'periodPreset из payload');
+}
+
+// 12b. явные настройки appearance прокидываются.
+{
+  const cfg = OzonAnalyticsBlockConfigSchema.parse({
+    showProductImage: true,
+    showDrrColor: false,
+    showStockColor: false,
+  });
+  expect(cfg.showProductImage === true, 'showProductImage опция работает');
+  expect(cfg.showDrrColor === false, 'showDrrColor опция работает');
+  expect(cfg.showStockColor === false, 'showStockColor опция работает');
+}
+
+// 12c. primaryImage на row проходит через builder.
+{
+  const r = row({ primaryImage: 'https://cdn.ozone.ru/some.jpg' });
+  expect(r.primaryImage === 'https://cdn.ozone.ru/some.jpg', 'primaryImage сохраняется на row');
+  const r2 = row({});
+  expect(r2.primaryImage === null, 'primaryImage по умолчанию null');
 }
 
 console.log('\n# resolvePeriod');
@@ -191,6 +224,108 @@ console.log('\n# resolvePeriod');
   expect(p.to.getTime() === todayMidnight.getTime(), 'yesterday.to = сегодня (миднайт)');
   const yesterdayMidnight = new Date(todayMidnight.getTime() - 24 * 3600 * 1000);
   expect(p.from.getTime() === yesterdayMidnight.getTime(), 'yesterday.from = вчера');
+}
+
+console.log('\n# Ozon Performance CSV parser');
+
+// 19. normalizeDate понимает оба формата.
+{
+  expect(normalizeDate('2026-05-19') === '2026-05-19', 'ISO без времени');
+  expect(normalizeDate('2026-05-19T10:00:00Z') === '2026-05-19', 'ISO с временем');
+  expect(normalizeDate('19.05.2026') === '2026-05-19', 'RU 19.05.2026');
+  expect(normalizeDate('') === null, 'empty → null');
+  expect(normalizeDate('junk') === null, 'junk → null');
+  expect(normalizeDate(null) === null, 'null → null');
+}
+
+// 20. parseCsv детектит реальный header, пропуская метастроки кампании.
+{
+  // Реальный формат Ozon Performance CSV (Перфоманс 2.0, стра 1775):
+  // строка 0 — campaign name + period (метадата)
+  // строка 1 — пустая
+  // строка 2 — настоящий header
+  // строки 3+ — данные
+  const ozonCsv = [
+    '"Кампания 12345 (CPC)";"01.05.2026-31.05.2026"',
+    '""',
+    'sku;"Название товара";"Цена товара, ₽";Показы;Клики;"CTR (%)";"В корзину";"Расход, ₽, с НДС";"Дата"',
+    '1275993197;"Спермидин 5мг 60 шт";"2900,00";"100";"5";"5.0";"3";"125,50";"19.05.2026"',
+    '3417910233;"Экстракт зародышей";"1261,00";"50";"2";"4.0";"1";"42,10";"19.05.2026"',
+  ].join('\n');
+
+  const lines = ozonCsv.split('\n').filter((l) => l.length > 0);
+  expect(detectHeaderIndex(lines) === 2, `detectHeaderIndex → 2 (got ${detectHeaderIndex(lines)})`);
+
+  const rows = parseCsv(ozonCsv);
+  expect(rows.length === 2, `parseCsv → 2 data rows (got ${rows.length})`);
+  expect(isSkuStatsHeader(rows[0]) === true, 'isSkuStatsHeader = true');
+
+  const parsed = parseSkuStatsRow(rows[0]);
+  expect(parsed.sku === '1275993197', `sku = 1275993197 (got ${parsed.sku})`);
+  expect(parsed.views === 100, `views = 100 (got ${parsed.views})`);
+  expect(parsed.clicks === 5, `clicks = 5 (got ${parsed.clicks})`);
+  expect(parsed.cartAdds === 3, `cartAdds = 3 (got ${parsed.cartAdds})`);
+  expect(parsed.expenseRub === 125.5, `expenseRub = 125.50 (got ${parsed.expenseRub})`);
+  expect(parsed.date === '2026-05-19', `date нормализована в ISO (got ${parsed.date})`);
+}
+
+// 21. Старый формат без метастрок — backward compat.
+{
+  const plainCsv = [
+    'sku;Показы;Клики;"Расход, ₽, с НДС"',
+    '99999;10;1;5,00',
+  ].join('\n');
+  const rows = parseCsv(plainCsv);
+  expect(rows.length === 1, 'без метастрок → 1 row');
+  const parsed = parseSkuStatsRow(rows[0]);
+  expect(parsed.sku === '99999', 'plain CSV: sku парсится');
+}
+
+// 22. CSV без валидного header — fallback на line[0].
+{
+  const csv = 'garbage_a;garbage_b\nval1;val2';
+  const rows = parseCsv(csv);
+  expect(rows.length === 1, 'fallback на line[0] для unknown header');
+  expect(isSkuStatsHeader(rows[0]) === false, 'garbage header не считается sku stats');
+}
+
+// 23. CPO CSV (без SKU, только агрегат по дням).
+{
+  const cpoCsv = [
+    '"Кампания 99 (CPO)";"01.05.2026-31.05.2026"',
+    'Дата;"Статус продвижения";"Расход, ₽";"Продажи из поиска, ₽";"Продажи из рекомендаций, ₽";"Заказы из поиска";"Заказы из рекомендаций"',
+    '19.05.2026;Активна;"1500,00";"50000,00";"10000,00";20;3',
+  ].join('\n');
+  const rows = parseCsv(cpoCsv);
+  expect(rows.length === 1, 'CPO CSV: 1 data row');
+  expect(isCpoDailyHeader(rows[0]) === true, 'isCpoDailyHeader = true');
+  expect(isSkuStatsHeader(rows[0]) === false, 'CPO header NOT sku stats');
+
+  const parsed = parseCpoDailyRow(rows[0]);
+  expect(parsed !== null, 'parseCpoDailyRow не null');
+  if (parsed) {
+    expect(parsed.date === '2026-05-19', `CPO date RU → ISO (got ${parsed.date})`);
+    expect(parsed.expenseRub === 1500, `expense = 1500 (got ${parsed.expenseRub})`);
+    expect(parsed.salesSearchRub === 50000, `salesSearch = 50000 (got ${parsed.salesSearchRub})`);
+    expect(parsed.ordersSearch === 20, `ordersSearch = 20 (got ${parsed.ordersSearch})`);
+  }
+}
+
+// 24. SKU не числовой → не записывается.
+{
+  const csv = [
+    'sku;Показы',
+    'rm-sesame-60-10;100',
+  ].join('\n');
+  const rows = parseCsv(csv);
+  const parsed = parseSkuStatsRow(rows[0]);
+  expect(parsed.sku === '', 'не-числовой SKU отбрасывается');
+}
+
+// 25. Пустой CSV → 0 rows.
+{
+  expect(parseCsv('').length === 0, 'пустой CSV → 0 rows');
+  expect(parseCsv('\n\n').length === 0, 'только переносы → 0 rows');
 }
 
 console.log(`\n## ${passed} PASS · ${failed} FAIL\n`);

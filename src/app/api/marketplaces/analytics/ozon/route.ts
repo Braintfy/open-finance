@@ -53,8 +53,8 @@ export type OzonAnalyticsResponse = {
 /** TTL Redis-кэша для аналитики, секунды. Sync переписывает данные не чаще раза в час. */
 const ANALYTICS_CACHE_TTL_SEC = 3600;
 
-/** Bump ключ кэша при изменении формы response (v0.18.16 — +CPO/FBO/FBS). */
-const CACHE_VERSION = 'v2';
+/** Bump ключ кэша при изменении формы response (v0.18.17 — +primaryImage). */
+const CACHE_VERSION = 'v3';
 
 /**
  * Эвристика для классификации транзакций Ozon как «рекламные».
@@ -219,6 +219,7 @@ export async function GET(req: NextRequest) {
       article: string | null;
       sku: string | null;
       name: string;
+      primary_image: string | null;
       stock_marketplace: number;
       stock_own: number;
       price_kopecks: number;
@@ -396,6 +397,7 @@ export async function GET(req: NextRequest) {
         ${unitProducts.article} AS article,
         ${unitProducts.sku} AS sku,
         ${unitProducts.name} AS name,
+        (${unitProducts.metadata}->>'primaryImage') AS primary_image,
         ${unitProducts.stockMarketplace} AS stock_marketplace,
         ${unitProducts.stockOwn} AS stock_own,
         ${unitProducts.priceKopecks} AS price_kopecks,
@@ -423,8 +425,12 @@ export async function GET(req: NextRequest) {
           SUM(ad.perf_cart_adds) AS perf_cart_adds
         FROM agg_ads ad
         WHERE
+          -- 5 match-ключей покрывают: новые записи (sku = реальный Ozon SKU),
+          -- legacy (sku = product_id), backfilled (metadata.ozonSku), CPC-стейдж
+          -- (offer_id и article_raw в raw).
           ad.sku = ${unitProducts.sku}
           OR ad.sku = (${unitProducts.metadata}->>'productId')
+          OR ad.sku = (${unitProducts.metadata}->>'ozonSku')
           OR ad.offer_id = ${unitProducts.article}
           OR ad.article_raw = ${unitProducts.article}
       ) ad ON TRUE
@@ -445,6 +451,7 @@ export async function GET(req: NextRequest) {
       article: string | null;
       sku: string | null;
       name: string;
+      primaryImage: string | null;
       stockMarketplace: number;
       stockOwn: number;
       priceRub: number;
@@ -487,6 +494,7 @@ export async function GET(req: NextRequest) {
         article: r.article,
         sku: r.sku,
         name: r.name,
+        primaryImage: r.primary_image ?? null,
         stockMarketplace: Number(r.stock_marketplace ?? 0),
         stockOwn: Number(r.stock_own ?? 0),
         priceRub,
@@ -507,6 +515,45 @@ export async function GET(req: NextRequest) {
       };
     });
 
+    // Debug-warn: если perf-данные есть, но 0 совпадений по всем 5 ключам —
+    // это сигнал, что SKU в unit_products рассинхронизированы с perf_sku_stats.
+    // Лечится backfill'ом через drizzle/init/11-marketplaces-sku-backfill.sql.
+    if (hasPerfData) {
+      const matchedRows = intermediate.filter((r) => r.adsCpcRub > 0).length;
+      if (matchedRows === 0 && intermediate.length > 0) {
+        try {
+          // Сэмпл из 3 perf-sku и 3 unit-products для диагностики.
+          type SampleAdsRow = { sku: string };
+          const adsSampleResult = await db.execute<SampleAdsRow>(sql`
+            SELECT DISTINCT ps.sku FROM ${ozonPerfSkuStats} ps
+            WHERE ps.tenant_id = ${session.tenantId}
+              ${accountCondPerf}
+              AND ps.date >= ${fromIso}::date
+              AND ps.date < ${toIso}::date
+            LIMIT 3
+          `);
+          const adsSample: SampleAdsRow[] = Array.isArray(adsSampleResult)
+            ? (adsSampleResult as SampleAdsRow[])
+            : (((adsSampleResult as unknown) as { rows: SampleAdsRow[] }).rows ?? []);
+          const upSample = intermediate.slice(0, 3).map((r) => ({
+            article: r.article,
+            sku: r.sku,
+            productId: r.productId,
+          }));
+          console.warn(
+            '[ozon-analytics] perf-data present but 0 matches via all 5 keys.',
+            'Sample ads.sku:',
+            adsSample.map((r) => r.sku),
+            'Sample unit_products:',
+            upSample,
+            '→ Apply drizzle/init/11-marketplaces-sku-backfill.sql to fix.',
+          );
+        } catch {
+          // Diagnostics — best-effort.
+        }
+      }
+    }
+
     // Распределяем CPO по SKU пропорционально выручке.
     // Если выручки нет (productsWithSales=0) — CPO не разносится (остаётся в totals).
     const totalRevenueForAlloc = intermediate.reduce((s, r) => s + r.revenueRub, 0);
@@ -524,6 +571,7 @@ export async function GET(req: NextRequest) {
         article: r.article,
         sku: r.sku,
         name: r.name,
+        primaryImage: r.primaryImage,
         stockMarketplace: r.stockMarketplace,
         stockOwn: r.stockOwn,
         priceRub: r.priceRub,

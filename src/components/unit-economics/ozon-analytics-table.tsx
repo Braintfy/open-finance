@@ -2,11 +2,12 @@
 // Колонки: Артикул, Название, Цена, Себестоимость, Маржа, Заказов,
 // Выручка, Реклама, ДРР, Остаток, Дней остатков.
 // Сортировка по любой колонке, баджи (ДРР цвета, остаток), формат рублей.
+// Опционально: миниатюра товара (28×28) слева от названия — toggle в SettingsForm.
 
 'use client';
 
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ArrowUp, ArrowDownUp } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowDownUp, ImageOff } from 'lucide-react';
 import type { OzonAnalyticsRow } from '@/lib/blocks/catalog/unit-ozon-analytics-types';
 import { cn } from '@/lib/utils';
 
@@ -231,6 +232,38 @@ const TONE_BG: Record<DrrTone, string> = {
   danger: 'bg-red-100 dark:bg-red-950/40',
 };
 
+/**
+ * Миниатюра товара 28×28. При отсутствии URL или ошибке загрузки —
+ * нейтральный плейсхолдер с иконкой. Lazy-loaded, referrerPolicy=no-referrer
+ * (некоторые Ozon-CDN блокируют hot-linking без правильного referrer'а).
+ */
+function ProductThumb({ url, name }: { url: string | null; name: string }) {
+  const [errored, setErrored] = useState(false);
+  if (!url || errored) {
+    return (
+      <div
+        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground"
+        title={name || 'Без изображения'}
+      >
+        <ImageOff className="h-3 w-3" />
+      </div>
+    );
+  }
+  return (
+    /* eslint-disable-next-line @next/next/no-img-element */
+    <img
+      src={url}
+      alt={name}
+      width={28}
+      height={28}
+      loading="lazy"
+      referrerPolicy="no-referrer"
+      onError={() => setErrored(true)}
+      className="h-7 w-7 shrink-0 rounded-md object-cover bg-muted"
+    />
+  );
+}
+
 export function OzonAnalyticsTable({
   rows,
   enabledColumns,
@@ -238,6 +271,9 @@ export function OzonAnalyticsTable({
   onSortChange,
   totalRevenue = 0,
   periodDays = 1,
+  showProductImage = false,
+  showDrrColor = true,
+  showStockColor = true,
 }: {
   rows: OzonAnalyticsRow[];
   enabledColumns: TableColumnKey[];
@@ -245,6 +281,12 @@ export function OzonAnalyticsTable({
   onSortChange: (sort: TableSort) => void;
   totalRevenue?: number;
   periodDays?: number;
+  /** Показывать миниатюру товара 28×28 слева от названия (по умолчанию false). */
+  showProductImage?: boolean;
+  /** Цветная подсветка ячейки ДРР. По умолчанию true. */
+  showDrrColor?: boolean;
+  /** Цветная подсветка ячейки «Остаток» и «Дней». По умолчанию true. */
+  showStockColor?: boolean;
 }) {
   const columns = useMemo(
     () => COLUMN_DEFS.filter((c) => enabledColumns.includes(c.key)),
@@ -390,7 +432,14 @@ export function OzonAnalyticsTable({
                         );
                         break;
                       case 'name':
-                        body = (
+                        body = showProductImage ? (
+                          <div className="flex items-center gap-2 min-w-0">
+                            <ProductThumb url={row.primaryImage} name={row.name} />
+                            <span className="block truncate" title={row.name}>
+                              {row.name || '—'}
+                            </span>
+                          </div>
+                        ) : (
                           <span className="block truncate" title={row.name}>
                             {row.name || '—'}
                           </span>
@@ -463,9 +512,11 @@ export function OzonAnalyticsTable({
                           <span className="inline-flex items-center gap-1">
                             <span
                               className={cn(
-                                'inline-block rounded-md px-1.5 py-0.5 text-[11px] font-medium',
-                                TONE_BG[dt],
-                                TONE_CLASSES[dt],
+                                showDrrColor
+                                  ? 'inline-block rounded-md px-1.5 py-0.5 text-[11px] font-medium'
+                                  : 'tabular-nums',
+                                showDrrColor && TONE_BG[dt],
+                                showDrrColor && TONE_CLASSES[dt],
                               )}
                             >
                               {formatPct(row.drrPct)}
@@ -482,7 +533,7 @@ export function OzonAnalyticsTable({
                         );
                         break;
                       case 'stock':
-                        body = (
+                        body = showStockColor ? (
                           <span
                             className={cn(
                               'inline-block rounded-md px-1.5 py-0.5 text-[11px] font-medium',
@@ -492,11 +543,16 @@ export function OzonAnalyticsTable({
                           >
                             {formatInt(stock)}
                           </span>
+                        ) : (
+                          formatInt(stock)
                         );
                         break;
                       case 'daysOfStock':
                         body = row.daysOfStock !== null ? `${row.daysOfStock}` : '—';
-                        extraClass = st === 'danger' || st === 'warning' ? TONE_CLASSES[st] : '';
+                        extraClass =
+                          showStockColor && (st === 'danger' || st === 'warning')
+                            ? TONE_CLASSES[st]
+                            : '';
                         break;
                       case 'buyoutPct':
                         body = formatPct(row.buyoutPct);

@@ -71,7 +71,21 @@ export type OzonSyncSettings = {
 };
 
 export type SyncSummary = {
-  stages: Record<string, { ok: boolean; itemsProcessed?: number; durationMs?: number; error?: string }>;
+  stages: Record<
+    string,
+    {
+      ok: boolean;
+      itemsProcessed?: number;
+      itemsTotal?: number;
+      durationMs?: number;
+      error?: string;
+      /**
+       * Non-fatal warnings из стейджа. UI блока Аналитики/SyncSection читает
+       * их и подсвечивает «sync ok с 0 записей» красным.
+       */
+      warnings?: string[];
+    }
+  >;
   totalItems?: number;
   totalErrors?: number;
 };
@@ -149,6 +163,12 @@ export type SyncStageState = {
   finishedAt?: string;
   durationMs?: number;
   error?: string;
+  /**
+   * Non-fatal warnings собранные стейджем. ВАЖНО для диагностики
+   * silent failure (status='success' && itemsProcessed=0). UI блока
+   * Аналитики/SyncSection читает их и подсвечивает красным.
+   */
+  warnings?: string[];
 };
 
 export const ozonSyncJobs = pgTable(

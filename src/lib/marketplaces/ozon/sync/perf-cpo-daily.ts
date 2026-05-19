@@ -152,8 +152,10 @@ export async function syncPerfCpoDailyStage(ctx: StageContext): Promise<StageRes
       totalRows = rows.length;
 
       if (rows.length > 0 && !isCpoDailyHeader(rows[0])) {
+        const firstKeys = Object.keys(rows[0]).slice(0, 6).join(' | ');
+        const csvPreview = csv.slice(0, 200).replace(/\n/g, '\\n');
         warnings.push(
-          'CPO отчёт: CSV неожиданного формата (нет колонки расход/дата). Пропуск.',
+          `CPO отчёт: CSV неожиданного формата (нет колонки расход/дата). Ключи: ${firstKeys}. Превью CSV: ${csvPreview}`,
         );
         return { itemsProcessed: 0, itemsTotal: totalRows, ok: true, warnings };
       }
@@ -193,6 +195,15 @@ export async function syncPerfCpoDailyStage(ctx: StageContext): Promise<StageRes
 
         processed += 1;
         ctx.onProgress?.(processed, totalRows);
+      }
+      // Diagnostic: CSV есть, но parser ничего не извлёк → значит формат
+      // изменился или daty не парсятся.
+      if (processed === 0 && rows.length > 0) {
+        const firstKeys = Object.keys(rows[0]).slice(0, 6).join(' | ');
+        const csvPreview = csv.slice(0, 200).replace(/\n/g, '\\n');
+        warnings.push(
+          `CPO отчёт: ${rows.length} строк CSV, но ни одной валидной даты. Ключи: ${firstKeys}. Превью: ${csvPreview}`,
+        );
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
