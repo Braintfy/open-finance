@@ -8,8 +8,14 @@ import { sql } from 'drizzle-orm';
 import { auth } from '@/lib/auth';
 import { db } from '@/lib/db/client';
 import { unitProducts } from '@/lib/db/schema/unit-economics';
-import { ozonOrders, ozonTransactions, ozonPerfSkuStats } from '@/lib/db/schema/marketplaces';
+import {
+  ozonOrders,
+  ozonTransactions,
+  ozonPerfSkuStats,
+  ozonAnalyticsDaily,
+} from '@/lib/db/schema/marketplaces';
 import type { OzonAnalyticsRow } from '@/lib/blocks/catalog/unit-ozon-analytics-types';
+import { getRedis } from '@/lib/redis';
 
 // Re-export для существующих импортов API-роуты.
 export type { OzonAnalyticsRow };
@@ -28,7 +34,12 @@ export type OzonAnalyticsResponse = {
   };
   period: { from: string; to: string };
   adsSource: 'performance' | 'transactions-heuristic' | 'none';
+  /** Источник данных продаж: 'analytics-api' = ozon_analytics_daily, 'orders-fallback' = ozon_orders. */
+  ordersSource: 'analytics-api' | 'orders-fallback';
 };
+
+/** TTL Redis-кэша для аналитики, секунды. Sync переписывает данные не чаще раза в час. */
+const ANALYTICS_CACHE_TTL_SEC = 3600;
 
 /**
  * Эвристика для классификации транзакций Ozon как «рекламные».
@@ -73,9 +84,22 @@ export async function GET(req: NextRequest) {
 
     const periodDays = Math.max(1, Math.round((to.getTime() - from.getTime()) / (24 * 3600 * 1000)));
 
+    // Redis-кэш: блок аналитики переоткрывается часто, sync переписывает данные
+    // максимум раз в час. Ключ зависит от tenant + accountId + период.
+    const cacheKey = `analytics:ozon:${session.tenantId}:${accountId ?? 'all'}:${fromIso}:${toIso}`;
+    try {
+      const cached = await getRedis().get(cacheKey);
+      if (cached) {
+        return NextResponse.json(JSON.parse(cached) as OzonAnalyticsResponse);
+      }
+    } catch {
+      // Cache не критичен — продолжаем без него.
+    }
+
     const accountCondOrders = accountId ? sql`AND o.account_id = ${accountId}` : sql``;
     const accountCondTx = accountId ? sql`AND tx.account_id = ${accountId}` : sql``;
     const accountCondPerf = accountId ? sql`AND ps.account_id = ${accountId}` : sql``;
+    const accountCondAnalytics = accountId ? sql`AND ad.account_id = ${accountId}` : sql``;
     const accountCondUp = accountId
       ? sql`AND ${unitProducts.marketplaceAccountId} = ${accountId}`
       : sql``;
@@ -94,6 +118,24 @@ export async function GET(req: NextRequest) {
       ? (perfCheck as AdsCheckRow[])
       : (((perfCheck as unknown) as { rows: AdsCheckRow[] }).rows ?? []);
     const hasPerfData = (perfCheckRows[0]?.cnt ?? 0) > 0;
+
+    // Определяем источник продаж: ozon_analytics_daily (primary, после v0.18.13) →
+    // ozon_orders (legacy fallback). Если новой таблицы пока нет/пустая — используем старый CTE.
+    const analyticsCheck = await db.execute<AdsCheckRow>(sql`
+      SELECT COUNT(*)::int AS cnt FROM ${ozonAnalyticsDaily} ad
+      WHERE ad.tenant_id = ${session.tenantId}
+        ${accountCondAnalytics}
+        AND ad.date >= ${fromIso}::date
+        AND ad.date < ${toIso}::date
+      LIMIT 1
+    `);
+    const analyticsCheckRows: AdsCheckRow[] = Array.isArray(analyticsCheck)
+      ? (analyticsCheck as AdsCheckRow[])
+      : (((analyticsCheck as unknown) as { rows: AdsCheckRow[] }).rows ?? []);
+    const hasAnalyticsData = (analyticsCheckRows[0]?.cnt ?? 0) > 0;
+    const ordersSource: 'analytics-api' | 'orders-fallback' = hasAnalyticsData
+      ? 'analytics-api'
+      : 'orders-fallback';
 
     // CTE для рекламных данных зависит от источника.
     const adsCte = hasPerfData
@@ -159,8 +201,54 @@ export async function GET(req: NextRequest) {
       perf_cart_adds: number | string;
     };
 
-    const rawResult = await db.execute<Raw>(sql`
-      WITH order_items AS (
+    // CTE для продаж зависит от источника:
+    //  - analytics-api (после v0.18.13): ozon_analytics_daily, JOIN по SKU.
+    //    Это даёт цифры идентичные Seller-кабинету Ozon.
+    //  - orders-fallback (legacy): ozon_orders.items.offer_id, JOIN по article.
+    //    Используется когда ozon_analytics_daily ещё пустая.
+    //
+    // Колонки в обоих случаях одинаковы: match_key, delivered, cancelled,
+    // returned, qty_delivered, revenue_rub. Это позволяет иметь общий хвост
+    // запроса с LEFT JOIN agg_orders ao ON ao.match_key = ...
+    const ordersCte = hasAnalyticsData
+      ? sql`
+      agg_orders AS (
+        SELECT
+          ad.sku AS match_key,
+          SUM(ad.ordered_units)::int AS delivered,
+          SUM(ad.cancellations)::int AS cancelled,
+          SUM(ad.returns)::int AS returned,
+          SUM(ad.delivered_units)::numeric AS qty_delivered,
+          SUM(ad.revenue_kopecks)::numeric / 100 AS revenue_rub
+        FROM ${ozonAnalyticsDaily} ad
+        WHERE ad.tenant_id = ${session.tenantId}
+          ${accountCondAnalytics}
+          AND ad.date >= ${fromIso}::date
+          AND ad.date < ${toIso}::date
+        GROUP BY ad.sku
+      ),
+      -- Fallback для basic-tier (cancellations/returns в analytics_daily = 0):
+      -- доагрегируем cancelled/returned из ozon_orders по offer_id → article.
+      agg_orders_fb AS (
+        SELECT
+          (it->>'offerId')::text AS match_key,
+          COUNT(DISTINCT o.id) FILTER (
+            WHERE o.cancelled_at IS NOT NULL OR lower(o.status) LIKE '%cancel%'
+          ) AS cancelled,
+          COUNT(DISTINCT o.id) FILTER (
+            WHERE o.returned_at IS NOT NULL OR lower(o.status) LIKE '%return%'
+          ) AS returned
+        FROM ${ozonOrders} o
+        CROSS JOIN LATERAL jsonb_array_elements(o.items) AS it
+        WHERE o.tenant_id = ${session.tenantId}
+          ${accountCondOrders}
+          AND o.order_created_at >= ${fromIso}::timestamp
+          AND o.order_created_at < ${toIso}::timestamp
+          AND COALESCE(it->>'offerId', '') <> ''
+        GROUP BY (it->>'offerId')::text
+      )`
+      : sql`
+      order_items AS (
         SELECT
           o.id,
           o.status,
@@ -181,16 +269,60 @@ export async function GET(req: NextRequest) {
       ),
       agg_orders AS (
         SELECT
-          offer_id,
-          COUNT(DISTINCT id) FILTER (WHERE status = 'delivered') AS delivered,
-          COUNT(DISTINCT id) FILTER (WHERE cancelled_at IS NOT NULL OR lower(status) LIKE '%cancel%') AS cancelled,
-          COUNT(DISTINCT id) FILTER (WHERE returned_at IS NOT NULL OR lower(status) LIKE '%return%') AS returned,
-          SUM(item_qty) FILTER (WHERE status = 'delivered') AS qty_delivered,
-          SUM(item_qty * item_price_rub) FILTER (WHERE status = 'delivered') AS revenue_rub
+          offer_id AS match_key,
+          -- delivered = все заказы кроме явных отмен/возвратов
+          -- (включая awaiting_deliver, delivering). Иначе на коротком окне
+          -- 7d большинство заказов ещё в пути и блок показывает 0 продаж.
+          COUNT(DISTINCT id) FILTER (
+            WHERE cancelled_at IS NULL
+              AND returned_at IS NULL
+              AND lower(status) NOT LIKE '%cancel%'
+              AND lower(status) NOT LIKE '%return%'
+          ) AS delivered,
+          COUNT(DISTINCT id) FILTER (
+            WHERE cancelled_at IS NOT NULL OR lower(status) LIKE '%cancel%'
+          ) AS cancelled,
+          COUNT(DISTINCT id) FILTER (
+            WHERE returned_at IS NOT NULL OR lower(status) LIKE '%return%'
+          ) AS returned,
+          SUM(item_qty) FILTER (
+            WHERE cancelled_at IS NULL
+              AND returned_at IS NULL
+              AND lower(status) NOT LIKE '%cancel%'
+              AND lower(status) NOT LIKE '%return%'
+          ) AS qty_delivered,
+          SUM(item_qty * item_price_rub) FILTER (
+            WHERE cancelled_at IS NULL
+              AND returned_at IS NULL
+              AND lower(status) NOT LIKE '%cancel%'
+              AND lower(status) NOT LIKE '%return%'
+          ) AS revenue_rub
         FROM order_items
         WHERE offer_id IS NOT NULL AND offer_id <> ''
         GROUP BY offer_id
-      ),
+      )`;
+
+    // Условия JOIN для match_key:
+    //  - analytics-api: match_key = ozon SKU → JOIN по unit_products.sku
+    //  - orders-fallback: match_key = offer_id → JOIN по unit_products.article
+    const ordersJoin = hasAnalyticsData
+      ? sql`LEFT JOIN agg_orders ao ON ao.match_key = ${unitProducts.sku}
+            LEFT JOIN agg_orders_fb fb ON fb.match_key = ${unitProducts.article}`
+      : sql`LEFT JOIN agg_orders ao ON ao.match_key = ${unitProducts.article}`;
+
+    // В analytics-api режиме для basic-tier берём cancellations/returns из fallback;
+    // для premium-plus tier в analytics уже актуальные значения (fb берётся через
+    // COALESCE как «ноль или больше из ozon_orders»). GREATEST не используем —
+    // у premium-plus данных может быть меньше из-за лага sync ozon_orders.
+    const cancelledExpr = hasAnalyticsData
+      ? sql`COALESCE(NULLIF(ao.cancelled, 0), fb.cancelled, 0)::int`
+      : sql`COALESCE(ao.cancelled, 0)::int`;
+    const returnedExpr = hasAnalyticsData
+      ? sql`COALESCE(NULLIF(ao.returned, 0), fb.returned, 0)::int`
+      : sql`COALESCE(ao.returned, 0)::int`;
+
+    const rawResult = await db.execute<Raw>(sql`
+      WITH ${ordersCte},
       ${adsCte}
       SELECT
         ${unitProducts.id}::text AS "productId",
@@ -203,8 +335,8 @@ export async function GET(req: NextRequest) {
         ${unitProducts.costKopecks} AS cost_kopecks,
         (${unitProducts.metadata}->>'priceWithSpp')::numeric AS marketing_price_rub,
         COALESCE(ao.delivered, 0)::int AS delivered,
-        COALESCE(ao.cancelled, 0)::int AS cancelled,
-        COALESCE(ao.returned, 0)::int AS returned,
+        ${cancelledExpr} AS cancelled,
+        ${returnedExpr} AS returned,
         COALESCE(ao.qty_delivered, 0) AS qty_delivered,
         COALESCE(ao.revenue_rub * 100, 0) AS revenue_kopecks,
         COALESCE(ad.ads_kopecks, 0) AS ads_kopecks,
@@ -212,7 +344,7 @@ export async function GET(req: NextRequest) {
         COALESCE(ad.perf_clicks, 0) AS perf_clicks,
         COALESCE(ad.perf_cart_adds, 0) AS perf_cart_adds
       FROM ${unitProducts}
-      LEFT JOIN agg_orders ao ON ao.offer_id = ${unitProducts.article}
+      ${ordersJoin}
       LEFT JOIN LATERAL (
         SELECT
           SUM(ad.ads_kopecks) AS ads_kopecks,
@@ -311,13 +443,23 @@ export async function GET(req: NextRequest) {
       adsSource = 'transactions-heuristic';
     }
 
-    return NextResponse.json({
+    const payload: OzonAnalyticsResponse = {
       ok: true,
       rows,
       totals,
       period: { from: from.toISOString(), to: to.toISOString() },
       adsSource,
-    } satisfies OzonAnalyticsResponse);
+      ordersSource,
+    };
+
+    // Запись в кэш — best-effort.
+    try {
+      await getRedis().set(cacheKey, JSON.stringify(payload), 'EX', ANALYTICS_CACHE_TTL_SEC);
+    } catch {
+      /* ignore */
+    }
+
+    return NextResponse.json(payload);
   } catch (e) {
     console.error('[ozon-analytics] GET failed:', e);
     return NextResponse.json(

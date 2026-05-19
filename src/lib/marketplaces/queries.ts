@@ -194,6 +194,36 @@ export function decryptAccountPerfSecret(
   return decryptSecret(account.perfClientSecretEnc);
 }
 
+/**
+ * Обновить лейбл «уровень доступа к аналитике» в companyInfo.
+ * Хранится в JSONB чтобы не плодить миграции — это вспомогательная пометка
+ * для UI (бейдж «basic/premium-plus») и API аналитики (нужен ли fallback
+ * на ozon_orders для cancellations/returns).
+ */
+export async function setAccountAnalyticsTier(args: {
+  tenantId: string;
+  id: string;
+  tier: 'basic' | 'premium-plus';
+}): Promise<void> {
+  await db
+    .update(marketplaceAccounts)
+    .set({
+      companyInfo: sql`jsonb_set(
+        coalesce(${marketplaceAccounts.companyInfo}, '{}'::jsonb),
+        '{_analyticsTier}',
+        to_jsonb(${args.tier}::text),
+        true
+      )`,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(marketplaceAccounts.tenantId, args.tenantId),
+        eq(marketplaceAccounts.id, args.id),
+      ),
+    );
+}
+
 /** Обновить perf-статус после успешного теста / sync. */
 export async function updateAccountPerfStatus(args: {
   tenantId: string;

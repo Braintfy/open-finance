@@ -54,6 +54,14 @@ export type OzonSyncSettings = {
   perfPhrases?: boolean;
   /** Окно perf-статистики в днях. По умолчанию 30. */
   perfWindowDays?: number;
+  /**
+   * Sync дневной аналитики продаж через Seller `/v1/analytics/data`.
+   * Это primary source для блока Ozon Аналитика (revenue/ordered_units).
+   * См. ozon_analytics_daily.
+   */
+  analyticsData?: boolean;
+  /** Окно аналитики продаж в днях. По умолчанию 90. */
+  analyticsWindowDays?: number;
 };
 
 export type SyncSummary = {
@@ -121,7 +129,8 @@ export type SyncJobKind =
   | 'turnover'
   | 'perfCampaigns'
   | 'perfSkuStats'
-  | 'perfPhrases';
+  | 'perfPhrases'
+  | 'analyticsData';
 
 export type SyncJobStatus = 'pending' | 'running' | 'success' | 'partial' | 'error';
 
@@ -337,6 +346,53 @@ export const ozonPerfSkuStats = pgTable(
   ],
 );
 
+/**
+ * Дневной агрегат продаж по SKU из Seller API `/v1/analytics/data`.
+ * Это родной аналитический endpoint Ozon (используется и в их UI/Seller-кабинете).
+ * Метрики:
+ *  - revenue (₽, в копейках)
+ *  - ordered_units (заказано шт.)
+ *  - delivered_units (доставлено шт.) — Premium Plus
+ *  - cancellations (отменено) — Premium Plus
+ *  - returns (возврат) — Premium Plus
+ *
+ * Без Premium Plus заполняются только revenue + ordered_units, остальные = 0.
+ * См. лейбл `account.metadata.ozonAnalyticsTier` ('basic' | 'premium-plus').
+ */
+export const ozonAnalyticsDaily = pgTable(
+  'ozon_analytics_daily',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    accountId: uuid('account_id')
+      .notNull()
+      .references(() => marketplaceAccounts.id, { onDelete: 'cascade' }),
+    /** День в Europe/Moscow (хранится как date без TZ). */
+    date: date('date').notNull(),
+    sku: varchar('sku', { length: 200 }).notNull(),
+    /** Выручка в копейках. */
+    revenueKopecks: bigint('revenue_kopecks', { mode: 'number' }).notNull().default(0),
+    /** Заказано штук (`ordered_units`). */
+    orderedUnits: integer('ordered_units').notNull().default(0),
+    /** Доставлено штук (Premium Plus). */
+    deliveredUnits: integer('delivered_units').notNull().default(0),
+    /** Отменено штук (Premium Plus). */
+    cancellations: integer('cancellations').notNull().default(0),
+    /** Возвращено штук (Premium Plus). */
+    returns: integer('returns').notNull().default(0),
+    raw: jsonb('raw').$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex('ozon_analytics_daily_uniq').on(t.accountId, t.date, t.sku),
+    index('ozon_analytics_daily_tenant_date_idx').on(t.tenantId, t.date),
+    index('ozon_analytics_daily_account_date_idx').on(t.accountId, t.date),
+  ],
+);
+
 export const ozonPerfPhrases = pgTable(
   'ozon_perf_phrases',
   {
@@ -381,3 +437,5 @@ export type OzonPerfSkuStat = typeof ozonPerfSkuStats.$inferSelect;
 export type NewOzonPerfSkuStat = typeof ozonPerfSkuStats.$inferInsert;
 export type OzonPerfPhrase = typeof ozonPerfPhrases.$inferSelect;
 export type NewOzonPerfPhrase = typeof ozonPerfPhrases.$inferInsert;
+export type OzonAnalyticsDaily = typeof ozonAnalyticsDaily.$inferSelect;
+export type NewOzonAnalyticsDaily = typeof ozonAnalyticsDaily.$inferInsert;

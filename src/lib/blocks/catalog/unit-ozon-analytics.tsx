@@ -7,8 +7,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useBlockValuePublisher } from '@/lib/blocks/values';
-import { BarChart3, Download, Loader2, RefreshCw } from 'lucide-react';
+import { BarChart3, Check, Download, Loader2, RefreshCw } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import { useLastFetched } from '@/lib/blocks/use-last-fetched';
 import type { BlockDef, BlockRenderProps, BlockSettingsFormProps } from '../types';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -59,6 +60,7 @@ function RenderOzonAnalytics({ instance }: BlockRenderProps) {
   const [error, setError] = useState<string | null>(null);
   const [sort, setSort] = useState<TableSort>({ key: 'revenueRub', dir: 'desc' });
   const mountedRef = useRef(true);
+  const { markFetched, label: lastFetchedLabel, justUpdated } = useLastFetched();
 
   useEffect(() => {
     mountedRef.current = true;
@@ -93,6 +95,7 @@ function RenderOzonAnalytics({ instance }: BlockRenderProps) {
         (data as { ok: boolean }).ok
       ) {
         setResponse(data as OzonAnalyticsResponse);
+        markFetched();
       } else {
         setError(
           (data as { error?: string } | null)?.error ?? `HTTP ${res.status}`,
@@ -306,17 +309,28 @@ function RenderOzonAnalytics({ instance }: BlockRenderProps) {
             </span>
           )}
         </div>
-        <div className="ml-auto flex items-center gap-1">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={fetchData}
+        <div className="ml-auto flex items-center gap-1.5">
+          {lastFetchedLabel && (
+            <span
+              className={
+                'flex items-center gap-1 text-[10px] transition-colors ' +
+                (justUpdated ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground')
+              }
+              title={`Последнее обновление: ${lastFetchedLabel}`}
+            >
+              {justUpdated && <Check className="h-2.5 w-2.5" />}
+              {lastFetchedLabel}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => fetchData()}
             disabled={loading}
+            className="inline-flex items-center gap-1 rounded-md border border-border/60 px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
             title="Обновить"
           >
-            {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-            {loading ? ' Обновляем…' : ' Обновить'}
-          </Button>
+            <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
+          </button>
           <Button
             variant="outline"
             size="sm"
@@ -331,13 +345,24 @@ function RenderOzonAnalytics({ instance }: BlockRenderProps) {
 
       {/* Totals header */}
       {response && (
-        <div className="grid grid-cols-2 gap-px border-b border-border/40 bg-border/40 sm:grid-cols-5">
-          <Totals label="Выручка" value={formatRub(response.totals.revenueRub)} />
-          <Totals label="Реклама" value={formatRub(response.totals.adsRub)} />
-          <Totals label="ДРР" value={formatPct(response.totals.drrPct)} tone={response.totals.drrPct !== null && response.totals.drrPct > 20 ? 'warning' : 'neutral'} />
-          <Totals label="Заказы" value={response.totals.delivered.toLocaleString('ru-RU')} />
-          <Totals label="Товары с продажами" value={`${response.totals.productsWithSales} / ${rows.length}`} />
-        </div>
+        <>
+          <div className="grid grid-cols-2 gap-px border-b border-border/40 bg-border/40 sm:grid-cols-5">
+            <Totals label="Выручка" value={formatRub(response.totals.revenueRub)} />
+            <Totals label="Реклама" value={formatRub(response.totals.adsRub)} />
+            <Totals label="ДРР" value={formatPct(response.totals.drrPct)} tone={response.totals.drrPct !== null && response.totals.drrPct > 20 ? 'warning' : 'neutral'} />
+            <Totals label="Заказы" value={response.totals.delivered.toLocaleString('ru-RU')} />
+            <Totals label="Товары с продажами" value={`${response.totals.productsWithSales} / ${rows.length}`} />
+          </div>
+          {/* Source badges: показывают откуда взяты числа (Seller analytics vs legacy postings). */}
+          {response.ordersSource === 'orders-fallback' && (
+            <div className="flex flex-wrap items-center gap-1.5 border-b border-border/40 bg-amber-50 px-3 py-1 text-[10px] text-amber-700 dark:bg-amber-950/30 dark:text-amber-300">
+              <span className="font-medium">Аналитика из postings (legacy).</span>
+              <span className="text-amber-700/80 dark:text-amber-400/70">
+                Запустите sync «Аналитика продаж (Seller API)» в настройках для точных цифр как в Seller-кабинете Ozon.
+              </span>
+            </div>
+          )}
+        </>
       )}
 
       {/* Filter chips */}

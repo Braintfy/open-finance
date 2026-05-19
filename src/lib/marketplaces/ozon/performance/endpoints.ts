@@ -40,13 +40,14 @@ export async function listCampaigns(
 }
 
 // ---------------------------------------------------------------------------
-// /api/client/statistics/all_sku_promo/products/generate (async report)
+// /api/client/statistic/products/generate (async report по товарам)
 // ---------------------------------------------------------------------------
 
 const GenerateReportSchema = z
   .object({
     UUID: z.string().optional(),
     uuid: z.string().optional(),
+    vendor: z.boolean().optional(),
   })
   .passthrough();
 
@@ -60,23 +61,63 @@ const ReportStatusSchema = z
   .passthrough();
 
 /**
- * Запускает async-генерацию SKU-stats отчёта. Возвращает UUID. Затем
- * нужно опрашивать `getReportStatus` до OK, потом скачать через `downloadReport`.
+ * Конвертирует YYYY-MM-DD в RFC 3339 (требование Performance API).
+ * Для `dateTo` используем конец дня, чтобы захватить весь последний день.
+ */
+function toRfc3339(yyyymmdd: string, endOfDay = false): string {
+  const time = endOfDay ? 'T23:59:59Z' : 'T00:00:00Z';
+  return `${yyyymmdd}${time}`;
+}
+
+/**
+ * Запускает async-генерацию отчёта Search Promo по товарам (показы/клики/
+ * корзина/заказы per-SKU per-day per-campaign). Возвращает UUID.
+ *
+ * Endpoint: `POST /api/client/statistic/products/generate`
+ * (operation `SearchPromoProductsReportSubmitRequest` в docs.ozon.ru/api/performance).
+ *
+ * **REQUIRED**: `campaigns` — массив id Search Promo кампаний (CPC/CPM × SKU).
+ * Без него Ozon возвращает default-отчёт типа «Оплата за заказ»
+ * (CSV с двумя колонками `[SKU; campaign_code]`), который нельзя парсить как
+ * SKU-stats — это и был баг в v0.18.12.
+ *
+ * Тело запроса по доке:
+ * ```
+ * {
+ *   campaigns: string[],     // id кампаний (REQUIRED)
+ *   dateFrom: 'YYYY-MM-DD',  // короткий формат
+ *   dateTo:   'YYYY-MM-DD',
+ *   from:     RFC3339,       // полный формат (Ozon принимает оба)
+ *   to:       RFC3339,
+ *   groupBy:  'DATE' | 'NO_GROUP_BY' | 'START_OF_WEEK' | 'START_OF_MONTH'
+ * }
+ * ```
  */
 export async function generateSkuStatsReport(
   client: OzonPerformanceClient,
-  args: { dateFrom: string; dateTo: string; campaignIds?: string[] },
+  args: {
+    dateFrom: string;
+    dateTo: string;
+    campaigns: string[];
+    groupBy?: 'DATE' | 'NO_GROUP_BY' | 'START_OF_WEEK' | 'START_OF_MONTH';
+  },
 ): Promise<string> {
-  const query: Record<string, string> = {
+  if (!args.campaigns || args.campaigns.length === 0) {
+    throw new Error(
+      'Performance API: generate report требует непустой `campaigns` (список id Search Promo кампаний). Без него возвращается default-отчёт «Оплата за заказ», который нельзя парсить как SKU-stats.',
+    );
+  }
+  const body: Record<string, unknown> = {
+    campaigns: args.campaigns,
     dateFrom: args.dateFrom,
     dateTo: args.dateTo,
+    from: toRfc3339(args.dateFrom, false),
+    to: toRfc3339(args.dateTo, true),
+    groupBy: args.groupBy ?? 'DATE',
   };
-  if (args.campaignIds && args.campaignIds.length > 0) {
-    query.campaignIds = args.campaignIds.join(',');
-  }
-  const data = (await client.get(
-    '/api/client/statistics/all_sku_promo/products/generate',
-    query,
+  const data = (await client.post(
+    '/api/client/statistic/products/generate',
+    body,
     GenerateReportSchema,
   )) as { UUID?: string; uuid?: string } | undefined;
   const id = data?.UUID ?? data?.uuid;
@@ -241,11 +282,26 @@ export function parseRuNumber(value: string | undefined | null): number {
 }
 
 /**
+ * Проверка что заголовок CSV действительно SKU-stats отчёт (а не «Оплата за
+ * заказ» или другой формат). Должна найтись хотя бы одна из колонок SKU.
+ */
+export function isSkuStatsHeader(row: Record<string, string>): boolean {
+  const aliases = ['sku', 'артикул', 'id товара', 'product id'];
+  for (const k of Object.keys(row)) {
+    if (aliases.includes(k.trim().toLowerCase())) return true;
+  }
+  return false;
+}
+
+/**
  * Конвертирует одну CSV-строку SKU-stats в типизированный объект.
  * Колонки берутся с устойчивостью к разному регистру/русским названиям.
+ * Если sku не похож на валидный Ozon SKU (цифры) — возвращает пустой sku,
+ * stage пропустит такую строку.
  */
 export function parseSkuStatsRow(row: Record<string, string>): {
   sku: string;
+  campaignId: string | null;
   date: string | null;
   views: number;
   clicks: number;
@@ -263,14 +319,34 @@ export function parseSkuStatsRow(row: Record<string, string>): {
     return '';
   };
   const get = (...names: string[]) => row[findKey(...names)] ?? '';
+  const skuRaw = get('sku', 'SKU', 'Артикул', 'ID товара', 'Product ID').trim();
+  // Ozon SKU всегда числовой. Защита от случайно прочитанных названий
+  // кампаний (например `rm-nnm-60-5`) в позиции SKU.
+  const sku = /^\d+$/.test(skuRaw) ? skuRaw : '';
+  const campaignIdRaw = get(
+    'campaignId',
+    'campaign_id',
+    'Идентификатор кампании',
+    'ID кампании',
+    'Кампания',
+  ).trim();
   return {
-    sku: get('sku', 'SKU', 'Артикул', 'ID товара').trim(),
+    sku,
+    campaignId: campaignIdRaw && /^\d+$/.test(campaignIdRaw) ? campaignIdRaw : null,
     date: (get('date', 'Дата') || null) as string | null,
     views: Math.round(parseRuNumber(get('views', 'Показы'))),
     clicks: Math.round(parseRuNumber(get('clicks', 'Клики'))),
-    cartAdds: Math.round(parseRuNumber(get('cartAdds', 'В корзину'))),
-    orders: Math.round(parseRuNumber(get('orders', 'Заказы'))),
-    ordersRub: parseRuNumber(get('ordersMoney', 'Выручка', 'Заказы (руб.)')),
-    expenseRub: parseRuNumber(get('moneySpent', 'Расход', 'Затраты')),
+    cartAdds: Math.round(
+      parseRuNumber(
+        get('cartAdds', 'В корзину', 'Добавления в корзину', 'Количество добавлений товара в корзину'),
+      ),
+    ),
+    orders: Math.round(parseRuNumber(get('orders', 'Заказы', 'Заказы в штуках', 'Заказы (шт)'))),
+    ordersRub: parseRuNumber(
+      get('ordersMoney', 'Выручка', 'Заказы (руб.)', 'Заказы в рублях', 'Заказы, ₽'),
+    ),
+    expenseRub: parseRuNumber(
+      get('moneySpent', 'Расход', 'Затраты', 'Расход в рублях', 'Расход, ₽'),
+    ),
   };
 }

@@ -5,7 +5,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { z } from 'zod';
-import { Search, AlertCircle, Info, RefreshCw } from 'lucide-react';
+import { Search, AlertCircle, Check, Info, RefreshCw } from 'lucide-react';
+import { useLastFetched } from '@/lib/blocks/use-last-fetched';
 import { Card } from '@/components/ui/card';
 import {
   PeriodPicker,
@@ -49,6 +50,7 @@ function RenderOzonSearchPhrases({ instance }: BlockRenderProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
+  const { markFetched, label: lastFetchedLabel, justUpdated } = useLastFetched();
   const { accounts } = useMarketplaceAccounts({ marketplace: 'ozon' });
   const currentAccount = useMemo(
     () => accounts.find((a) => a.id === config.accountId) ?? null,
@@ -81,8 +83,10 @@ function RenderOzonSearchPhrases({ instance }: BlockRenderProps) {
       const res = await fetch(`/api/marketplaces/ozon/search-phrases?${params}`);
       const json = await res.json();
       if (!mountedRef.current) return;
-      if (res.ok && json.ok) setData(json as OzonSearchPhrasesResponse);
-      else {
+      if (res.ok && json.ok) {
+        setData(json as OzonSearchPhrasesResponse);
+        markFetched();
+      } else {
         setError(json.error ?? `HTTP ${res.status}`);
         setData(null);
       }
@@ -188,15 +192,29 @@ function RenderOzonSearchPhrases({ instance }: BlockRenderProps) {
     <Card className="flex h-full flex-col overflow-hidden p-0">
       <div className="flex flex-wrap items-center gap-2 border-b border-border/40 px-3 py-2">
         <PeriodPicker value={period} onChange={setPeriod} compact />
-        <button
-          type="button"
-          onClick={() => fetchData()}
-          disabled={loading}
-          className="ml-auto inline-flex items-center gap-1 rounded-md border border-border/60 px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
-          title="Обновить данные"
-        >
-          <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
-        </button>
+        <div className="ml-auto flex items-center gap-1.5">
+          {lastFetchedLabel && (
+            <span
+              className={
+                'flex items-center gap-1 text-[10px] transition-colors ' +
+                (justUpdated ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground')
+              }
+              title={`Последнее обновление: ${lastFetchedLabel}`}
+            >
+              {justUpdated && <Check className="h-2.5 w-2.5" />}
+              {lastFetchedLabel}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => fetchData()}
+            disabled={loading}
+            className="inline-flex items-center gap-1 rounded-md border border-border/60 px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
+            title="Обновить данные"
+          >
+            <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
+          </button>
+        </div>
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
         {emptyKind ? (

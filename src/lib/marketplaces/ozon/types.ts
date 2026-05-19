@@ -313,6 +313,41 @@ export const TransactionListResponseSchema = z.object({
     .optional(),
 });
 
+// ---- /v1/analytics/data --------------------------------------------------
+// Родной аналитический endpoint Ozon (Seller API). Возвращает агрегированные
+// метрики по dimension. См. docs.ozon.ru/api/seller. Лимит 1 req/min.
+//
+// data[].dimensions — массив объектов в порядке запроса dimension'ов:
+//   [{ id: '<sku>', name: '<product name>' }, { id: 'YYYY-MM-DD', name: '...' }]
+// data[].metrics — числа в том же порядке, что и в request.metrics.
+
+export const AnalyticsDataDimensionSchema = z
+  .object({
+    id: z.string().optional(),
+    name: z.string().optional(),
+  })
+  .passthrough();
+
+export const AnalyticsDataRowSchema = z
+  .object({
+    dimensions: z.array(AnalyticsDataDimensionSchema).optional(),
+    metrics: z.array(z.number()).optional(),
+  })
+  .passthrough();
+
+export const AnalyticsDataResponseSchema = z
+  .object({
+    result: z
+      .object({
+        data: z.array(AnalyticsDataRowSchema).optional(),
+        totals: z.array(z.number()).optional(),
+      })
+      .passthrough()
+      .optional(),
+    timestamp: z.string().optional(),
+  })
+  .passthrough();
+
 // ---- /v1/analytics/turnover/stocks ---------------------------------------
 
 export const TurnoverRowSchema = z
@@ -340,3 +375,5 @@ export type FboPosting = z.infer<typeof FboPostingSchema>;
 export type RealizationRow = z.infer<typeof RealizationRowSchema>;
 export type TransactionOperation = z.infer<typeof TransactionOperationSchema>;
 export type TurnoverRow = z.infer<typeof TurnoverRowSchema>;
+export type AnalyticsDataRow = z.infer<typeof AnalyticsDataRowSchema>;
+export type AnalyticsDataResponse = z.infer<typeof AnalyticsDataResponseSchema>;

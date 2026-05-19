@@ -84,11 +84,32 @@ export async function getOzonAnalyticsTotals(
     agg_orders AS (
       SELECT
         offer_id,
-        COUNT(DISTINCT id) FILTER (WHERE status = 'delivered') AS delivered,
-        COUNT(DISTINCT id) FILTER (WHERE status IN ('cancelled', 'canceled')) AS cancelled,
-        COUNT(DISTINCT id) FILTER (WHERE status = 'returned') AS returned,
-        SUM(item_qty) FILTER (WHERE status = 'delivered') AS qty_delivered,
-        SUM(item_qty * item_price_rub) FILTER (WHERE status = 'delivered') AS revenue_rub
+        -- См. /api/marketplaces/analytics/ozon: «Заказы» = всё кроме отмен/
+        -- возвратов, чтобы 7d-окно не показывало 0.
+        COUNT(DISTINCT id) FILTER (
+          WHERE cancelled_at IS NULL
+            AND returned_at IS NULL
+            AND lower(status) NOT LIKE '%cancel%'
+            AND lower(status) NOT LIKE '%return%'
+        ) AS delivered,
+        COUNT(DISTINCT id) FILTER (
+          WHERE cancelled_at IS NOT NULL OR lower(status) LIKE '%cancel%'
+        ) AS cancelled,
+        COUNT(DISTINCT id) FILTER (
+          WHERE returned_at IS NOT NULL OR lower(status) LIKE '%return%'
+        ) AS returned,
+        SUM(item_qty) FILTER (
+          WHERE cancelled_at IS NULL
+            AND returned_at IS NULL
+            AND lower(status) NOT LIKE '%cancel%'
+            AND lower(status) NOT LIKE '%return%'
+        ) AS qty_delivered,
+        SUM(item_qty * item_price_rub) FILTER (
+          WHERE cancelled_at IS NULL
+            AND returned_at IS NULL
+            AND lower(status) NOT LIKE '%cancel%'
+            AND lower(status) NOT LIKE '%return%'
+        ) AS revenue_rub
       FROM order_items
       WHERE offer_id IS NOT NULL AND offer_id <> ''
       GROUP BY offer_id

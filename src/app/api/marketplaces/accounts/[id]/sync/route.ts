@@ -21,9 +21,18 @@ type RouteCtx = { params: Promise<{ id: string }> };
 
 const BodySchema = z
   .object({
+    /** Запустить только один стейдж (все остальные — skipped). */
     stage: z.enum(OZON_FULL_STAGES).optional(),
+    /**
+     * Полный sync, но только с включёнными стейджами. UI блока аналитики
+     * отправляет это, чтобы пользователь мог выбрать набор стейджей.
+     * Незаявленные стейджи останутся со значением из account.syncSettings.
+     */
+    stages: z.record(z.enum(OZON_FULL_STAGES), z.boolean()).optional(),
+    /** Декоративное поле от UI, нам не нужно. */
+    kind: z.string().optional(),
   })
-  .strict()
+  .passthrough()
   .optional();
 
 export async function POST(req: Request, ctx: RouteCtx) {
@@ -48,6 +57,9 @@ export async function POST(req: Request, ctx: RouteCtx) {
     }
 
     const onlyStage = body?.stage as OzonStageKind | undefined;
+    const stagesOverride = body?.stages as
+      | Partial<Record<OzonStageKind, boolean>>
+      | undefined;
 
     const initStages = (
       onlyStage ? [onlyStage] : ([...OZON_FULL_STAGES] as OzonStageKind[])
@@ -71,6 +83,7 @@ export async function POST(req: Request, ctx: RouteCtx) {
       accountId: id,
       jobId: job.id,
       onlyStage,
+      stagesOverride,
     }).catch((e) => {
       console.error('[marketplaces] runFullSync background error:', e);
     });

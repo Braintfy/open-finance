@@ -26,6 +26,7 @@ export const OZON_FULL_STAGES = [
   'products',
   'prices',
   'stocks',
+  'analyticsData',
   'orders',
   'realization',
   'transactions',
@@ -56,16 +57,20 @@ export const DEFAULT_OZON_SYNC_SETTINGS: Required<
     | 'perfSkuStats'
     | 'perfPhrases'
     | 'perfWindowDays'
+    | 'analyticsData'
+    | 'analyticsWindowDays'
   >
 > = {
   products: true,
   prices: true,
   stocks: true,
   orders: true,
-  ordersWindowDays: 30,
+  // 90 дней покрывают большинство аналитических окон (mtd/30d/buyout 90d).
+  // 30 ранее давали «нет данных» при выборе периода mtd.
+  ordersWindowDays: 90,
   realization: true,
   transactions: false,
-  transactionsWindowDays: 30,
+  transactionsWindowDays: 90,
   turnover: true,
   autoSyncEnabled: false,
   autoSyncCron: '0 6 * * *',
@@ -73,6 +78,10 @@ export const DEFAULT_OZON_SYNC_SETTINGS: Required<
   perfSkuStats: true,
   perfPhrases: false,
   perfWindowDays: 30,
+  analyticsData: true,
+  // Без Premium даты ограничены 3 месяцами; для Premium Plus можно больше,
+  // но 90 дней — разумный baseline для блока аналитики.
+  analyticsWindowDays: 90,
 };
 
 export const OzonSyncSettingsSchema = z
@@ -93,6 +102,8 @@ export const OzonSyncSettingsSchema = z
     perfSkuStats: z.boolean().optional(),
     perfPhrases: z.boolean().optional(),
     perfWindowDays: z.number().int().min(1).max(365).optional(),
+    analyticsData: z.boolean().optional(),
+    analyticsWindowDays: z.number().int().min(1).max(365).optional(),
   })
   .strict();
 

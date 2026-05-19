@@ -6,8 +6,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { z } from 'zod';
-import { Activity, AlertTriangle, RefreshCw } from 'lucide-react';
+import { Activity, AlertTriangle, Check, RefreshCw } from 'lucide-react';
 import { Card } from '@/components/ui/card';
+import { useLastFetched } from '@/lib/blocks/use-last-fetched';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { StatCard } from '@/components/blocks/stat-card';
@@ -66,6 +67,7 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
+  const { markFetched, label: lastFetchedLabel, justUpdated } = useLastFetched();
 
   useEffect(() => {
     mountedRef.current = true;
@@ -94,6 +96,7 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
       if (!mountedRef.current) return;
       if (res.ok && json.ok) {
         setData(json as OzonKpiResponse);
+        markFetched();
       } else {
         setError(json.error ?? `HTTP ${res.status}`);
         setData(null);
@@ -133,15 +136,29 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
             Реклама ≈
           </span>
         )}
-        <button
-          type="button"
-          onClick={() => fetchData()}
-          disabled={loading}
-          className="ml-auto inline-flex items-center gap-1 rounded-md border border-border/60 px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
-          title="Обновить данные"
-        >
-          <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
-        </button>
+        <div className="ml-auto flex items-center gap-1.5">
+          {lastFetchedLabel && (
+            <span
+              className={
+                'flex items-center gap-1 text-[10px] transition-colors ' +
+                (justUpdated ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground')
+              }
+              title={`Последнее обновление: ${lastFetchedLabel}`}
+            >
+              {justUpdated && <Check className="h-2.5 w-2.5" />}
+              {lastFetchedLabel}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => fetchData()}
+            disabled={loading}
+            className="inline-flex items-center gap-1 rounded-md border border-border/60 px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
+            title="Обновить данные"
+          >
+            <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
+          </button>
+        </div>
       </div>
       {error ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center text-[12px] text-muted-foreground">

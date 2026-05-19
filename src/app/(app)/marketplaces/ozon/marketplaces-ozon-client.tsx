@@ -6,6 +6,7 @@
 import { BarChart3 } from 'lucide-react';
 import { BlockGrid } from '@/components/blocks/block-grid';
 import type { BlockInstance } from '@/lib/blocks/types';
+import { SyncAllButton } from '@/components/marketplaces/sync-all-button';
 
 export function MarketplacesOzonClient({
   tenantId,
@@ -29,6 +30,7 @@ export function MarketplacesOzonClient({
             </p>
           </div>
         </div>
+        <SyncAllButton />
       </div>
       <BlockGrid
         pageKey="marketplaces-ozon-dashboard"

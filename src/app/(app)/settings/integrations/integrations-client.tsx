@@ -140,6 +140,10 @@ const STAGE_LABELS: Record<OzonStageKind, { title: string; hint: string }> = {
     title: 'Оборачиваемость',
     hint: 'Дни оборачиваемости и индекс IDC',
   },
+  analyticsData: {
+    title: 'Аналитика продаж (Seller API)',
+    hint: 'Дневные revenue/ordered_units из /v1/analytics/data — родной источник Ozon Seller (premium-plus: +delivered/cancellations/returns)',
+  },
 };
 
 export function IntegrationsClient({
@@ -280,6 +284,14 @@ function AccountCard({
   const [showEditPerf, setShowEditPerf] = useState(false);
   const [testingPerf, setTestingPerf] = useState(false);
   const [perfTestResult, setPerfTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [syncStartedHint, setSyncStartedHint] = useState(false);
+
+  // Auto-hide «Sync запущен» баннера через 10с.
+  useEffect(() => {
+    if (!syncStartedHint) return;
+    const id = setTimeout(() => setSyncStartedHint(false), 10_000);
+    return () => clearTimeout(id);
+  }, [syncStartedHint]);
 
   // Apply server's syncSettings if account refreshes.
   useEffect(() => {
@@ -396,6 +408,7 @@ function AccountCard({
       const data = await res.json();
       if (data.ok) {
         setActiveJobId(data.jobId);
+        setSyncStartedHint(true);
       } else {
         setSyncing(false);
         setTestResult({ ok: false, message: data.error ?? 'Sync failed' });
@@ -478,6 +491,27 @@ function AccountCard({
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           )}
           <span>{testResult.message}</span>
+        </div>
+      )}
+
+      {syncStartedHint && (
+        <div className="flex items-start gap-2 border-b border-blue-200 bg-blue-50 px-3 py-2 text-[11px] text-blue-900 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-200">
+          <Loader2 className="mt-0.5 h-3 w-3 shrink-0 animate-spin" />
+          <div className="flex-1">
+            <div className="font-medium">Синхронизация запущена</div>
+            <div className="text-blue-800/80 dark:text-blue-300/80">
+              Это может занять от нескольких минут до нескольких часов в зависимости от объёма данных.
+              Можно закрыть страницу — sync продолжится в фоне. Прогресс виден в индикаторе внизу справа.
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSyncStartedHint(false)}
+            className="ml-1 text-blue-700/60 hover:text-blue-900 dark:text-blue-300/50 dark:hover:text-blue-200"
+            aria-label="Скрыть"
+          >
+            ×
+          </button>
         </div>
       )}
 

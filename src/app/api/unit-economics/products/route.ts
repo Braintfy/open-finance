@@ -106,11 +106,33 @@ export async function GET(req: NextRequest) {
       )
       SELECT
         ir.offer_id,
-        COUNT(DISTINCT ir.id) FILTER (WHERE ir.status = 'delivered' AND ir.order_created_at >= ${since30Iso}::timestamp) AS delivered_30d,
-        COUNT(DISTINCT ir.id) FILTER (WHERE ir.status = 'delivered') AS delivered_90d,
-        COUNT(DISTINCT ir.id) FILTER (WHERE ir.cancelled_at IS NOT NULL) AS cancelled_90d,
-        COUNT(DISTINCT ir.id) FILTER (WHERE ir.returned_at IS NOT NULL) AS returned_90d,
-        COALESCE(SUM(ir.item_qty * ir.item_price_rub * 100) FILTER (WHERE ir.status = 'delivered' AND ir.order_created_at >= ${since30Iso}::timestamp), 0) AS revenue_30d_kopecks,
+        -- "delivered" здесь = заказы кроме отмен/возвратов (см. analytics route)
+        COUNT(DISTINCT ir.id) FILTER (
+          WHERE ir.cancelled_at IS NULL
+            AND ir.returned_at IS NULL
+            AND lower(ir.status) NOT LIKE '%cancel%'
+            AND lower(ir.status) NOT LIKE '%return%'
+            AND ir.order_created_at >= ${since30Iso}::timestamp
+        ) AS delivered_30d,
+        COUNT(DISTINCT ir.id) FILTER (
+          WHERE ir.cancelled_at IS NULL
+            AND ir.returned_at IS NULL
+            AND lower(ir.status) NOT LIKE '%cancel%'
+            AND lower(ir.status) NOT LIKE '%return%'
+        ) AS delivered_90d,
+        COUNT(DISTINCT ir.id) FILTER (
+          WHERE ir.cancelled_at IS NOT NULL OR lower(ir.status) LIKE '%cancel%'
+        ) AS cancelled_90d,
+        COUNT(DISTINCT ir.id) FILTER (
+          WHERE ir.returned_at IS NOT NULL OR lower(ir.status) LIKE '%return%'
+        ) AS returned_90d,
+        COALESCE(SUM(ir.item_qty * ir.item_price_rub * 100) FILTER (
+          WHERE ir.cancelled_at IS NULL
+            AND ir.returned_at IS NULL
+            AND lower(ir.status) NOT LIKE '%cancel%'
+            AND lower(ir.status) NOT LIKE '%return%'
+            AND ir.order_created_at >= ${since30Iso}::timestamp
+        ), 0) AS revenue_30d_kopecks,
         0 AS ads_30d_kopecks
       FROM item_rows ir
       WHERE ir.offer_id IS NOT NULL AND ir.offer_id <> ''

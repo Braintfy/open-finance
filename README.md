@@ -71,6 +71,173 @@ Adminer (web UI для Postgres): [http://localhost:8081](http://localhost:8081)
 | Adminer | 8081 | без конфликта с 8080 |
 | Ollama (хост) | 11434 | дефолт |
 
+## Применение миграций БД
+
+Drizzle-схема (таблицы) применяется через `pnpm db:push`. SQL-файлы из `drizzle/init/` — индексы и DDL, которые drizzle-kit не умеет, — применяются вручную через `docker exec`:
+
+```bash
+# Локально (Docker)
+docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev < drizzle/init/02-vector-indexes.sql
+docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev < drizzle/init/09-marketplaces-analytics.sql
+
+# Проверить что таблица создалась
+docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev -c '\d ozon_analytics_daily'
+
+# Откатить миграцию (если нужно)
+docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev -c 'DROP TABLE IF EXISTS ozon_analytics_daily;'
+```
+
+> Файлы из `drizzle/init/*.sql` автоматически выполняются при **первом** запуске Postgres-контейнера (через `docker-entrypoint-initdb.d`). На уже работающей БД их нужно применять вручную командой выше.
+
+## Деплой на Ubuntu-сервер
+
+> Production-стек: Ubuntu 22.04+, Docker (Postgres+Redis), Node.js 20+, pnpm, systemd, nginx + certbot. Приложение клонируется в `/var/www/open-finance`, БД и кэш живут в Docker.
+
+### 1. Подготовка сервера (один раз)
+
+```bash
+# Обновление + базовые утилиты
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y curl git nginx ufw certbot python3-certbot-nginx
+
+# Docker + Docker Compose plugin
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker $USER
+newgrp docker
+
+# Node.js 20 + pnpm
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+sudo npm install -g pnpm
+
+# Firewall
+sudo ufw allow OpenSSH && sudo ufw allow 'Nginx Full' && sudo ufw enable
+```
+
+### 2. Клонирование и настройка
+
+```bash
+sudo mkdir -p /var/www/open-finance && sudo chown $USER:$USER /var/www/open-finance
+git clone https://github.com/<your-org>/open-finance.git /var/www/open-finance
+cd /var/www/open-finance
+
+# Production env (заполнить секретами: DATABASE_URL, REDIS_URL, JWT_SECRET, AI keys, OZON_*, S3, SMTP, APP_URL=https://yourdomain.com)
+cp .env.example .env.production
+nano .env.production
+
+# Зависимости + build
+pnpm install --frozen-lockfile
+pnpm build
+```
+
+### 3. Запуск БД и кэша (Docker)
+
+```bash
+pnpm docker:up                # postgres:5434, redis:6380, minio, adminer
+pnpm db:push                  # таблицы через Drizzle
+
+# SQL-индексы и DDL (по очереди, при добавлении новых файлов в drizzle/init/)
+docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev < drizzle/init/02-vector-indexes.sql
+docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev < drizzle/init/09-marketplaces-analytics.sql
+```
+
+### 4. systemd-сервис для Next.js
+
+```bash
+sudo tee /etc/systemd/system/open-finance.service > /dev/null <<'EOF'
+[Unit]
+Description=Open Finance (Next.js)
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/var/www/open-finance
+EnvironmentFile=/var/www/open-finance/.env.production
+ExecStart=/usr/bin/pnpm start
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo chown -R www-data:www-data /var/www/open-finance
+sudo systemctl daemon-reload
+sudo systemctl enable --now open-finance
+sudo systemctl status open-finance
+```
+
+### 5. Nginx + HTTPS
+
+```bash
+sudo tee /etc/nginx/sites-available/open-finance > /dev/null <<'EOF'
+server {
+    server_name yourdomain.com;
+    client_max_body_size 25M;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    listen 80;
+}
+EOF
+
+sudo ln -sf /etc/nginx/sites-available/open-finance /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+
+# Получить SSL (автоматически перепишет конфиг на 443)
+sudo certbot --nginx -d yourdomain.com --redirect --agree-tos -m you@example.com
+```
+
+### 6. Обновление до новой версии (CI/CD рутина)
+
+```bash
+cd /var/www/open-finance
+git pull origin main
+pnpm install --frozen-lockfile
+pnpm build
+
+# Применить новые SQL-миграции (если в этом релизе появились в drizzle/init/)
+pnpm db:push
+docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev < drizzle/init/<new-file>.sql
+
+sudo systemctl restart open-finance
+sudo systemctl status open-finance --no-pager
+```
+
+### 7. Бэкапы Postgres (cron)
+
+```bash
+sudo mkdir -p /var/backups/open-finance
+sudo tee /etc/cron.daily/open-finance-db-backup > /dev/null <<'EOF'
+#!/bin/bash
+TS=$(date +%Y%m%d-%H%M%S)
+docker exec openfinance-postgres pg_dump -U openfinance_user openfinance_dev \
+  | gzip > /var/backups/open-finance/db-$TS.sql.gz
+find /var/backups/open-finance -name 'db-*.sql.gz' -mtime +14 -delete
+EOF
+sudo chmod +x /etc/cron.daily/open-finance-db-backup
+```
+
+### 8. Логи и диагностика
+
+```bash
+sudo journalctl -u open-finance -f          # логи приложения
+docker logs -f openfinance-postgres         # логи БД
+docker logs -f openfinance-redis            # логи Redis
+docker exec -it openfinance-postgres psql -U openfinance_user -d openfinance_dev   # psql shell
+```
+
 ## Структура
 
 ```

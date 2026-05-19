@@ -28,6 +28,7 @@ import { syncTurnoverStage } from './turnover';
 import { syncPerfCampaignsStage } from './perf-campaigns';
 import { syncPerfSkuStatsStage } from './perf-sku-stats';
 import { syncPerfPhrasesStage } from './perf-phrases';
+import { syncAnalyticsDataStage } from './analytics-data';
 import type { StageContext, StageResult } from './types';
 import {
   OZON_FULL_STAGES,
@@ -43,6 +44,7 @@ const STAGE_RUNNERS: Record<OzonStageKind, (ctx: StageContext) => Promise<StageR
   products: syncProductsStage,
   prices: syncPricesStage,
   stocks: syncStocksStage,
+  analyticsData: syncAnalyticsDataStage,
   orders: syncOrdersStage,
   realization: syncRealizationStage,
   transactions: syncTransactionsStage,
@@ -65,6 +67,14 @@ export type RunFullSyncArgs = {
   jobId: string;
   /** Если задан — синхронизирует только этот стейдж (игнорируя тогглы). */
   onlyStage?: OzonStageKind;
+  /**
+   * Дополнительный override на per-stage флаги enabled. Используется UI
+   * блока аналитики, чтобы пользователь мог выбрать набор стейджей не
+   * меняя постоянные `account.syncSettings`. Передаётся как
+   * `Partial<Record<OzonStageKind, boolean>>` — true включает, false
+   * выключает, отсутствие ключа = взять из `settings`.
+   */
+  stagesOverride?: Partial<Record<OzonStageKind, boolean>>;
 };
 
 export async function runFullSync(args: RunFullSyncArgs): Promise<void> {
@@ -113,7 +123,10 @@ export async function runFullSync(args: RunFullSyncArgs): Promise<void> {
     : ([...OZON_FULL_STAGES] as OzonStageKind[]);
 
   for (const stage of stagesToRun) {
-    const enabled = (settings as Record<string, unknown>)[stage] !== false;
+    const overrideValue = args.stagesOverride?.[stage];
+    const enabled = overrideValue !== undefined
+      ? overrideValue
+      : (settings as Record<string, unknown>)[stage] !== false;
     const isPerfStage = PERF_STAGES.has(stage);
     const skipPerfNoCreds = isPerfStage && !perfClient;
 

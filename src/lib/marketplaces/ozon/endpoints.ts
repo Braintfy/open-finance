@@ -8,7 +8,7 @@
 // 2. соответствующий sync/*.ts маппинг;
 // 3. docs/MARKETPLACES_OZON.md (когда заведём — см. mini-plan в PLAN.md).
 
-import { OzonClient } from './client';
+import { OzonClient, OzonApiError } from './client';
 import {
   SellerInfoSchema,
   ProductListResponseSchema,
@@ -20,6 +20,8 @@ import {
   RealizationResponseSchema,
   TransactionListResponseSchema,
   TurnoverResponseSchema,
+  AnalyticsDataResponseSchema,
+  type AnalyticsDataResponse,
 } from './types';
 
 export const OZON_API_VERSION_MAP = {
@@ -33,7 +35,29 @@ export const OZON_API_VERSION_MAP = {
   financeRealization: '/v2/finance/realization',
   financeTransactionList: '/v3/finance/transaction/list',
   analyticsTurnoverStocks: '/v1/analytics/turnover/stocks',
+  analyticsData: '/v1/analytics/data',
 } as const;
+
+/** Все возможные метрики для /v1/analytics/data. */
+export const ANALYTICS_METRICS_PREMIUM = [
+  'revenue',
+  'ordered_units',
+  'delivered_units',
+  'cancellations',
+  'returns',
+] as const;
+
+/** Метрики, доступные на базовом тарифе (без Premium Plus). */
+export const ANALYTICS_METRICS_BASIC = ['revenue', 'ordered_units'] as const;
+
+export type AnalyticsMetric =
+  | 'revenue'
+  | 'ordered_units'
+  | 'delivered_units'
+  | 'cancellations'
+  | 'returns';
+
+export type AnalyticsDimension = 'sku' | 'spu' | 'day' | 'week' | 'month';
 
 export async function sellerInfo(client: OzonClient) {
   return client.post(OZON_API_VERSION_MAP.sellerInfo, {}, SellerInfoSchema);
@@ -209,4 +233,134 @@ export async function analyticsTurnoverStocks(
     },
     TurnoverResponseSchema,
   );
+}
+
+/**
+ * Запрашивает агрегированные метрики продаж через `/v1/analytics/data`.
+ *
+ * Это родной аналитический endpoint Ozon (Seller API), он же используется
+ * в Seller-кабинете в разделе «Аналитика → Графики». В отличие от FBO/FBS
+ * postings (которые мы выкачиваем как заказы), этот endpoint возвращает
+ * агрегированные финальные числа — те самые, что показывает Ozon на своих
+ * дашбордах.
+ *
+ * Лимит: **1 запрос в минуту** на аккаунт. Если делаем несколько запросов
+ * подряд (например, при пагинации) — нужно `await sleep(60_000)` между ними.
+ *
+ * Метрики:
+ *  - `revenue` (₽), `ordered_units` (шт.) — всем продавцам.
+ *  - `delivered_units`, `cancellations`, `returns`, и десятки прочих —
+ *    только Premium Plus / Pro. На базовом тарифе Ozon ответит 400
+ *    InvalidArgument; вызывающий код должен поймать ошибку и переключиться
+ *    на минимальный набор. См. `analyticsDataWithFallback()`.
+ *
+ * Без Premium даты ограничены последними 3 месяцами.
+ *
+ * docs.ozon.ru/api/seller — Analytics Data.
+ */
+export async function analyticsData(
+  client: OzonClient,
+  args: {
+    /** YYYY-MM-DD. */
+    dateFrom: string;
+    /** YYYY-MM-DD. */
+    dateTo: string;
+    /** До 14 метрик. */
+    metrics: ReadonlyArray<AnalyticsMetric>;
+    /** До 2 dimension'ов. Пример: ['sku', 'day']. */
+    dimension: ReadonlyArray<AnalyticsDimension>;
+    filters?: Array<Record<string, unknown>>;
+    sort?: Array<{ key: string; order: 'ASC' | 'DESC' }>;
+    /** Max 1000. */
+    limit?: number;
+    offset?: number;
+  },
+): Promise<AnalyticsDataResponse> {
+  return client.post(
+    OZON_API_VERSION_MAP.analyticsData,
+    {
+      date_from: args.dateFrom,
+      date_to: args.dateTo,
+      metrics: [...args.metrics],
+      dimension: [...args.dimension],
+      filters: args.filters ?? [],
+      sort: args.sort ?? [],
+      limit: Math.min(Math.max(args.limit ?? 1000, 1), 1000),
+      offset: Math.max(args.offset ?? 0, 0),
+    },
+    AnalyticsDataResponseSchema,
+  );
+}
+
+/**
+ * Эвристика: ошибка от Ozon вызвана отсутствием подписки Premium Plus
+ * (а не битыми параметрами или сетью). Тогда стейдж аналитики деградирует
+ * до базовых метрик `revenue` + `ordered_units`.
+ *
+ * Точного кода ответа Ozon нет: он отвечает 400 InvalidArgument либо 403
+ * Forbidden, иногда с message «metric ... is not available for current
+ * subscription» / «access denied». Поэтому смотрим на статус + текст.
+ */
+export function isPremiumPlusUnavailableError(e: unknown): boolean {
+  if (!(e instanceof OzonApiError)) return false;
+  if (e.status !== 400 && e.status !== 403) return false;
+  const haystack = `${e.message} ${describeBody(e.body)}`.toLowerCase();
+  return (
+    haystack.includes('subscription') ||
+    haystack.includes('premium') ||
+    haystack.includes('not available') ||
+    haystack.includes('access denied') ||
+    haystack.includes('forbidden') ||
+    /metric/.test(haystack)
+  );
+}
+
+function describeBody(body: unknown): string {
+  if (!body) return '';
+  if (typeof body === 'string') return body;
+  if (typeof body === 'object') {
+    try {
+      return JSON.stringify(body).slice(0, 500);
+    } catch {
+      return '';
+    }
+  }
+  return String(body);
+}
+
+export type AnalyticsDataTier = 'premium-plus' | 'basic';
+
+/**
+ * Запрашивает `/v1/analytics/data` сначала с полным набором Premium Plus
+ * метрик; при ошибке подписки автоматически деградирует до базовых
+ * `revenue` + `ordered_units`.
+ *
+ * Возвращает результат вместе с `tier`, чтобы вызывающий код мог:
+ *  1) проставить лейбл `account.metadata.ozonAnalyticsTier`,
+ *  2) понять, нужно ли заполнять `cancellations`/`returns` из orders fallback.
+ */
+export async function analyticsDataWithFallback(
+  client: OzonClient,
+  args: {
+    dateFrom: string;
+    dateTo: string;
+    dimension: ReadonlyArray<AnalyticsDimension>;
+    limit?: number;
+    offset?: number;
+  },
+): Promise<{ tier: AnalyticsDataTier; metrics: ReadonlyArray<AnalyticsMetric>; response: AnalyticsDataResponse }> {
+  try {
+    const response = await analyticsData(client, {
+      ...args,
+      metrics: ANALYTICS_METRICS_PREMIUM,
+    });
+    return { tier: 'premium-plus', metrics: ANALYTICS_METRICS_PREMIUM, response };
+  } catch (e) {
+    if (!isPremiumPlusUnavailableError(e)) throw e;
+    const response = await analyticsData(client, {
+      ...args,
+      metrics: ANALYTICS_METRICS_BASIC,
+    });
+    return { tier: 'basic', metrics: ANALYTICS_METRICS_BASIC, response };
+  }
 }

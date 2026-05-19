@@ -283,12 +283,45 @@ Open Finance = настраиваемый Lego-конструктор интер
 - **Тесты:** 29 PASS в [`scripts/test-ozon-analytics.ts`](scripts/test-ozon-analytics.ts) — все 8 фильтров, config schema (включая backward-compat), `resolvePeriod` все пресеты. Запуск `pnpm tsx scripts/test-ozon-analytics.ts`.
 - **`JobErrorsBlock`** в `/settings/integrations` — раскрываемый список ошибок job'a с stage-badge. Info-tooltip для «schema mismatch» сообщений (после lenient-mode они = warnings).
 
-### Ozon Analytics / Performance API root-cause fixes (v0.18.11)
+### Performance API: `campaigns` REQUIRED в body + GlobalSyncIndicator (v0.18.14)
+- **`POST /api/client/statistic/products/generate` ТРЕБУЕТ `campaigns: [ids...]`.** По docs.ozon.ru/api/performance (operation `SearchPromoProductsReportSubmitRequest`) — это отчёт по товарам в Search Promo (CPC/CPM). Без `campaigns` Ozon возвращает default-отчёт «Оплата за заказ» с CSV `[SKU;campaign_code]`, парсер прочитает как мусор (номер кампании во views/clicks/orders). Body: `{campaigns, dateFrom: YYYY-MM-DD, dateTo, from: RFC3339, to: RFC3339, groupBy: 'DATE'}`.
+- **`syncPerfSkuStatsStage` тянет кампании из `ozon_perf_campaigns`** где `payment_type IN ('CPC','CPM') AND adv_object_type='SKU' AND state IN ('CAMPAIGN_STATE_RUNNING','CAMPAIGN_STATE_PAUSED','CAMPAIGN_STATE_FINISHED')`. Batch по 50 IDs (`CAMPAIGNS_PER_REPORT`).
+- **`parseSkuStatsRow()` валидирует SKU как `/^\d+$/`.** Ozon SKU всегда числовой; защита от случайно прочитанных названий кампаний (`rm-nnm-60-5`) в позиции SKU.
+- **`isSkuStatsHeader()` проверяет наличие колонки SKU** перед парсингом. Если нет — пишет warning, не падает.
+- **Upsert использует sql `+=` для накопления.** Несколько batch'ей за одно окно могут вернуть один и тот же `(account, date, sku, campaign_id)` — поэтому `views: sql\`${ozonPerfSkuStats.views} + ${parsed.views}\``. Перед первым insert'ом — `DELETE FROM ozon_perf_sku_stats WHERE date BETWEEN ...` (чтобы не копить дубли при перезапусках).
+
+### Глобальный sync UX (v0.18.14)
+- **`<GlobalSyncIndicator />`** в `src/components/marketplaces/global-sync-indicator.tsx`, mount в `src/app/(app)/layout.tsx`. Sticky bottom-right на всех authenticated страницах. Поллит `GET /api/marketplaces/jobs/active` каждые 5с.
+- **`GET /api/marketplaces/jobs/active`** возвращает `[{jobId, accountId, accountName, kind, status, currentStage, currentStageProcessed/Total, stages, itemsProcessed/Total}]` для активных job'ов tenant'а (`status IN ('pending','running')`). JOIN с `marketplace_accounts` для `accountName`. Limit 10.
+- **`<SyncAllButton />`** в `src/components/marketplaces/sync-all-button.tsx` — в header `/marketplaces/ozon`. Селектор аккаунта + popover с чекбоксами стейджей + миниинструкция «2 мин — 2 часа». POST `/api/marketplaces/accounts/{id}/sync` с `{kind: 'full', stages: {...}}`.
+- **`useLastFetched()` хук** — `src/lib/blocks/use-last-fetched.ts`. Возвращает `{markFetched, label, justUpdated}`. Пересчёт лейбла раз в 30с. `justUpdated` пульсирует true ~1.2с после `markFetched()` (для зелёной галочки). Используется во всех Ozon-блоках для feedback после refetch.
+- **Кнопка «Обновить» паттерн**: icon-only `<RefreshCw className={loading ? 'animate-spin' : ''}/>`, `border border-border/60`, `text-[11px]`, `title="Обновить данные"`. Рядом — last-fetched `text-[10px]` с зелёной галочкой при `justUpdated`.
+
+### Ozon Analytics: переход на Seller `/v1/analytics/data` (v0.18.13)
+- **`/v1/analytics/data` — primary source аналитики продаж.** Родной аналитический endpoint Seller API: dimension `[sku, day]`, метрики `revenue` + `ordered_units` (+ `delivered_units`/`cancellations`/`returns` для Premium Plus). Те же числа, что в Seller-кабинете Ozon. **Старая логика (FBO/FBS postings JOIN `unit_products`) давала 60× потерь** на коротких окнах — не использовать как primary, только fallback.
+- **Таблица `ozon_analytics_daily`** — `(account_id, date, sku)` UNIQUE, `revenue_kopecks`, `ordered_units`, `delivered_units`, `cancellations`, `returns`. Применять `drizzle/init/09-marketplaces-analytics.sql` вручную через psql.
+- **Стейдж sync `analyticsData`** — `src/lib/marketplaces/ozon/sync/analytics-data.ts`. Окно по умолчанию 90 дней, `dateTo = today - 1d`. Перед записью `DELETE FROM ozon_analytics_daily WHERE date BETWEEN …` — не копит дубли при перекрывающихся окнах. Пагинация по `offset`, max 5 страниц.
+- **Rate-limit 1 req/min на `/v1/analytics/data`** — между страницами пагинации `sleep(60_000)`. Если у юзера >1000 SKU/день, sync будет реально долгим.
+- **Graceful degradation Premium Plus → basic.** `analyticsDataWithFallback()` сначала пробует все 5 метрик; при 400/403 с keywords `subscription`/`premium`/`not available`/`access denied`/`forbidden`/`metric` — повторяет с `[revenue, ordered_units]`. Тир записывается в `marketplace_accounts.companyInfo._analyticsTier` через `setAccountAnalyticsTier()` (JSONB, без миграции колонок). Для basic-tier cancellations/returns в `ozon_analytics_daily` = 0; API analytics дополняет из `ozon_orders` через `COALESCE(NULLIF(ao.cancelled, 0), fb.cancelled, 0)`.
+- **API `/api/marketplaces/analytics/ozon` — условный CTE.** Если `ozon_analytics_daily` пустая за period → fallback на `ozon_orders` (legacy). JOIN изменяется: analytics-api по `unit_products.sku` (реальный Ozon SKU), orders-fallback по `unit_products.article` (= offer_id). Response содержит `ordersSource: 'analytics-api' | 'orders-fallback'` — UI показывает amber-бейдж в fallback-режиме.
+- **Redis-кэш TTL 1 час** для analytics route. Ключ `analytics:ozon:{tenantId}:{accountId|all}:{from}:{to}`. In-memory shim, инвалидация через TTL (sync переписывает данные не чаще 1×/час).
+- **Performance API `generate` 405 fix.** Endpoint `/api/client/statistics/all_sku_promo/products/generate` (с `s`) — GET с `timeBounds.from`/`timeBounds.to`, мы шлём POST → 405. Перешли на legacy `POST /api/client/statistic/products/generate` (без `s`) с body `{from, to}` в RFC 3339. Helper `toRfc3339(yyyymmdd, endOfDay)` — `endOfDay=true` для dateTo.
+
+### Ozon Analytics / Performance API root-cause fixes (v0.18.11–v0.18.12)
 - **НЕ путать `product_id` и Ozon SKU.** `unit_products.article` = seller `offer_id`; `unit_products.sku` должен быть реальным Ozon SKU (`ProductInfo.sources[].sku`, `PricesItem.sku`, `StocksItem.sku`). `product_id` хранится только в `metadata.productId`. Баг v0.18.10: `sku = String(info.id)` давал неверные ссылки `ozon.ru/product/{sku}` и ломал join рекламы.
 - **Analytics ads join должен быть backward-compatible.** `/api/marketplaces/analytics/ozon` матчится через lateral aggregate по `unit_products.sku`, legacy `metadata.productId`, `offer_id` и raw `Артикул`; не делать прямой `LEFT JOIN agg_ads ON a OR b OR c` без агрегирования — можно задвоить строки товара.
+- **«Заказы»/выручка не считаются по `status = 'delivered'`.** Колонка в UI подписана «Заказы», поэтому SQL считает «delivered» = заказы кроме явно отменённых/возвращённых (включая `awaiting_deliver`/`delivering`). Иначе на 7d-окне всё в пути и блок показывает 0 продаж. См. `agg_orders` CTE в `route.ts`, `unit-ozon-analytics-queries.ts`, `unit-economics/products/route.ts`.
 - **Отмены/возвраты считать не только по датам.** `ozon_orders.cancelled_at`/`returned_at` могут быть null; API аналитики дополнительно учитывает `lower(status) LIKE '%cancel%'/'%return%'`.
 - **`ozon_perf_sku_stats` с `campaign_id NULL` может дублироваться.** Postgres unique index не дедупит `NULL`, поэтому `perfSkuStats` перед записью очищает агрегаты текущего окна `(tenant, account, date range, campaign_id IS NULL)`.
-- **Performance period retry:** при 400 «Некорректный период» `perfSkuStats` пробует окна 30/14/7 и лаг завершённого дня 1/2/3/4/7. Официальные Ozon docs недоступны через tool (403), подтверждён общий async-flow: UUID report → wait → download.
+- **Performance API generate — POST с JSON body, не GET.** `OzonPerformanceClient.post()` отправляет `{dateFrom,dateTo,campaignIds?}` в `/api/client/statistics/all_sku_promo/products/generate`. Раньше запрос шёл GET'ом и Ozon стабильно отвечал 400 «Некорректный период» — это и был root cause «реклама не загружается».
+- **Performance period retry оставлен:** окна 30/14/7 и лаг завершённого дня 1/2/3/4/7 — на случай транзиентных ограничений у конкретных кампаний. Официальные Ozon docs через tool недоступны (403), подтверждён общий async-flow: UUID report → wait → download.
+- **Sync API принимает `stages` override.** `POST /api/marketplaces/accounts/[id]/sync` теперь поддерживает body `{ stages: Record<OzonStageKind, boolean> }` — UI блока аналитики так выбирает набор стейджей без записи в `account.syncSettings`. `runFullSync({ stagesOverride })` уважает override.
+- **Дефолтные окна orders/transactions расширены до 90 дней** (было 30) — `DEFAULT_OZON_SYNC_SETTINGS` в `src/lib/marketplaces/types.ts`. 30 дней не покрывали period mtd / 90-дневный buyout.
+
+### Reset password (v0.18.12)
+- `src/app/(auth)/reset-password/page.tsx` — форма с `Suspense + useSearchParams`, читает `?token=...`, валидация `length>=8` + match.
+- `src/app/api/auth/reset-password/route.ts` — POST `{token, password}` → `confirmPasswordReset()`.
+- `middleware.ts` уже пропускает `/reset-password`. Email с `${APP_URL}/reset-password?token=...` теперь не даёт 404.
 
 ## Marketplace Integrations / Ozon Seller API (v0.17.0)
 ### Ключевые файлы

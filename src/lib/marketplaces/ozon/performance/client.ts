@@ -212,9 +212,33 @@ export class OzonPerformanceClient {
    * Низкоуровневый GET-запрос к Performance API. Bearer-авторизация.
    * Lenient валидация (warning + raw).
    */
+  async post<T>(
+    path: string,
+    body: unknown,
+    schema?: ZodSchema<T>,
+    options?: { timeoutMs?: number; retry?: number; strict?: boolean },
+  ): Promise<T> {
+    return this.request<T>('POST', path, undefined, body, schema, options);
+  }
+
+  /**
+   * Низкоуровневый GET-запрос к Performance API. Bearer-авторизация.
+   * Lenient валидация (warning + raw).
+   */
   async get<T>(
     path: string,
     query?: Record<string, string | number | undefined | null>,
+    schema?: ZodSchema<T>,
+    options?: { timeoutMs?: number; retry?: number; strict?: boolean; binary?: boolean },
+  ): Promise<T> {
+    return this.request<T>('GET', path, query, undefined, schema, options);
+  }
+
+  private async request<T>(
+    method: 'GET' | 'POST',
+    path: string,
+    query?: Record<string, string | number | undefined | null>,
+    body?: unknown,
     schema?: ZodSchema<T>,
     options?: { timeoutMs?: number; retry?: number; strict?: boolean; binary?: boolean },
   ): Promise<T> {
@@ -243,12 +267,17 @@ export class OzonPerformanceClient {
         options?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       );
       try {
+        const headers: Record<string, string> = {
+          Authorization: `Bearer ${token}`,
+          Accept: options?.binary ? 'text/csv, application/octet-stream' : 'application/json',
+        };
+        if (method === 'POST' && body !== undefined) {
+          headers['Content-Type'] = 'application/json';
+        }
         const res = await fetch(url, {
-          method: 'GET',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            Accept: options?.binary ? 'text/csv, application/octet-stream' : 'application/json',
-          },
+          method,
+          headers,
+          body: method === 'POST' && body !== undefined ? JSON.stringify(body) : undefined,
           signal: controller.signal,
         });
 

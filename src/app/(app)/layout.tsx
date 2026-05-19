@@ -22,6 +22,7 @@ import { LogoutButton } from '@/components/logout-button';
 import { CommandPalette } from '@/components/command-palette';
 import { loadLayout } from '@/lib/blocks/queries';
 import { listPinnedBoards } from '@/lib/boards/queries';
+import { GlobalSyncIndicator } from '@/components/marketplaces/global-sync-indicator';
 
 type NavItem = {
   key: string;
@@ -133,6 +134,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         </header>
         <main className="min-w-0 flex-1 p-4 md:p-5">{children}</main>
       </div>
+      <GlobalSyncIndicator />
     </div>
   );
 }
