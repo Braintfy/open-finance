@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.18.15] - 2026-05-19
+
+Полная переделка Performance API integration: smart routing CPC/CPO кампаний, правильный endpoint для дневной разбивки, новая таблица для CPO кампаний, KPI/timeseries суммируют CPC + CPO.
+
+### Fixed
+
+- **`payment_type` NULL у всех кампаний → 0₽ расход** — `src/lib/marketplaces/ozon/sync/perf-sku-stats.ts:74-91`. Ozon API `/api/client/campaign` НЕ возвращает `paymentType` (поле всегда null). Прежний фильтр `payment_type IN ('CPC','CPM')` отсекал ВСЕ кампании → стейдж скипался → `ozon_perf_sku_stats` пустая → KPI показывал 0₽ при наличии активных Search Promo. Заменён на `adv_object_type IN ('SKU','SEARCH_PROMO')` — это поле API возвращает корректно.
+- **Endpoint `POST /statistic/products/generate` фундаментально неподходящий** — `src/lib/marketplaces/ozon/performance/endpoints.ts:99-129`. По дампу docs.ozon.ru/api/performance это **агрегированный отчёт за период БЕЗ даты, БЕЗ views/clicks**. Для дневной разбивки `ozon_perf_sku_stats(date, sku, ...)` структуры он непригоден. Парсер не находил колонку `date` → все строки уходили в `dateTo` → выглядело как «один день со всем расходом», timeseries-график плоский. Прежний commit `7938e38` добавлял в body `campaigns[]` — но этот endpoint его игнорирует (нет в schema), `campaigns[]` REQUIRED только в `POST /api/client/statistics` (SubmitRequest).
+- **`POST /api/client/statistics` (SubmitRequest) — правильный endpoint** — `endpoints.ts:99-129` `submitStatisticsReport()`. Body `{campaigns: [oneId], from, to RFC3339, groupBy: 'DATE'}`, max окно 62 дня. Передаём по одной кампании → всегда CSV (несколько кампаний → ZIP, требует распаковки). Возвращает per-day per-SKU detail с views/clicks/расходом — то что нужно для аналитики.
+
+### Added
+
+- **Стейдж sync `perfCpoDaily` для CPO кампаний (Оплата за заказ)** — `src/lib/marketplaces/ozon/sync/perf-cpo-daily.ts`. Endpoint `GET /api/client/statistics/all_sku_promo/products/generate?timeBounds.from&timeBounds.to`. Возвращает per-day агрегат **по магазину** (без SKU): расход, продажи из поиска/рекомендаций, заказы из поиска/рекомендаций. Добавлен в `OZON_FULL_STAGES` после `perfSkuStats`.
+- **Таблица `ozon_perf_cpo_daily`** — `drizzle/init/10-marketplaces-perf-cpo.sql`, `src/lib/db/schema/marketplaces.ts:ozonPerfCpoDaily`. UNIQUE `(account_id, date)`. Поля: `expense_kopecks`, `sales_search_kopecks`, `sales_reco_kopecks`, `orders_search`, `orders_reco`, `promotion_status`, `raw` JSONB.
+- **Endpoint `submitCpoDailyReport()`** + парсер `parseCpoDailyRow()` + `isCpoDailyHeader()` — `endpoints.ts:167-182, 437-479`. Под формат CSV all_sku_promo: 7 колонок (дата/статус/расход/продажи_поиск/продажи_реко/заказы_поиск/заказы_реко).
+- **CPC + CPO агрегат в KPI и timeseries** — `src/app/api/marketplaces/ozon/{kpi,timeseries}/route.ts`. CTE `cpc_daily UNION ALL cpo_daily` суммирует расход из `ozon_perf_sku_stats` (CPC/CPM per-SKU) + `ozon_perf_cpo_daily` (CPO per-day). KPI «Расход на рекламу» теперь считает обе категории.
+- **Info-бейджи `CPC/CPM`** в блоках `unit-ozon-top-ads` и `unit-ozon-search-phrases` — `src/lib/blocks/catalog/unit-ozon-{top-ads,search-phrases}.tsx`. Показывают что per-SKU аналитика только для CPC/CPM, CPO — агрегат в KPI блоке.
+- **Hint в KPI карточке «Расход на рекламу»** — `unit-ozon-kpi.tsx:225` — `«CPC + CPO»` или `«CPC/CPM (per-SKU) + CPO (агрегат)»`.
+
+### Changed
+
+- **`SyncJobKind`** + `OzonStageKind` + `OzonSyncSettings` — добавлен `perfCpoDaily`. `STAGE_LABELS` в `integrations-client.tsx`, `sync-all-button.tsx`, `global-sync-indicator.tsx` — новые тайтлы «Реклама CPC/CPM (per-SKU)» / «Реклама CPO (Оплата за заказ)».
+- **`syncPerfSkuStatsStage`: batch по 1 кампании** (CSV всегда), max окно 62 дня (clamp), фильтр по `adv_object_type IN ('SKU','SEARCH_PROMO')`, новое описание warning'а с упоминанием CPO стейджа.
+- **`generateSkuStatsReport()` deprecated** в пользу `submitStatisticsReport()` — старый endpoint оставлен для backward compat.
+
 ## [0.18.14] - 2026-05-19
 
 Performance API root-cause fix `perfSkuStats` (передача `campaigns` в body) + фоновый sync UX: глобальный индикатор прогресса, info-баннер, кнопка «Синхронизировать» над блоками, компактные кнопки «Обновить» с last-fetched.

@@ -192,6 +192,12 @@ function RenderOzonSearchPhrases({ instance }: BlockRenderProps) {
     <Card className="flex h-full flex-col overflow-hidden p-0">
       <div className="flex flex-wrap items-center gap-2 border-b border-border/40 px-3 py-2">
         <PeriodPicker value={period} onChange={setPeriod} compact />
+        <span
+          className="rounded-md border border-blue-200 bg-blue-50 px-1.5 py-0.5 text-[9px] font-medium text-blue-900 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-200"
+          title="Поисковые фразы доступны только для CPC/CPM Search Promo кампаний. CPO (Оплата за заказ) — без детализации по фразам."
+        >
+          CPC/CPM
+        </span>
         <div className="ml-auto flex items-center gap-1.5">
           {lastFetchedLabel && (
             <span

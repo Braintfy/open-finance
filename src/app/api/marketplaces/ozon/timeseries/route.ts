@@ -8,6 +8,7 @@ import { db } from '@/lib/db/client';
 import {
   ozonOrders,
   ozonPerfSkuStats,
+  ozonPerfCpoDaily,
   ozonTransactions,
 } from '@/lib/db/schema/marketplaces';
 
@@ -98,17 +99,43 @@ export async function GET(req: NextRequest) {
       ? (ordersResult as Row[])
       : (((ordersResult as unknown) as { rows: Row[] }).rows ?? []);
 
-    // Реклама — из perf если есть, иначе из transactions.
+    // Реклама: UNION CPC/CPM (per-SKU) + CPO (агрегат по магазину).
     type AdsRow = { bucket: string; ads_kopecks: number };
+    const accountCondCpo = accountId
+      ? sql`AND cd.account_id = ${accountId}`
+      : sql``;
     const perfResult = await db.execute<AdsRow>(sql`
+      WITH cpc_daily AS (
+        SELECT
+          ps.date AS day,
+          SUM(ps.expense_kopecks) AS kopecks
+        FROM ${ozonPerfSkuStats} ps
+        WHERE ps.tenant_id = ${session.tenantId}
+          ${accountCondPerf}
+          AND ps.date >= ${fromIso}::date
+          AND ps.date < ${toIso}::date
+        GROUP BY ps.date
+      ),
+      cpo_daily AS (
+        SELECT
+          cd.date AS day,
+          SUM(cd.expense_kopecks) AS kopecks
+        FROM ${ozonPerfCpoDaily} cd
+        WHERE cd.tenant_id = ${session.tenantId}
+          ${accountCondCpo}
+          AND cd.date >= ${fromIso}::date
+          AND cd.date < ${toIso}::date
+        GROUP BY cd.date
+      ),
+      combined AS (
+        SELECT day, kopecks FROM cpc_daily
+        UNION ALL
+        SELECT day, kopecks FROM cpo_daily
+      )
       SELECT
-        to_char(date_trunc(${granLit}, ps.date::timestamp), 'YYYY-MM-DD') AS bucket,
-        COALESCE(SUM(ps.expense_kopecks), 0) AS ads_kopecks
-      FROM ${ozonPerfSkuStats} ps
-      WHERE ps.tenant_id = ${session.tenantId}
-        ${accountCondPerf}
-        AND ps.date >= ${fromIso}::date
-        AND ps.date < ${toIso}::date
+        to_char(date_trunc(${granLit}, day::timestamp), 'YYYY-MM-DD') AS bucket,
+        COALESCE(SUM(kopecks), 0) AS ads_kopecks
+      FROM combined
       GROUP BY 1
       ORDER BY 1
     `);

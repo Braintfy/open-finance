@@ -283,12 +283,39 @@ Open Finance = настраиваемый Lego-конструктор интер
 - **Тесты:** 29 PASS в [`scripts/test-ozon-analytics.ts`](scripts/test-ozon-analytics.ts) — все 8 фильтров, config schema (включая backward-compat), `resolvePeriod` все пресеты. Запуск `pnpm tsx scripts/test-ozon-analytics.ts`.
 - **`JobErrorsBlock`** в `/settings/integrations` — раскрываемый список ошибок job'a с stage-badge. Info-tooltip для «schema mismatch» сообщений (после lenient-mode они = warnings).
 
-### Performance API: `campaigns` REQUIRED в body + GlobalSyncIndicator (v0.18.14)
-- **`POST /api/client/statistic/products/generate` ТРЕБУЕТ `campaigns: [ids...]`.** По docs.ozon.ru/api/performance (operation `SearchPromoProductsReportSubmitRequest`) — это отчёт по товарам в Search Promo (CPC/CPM). Без `campaigns` Ozon возвращает default-отчёт «Оплата за заказ» с CSV `[SKU;campaign_code]`, парсер прочитает как мусор (номер кампании во views/clicks/orders). Body: `{campaigns, dateFrom: YYYY-MM-DD, dateTo, from: RFC3339, to: RFC3339, groupBy: 'DATE'}`.
-- **`syncPerfSkuStatsStage` тянет кампании из `ozon_perf_campaigns`** где `payment_type IN ('CPC','CPM') AND adv_object_type='SKU' AND state IN ('CAMPAIGN_STATE_RUNNING','CAMPAIGN_STATE_PAUSED','CAMPAIGN_STATE_FINISHED')`. Batch по 50 IDs (`CAMPAIGNS_PER_REPORT`).
-- **`parseSkuStatsRow()` валидирует SKU как `/^\d+$/`.** Ozon SKU всегда числовой; защита от случайно прочитанных названий кампаний (`rm-nnm-60-5`) в позиции SKU.
-- **`isSkuStatsHeader()` проверяет наличие колонки SKU** перед парсингом. Если нет — пишет warning, не падает.
-- **Upsert использует sql `+=` для накопления.** Несколько batch'ей за одно окно могут вернуть один и тот же `(account, date, sku, campaign_id)` — поэтому `views: sql\`${ozonPerfSkuStats.views} + ${parsed.views}\``. Перед первым insert'ом — `DELETE FROM ozon_perf_sku_stats WHERE date BETWEEN ...` (чтобы не копить дубли при перезапусках).
+### Performance API: multi-endpoint smart routing (v0.18.15) — ВАЖНО
+
+**Корневая разгадка**: `/api/client/campaign` НЕ возвращает `paymentType` (всегда null) — фильтровать кампании надо по **`adv_object_type`**:
+- `SKU` или `SEARCH_PROMO` → CPC/CPM (Search Promo) → endpoint `POST /api/client/statistics`
+- `ALL_SKU_PROMO` → CPO (Оплата за заказ) → endpoint `GET /api/client/statistics/all_sku_promo/products/generate`
+- `BANNER`/`VIDEO_BANNER` → пропускать (или отдельный endpoint)
+
+**Endpoint для CPC/CPM per-SKU дневной разбивки** — `POST /api/client/statistics` (operation `SubmitRequest`, не `/statistic/products/generate`!). Body: `{campaigns: [oneId], from RFC3339, to RFC3339, groupBy: 'DATE'}`. **`campaigns` REQUIRED**, max окно 62 дня, передавать **по одной кампании** → CSV (несколько → ZIP). `submitStatisticsReport()` в `src/lib/marketplaces/ozon/performance/endpoints.ts:99-129`.
+
+**Endpoint для CPO** — `GET /api/client/statistics/all_sku_promo/products/generate?timeBounds.from&timeBounds.to`. CSV: дата, статус, расход, продажи_поиск, продажи_реко, заказы_поиск, заказы_реко. **БЕЗ SKU** — отчёт агрегирован по магазину (per-day). `submitCpoDailyReport()` в `endpoints.ts:167-182`.
+
+**Старый endpoint `/api/client/statistic/products/generate`** (без `s`) — это **агрегат за период БЕЗ даты, БЕЗ views/clicks**. Не годится для timeseries. Оставлен deprecated. Параметр `campaigns` им игнорируется (нет в schema).
+
+**Таблицы**:
+- `ozon_perf_sku_stats(account, date, sku, campaign_id)` — CPC/CPM per-SKU per-day per-campaign.
+- `ozon_perf_cpo_daily(account, date)` — CPO per-day агрегат по магазину (БЕЗ SKU). Миграция `drizzle/init/10-marketplaces-perf-cpo.sql`. UNIQUE `(account_id, date)`.
+
+**Стейджи** (порядок в `OZON_FULL_STAGES`): `perfCampaigns` → `perfSkuStats` (CPC/CPM) → `perfCpoDaily` (CPO) → `perfPhrases`.
+
+**KPI/timeseries** — `src/app/api/marketplaces/ozon/{kpi,timeseries}/route.ts`. CTE `cpc_daily UNION ALL cpo_daily` суммирует расход. Без этого расход на рекламу = 0₽ когда у магазина CPO кампании.
+
+**UI** — info-бейдж «CPC/CPM» в `unit-ozon-top-ads` и `unit-ozon-search-phrases` (per-SKU only). KPI карточка «Расход» показывает hint «CPC + CPO».
+
+**Edge cases**:
+- 1 кампания за раз = CSV. Несколько = ZIP (требует распаковку, не делаем).
+- `submitStatisticsReport({campaigns: []})` → throw (REQUIRED).
+- Окно > 62 дня → clamp + warning.
+- CSV format может меняться → tolerant parser `findKey(...aliases)`.
+- Парсер `parseSkuStatsRow()` валидирует SKU как `/^\d+$/` (Ozon SKU всегда числовой) — защита от мусора.
+- Парсер `parseCpoDailyRow()` возвращает `null` если нет валидной даты.
+
+### v0.18.14 (DEPRECATED — фикс был ошибочным)
+Добавление `campaigns[]` в body `POST /statistic/products/generate` оказалось бесполезным: этот endpoint его игнорирует, а сам endpoint возвращает агрегат без даты. Правильный fix в **v0.18.15** (см. секцию выше). Историческая ценность: удалил гипотезу про "default CPO-отчёт без campaigns".
 
 ### Глобальный sync UX (v0.18.14)
 - **`<GlobalSyncIndicator />`** в `src/components/marketplaces/global-sync-indicator.tsx`, mount в `src/app/(app)/layout.tsx`. Sticky bottom-right на всех authenticated страницах. Поллит `GET /api/marketplaces/jobs/active` каждые 5с.

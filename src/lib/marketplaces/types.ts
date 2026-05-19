@@ -33,6 +33,7 @@ export const OZON_FULL_STAGES = [
   'turnover',
   'perfCampaigns',
   'perfSkuStats',
+  'perfCpoDaily',
   'perfPhrases',
 ] as const;
 
@@ -55,6 +56,7 @@ export const DEFAULT_OZON_SYNC_SETTINGS: Required<
     | 'autoSyncCron'
     | 'perfCampaigns'
     | 'perfSkuStats'
+    | 'perfCpoDaily'
     | 'perfPhrases'
     | 'perfWindowDays'
     | 'analyticsData'
@@ -76,6 +78,7 @@ export const DEFAULT_OZON_SYNC_SETTINGS: Required<
   autoSyncCron: '0 6 * * *',
   perfCampaigns: true,
   perfSkuStats: true,
+  perfCpoDaily: true,
   perfPhrases: false,
   perfWindowDays: 30,
   analyticsData: true,
@@ -100,6 +103,7 @@ export const OzonSyncSettingsSchema = z
     autoSyncLastRunAt: z.string().optional(),
     perfCampaigns: z.boolean().optional(),
     perfSkuStats: z.boolean().optional(),
+    perfCpoDaily: z.boolean().optional(),
     perfPhrases: z.boolean().optional(),
     perfWindowDays: z.number().int().min(1).max(365).optional(),
     analyticsData: z.boolean().optional(),

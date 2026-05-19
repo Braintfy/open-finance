@@ -14,6 +14,7 @@ import {
   ozonOrders,
   ozonTransactions,
   ozonPerfSkuStats,
+  ozonPerfCpoDaily,
 } from '@/lib/db/schema/marketplaces';
 
 export const runtime = 'nodejs';
@@ -65,6 +66,9 @@ async function getAggregateForRange(args: {
   const accountCondPerf = accountId
     ? sql`AND ps.account_id = ${accountId}`
     : sql``;
+  const accountCondCpo = accountId
+    ? sql`AND cd.account_id = ${accountId}`
+    : sql``;
   const accountCondTx = accountId ? sql`AND tx.account_id = ${accountId}` : sql``;
 
   type Row = {
@@ -101,19 +105,43 @@ async function getAggregateForRange(args: {
     ? (ordersResult as Row[])
     : (((ordersResult as unknown) as { rows: Row[] }).rows ?? []);
 
-  // Реклама из ozon_perf_sku_stats (если есть данные за период).
+  // Реклама: UNION CPC/CPM (per-SKU) + CPO (агрегат по магазину).
+  // CPC из ozon_perf_sku_stats, CPO из ozon_perf_cpo_daily — суммируются per-day.
   type AdsRow = { day: string; ads_kopecks: number };
   const perfResult = await db.execute<AdsRow>(sql`
+    WITH cpc_daily AS (
+      SELECT
+        ps.date AS day,
+        SUM(ps.expense_kopecks) AS kopecks
+      FROM ${ozonPerfSkuStats} ps
+      WHERE ps.tenant_id = ${tenantId}
+        ${accountCondPerf}
+        AND ps.date >= ${fromIso}::date
+        AND ps.date < ${toIso}::date
+      GROUP BY ps.date
+    ),
+    cpo_daily AS (
+      SELECT
+        cd.date AS day,
+        SUM(cd.expense_kopecks) AS kopecks
+      FROM ${ozonPerfCpoDaily} cd
+      WHERE cd.tenant_id = ${tenantId}
+        ${accountCondCpo}
+        AND cd.date >= ${fromIso}::date
+        AND cd.date < ${toIso}::date
+      GROUP BY cd.date
+    ),
+    combined AS (
+      SELECT day, kopecks FROM cpc_daily
+      UNION ALL
+      SELECT day, kopecks FROM cpo_daily
+    )
     SELECT
-      to_char(ps.date, 'YYYY-MM-DD') AS day,
-      COALESCE(SUM(ps.expense_kopecks), 0) AS ads_kopecks
-    FROM ${ozonPerfSkuStats} ps
-    WHERE ps.tenant_id = ${tenantId}
-      ${accountCondPerf}
-      AND ps.date >= ${fromIso}::date
-      AND ps.date < ${toIso}::date
-    GROUP BY ps.date
-    ORDER BY ps.date
+      to_char(day, 'YYYY-MM-DD') AS day,
+      COALESCE(SUM(kopecks), 0) AS ads_kopecks
+    FROM combined
+    GROUP BY day
+    ORDER BY day
   `);
   const perfRows: AdsRow[] = Array.isArray(perfResult)
     ? (perfResult as AdsRow[])

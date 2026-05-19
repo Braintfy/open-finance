@@ -222,8 +222,8 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
               sparkline={sparklineAds.length > 1 ? sparklineAds : null}
               hint={
                 data?.current.cpoRub != null
-                  ? `Средний CPO: ${Math.round(data.current.cpoRub)} ₽`
-                  : undefined
+                  ? `Средний CPO: ${Math.round(data.current.cpoRub)} ₽ · CPC + CPO`
+                  : 'CPC/CPM (per-SKU) + CPO (агрегат)'
               }
               accent="rose"
               loading={loading && !data}

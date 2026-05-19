@@ -51,8 +51,14 @@ export type OzonSyncSettings = {
   /** Sync-стейджи Performance API (включаются только если есть perf-креды). */
   perfCampaigns?: boolean;
   perfSkuStats?: boolean;
+  /**
+   * Sync дневного агрегата CPO кампаний (Оплата за заказ / all_sku_promo).
+   * Без SKU — расход на CPO рекламу per-day по магазину.
+   * См. ozon_perf_cpo_daily.
+   */
+  perfCpoDaily?: boolean;
   perfPhrases?: boolean;
-  /** Окно perf-статистики в днях. По умолчанию 30. */
+  /** Окно perf-статистики в днях. По умолчанию 30 (max 62 — лимит Ozon API). */
   perfWindowDays?: number;
   /**
    * Sync дневной аналитики продаж через Seller `/v1/analytics/data`.
@@ -129,6 +135,7 @@ export type SyncJobKind =
   | 'turnover'
   | 'perfCampaigns'
   | 'perfSkuStats'
+  | 'perfCpoDaily'
   | 'perfPhrases'
   | 'analyticsData';
 
@@ -393,6 +400,51 @@ export const ozonAnalyticsDaily = pgTable(
   ],
 );
 
+/**
+ * Дневной агрегат CPO кампаний (Оплата за заказ / all_sku_promo).
+ * Endpoint: `GET /api/client/statistics/all_sku_promo/products/generate`.
+ *
+ * **БЕЗ SKU** — отчёт агрегирован по магазину per-day (так как CPO применяется
+ * сразу ко всем товарам подключённым к продвижению). Per-SKU детализация для
+ * CPO в Performance API отсутствует.
+ *
+ * Используется в KPI/timeseries: суммируется с `ozon_perf_sku_stats.expense_kopecks`
+ * (CPC/CPM) для общего расхода на рекламу.
+ */
+export const ozonPerfCpoDaily = pgTable(
+  'ozon_perf_cpo_daily',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    accountId: uuid('account_id')
+      .notNull()
+      .references(() => marketplaceAccounts.id, { onDelete: 'cascade' }),
+    /** День в Europe/Moscow (date без TZ). */
+    date: date('date').notNull(),
+    /** Расход на CPO рекламу в копейках. */
+    expenseKopecks: bigint('expense_kopecks', { mode: 'number' }).notNull().default(0),
+    /** Продажи из поиска, ₽ → копейки. */
+    salesSearchKopecks: bigint('sales_search_kopecks', { mode: 'number' }).notNull().default(0),
+    /** Продажи из рекомендаций, ₽ → копейки. */
+    salesRecoKopecks: bigint('sales_reco_kopecks', { mode: 'number' }).notNull().default(0),
+    /** Заказы из поиска, шт. */
+    ordersSearch: integer('orders_search').notNull().default(0),
+    /** Заказы из рекомендаций, шт. */
+    ordersReco: integer('orders_reco').notNull().default(0),
+    /** Статус продвижения (включено/выключено). */
+    promotionStatus: varchar('promotion_status', { length: 50 }),
+    raw: jsonb('raw').$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex('ozon_perf_cpo_daily_uniq').on(t.accountId, t.date),
+    index('ozon_perf_cpo_daily_tenant_date_idx').on(t.tenantId, t.date),
+  ],
+);
+
 export const ozonPerfPhrases = pgTable(
   'ozon_perf_phrases',
   {
@@ -439,3 +491,5 @@ export type OzonPerfPhrase = typeof ozonPerfPhrases.$inferSelect;
 export type NewOzonPerfPhrase = typeof ozonPerfPhrases.$inferInsert;
 export type OzonAnalyticsDaily = typeof ozonAnalyticsDaily.$inferSelect;
 export type NewOzonAnalyticsDaily = typeof ozonAnalyticsDaily.$inferInsert;
+export type OzonPerfCpoDaily = typeof ozonPerfCpoDaily.$inferSelect;
+export type NewOzonPerfCpoDaily = typeof ozonPerfCpoDaily.$inferInsert;

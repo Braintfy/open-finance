@@ -27,6 +27,7 @@ import { syncTransactionsStage } from './transactions';
 import { syncTurnoverStage } from './turnover';
 import { syncPerfCampaignsStage } from './perf-campaigns';
 import { syncPerfSkuStatsStage } from './perf-sku-stats';
+import { syncPerfCpoDailyStage } from './perf-cpo-daily';
 import { syncPerfPhrasesStage } from './perf-phrases';
 import { syncAnalyticsDataStage } from './analytics-data';
 import type { StageContext, StageResult } from './types';
@@ -51,12 +52,14 @@ const STAGE_RUNNERS: Record<OzonStageKind, (ctx: StageContext) => Promise<StageR
   turnover: syncTurnoverStage,
   perfCampaigns: syncPerfCampaignsStage,
   perfSkuStats: syncPerfSkuStatsStage,
+  perfCpoDaily: syncPerfCpoDailyStage,
   perfPhrases: syncPerfPhrasesStage,
 };
 
 const PERF_STAGES: ReadonlySet<OzonStageKind> = new Set([
   'perfCampaigns',
   'perfSkuStats',
+  'perfCpoDaily',
   'perfPhrases',
 ]);
 

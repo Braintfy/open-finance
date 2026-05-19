@@ -129,8 +129,12 @@ const STAGE_LABELS: Record<OzonStageKind, { title: string; hint: string }> = {
     hint: 'Список кампаний, бюджеты, статусы',
   },
   perfSkuStats: {
-    title: 'Статистика рекламы по товарам (Performance API)',
-    hint: 'Показы, клики, заказы, расход, CTR/CPC/CPO',
+    title: 'Статистика рекламы CPC/CPM (per-SKU)',
+    hint: 'Search Promo: показы, клики, заказы, расход per-SKU per-day. POST /api/client/statistics.',
+  },
+  perfCpoDaily: {
+    title: 'Статистика рекламы CPO (Оплата за заказ)',
+    hint: 'all_sku_promo: дневной расход + продажи из поиска/рекомендаций (агрегат по магазину, без SKU).',
   },
   perfPhrases: {
     title: 'Поисковые фразы (Performance API)',

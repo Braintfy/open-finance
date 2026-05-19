@@ -1,20 +1,23 @@
-// PURPOSE: Стейдж синхронизации per-SKU статистики Ozon Performance API.
+// PURPOSE: Стейдж синхронизации per-SKU статистики Ozon Performance API
+// для CPC/CPM (Search Promo) кампаний.
 //
-// Архитектура (v0.18.14, root-cause fix):
-//   1. Берём активные Search Promo кампании (CPC/CPM × SKU) из ozon_perf_campaigns.
-//   2. Для каждого батча (по 50 ID) генерируем асинхронный отчёт
-//      POST /api/client/statistic/products/generate с обязательным `campaigns[]`
-//      (без него Ozon отдаёт default-отчёт «Оплата за заказ» с другой CSV-схемой).
+// Архитектура (v0.18.15, root-cause fix):
+//   1. Берём активные SKU/SEARCH_PROMO кампании из ozon_perf_campaigns
+//      (фильтр по adv_object_type — payment_type обычно null).
+//   2. Для КАЖДОЙ кампании (по одной — чтобы получать CSV, не ZIP) запускаем
+//      POST /api/client/statistics (SubmitRequest) с groupBy: 'DATE'.
+//      Это правильный endpoint для дневной разбивки per-SKU.
 //   3. Поллим статус до OK → скачиваем CSV → парсим.
 //   4. Upsert в ozon_perf_sku_stats по (account, date, sku, campaign_id).
 //
-// Окно: ctx.settings.perfWindowDays (default 30).
+// Окно: ctx.settings.perfWindowDays (default 30, max 62 — лимит Ozon API).
+// Для CPO кампаний (ALL_SKU_PROMO) есть отдельный стейдж perfCpoDaily.
 
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { ozonPerfCampaigns, ozonPerfSkuStats } from '@/lib/db/schema/marketplaces';
 import {
-  generateSkuStatsReport,
+  submitStatisticsReport,
   waitForReport,
   downloadReport,
   parseCsv,
@@ -26,16 +29,18 @@ import { rublesToKopecks } from '@/lib/unit-economics/types';
 import { runStageWithTiming, type StageContext, type StageResult } from './types';
 import { buildPerfPeriod, describePeriod, type PerfPeriod } from './perf-period';
 
-/** Сколько ID кампаний отправляем за один generate-запрос. Безопасный batch size. */
-const CAMPAIGNS_PER_REPORT = 50;
+/** Какие adv_object_type считаются Search Promo (CPC/CPM × SKU). */
+const SEARCH_PROMO_ADV_OBJECTS = ['SKU', 'SEARCH_PROMO'] as const;
 
-/** Какие кампании берём в отчёт (CPC/CPM × SKU). */
-const SUPPORTED_PAYMENT_TYPES = ['CPC', 'CPM'] as const;
+/** Какие state кампаний берём для отчёта. */
 const SUPPORTED_STATES = [
   'CAMPAIGN_STATE_RUNNING',
   'CAMPAIGN_STATE_PAUSED',
   'CAMPAIGN_STATE_FINISHED',
 ] as const;
+
+/** Максимальное окно отчёта (лимит Ozon Performance API SubmitRequest). */
+const MAX_WINDOW_DAYS = 62;
 
 /** Окна для auto-retry при 400 от Performance API (desc порядок). */
 const RETRY_WINDOWS = [30, 14, 7] as const;
@@ -51,14 +56,20 @@ export async function syncPerfSkuStatsStage(ctx: StageContext): Promise<StageRes
       };
     }
 
-    const requestedWindow = ctx.settings.perfWindowDays ?? 30;
+    let requestedWindow = ctx.settings.perfWindowDays ?? 30;
+    const localWarnings: string[] = [];
+    if (requestedWindow > MAX_WINDOW_DAYS) {
+      localWarnings.push(
+        `Окно ${requestedWindow}d > 62d (лимит Performance API). Clamp до 62d.`,
+      );
+      requestedWindow = MAX_WINDOW_DAYS;
+    }
 
-    // 1) Берём активные SKU-кампании (CPC/CPM) из базы. Стейдж perfCampaigns
-    //    запускается раньше (см. ORDER в OZON_FULL_STAGES).
+    // 1) Берём активные Search Promo кампании из БД. Фильтр по adv_object_type
+    //    (а не payment_type — он null у всех кампаний).
     const campaignRows = await db
       .select({
         campaignId: ozonPerfCampaigns.campaignId,
-        paymentType: ozonPerfCampaigns.paymentType,
         state: ozonPerfCampaigns.state,
         advObjectType: ozonPerfCampaigns.advObjectType,
       })
@@ -72,10 +83,9 @@ export async function syncPerfSkuStatsStage(ctx: StageContext): Promise<StageRes
 
     const campaignIds = campaignRows
       .filter((c) =>
-        c.paymentType && SUPPORTED_PAYMENT_TYPES.includes(c.paymentType as 'CPC' | 'CPM'),
+        c.advObjectType &&
+        (SEARCH_PROMO_ADV_OBJECTS as readonly string[]).includes(c.advObjectType),
       )
-      // advObjectType может быть null у старых записей — пропускаем только BANNER/VIDEO
-      .filter((c) => !c.advObjectType || c.advObjectType === 'SKU')
       .filter((c) => !c.state || (SUPPORTED_STATES as readonly string[]).includes(c.state))
       .map((c) => c.campaignId)
       .filter((id): id is string => Boolean(id));
@@ -85,7 +95,8 @@ export async function syncPerfSkuStatsStage(ctx: StageContext): Promise<StageRes
         itemsProcessed: 0,
         ok: true,
         warnings: [
-          'Нет активных Search Promo кампаний (CPC/CPM × SKU). Аналитика per-SKU показы/клики недоступна. Синхронизируйте «Рекламные кампании» раньше или создайте кампании в Ozon.',
+          ...localWarnings,
+          'Нет активных Search Promo кампаний (adv_object_type IN SKU/SEARCH_PROMO, state RUNNING/PAUSED/FINISHED). Per-SKU аналитика недоступна. CPO-кампании синхронизируются отдельным стейджем «perfCpoDaily».',
         ],
       };
     }
@@ -98,34 +109,27 @@ export async function syncPerfSkuStatsStage(ctx: StageContext): Promise<StageRes
     );
 
     let period: PerfPeriod = buildPerfPeriod(requestedWindow);
-    const warnings: string[] = [];
+    const warnings: string[] = [...localWarnings];
     let processed = 0;
     let totalRows = 0;
 
-    // 3) Батчим кампании по CAMPAIGNS_PER_REPORT и для каждого батча
-    //    запускаем generate → wait → download → parse → upsert.
-    const batches: string[][] = [];
-    for (let i = 0; i < campaignIds.length; i += CAMPAIGNS_PER_REPORT) {
-      batches.push(campaignIds.slice(i, i + CAMPAIGNS_PER_REPORT));
-    }
-
-    // Очищаем всё окно перед записью (и campaign_id NOT NULL и NULL — legacy).
-    // Делаем это один раз после выбора финального period первого батча.
+    // Очищаем всё окно перед записью один раз.
     let cleaned = false;
 
-    for (const [batchIdx, batch] of batches.entries()) {
+    // 3) Каждой кампании — отдельный отчёт (CSV, не ZIP).
+    for (const [campaignIdx, campaignId] of campaignIds.entries()) {
       // 3.1) Генерируем отчёт с retry уменьшенного окна при 400.
       let uuid: string | null = null;
       for (const [index, attempt] of attempts.entries()) {
         period = buildPerfPeriod(attempt.windowDays, new Date(), attempt.lagDays);
         try {
-          uuid = await generateSkuStatsReport(ctx.perfClient, {
+          uuid = await submitStatisticsReport(ctx.perfClient, {
             dateFrom: period.dateFrom,
             dateTo: period.dateTo,
-            campaigns: batch,
+            campaigns: [campaignId],
             groupBy: 'DATE',
           });
-          if (batchIdx === 0 && (attempt.windowDays < requestedWindow || attempt.lagDays > 1)) {
+          if (campaignIdx === 0 && (attempt.windowDays < requestedWindow || attempt.lagDays > 1)) {
             warnings.push(
               `Ozon отклонил часть периодов, успешно с ${attempt.windowDays}d / лаг ${attempt.lagDays}d (${describePeriod(period)})`,
             );
@@ -136,7 +140,7 @@ export async function syncPerfSkuStatsStage(ctx: StageContext): Promise<StageRes
           if (!is400 || index === attempts.length - 1) {
             const msg = e instanceof Error ? e.message : String(e);
             warnings.push(
-              `Batch ${batchIdx + 1}/${batches.length} (${batch.length} кампаний): ${msg}`,
+              `Кампания ${campaignId} (${campaignIdx + 1}/${campaignIds.length}): ${msg}`,
             );
             uuid = null;
             break;
@@ -145,7 +149,7 @@ export async function syncPerfSkuStatsStage(ctx: StageContext): Promise<StageRes
       }
       if (!uuid) continue;
 
-      // 3.2) Очистка окна при первом успешном батче.
+      // 3.2) Очистка окна при первом успешном отчёте.
       if (!cleaned) {
         await db.execute(sql`
           DELETE FROM ${ozonPerfSkuStats}
@@ -167,10 +171,10 @@ export async function syncPerfSkuStatsStage(ctx: StageContext): Promise<StageRes
         const rows = parseCsv(csv);
         totalRows += rows.length;
 
-        // Защита: если в заголовке CSV нет колонки SKU — это не SKU-stats отчёт.
+        // Защита: если в заголовке нет колонки SKU — это не CPC отчёт.
         if (rows.length > 0 && !isSkuStatsHeader(rows[0])) {
           warnings.push(
-            `Batch ${batchIdx + 1}/${batches.length}: Ozon вернул CSV неожиданного формата (нет колонки SKU). Пропуск.`,
+            `Кампания ${campaignId}: CSV без колонки SKU (возможно, баннерная). Пропуск.`,
           );
           continue;
         }
@@ -178,12 +182,14 @@ export async function syncPerfSkuStatsStage(ctx: StageContext): Promise<StageRes
         // 3.4) Upsert всех валидных строк.
         for (const raw of rows) {
           const parsed = parseSkuStatsRow(raw);
-          if (!parsed.sku) continue; // невалидный или отсутствующий SKU
+          if (!parsed.sku) continue;
           const day =
             parsed.date && parsed.date.length >= 10
               ? parsed.date.slice(0, 10)
               : period.dateTo;
-          const campaignId = parsed.campaignId ?? batch[0] ?? null;
+          // Если CSV не вернул campaign_id (иногда отсутствует), используем
+          // тот, который мы передавали в запрос — это корректно для одной кампании.
+          const finalCampaignId = parsed.campaignId ?? campaignId;
 
           await db
             .insert(ozonPerfSkuStats)
@@ -192,7 +198,7 @@ export async function syncPerfSkuStatsStage(ctx: StageContext): Promise<StageRes
               accountId: ctx.accountId,
               date: day,
               sku: parsed.sku,
-              campaignId,
+              campaignId: finalCampaignId,
               views: parsed.views,
               clicks: parsed.clicks,
               cartAdds: parsed.cartAdds,
@@ -223,7 +229,7 @@ export async function syncPerfSkuStatsStage(ctx: StageContext): Promise<StageRes
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        warnings.push(`Batch ${batchIdx + 1}/${batches.length}: ${msg}`);
+        warnings.push(`Кампания ${campaignId}: ${msg}`);
       }
     }
 

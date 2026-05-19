@@ -70,28 +70,69 @@ function toRfc3339(yyyymmdd: string, endOfDay = false): string {
 }
 
 /**
- * Запускает async-генерацию отчёта Search Promo по товарам (показы/клики/
- * корзина/заказы per-SKU per-day per-campaign). Возвращает UUID.
+ * Запускает async-генерацию отчёта статистики по кампаниям с дневной
+ * разбивкой (показы/клики/расход/заказы per-SKU per-day per-campaign).
  *
- * Endpoint: `POST /api/client/statistic/products/generate`
- * (operation `SearchPromoProductsReportSubmitRequest` в docs.ozon.ru/api/performance).
+ * Endpoint: **`POST /api/client/statistics`**
+ * (operation `SubmitRequest` в docs.ozon.ru/api/performance, строка 1591
+ * дампа `Ozon Performance API (2.0).md`).
  *
- * **REQUIRED**: `campaigns` — массив id Search Promo кампаний (CPC/CPM × SKU).
- * Без него Ozon возвращает default-отчёт типа «Оплата за заказ»
- * (CSV с двумя колонками `[SKU; campaign_code]`), который нельзя парсить как
- * SKU-stats — это и был баг в v0.18.12.
+ * Это **правильный endpoint** для дневной аналитики per-SKU CPC/CPM
+ * (Search Promo) кампаний. Старый `/statistic/products/generate` отдаёт
+ * **агрегат за период без даты, без views/clicks** — для timeseries не годится.
  *
- * Тело запроса по доке:
+ * Body schema (REQUIRED поля помечены ★):
  * ```
  * {
- *   campaigns: string[],     // id кампаний (REQUIRED)
- *   dateFrom: 'YYYY-MM-DD',  // короткий формат
- *   dateTo:   'YYYY-MM-DD',
- *   from:     RFC3339,       // полный формат (Ozon принимает оба)
- *   to:       RFC3339,
- *   groupBy:  'DATE' | 'NO_GROUP_BY' | 'START_OF_WEEK' | 'START_OF_MONTH'
+ *   campaigns: string[]    // ★ id кампаний (1 → CSV; >1 → ZIP)
+ *   from:      RFC3339     // ★ начало периода
+ *   to:        RFC3339     // ★ конец периода (max окно 62 дня)
+ *   dateFrom:  'YYYY-MM-DD' // опц. (Ozon берёт from/to, dateFrom/dateTo
+ *   dateTo:    'YYYY-MM-DD' //       fallback'ы при отсутствии from/to)
+ *   groupBy:   'DATE' | 'NO_GROUP_BY' | 'START_OF_WEEK' | 'START_OF_MONTH'
  * }
  * ```
+ *
+ * **Совет**: всегда передавать ровно одну кампанию → CSV. ZIP с многими
+ * кампаниями требует распаковки и усложняет код.
+ */
+export async function submitStatisticsReport(
+  client: OzonPerformanceClient,
+  args: {
+    campaigns: string[];
+    dateFrom: string;
+    dateTo: string;
+    groupBy?: 'DATE' | 'NO_GROUP_BY' | 'START_OF_WEEK' | 'START_OF_MONTH';
+  },
+): Promise<string> {
+  if (!args.campaigns || args.campaigns.length === 0) {
+    throw new Error(
+      'Performance API submit-report: `campaigns` обязателен (список id кампаний).',
+    );
+  }
+  const body: Record<string, unknown> = {
+    campaigns: args.campaigns,
+    from: toRfc3339(args.dateFrom, false),
+    to: toRfc3339(args.dateTo, true),
+    dateFrom: args.dateFrom,
+    dateTo: args.dateTo,
+    groupBy: args.groupBy ?? 'DATE',
+  };
+  const data = (await client.post(
+    '/api/client/statistics',
+    body,
+    GenerateReportSchema,
+  )) as { UUID?: string; uuid?: string } | undefined;
+  const id = data?.UUID ?? data?.uuid;
+  if (!id) throw new Error('Performance API: submitStatisticsReport не вернул UUID');
+  return id;
+}
+
+/**
+ * @deprecated Используй {@link submitStatisticsReport}. Старый endpoint
+ * `/statistic/products/generate` (без `s`) возвращает агрегированный отчёт
+ * **без даты и без views/clicks** — для дневной timeseries не годится.
+ * Оставлено для обратной совместимости и edge cases.
  */
 export async function generateSkuStatsReport(
   client: OzonPerformanceClient,
@@ -102,26 +143,41 @@ export async function generateSkuStatsReport(
     groupBy?: 'DATE' | 'NO_GROUP_BY' | 'START_OF_WEEK' | 'START_OF_MONTH';
   },
 ): Promise<string> {
-  if (!args.campaigns || args.campaigns.length === 0) {
-    throw new Error(
-      'Performance API: generate report требует непустой `campaigns` (список id Search Promo кампаний). Без него возвращается default-отчёт «Оплата за заказ», который нельзя парсить как SKU-stats.',
-    );
-  }
-  const body: Record<string, unknown> = {
-    campaigns: args.campaigns,
-    dateFrom: args.dateFrom,
-    dateTo: args.dateTo,
-    from: toRfc3339(args.dateFrom, false),
-    to: toRfc3339(args.dateTo, true),
-    groupBy: args.groupBy ?? 'DATE',
-  };
-  const data = (await client.post(
-    '/api/client/statistic/products/generate',
-    body,
+  return submitStatisticsReport(client, args);
+}
+
+/**
+ * Запускает async-генерацию CPO отчёта (Оплата за заказ / all_sku_promo).
+ * Возвращает UUID.
+ *
+ * Endpoint: **`GET /api/client/statistics/all_sku_promo/products/generate`**
+ * (operation `GenerateAllSkuPromoProductsReport` в дампе).
+ *
+ * Query params: `timeBounds.from`, `timeBounds.to` (RFC 3339).
+ *
+ * CSV содержит **per-day агрегат по магазину**, БЕЗ SKU:
+ * - дата
+ * - статус продвижения (включено/выключено)
+ * - расход ₽
+ * - продажи из поиска ₽
+ * - продажи из рекомендаций ₽
+ * - заказы из поиска (шт)
+ * - заказы из рекомендаций (шт)
+ */
+export async function submitCpoDailyReport(
+  client: OzonPerformanceClient,
+  args: { dateFrom: string; dateTo: string },
+): Promise<string> {
+  const data = (await client.get(
+    '/api/client/statistics/all_sku_promo/products/generate',
+    {
+      'timeBounds.from': toRfc3339(args.dateFrom, false),
+      'timeBounds.to': toRfc3339(args.dateTo, true),
+    },
     GenerateReportSchema,
   )) as { UUID?: string; uuid?: string } | undefined;
   const id = data?.UUID ?? data?.uuid;
-  if (!id) throw new Error('Performance API: generate report не вернул UUID');
+  if (!id) throw new Error('Performance API: submitCpoDailyReport не вернул UUID');
   return id;
 }
 
@@ -348,5 +404,76 @@ export function parseSkuStatsRow(row: Record<string, string>): {
     expenseRub: parseRuNumber(
       get('moneySpent', 'Расход', 'Затраты', 'Расход в рублях', 'Расход, ₽'),
     ),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// CPO daily CSV (all_sku_promo) — агрегат по магазину per-day без SKU.
+// Колонки (по дампу docs.ozon.ru/api/performance):
+//   - дата
+//   - статус продвижения
+//   - расход, ₽
+//   - продажи из поиска, ₽
+//   - продажи из рекомендаций, ₽
+//   - заказы из поиска (шт)
+//   - заказы из рекомендаций (шт)
+// ---------------------------------------------------------------------------
+
+/** Эвристика: содержит ли CSV CPO-отчёт (есть колонка «расход» и нет SKU). */
+export function isCpoDailyHeader(row: Record<string, string>): boolean {
+  const keys = Object.keys(row).map((k) => k.trim().toLowerCase());
+  const hasDate = keys.some((k) => k === 'date' || k === 'дата');
+  const hasExpense = keys.some(
+    (k) => k.includes('расход') || k === 'expense' || k === 'spent',
+  );
+  const hasSku = keys.some((k) => k === 'sku' || k === 'артикул' || k === 'product id');
+  return hasDate && hasExpense && !hasSku;
+}
+
+/**
+ * Парсит одну CSV-строку CPO daily отчёта.
+ * Возвращает null если строка невалидная (нет даты).
+ */
+export function parseCpoDailyRow(row: Record<string, string>): {
+  date: string;
+  expenseRub: number;
+  salesSearchRub: number;
+  salesRecoRub: number;
+  ordersSearch: number;
+  ordersReco: number;
+  status: string;
+} | null {
+  const findKey = (...names: string[]): string => {
+    for (const n of names) {
+      for (const k of Object.keys(row)) {
+        if (k.trim().toLowerCase() === n.toLowerCase()) return k;
+      }
+    }
+    return '';
+  };
+  const get = (...names: string[]) => row[findKey(...names)] ?? '';
+  const date = (get('date', 'Дата') || '').trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+
+  return {
+    date,
+    expenseRub: parseRuNumber(get('Расход', 'Расход, ₽', 'Расход в рублях', 'expense')),
+    salesSearchRub: parseRuNumber(
+      get('Продажи из поиска', 'Продажи из поиска, ₽', 'sales_search'),
+    ),
+    salesRecoRub: parseRuNumber(
+      get('Продажи из рекомендаций', 'Продажи из рекомендаций, ₽', 'sales_reco'),
+    ),
+    ordersSearch: Math.round(
+      parseRuNumber(
+        get('Заказы из поиска', 'Заказы из поиска (шт)', 'orders_search'),
+      ),
+    ),
+    ordersReco: Math.round(
+      parseRuNumber(
+        get('Заказы из рекомендаций', 'Заказы из рекомендаций (шт)', 'orders_reco'),
+      ),
+    ),
+    status: (get('Статус', 'Статус продвижения', 'status') || '').trim(),
   };
 }
