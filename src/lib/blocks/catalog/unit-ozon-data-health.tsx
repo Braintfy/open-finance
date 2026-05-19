@@ -54,7 +54,10 @@ function RenderOzonDataHealth({ instance }: BlockRenderProps) {
     ? (Date.now() - new Date(account.lastSyncAt).getTime()) / 1000 / 60 / 60
     : Infinity;
   const stale = hoursSinceSync > 24;
+  // Primary value — общий «zdorov'ye» (1 = всё ок, 0 = есть проблемы).
+  // __labels для русских названий в модалке «Связать ячейку».
   useBlockValuePublisher(instance.id, {
+    value: sellerOk && perfOk && !stale ? 1 : 0,
     sellerOk: sellerOk ? 1 : 0,
     perfOk: perfOk ? 1 : 0,
     perfConnected: account?.perfConnected ? 1 : 0,
@@ -64,6 +67,12 @@ function RenderOzonDataHealth({ instance }: BlockRenderProps) {
     perfStatus: account?.perfStatus ?? '',
     sellerErrorMessage: account?.lastSyncError ?? '',
     perfErrorMessage: account?.perfLastSyncError ?? '',
+    __labels:
+      'value=Состояние API (1=ok),sellerOk=Seller API OK,perfOk=Performance API OK,' +
+      'perfConnected=Performance API подключён,perfStatus=Статус Performance sync,' +
+      'sellerLastSyncStatus=Статус Seller sync,sellerErrorMessage=Ошибка Seller API,' +
+      'perfErrorMessage=Ошибка Performance API,stale=Данные устарели (>24ч),' +
+      'sellerHoursSinceSync=Часов с последней синхронизации',
   });
 
   if (loading) {

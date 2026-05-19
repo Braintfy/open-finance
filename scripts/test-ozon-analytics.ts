@@ -22,6 +22,11 @@ import {
   parseCpoDailyRow,
   normalizeDate,
 } from '../src/lib/marketplaces/ozon/performance/endpoints';
+import {
+  COLUMN_DEFS,
+  sortRows,
+  type TableColumnKey,
+} from '../src/components/unit-economics/ozon-analytics-table';
 
 let passed = 0;
 let failed = 0;
@@ -326,6 +331,72 @@ console.log('\n# Ozon Performance CSV parser');
 {
   expect(parseCsv('').length === 0, 'пустой CSV → 0 rows');
   expect(parseCsv('\n\n').length === 0, 'только переносы → 0 rows');
+}
+
+console.log('\n# OzonAnalyticsTable column order & sort');
+
+// 26. Column order: visibleColumns диктует order, не COLUMN_DEFS.
+{
+  // Симулируем `columns = enabledColumns.map(key => byKey.get(key))` — тот же
+  // алгоритм что в OzonAnalyticsTable после v0.18.19.
+  const byKey = new Map(COLUMN_DEFS.map((c) => [c.key, c]));
+  const enabled: TableColumnKey[] = ['sku', 'article', 'revenueRub'];
+  const ordered = enabled.map((k) => byKey.get(k)?.key);
+  expect(
+    ordered.join(',') === 'sku,article,revenueRub',
+    'enabled order сохраняется',
+    `got ${ordered.join(',')}`,
+  );
+
+  // Reverse порядок тоже работает.
+  const reversed: TableColumnKey[] = ['revenueRub', 'article', 'sku'];
+  const orderedRev = reversed.map((k) => byKey.get(k)?.key);
+  expect(
+    orderedRev.join(',') === 'revenueRub,article,sku',
+    'reverse order сохраняется (DnD reorder)',
+  );
+
+  // Несуществующий ключ filter'ится.
+  const garbageKeys: TableColumnKey[] = [
+    'sku',
+    'nonexistent' as unknown as TableColumnKey,
+    'article',
+  ];
+  const withGarbage = garbageKeys.map((k) => byKey.get(k));
+  const filtered = withGarbage.filter(Boolean);
+  expect(filtered.length === 2, 'unknown key отфильтрован');
+}
+
+// 27. FBO/FBS labels.
+{
+  const fbo = COLUMN_DEFS.find((c) => c.key === 'deliveredFbo');
+  const fbs = COLUMN_DEFS.find((c) => c.key === 'deliveredFbs');
+  expect(fbo?.label === 'FBO', 'deliveredFbo label = FBO');
+  expect(fbs?.label === 'FBS', 'deliveredFbs label = FBS');
+}
+
+// 28. sort=null → pass-through (rows возвращаются как есть).
+{
+  const rowA = row({ productId: 'A', revenueRub: 100 });
+  const rowB = row({ productId: 'B', revenueRub: 999 });
+  const rowC = row({ productId: 'C', revenueRub: 50 });
+  const original = [rowA, rowB, rowC];
+  // Симулируем логику OzonAnalyticsTable: `sort ? sortRows(rows, sort) : rows`.
+  // Используем переменную `sortState`, чтобы TS не схлопывал null до false.
+  const sortState: { key: 'revenueRub'; dir: 'desc' } | null = null;
+  const passThrough = sortState
+    ? sortRows(original, sortState)
+    : original;
+  expect(
+    passThrough.map((r) => r.productId).join(',') === 'A,B,C',
+    'sort=null → исходный порядок',
+  );
+  // С сортировкой — desc.
+  const sorted = sortRows(original, { key: 'revenueRub', dir: 'desc' });
+  expect(
+    sorted.map((r) => r.productId).join(',') === 'B,A,C',
+    'sort desc по revenueRub → B,A,C',
+  );
 }
 
 console.log(`\n## ${passed} PASS · ${failed} FAIL\n`);

@@ -7,7 +7,30 @@
 'use client';
 
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ArrowUp, ArrowDownUp, ImageOff } from 'lucide-react';
+import {
+  ArrowDown,
+  ArrowUp,
+  ArrowDownUp,
+  Check,
+  Copy,
+  GripVertical,
+  ImageOff,
+} from 'lucide-react';
+import {
+  DndContext,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  closestCenter,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  horizontalListSortingStrategy,
+  arrayMove,
+  useSortable,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import type { OzonAnalyticsRow } from '@/lib/blocks/catalog/unit-ozon-analytics-types';
 import { cn } from '@/lib/utils';
 
@@ -67,8 +90,8 @@ export const COLUMN_DEFS: ColumnDef[] = [
   { key: 'costRub', label: 'Себест.', align: 'right', minPx: 70, defaultPx: 90, sortable: true },
   { key: 'marginRub', label: 'Маржа', hint: 'price − cost', align: 'right', minPx: 70, defaultPx: 90, sortable: true },
   { key: 'delivered', label: 'Заказы', align: 'right', minPx: 56, defaultPx: 72, sortable: true },
-  { key: 'deliveredFbo', label: 'ФБО', hint: 'со склада Ozon', align: 'right', minPx: 50, defaultPx: 64, sortable: true },
-  { key: 'deliveredFbs', label: 'ФБС', hint: 'со склада продавца', align: 'right', minPx: 50, defaultPx: 64, sortable: true },
+  { key: 'deliveredFbo', label: 'FBO', hint: 'FBO — со склада Ozon', align: 'right', minPx: 50, defaultPx: 64, sortable: true },
+  { key: 'deliveredFbs', label: 'FBS', hint: 'FBS — со склада продавца', align: 'right', minPx: 50, defaultPx: 64, sortable: true },
   { key: 'qtyDelivered', label: 'Штук', align: 'right', minPx: 50, defaultPx: 64, sortable: true },
   { key: 'cancelled', label: 'Отмены', align: 'right', minPx: 56, defaultPx: 72, sortable: true },
   { key: 'returned', label: 'Возвраты', align: 'right', minPx: 56, defaultPx: 72, sortable: true },
@@ -267,6 +290,7 @@ function ProductThumb({ url, name }: { url: string | null; name: string }) {
 export function OzonAnalyticsTable({
   rows,
   enabledColumns,
+  onReorderColumns,
   sort,
   onSortChange,
   totalRevenue = 0,
@@ -277,8 +301,13 @@ export function OzonAnalyticsTable({
 }: {
   rows: OzonAnalyticsRow[];
   enabledColumns: TableColumnKey[];
-  sort: TableSort;
-  onSortChange: (sort: TableSort) => void;
+  /**
+   * Колбек для DnD-перестановки колонок. Получает новый порядок ключей.
+   * Если не передан — DnD-handles не рендерятся (read-only).
+   */
+  onReorderColumns?: (next: TableColumnKey[]) => void;
+  sort: TableSort | null;
+  onSortChange: (sort: TableSort | null) => void;
   totalRevenue?: number;
   periodDays?: number;
   /** Показывать миниатюру товара 28×28 слева от названия (по умолчанию false). */
@@ -288,12 +317,21 @@ export function OzonAnalyticsTable({
   /** Цветная подсветка ячейки «Остаток» и «Дней». По умолчанию true. */
   showStockColor?: boolean;
 }) {
-  const columns = useMemo(
-    () => COLUMN_DEFS.filter((c) => enabledColumns.includes(c.key)),
-    [enabledColumns],
-  );
+  // Порядок колонок задаётся `enabledColumns` (это `config.visibleColumns`
+  // блока). Раньше brался из COLUMN_DEFS, что игнорировало пользовательскую
+  // перестановку через DnD.
+  const columns = useMemo(() => {
+    const byKey = new Map<TableColumnKey, ColumnDef>(
+      COLUMN_DEFS.map((c) => [c.key, c]),
+    );
+    return enabledColumns
+      .map((key) => byKey.get(key))
+      .filter((c): c is ColumnDef => Boolean(c));
+  }, [enabledColumns]);
 
-  const sorted = useMemo(() => sortRows(rows, sort), [rows, sort]);
+  // sort=null значит «не сортировать» — отдаём rows как пришло из API
+  // (естественный порядок: revenue desc по умолчанию из бэкенда).
+  const sorted = useMemo(() => (sort ? sortRows(rows, sort) : rows), [rows, sort]);
 
   // Column widths state: initialized from defaultPx, user can resize via drag.
   const [colWidths, setColWidths] = useState<Record<string, number>>(() => {
@@ -343,59 +381,76 @@ export function OzonAnalyticsTable({
     [colWidths],
   );
 
+  // DnD-сенсор: drag начинается только после 5px движения, чтобы не мешать
+  // click-to-sort.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+  );
+
+  const handleDragEnd = useCallback(
+    (e: DragEndEvent) => {
+      if (!onReorderColumns) return;
+      const { active, over } = e;
+      if (!over || active.id === over.id) return;
+      const oldIdx = enabledColumns.indexOf(active.id as TableColumnKey);
+      const newIdx = enabledColumns.indexOf(over.id as TableColumnKey);
+      if (oldIdx < 0 || newIdx < 0) return;
+      onReorderColumns(arrayMove(enabledColumns, oldIdx, newIdx) as TableColumnKey[]);
+    },
+    [enabledColumns, onReorderColumns],
+  );
+
+  // Cycle: none → desc → asc → none. Третий клик по той же колонке сбрасывает
+  // сортировку, чтобы пользователь мог вернуться к естественному порядку API
+  // без перезагрузки.
   function toggleSort(key: TableColumnKey) {
-    if (sort.key === key) {
-      onSortChange({ key, dir: sort.dir === 'asc' ? 'desc' : 'asc' });
-    } else {
+    if (!sort || sort.key !== key) {
       onSortChange({ key, dir: 'desc' });
+      return;
     }
+    if (sort.dir === 'desc') {
+      onSortChange({ key, dir: 'asc' });
+      return;
+    }
+    onSortChange(null);
   }
 
   const totalWidth = columns.reduce((sum, col) => sum + (colWidths[col.key] ?? col.defaultPx), 0);
 
   return (
-    <div className="relative w-full overflow-auto">
+    <div className="relative w-full">
       <table className="border-collapse text-[12px]" style={{ width: `${totalWidth}px`, tableLayout: 'fixed' }}>
-        <thead className="sticky top-0 z-10 bg-card">
-          <tr>
-            {columns.map((col) => {
-              const active = sort.key === col.key;
-              const w = colWidths[col.key] ?? col.defaultPx;
-              return (
-                <th
-                  key={col.key}
-                  className={cn(
-                    'relative select-none whitespace-nowrap border-b border-border/60 px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider',
-                    col.align === 'right' ? 'text-right' : 'text-left',
-                    col.sortable ? 'cursor-pointer hover:bg-accent/30' : '',
-                  )}
-                  style={{ width: `${w}px` }}
-                  onClick={col.sortable ? () => toggleSort(col.key) : undefined}
-                  title={col.hint}
-                >
-                  <span className="inline-flex items-center gap-1">
-                    {col.label}
-                    {col.sortable &&
-                      (active ? (
-                        sort.dir === 'asc' ? (
-                          <ArrowUp className="h-3 w-3" />
-                        ) : (
-                          <ArrowDown className="h-3 w-3" />
-                        )
-                      ) : (
-                        <ArrowDownUp className="h-3 w-3 opacity-40" />
-                      ))}
-                  </span>
-                  {/* Resize handle */}
-                  <span
-                    className="absolute right-0 top-0 bottom-0 w-[5px] cursor-col-resize hover:bg-primary/20"
-                    onMouseDown={(e) => handleResizeStart(e, col.key)}
-                  />
-                </th>
-              );
-            })}
-          </tr>
-        </thead>
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragEnd={handleDragEnd}
+        >
+          <SortableContext
+            items={columns.map((c) => c.key)}
+            strategy={horizontalListSortingStrategy}
+          >
+            <thead className="sticky top-0 z-10 bg-card">
+              <tr>
+                {columns.map((col) => {
+                  const active = sort?.key === col.key;
+                  const w = colWidths[col.key] ?? col.defaultPx;
+                  return (
+                    <SortableHeaderCell
+                      key={col.key}
+                      col={col}
+                      width={w}
+                      active={active}
+                      sortDir={sort?.dir}
+                      draggable={Boolean(onReorderColumns)}
+                      onSortClick={() => toggleSort(col.key)}
+                      onResizeStart={(e) => handleResizeStart(e, col.key)}
+                    />
+                  );
+                })}
+              </tr>
+            </thead>
+          </SortableContext>
+        </DndContext>
         <tbody>
           {sorted.length === 0 ? (
             <tr>
@@ -425,10 +480,15 @@ export function OzonAnalyticsTable({
                     let extraClass = '';
                     switch (col.key) {
                       case 'article':
-                        body = (
-                          <span className="block truncate" title={row.article ?? undefined}>
-                            {row.article ?? '—'}
+                        body = row.article ? (
+                          <span className="group/cell flex items-center gap-1.5 min-w-0">
+                            <span className="block truncate" title={row.article}>
+                              {row.article}
+                            </span>
+                            <CopyButton text={row.article} label="артикул" />
                           </span>
+                        ) : (
+                          '—'
                         );
                         break;
                       case 'name':
@@ -447,16 +507,21 @@ export function OzonAnalyticsTable({
                         break;
                       case 'sku':
                         body = row.sku ? (
-                          <a
-                            href={`https://www.ozon.ru/product/${row.sku}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-blue-600 hover:underline dark:text-blue-400"
-                            title="Открыть на Ozon"
-                          >
-                            {row.sku}
-                          </a>
-                        ) : '—';
+                          <span className="group/cell flex items-center gap-1.5 min-w-0">
+                            <a
+                              href={`https://www.ozon.ru/product/${row.sku}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-blue-600 hover:underline dark:text-blue-400 truncate"
+                              title="Открыть на Ozon"
+                            >
+                              {row.sku}
+                            </a>
+                            <CopyButton text={row.sku} label="SKU" />
+                          </span>
+                        ) : (
+                          '—'
+                        );
                         break;
                       case 'priceRub':
                         body = row.priceRub > 0 ? formatRub(row.priceRub) : '—';
@@ -602,5 +667,124 @@ export function OzonAnalyticsTable({
         </tbody>
       </table>
     </div>
+  );
+}
+
+/**
+ * Draggable + sortable заголовок одной колонки таблицы. Drag-handle (GripVertical)
+ * виден только на hover, не конфликтует с click-to-sort (отдельный button с
+ * stopPropagation). Если `draggable=false` — handle не рендерится (read-only режим).
+ */
+function SortableHeaderCell({
+  col,
+  width,
+  active,
+  sortDir,
+  draggable,
+  onSortClick,
+  onResizeStart,
+}: {
+  col: ColumnDef;
+  width: number;
+  active: boolean;
+  sortDir: 'asc' | 'desc' | undefined;
+  draggable: boolean;
+  onSortClick: () => void;
+  onResizeStart: (e: React.MouseEvent) => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id: col.key });
+  const style: React.CSSProperties = {
+    width: `${width}px`,
+    transform: CSS.Translate.toString(transform),
+    transition,
+    zIndex: isDragging ? 50 : undefined,
+    opacity: isDragging ? 0.85 : undefined,
+  };
+  const sortHint = col.sortable
+    ? `${col.hint ?? col.label} · клик: убывание → возрастание → без сортировки`
+    : col.hint;
+  return (
+    <th
+      ref={setNodeRef}
+      className={cn(
+        'group/h relative select-none whitespace-nowrap border-b border-border/60 px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider',
+        col.align === 'right' ? 'text-right' : 'text-left',
+        col.sortable ? 'cursor-pointer hover:bg-accent/30' : '',
+      )}
+      style={style}
+      onClick={col.sortable ? onSortClick : undefined}
+      title={sortHint}
+    >
+      <span className="inline-flex items-center gap-1">
+        {draggable && (
+          <button
+            type="button"
+            {...attributes}
+            {...listeners}
+            className="cursor-grab opacity-0 transition-opacity group-hover/h:opacity-60 hover:opacity-100 active:cursor-grabbing"
+            title="Перетащите, чтобы изменить порядок"
+            aria-label="Перетащить колонку"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <GripVertical className="h-3 w-3" />
+          </button>
+        )}
+        {col.label}
+        {col.sortable &&
+          (active ? (
+            sortDir === 'asc' ? (
+              <ArrowUp className="h-3 w-3" />
+            ) : (
+              <ArrowDown className="h-3 w-3" />
+            )
+          ) : (
+            <ArrowDownUp className="h-3 w-3 opacity-40" />
+          ))}
+      </span>
+      {/* Resize handle */}
+      <span
+        className="absolute right-0 top-0 bottom-0 w-[5px] cursor-col-resize hover:bg-primary/20"
+        onMouseDown={onResizeStart}
+      />
+    </th>
+  );
+}
+
+/**
+ * Маленькая кнопка-иконка «копировать в буфер обмена». Появляется на hover
+ * ячейки. После клика на 1.2с показывает Check как подтверждение.
+ */
+function CopyButton({ text, label }: { text: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  const onCopy = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      e.preventDefault();
+      if (!text) return;
+      try {
+        void navigator.clipboard.writeText(text);
+      } catch {
+        return;
+      }
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    },
+    [text],
+  );
+  return (
+    <button
+      type="button"
+      onClick={onCopy}
+      className="opacity-0 transition-opacity group-hover/cell:opacity-70 hover:opacity-100"
+      title={`Скопировать ${label}`}
+      aria-label={`Скопировать ${label}`}
+    >
+      {copied ? (
+        <Check className="h-3 w-3 text-emerald-600" />
+      ) : (
+        <Copy className="h-3 w-3" />
+      )}
+    </button>
   );
 }

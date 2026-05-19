@@ -49,7 +49,7 @@ function formatPct(value: number | null): string {
   return value.toFixed(value >= 100 ? 0 : 1) + '%';
 }
 
-function RenderOzonAnalytics({ instance }: BlockRenderProps) {
+function RenderOzonAnalytics({ instance, onConfigChange }: BlockRenderProps) {
   const config = useMemo(() => parseConfig(instance.config), [instance.config]);
   const { accounts } = useMarketplaceAccounts({ marketplace: 'ozon' });
   const account = accounts.find((a) => a.id === config.accountId);
@@ -70,7 +70,22 @@ function RenderOzonAnalytics({ instance }: BlockRenderProps) {
   const [response, setResponse] = useState<OzonAnalyticsResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [sort, setSort] = useState<TableSort>({ key: 'revenueRub', dir: 'desc' });
+  // sort=null = «без сортировки», порядок rows как пришёл из API.
+  // Cycle через UI: null → desc → asc → null.
+  const [sort, setSort] = useState<TableSort | null>(null);
+
+  // Persist изменение порядка/видимости колонок. visibleColumns теперь —
+  // и порядок, и фильтр видимости (раньше порядок брался из COLUMN_DEFS, что
+  // мешало DnD-перетаскиванию заголовков).
+  const handleReorderColumns = useCallback(
+    (next: string[]) => {
+      onConfigChange?.({
+        ...config,
+        visibleColumns: next,
+      } as unknown as Record<string, unknown>);
+    },
+    [config, onConfigChange],
+  );
   const mountedRef = useRef(true);
   const { markFetched, label: lastFetchedLabel, justUpdated } = useLastFetched();
 
@@ -191,8 +206,15 @@ function RenderOzonAnalytics({ instance }: BlockRenderProps) {
 
   const handleExport = useCallback(() => {
     if (filteredRows.length === 0) return;
-    const sorted = sortRows(filteredRows, sort);
-    const columns = COLUMN_DEFS.filter((c) => config.visibleColumns.includes(c.key));
+    // Экспортируем в том же порядке, что и таблица: если пользователь сбросил
+    // сортировку (sort=null) — берём rows как пришли из API.
+    const sorted = sort ? sortRows(filteredRows, sort) : filteredRows;
+    // Порядок колонок берём из visibleColumns (пользовательский порядок через
+    // DnD), а не из COLUMN_DEFS, чтобы XLSX совпадал с тем, что на экране.
+    const byKey = new Map(COLUMN_DEFS.map((c) => [c.key, c]));
+    const columns = config.visibleColumns
+      .map((key) => byKey.get(key))
+      .filter((c): c is (typeof COLUMN_DEFS)[number] => Boolean(c));
     const header = columns.map((c) => c.label);
     const body = sorted.map((row) =>
       columns.map((col) => {
@@ -376,10 +398,10 @@ function RenderOzonAnalytics({ instance }: BlockRenderProps) {
               value={response.totals.delivered.toLocaleString('ru-RU')}
               subtitle={
                 response.totals.deliveredFbo + response.totals.deliveredFbs > 0
-                  ? `ФБО: ${response.totals.deliveredFbo.toLocaleString('ru-RU')} · ФБС: ${response.totals.deliveredFbs.toLocaleString('ru-RU')}`
+                  ? `FBO: ${response.totals.deliveredFbo.toLocaleString('ru-RU')} · FBS: ${response.totals.deliveredFbs.toLocaleString('ru-RU')}`
                   : undefined
               }
-              subtitleTitle="ФБО — со склада Ozon. ФБС — со склада продавца. Сумма может быть меньше «Заказы» если ozon_orders ещё не синхронизированы."
+              subtitleTitle="FBO — со склада Ozon. FBS — со склада продавца. Сумма может быть меньше «Заказы» если ozon_orders ещё не синхронизированы."
             />
             <Totals label="Товары с продажами" value={`${response.totals.productsWithSales} / ${rows.length}`} />
           </div>
@@ -472,8 +494,9 @@ function RenderOzonAnalytics({ instance }: BlockRenderProps) {
         })}
       </div>
 
-      {/* Body */}
-      <div className="min-h-0 flex-1 overflow-hidden">
+      {/* Body. overflow-auto на flex-child — нужно для scroll внутри таблицы.
+          min-h-0 обязательно, иначе flex-1 даёт min-height: auto и body вылезает. */}
+      <div className="min-h-0 flex-1 overflow-auto">
         {error ? (
           <div className="flex h-full items-center justify-center p-4 text-center text-[12px] text-muted-foreground">
             {error}
@@ -486,6 +509,7 @@ function RenderOzonAnalytics({ instance }: BlockRenderProps) {
           <OzonAnalyticsTable
             rows={filteredRows}
             enabledColumns={config.visibleColumns}
+            onReorderColumns={handleReorderColumns}
             sort={sort}
             onSortChange={setSort}
             totalRevenue={response?.totals.revenueRub ?? 0}

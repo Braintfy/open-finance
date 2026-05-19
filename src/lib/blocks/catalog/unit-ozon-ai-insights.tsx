@@ -19,6 +19,7 @@ import {
   type PeriodValue,
 } from '@/components/blocks/period-picker';
 import { OzonAccountSelector } from '@/components/marketplaces/ozon-account-selector';
+import { useBlockValuePublisher } from '@/lib/blocks/values';
 import type {
   BlockDef,
   BlockRenderProps,
@@ -229,6 +230,16 @@ function RenderOzonAiInsights({ instance }: BlockRenderProps) {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // Cell-binding: счётчик инсайтов + критических для дашбордов.
+  // Insight.type = 'danger' считается «критическим».
+  const totalCount = insights?.length ?? 0;
+  const criticalCount = insights?.filter((i) => i.type === 'danger').length ?? 0;
+  useBlockValuePublisher(instance.id, {
+    value: totalCount,
+    criticalCount,
+    __labels: 'value=Инсайтов,criticalCount=Критических',
+  });
 
   return (
     <Card className="flex h-full flex-col overflow-hidden p-3">

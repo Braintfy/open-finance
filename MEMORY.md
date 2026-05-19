@@ -312,6 +312,43 @@ Open Finance = настраиваемый Lego-конструктор интер
 4. `scripts/test-ozon-analytics.ts` (test row factory).
 Иначе TS error на required field.
 
+### Ozon Аналитика таблица: visibleColumns = порядок+видимость (v0.18.19)
+
+- `OzonAnalyticsTable` рендерит columns как `enabledColumns.map(key => byKey.get(key))` — порядок диктует `config.visibleColumns`, не `COLUMN_DEFS`. Та же логика в XLSX-экспорте. Backward-compat через `DEFAULT_VISIBLE_COLUMNS`.
+- `sort` теперь `TableSort | null`. Дефолт — `null` = «без сортировки», `sortRows` не вызывается, rows как пришли из API. Cycle через UI: `null → desc → asc → null`.
+- DnD-перестановка колонок через `@dnd-kit/core` + `@dnd-kit/sortable` (та же связка что в `unit-ozon-multi-table`). Handle `GripVertical` появляется на hover заголовка. Persistence через `onConfigChange({...config, visibleColumns: next})`.
+- Copy-кнопки в ячейках `article` и `sku` — обёртка `group/cell` + `CopyButton` helper в том же файле.
+- FBO/FBS вместо ФБО/ФБС в labels колонок и subtitle totals.
+
+### Cell-binding: useBlockValuePublisher convention (v0.18.19)
+
+Модалка «Связать ячейку с источником» (`UnitCellBindingDialog`, `excel-cell.tsx`) читает 2 источника:
+1. **Live** — `useBlockValuePublisher(instance.id, output)` из `src/lib/blocks/values.tsx`. Работает только если блок-источник mounted на текущей странице.
+2. **Remote** — `GET /api/blocks/sources` → `fieldsForBlock()` в `src/app/api/blocks/sources/route.ts`. Cross-page; нужен SQL/compute на сервере.
+
+**Конвенция publisher'а** для появления значений в picker:
+- `value: <number>` — primary chip (то что показывается без выбора поля).
+- `__labels: 'key1=Label1,key2=Label2'` — русские названия для UI.
+- `__money: 'field1,field2'` — поля форматируются как `1 234 ₽`.
+- Все остальные ключи — обычные числовые/строковые значения.
+
+**Пример** (`unit-ozon-kpi.tsx`):
+```ts
+useBlockValuePublisher(instance.id, {
+  value: data?.current.revenueRub ?? 0,
+  revenue: data?.current.revenueRub ?? 0,
+  orders: data?.current.orders ?? 0,
+  ads: data?.current.adsRub ?? 0,
+  __labels: 'value=Выручка / период,revenue=Выручка / период,orders=Заказы / период,ads=Расход на рекламу',
+  __money: 'value,revenue,ads',
+});
+```
+
+**Грабли**:
+- Ключи publisher'а ДОЛЖНЫ совпадать с ключами в `fieldsForBlock` (server-side), иначе live-merge через `mergeLiveFields` не сработает.
+- Если block-источник не mounted → live-режим пустой, picker показывает только remote labels. Решение: добавить SQL в `fieldsForBlock` для cross-page support.
+- На v0.18.19 publishers есть у: `unit.ozon-analytics`, `unit.ozon-kpi`, `unit.ozon-abc`, `unit.ozon-ai-insights`, `unit.ozon-top-ads`, `unit.ozon-data-health`. Server-side SQL пока только в `unit.ozon-analytics`.
+
 ### Ozon Performance CSV header detection — silent failure trap (v0.18.18) — КРИТИЧЕСКАЯ ЛОВУШКА
 
 **Грабли, выжгшие 15+ сессий**: Ozon Performance CSV-отчёты НЕ начинаются с header'а — первые 2 строки это метадата кампании (`"Кампания N (CPC)"; "01.05.2026-31.05.2026"` + пустая строка), реальный header (`sku;Название;...`) идёт **третьей строкой**. Старый `parseCsv` брал `lines[0]` → header = `Кампания N` ↔ `01.05.2026-31.05.2026` → `isSkuStatsHeader(rows[0])` ловил sku-row как «не header» (`!isSkuStatsHeader`) → **тихо `continue`**, все строки выкинуты. Sync завершался `status='success', itemsTotal=409, itemsProcessed=0`. UI блока Аналитики показывал «Расход на рекламу не загружен → Подключите Performance API», хотя API подключён, sync прошёл, парсер сломан.

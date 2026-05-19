@@ -166,13 +166,21 @@ function RenderOzonTopAds({ instance }: BlockRenderProps) {
     };
   }, [data]);
 
+  // Primary value (расход) — для bind в single-cell. Дополнительные поля и
+  // лейблы для модалки «Связать ячейку».
   useBlockValuePublisher(instance.id, {
+    value: summary.expenseRub,
     totalExpenseRub: summary.expenseRub,
     totalOrders: summary.orders,
     totalClicks: summary.clicks,
     totalViews: summary.views,
-    avgDrrPct: summary.drrPct,
+    avgDrrPct: summary.drrPct ?? 0,
     rowCount: rows.length,
+    __labels:
+      'value=Расход на рекламу,totalExpenseRub=Расход на рекламу,' +
+      'totalOrders=Заказы,totalClicks=Клики,totalViews=Показы,' +
+      'avgDrrPct=Средний ДРР %,rowCount=Товаров в топе',
+    __money: 'value,totalExpenseRub',
   });
 
   // Авторасчёт ширин — как в ozon-analytics-table.

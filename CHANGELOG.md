@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.18.19] - 2026-05-19
+
+UX-доработка таблицы «Ozon · Аналитика» (scroll, 3-mode sort, DnD-перестановка колонок, copy для артикула/SKU, переименование ФБО/ФБС → FBO/FBS) и устранение пустых значений в модалке «Связать ячейку с источником» для 5 Ozon-блоков (добавлены publishers с `value`/`__labels`/`__money`).
+
+### Added
+
+- **DnD-перестановка колонок** в таблице Аналитики (`src/components/unit-economics/ozon-analytics-table.tsx`). `@dnd-kit/core` + `@dnd-kit/sortable` (та же связка что в `unit-ozon-multi-table`). Handle `GripVertical` появляется на hover заголовка (`opacity-0 group-hover:opacity-60`), не конфликтует с click-to-sort. Порядок persisted в `config.visibleColumns` через `onConfigChange` — переживает reload.
+- **Третий режим сортировки** — клик по заголовку циклит `none → desc → asc → none`. Состояние `null` = «без сортировки», порядок rows как пришёл из API. Tooltip объясняет цикл.
+- **Кнопки копирования** в ячейках «Артикул» и «SKU». Helper `CopyButton` (lucide `Copy`/`Check`) — `navigator.clipboard.writeText` + визуальное подтверждение (Check 1.2с). Видна на hover ячейки (`opacity-0 group-hover/cell:opacity-70`).
+- **Publishers для модалки «Связать ячейку с источником»** в 5 блоках, которые раньше показывали все поля как «—»:
+  - **`unit.ozon-kpi`** — `value/revenue/orders/ads/drr/aov/cpo` с `__labels` и `__money`. Ключи match'аются с `/api/blocks/sources` fieldsForBlock.
+  - **`unit.ozon-abc`** — `value` (количество SKU в группе A) + `aRevenue/bRevenue/cRevenue`.
+  - **`unit.ozon-ai-insights`** — `value` (всего инсайтов) + `criticalCount` (тип `danger`).
+  - **`unit.ozon-top-ads`** — добавлено `value=расход` + `__labels` + `__money` к существующему publisher (раньше был без `value`).
+  - **`unit.ozon-data-health`** — добавлено `value` (агрегат «всё ок») + `__labels` для русских названий всех 9 полей в picker'е.
+- **9 новых тестов** в `scripts/test-ozon-analytics.ts`: column order сохраняется по `visibleColumns` (не `COLUMN_DEFS`), DnD-перестановка работает на reverse-порядке, unknown keys фильтруются, FBO/FBS labels, sort=null pass-through, sort desc. Всего 74 PASS / 0 FAIL.
+
+### Fixed
+
+- **Прокрутка таблицы Аналитики не работала.** Body wrapper в `unit-ozon-analytics.tsx:476` имел `overflow-hidden` вместо `overflow-auto` (как у соседних `unit-ozon-multi-table` / `unit-ozon-top-ads`). При большом количестве товаров таблица обрезалась карточкой блока без возможности проскроллить. Также убран дублирующий `overflow-auto` на внутреннем wrapper таблицы (`ozon-analytics-table.tsx:357`) — двойной scroll-родитель давал баги на iOS.
+- **Порядок колонок не следовал `config.visibleColumns`.** До v0.18.19 `OzonAnalyticsTable` и XLSX-экспорт делали `COLUMN_DEFS.filter(c => enabledColumns.includes(c.key))` — порядок брался из `COLUMN_DEFS`, не из пользовательского массива. Это блокировало любую возможность переставить колонки. Теперь `enabledColumns.map(key => byKey.get(key)).filter(Boolean)` — порядок диктует пользователь.
+
+### Changed
+
+- **`OzonAnalyticsTable.sort` и `onSortChange`** теперь принимают `TableSort | null` (раньше `TableSort` без `null`). Дефолтное состояние в `unit-ozon-analytics.tsx` — `null` (раньше `{key:'revenueRub', dir:'desc'}` — мешало пользователю вернуться к «естественному» порядку API).
+- **`COLUMN_DEFS` labels**: `ФБО → FBO`, `ФБС → FBS`. `hint` обновлены: `FBO — со склада Ozon`, `FBS — со склада продавца`. Также subtitle/subtitleTitle в `unit-ozon-analytics.tsx` totals.
+- **`OzonAnalyticsTable` получает новый optional prop `onReorderColumns?: (next: TableColumnKey[]) => void`.** Если не передан — DnD-handles не рендерятся (read-only режим).
+- **`config.visibleColumns`** теперь — источник И видимости И порядка (раньше — только видимость).
+
+### Not changed (отложено)
+
+- Server-side `fieldsForBlock` в `/api/blocks/sources/route.ts` для KPI/ABC/AI/top-ads/data-health всё ещё возвращает `value: null`. Cross-page picker (когда блок-источник не mounted на текущей странице) показывает только labels. Live-режим (блок открыт на той же странице) теперь работает для всех 5 блоков. SQL-расчёты по 5 блокам = отдельная итерация.
+
 ## [0.18.18] - 2026-05-19
 
 Root-cause фикс «реклама/ДРР не отображаются в блоке Аналитики», который не сдавался 15 сессий. Sync завершался `success` с `itemsTotal=409`, но `itemsProcessed=0` — Performance CSV-парсер брал метастроки кампании как header'ы и тихо отбрасывал все данные. Делаем парсер robust + warnings persistence + наглядные UI-баннеры.

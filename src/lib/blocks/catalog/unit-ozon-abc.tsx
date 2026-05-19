@@ -13,6 +13,7 @@ import {
   type PeriodValue,
 } from '@/components/blocks/period-picker';
 import { OzonAccountSelector } from '@/components/marketplaces/ozon-account-selector';
+import { useBlockValuePublisher } from '@/lib/blocks/values';
 import type {
   BlockDef,
   BlockRenderProps,
@@ -92,6 +93,21 @@ function RenderOzonAbc({ instance }: BlockRenderProps) {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  // Cell-binding source: A/B/C groups как primitives для биндинга в Excel-блоки.
+  const aGroup = data?.groups.find((g) => g.label === 'A');
+  const bGroup = data?.groups.find((g) => g.label === 'B');
+  const cGroup = data?.groups.find((g) => g.label === 'C');
+  useBlockValuePublisher(instance.id, {
+    value: aGroup?.productCount ?? 0,
+    aRevenue: aGroup?.revenueRub ?? 0,
+    bRevenue: bGroup?.revenueRub ?? 0,
+    cRevenue: cGroup?.revenueRub ?? 0,
+    __labels:
+      'value=Группа A (SKU),aRevenue=Выручка группы A,' +
+      'bRevenue=Выручка группы B,cRevenue=Выручка группы C',
+    __money: 'aRevenue,bRevenue,cRevenue',
+  });
 
   return (
     <Card className="flex h-full flex-col overflow-hidden p-3">

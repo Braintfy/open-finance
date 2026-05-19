@@ -20,6 +20,7 @@ import {
 } from '@/components/blocks/period-picker';
 import { OzonAccountSelector } from '@/components/marketplaces/ozon-account-selector';
 import { OzonSyncSection } from '@/components/unit-economics/ozon-sync-section';
+import { useBlockValuePublisher } from '@/lib/blocks/values';
 import type {
   BlockDef,
   BlockRenderProps,
@@ -173,6 +174,22 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
     [data],
   );
   const sparklineAds = useMemo(() => (data?.byDay ?? []).map((d) => d.adsRub), [data]);
+
+  // Публикуем KPI как источники для cell-binding (модалка «Связать ячейку»).
+  // Ключи и лейблы match'атся с /api/blocks/sources fieldsForBlock.
+  useBlockValuePublisher(instance.id, {
+    value: data?.current.revenueRub ?? 0,
+    revenue: data?.current.revenueRub ?? 0,
+    orders: data?.current.orders ?? 0,
+    ads: data?.current.adsRub ?? 0,
+    drr: data?.current.drrPct ?? 0,
+    aov: data?.current.aovRub ?? 0,
+    cpo: data?.current.cpoRub ?? 0,
+    __labels:
+      'value=Выручка / период,revenue=Выручка / период,orders=Заказы / период,' +
+      'ads=Расход на рекламу,drr=ДРР %,aov=Средний чек,cpo=Средний CPO',
+    __money: 'value,revenue,ads,aov,cpo',
+  });
 
   return (
     <Card className="flex h-full flex-col overflow-hidden p-3">
