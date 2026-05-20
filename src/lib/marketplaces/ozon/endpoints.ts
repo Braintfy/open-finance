@@ -21,7 +21,9 @@ import {
   TransactionListResponseSchema,
   TurnoverResponseSchema,
   AnalyticsDataResponseSchema,
+  StockOnWarehousesResponseSchema,
   type AnalyticsDataResponse,
+  type StockOnWarehousesRow,
 } from './types';
 
 export const OZON_API_VERSION_MAP = {
@@ -35,6 +37,7 @@ export const OZON_API_VERSION_MAP = {
   financeRealization: '/v2/finance/realization',
   financeTransactionList: '/v3/finance/transaction/list',
   analyticsTurnoverStocks: '/v1/analytics/turnover/stocks',
+  analyticsStockOnWarehouses: '/v1/analytics/stock_on_warehouses',
   analyticsData: '/v1/analytics/data',
 } as const;
 
@@ -233,6 +236,34 @@ export async function analyticsTurnoverStocks(
     },
     TurnoverResponseSchema,
   );
+}
+
+/**
+ * Получает остатки по складам через `/v1/analytics/stock_on_warehouses`.
+ * Отдаёт строки `(sku, item_code, item_name, warehouse_name, *_amount)` —
+ * **по конкретным FBO-складам**. Маппинг склад→географический кластер
+ * выполняется отдельно через Performance API `/v1/cluster/list`.
+ *
+ * Пагинация — по `offset/limit` (max 1000 на запрос).
+ */
+export async function analyticsStockOnWarehouses(
+  client: OzonClient,
+  args: { limit?: number; offset?: number; warehouseType?: 'ALL' | 'FULFILLMENT' | 'CROSSDOCK' },
+): Promise<{ rows: StockOnWarehousesRow[] }> {
+  const data = (await client.post(
+    OZON_API_VERSION_MAP.analyticsStockOnWarehouses,
+    {
+      limit: Math.min(Math.max(args.limit ?? 1000, 1), 1000),
+      offset: Math.max(args.offset ?? 0, 0),
+      warehouse_type: args.warehouseType ?? 'ALL',
+    },
+    StockOnWarehousesResponseSchema,
+  )) as
+    | { result?: { rows?: StockOnWarehousesRow[] }; rows?: StockOnWarehousesRow[] }
+    | undefined;
+
+  const rows = data?.result?.rows ?? data?.rows ?? [];
+  return { rows };
 }
 
 /**

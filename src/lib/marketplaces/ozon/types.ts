@@ -366,6 +366,34 @@ export const TurnoverResponseSchema = z.object({
   cursor: z.string().optional(),
 });
 
+// ---- /v1/analytics/stock_on_warehouses ------------------------------------
+
+export const StockOnWarehousesRowSchema = z
+  .object({
+    sku: z.number().optional(),
+    item_code: z.string().optional(),
+    item_name: z.string().optional(),
+    warehouse_name: z.string().optional(),
+    free_to_sell_amount: z.number().optional(),
+    promised_amount: z.number().optional(),
+    reserved_amount: z.number().optional(),
+  })
+  .passthrough();
+
+export const StockOnWarehousesResponseSchema = z
+  .object({
+    result: z
+      .object({
+        rows: z.array(StockOnWarehousesRowSchema).optional(),
+      })
+      .passthrough()
+      .optional(),
+    rows: z.array(StockOnWarehousesRowSchema).optional(),
+  })
+  .passthrough();
+
+export type StockOnWarehousesRow = z.infer<typeof StockOnWarehousesRowSchema>;
+
 export type ProductListItem = z.infer<typeof ProductListItemSchema>;
 export type ProductInfo = z.infer<typeof ProductInfoSchema>;
 export type PricesItem = z.infer<typeof PricesItemSchema>;

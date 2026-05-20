@@ -29,10 +29,25 @@ import { rublesToKopecks } from '@/lib/unit-economics/types';
 import { runStageWithTiming, type StageContext, type StageResult } from './types';
 import { buildPerfPeriod, describePeriod, type PerfPeriod } from './perf-period';
 
-/** Какие adv_object_type считаются Search Promo (CPC/CPM × SKU). */
-const SEARCH_PROMO_ADV_OBJECTS = ['SKU', 'SEARCH_PROMO'] as const;
+/**
+ * Какие adv_object_type обрабатываются стейджем per-SKU CPC.
+ *
+ * ВНИМАНИЕ: в v0.18.20 убрали `SEARCH_PROMO` из этого фильтра —
+ * это «Оплата за заказ» (CPO), отчёт `POST /api/client/statistics` для них
+ * возвращает CSV без колонки SKU (на чём наш парсер падал и тихо съедал
+ * расход). CPO-кампании покрываются стейджем `perfCpoDaily` (store-aggregate),
+ * а total adsRub теперь идёт через эталонный `perfExpenseDaily`.
+ */
+const SEARCH_PROMO_ADV_OBJECTS = ['SKU'] as const;
 
-/** Какие state кампаний берём для отчёта. */
+/**
+ * Какие state кампаний берём для отчёта.
+ * Согласно дампу Ozon Performance API (раздел CampaignState), фактически
+ * встречаются: RUNNING, FINISHED, PAUSED (как «приостановлена селлером»),
+ * INACTIVE/STOPPED — попадаются в некоторых ответах. Мы оставляем три
+ * основных state'а: запущенные сейчас, приостановленные и завершённые
+ * (всё ещё дают расход за прошедший период).
+ */
 const SUPPORTED_STATES = [
   'CAMPAIGN_STATE_RUNNING',
   'CAMPAIGN_STATE_PAUSED',
@@ -96,7 +111,7 @@ export async function syncPerfSkuStatsStage(ctx: StageContext): Promise<StageRes
         ok: true,
         warnings: [
           ...localWarnings,
-          'Нет активных Search Promo кампаний (adv_object_type IN SKU/SEARCH_PROMO, state RUNNING/PAUSED/FINISHED). Per-SKU аналитика недоступна. CPO-кампании синхронизируются отдельным стейджем «perfCpoDaily».',
+          'Нет активных CPC кампаний (adv_object_type=SKU, state RUNNING/PAUSED/FINISHED). Per-SKU CPC аналитика недоступна. CPO-кампании (SEARCH_PROMO/ALL_SKU_PROMO) синхронизируются отдельными стейджами perfCpoDaily / perfExpenseDaily.',
         ],
       };
     }

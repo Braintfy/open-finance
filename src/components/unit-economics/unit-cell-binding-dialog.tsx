@@ -65,6 +65,46 @@ function sourceFieldLabel(field: string): string {
   return field;
 }
 
+function moneyFieldSet(
+  blockId: string,
+  values: Record<string, number | string | null>,
+): Set<string> {
+  const raw = values[`${blockId}.__money`];
+  return new Set(
+    String(raw ?? '')
+      .split(',')
+      .map((field) => field.trim())
+      .filter(Boolean),
+  );
+}
+
+/**
+ * Портировано из excel-cell.tsx: для удалённых блоков (из /api/blocks/sources)
+ * накладываем актуальные live-значения и money-флаги поверх,
+ * чтобы модалка не показывала «—» когда блок на этой же странице
+ * уже опубликовал свежие числа.
+ */
+function mergeLiveFields(
+  block: SourceBlock,
+  liveFields: string[] | undefined,
+  liveValues: Record<string, number | string | null>,
+): SourceBlock {
+  if (!liveFields) return block;
+  const moneyFields = moneyFieldSet(block.blockId, liveValues);
+  const byName = new Map(block.fields.map((field) => [field.name, field]));
+  liveFields.forEach((name) => {
+    const key = name === 'value' ? block.blockId : `${block.blockId}.${name}`;
+    const current = byName.get(name);
+    byName.set(name, {
+      name,
+      label: current?.label ?? sourceFieldLabel(name),
+      value: liveValues[key] ?? current?.value ?? null,
+      format: moneyFields.has(name) ? 'money' : current?.format,
+    });
+  });
+  return { ...block, fields: Array.from(byName.values()) };
+}
+
 export function UnitCellBindingDialog({
   open,
   onOpenChange,
@@ -82,6 +122,7 @@ export function UnitCellBindingDialog({
   const [pageFilter, setPageFilter] = useState<string>('all');
 
   const allPages = useMemo<SourcePage[]>(() => {
+    const liveById = new Map(availableLive.map((b) => [b.blockId, b.fields]));
     const liveBlocks: SourceBlock[] = availableLive
       .filter((b) => b.blockId !== selfBlockId)
       .map((b) => ({
@@ -100,11 +141,16 @@ export function UnitCellBindingDialog({
         })),
       }))
       .sort((a, b) => a.label.localeCompare(b.label, 'ru'));
+    // Для удалённых блоков: оверлеим live-значения поверх (если блок
+    // публикуется на этой же странице — берём актуальные числа из store).
+    // Также дедуплицируем: блоки, которые уже видны в `liveBlocks`,
+    // не показываем повторно из удалённого списка.
+    const liveIdSet = new Set(liveBlocks.map((b) => b.blockId));
     const remote = remotePages.map((page) => ({
       ...page,
-      // remotePages уже отсортированы серверным /api/blocks/sources
-      // по категории + label, но дополнительно фильтруем self.
-      blocks: page.blocks.filter((b) => b.blockId !== selfBlockId),
+      blocks: page.blocks
+        .filter((b) => b.blockId !== selfBlockId && !liveIdSet.has(b.blockId))
+        .map((block) => mergeLiveFields(block, liveById.get(block.blockId), liveValues)),
     }));
     return liveBlocks.length > 0
       ? [

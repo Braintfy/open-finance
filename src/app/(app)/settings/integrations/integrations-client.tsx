@@ -148,6 +148,18 @@ const STAGE_LABELS: Record<OzonStageKind, { title: string; hint: string }> = {
     title: 'Аналитика продаж (Seller API)',
     hint: 'Дневные revenue/ordered_units из /v1/analytics/data — родной источник Ozon Seller (premium-plus: +delivered/cancellations/returns)',
   },
+  perfExpenseDaily: {
+    title: 'Расход рекламы (эталон)',
+    hint: 'Performance API /statistics/expense — суммарный расход по дню/кампании, покрывает все типы кампаний и бонусы',
+  },
+  clusters: {
+    title: 'Кластеры (география)',
+    hint: 'Performance API /cluster/list — карта warehouse → cluster для блока «Остатки по кластерам»',
+  },
+  warehouseStocks: {
+    title: 'Остатки по складам',
+    hint: 'Seller /v1/analytics/stock_on_warehouses — остатки по конкретным складам (свободно/резерв/ожидается)',
+  },
 };
 
 export function IntegrationsClient({

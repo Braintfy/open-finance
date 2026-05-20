@@ -405,7 +405,15 @@ function RenderOzonAnalytics({ instance, onConfigChange }: BlockRenderProps) {
             />
             <Totals label="Товары с продажами" value={`${response.totals.productsWithSales} / ${rows.length}`} />
           </div>
-          {/* Source badges: показывают откуда взяты числа (Seller analytics vs legacy postings). */}
+          {/* Source badges: показывают откуда взяты числа. */}
+          {response.adsSource === 'expense' && (
+            <div className="flex flex-wrap items-center gap-1.5 border-b border-border/40 bg-emerald-50 px-3 py-1 text-[10px] text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300">
+              <span className="font-medium">Эталон Performance API (expense).</span>
+              <span className="text-emerald-700/80 dark:text-emerald-400/70">
+                Расход покрывает все типы кампаний (SKU/SEARCH_PROMO/ALL_SKU_PROMO/BANNER/VIDEO) + бонусы — как в рекламном кабинете Ozon.
+              </span>
+            </div>
+          )}
           {response.ordersSource === 'orders-fallback' && (
             <div className="flex flex-wrap items-center gap-1.5 border-b border-border/40 bg-amber-50 px-3 py-1 text-[10px] text-amber-700 dark:bg-amber-950/30 dark:text-amber-300">
               <span className="font-medium">Аналитика из postings (legacy).</span>
@@ -509,6 +517,7 @@ function RenderOzonAnalytics({ instance, onConfigChange }: BlockRenderProps) {
           <OzonAnalyticsTable
             rows={filteredRows}
             enabledColumns={config.visibleColumns}
+            pinnedColumns={config.pinnedColumns}
             onReorderColumns={handleReorderColumns}
             sort={sort}
             onSortChange={setSort}
@@ -517,6 +526,7 @@ function RenderOzonAnalytics({ instance, onConfigChange }: BlockRenderProps) {
             showProductImage={config.showProductImage}
             showDrrColor={config.showDrrColor}
             showStockColor={config.showStockColor}
+            useOzonTurnover={config.useOzonTurnover}
           />
         )}
       </div>

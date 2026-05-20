@@ -17,6 +17,7 @@ import {
   ozonOrders,
   ozonPerfSkuStats,
   ozonPerfCpoDaily,
+  ozonPerfExpenseDaily,
   ozonTransactions,
   ozonAnalyticsDaily,
 } from '@/lib/db/schema/marketplaces';
@@ -36,7 +37,7 @@ export type OzonTimeseriesResponse = {
     drrPct: number | null;
     aovRub: number | null;
   }>;
-  adsSource: 'performance' | 'transactions-heuristic' | 'none';
+  adsSource: 'expense' | 'performance' | 'transactions-heuristic' | 'none';
   /** Источник продаж: 'analytics-api' = ozon_analytics_daily, 'orders-fallback' = ozon_orders. */
   ordersSource: 'analytics-api' | 'orders-fallback';
 };
@@ -86,6 +87,9 @@ export async function GET(req: NextRequest) {
       : sql``;
     const accountCondCpo = accountId
       ? sql`AND cd.account_id = ${accountId}`
+      : sql``;
+    const accountCondExp = accountId
+      ? sql`AND ex.account_id = ${accountId}`
       : sql``;
 
     // Определяем источник продаж: ozon_analytics_daily (primary) → ozon_orders (legacy).
@@ -159,8 +163,26 @@ export async function GET(req: NextRequest) {
       ? (ordersResult as Row[])
       : (((ordersResult as unknown) as { rows: Row[] }).rows ?? []);
 
-    // Реклама: UNION CPC/CPM (per-SKU) + CPO (агрегат по магазину).
+    // Реклама — приоритет:
+    //  1) `ozon_perf_expense_daily` (эталон Performance API `/statistics/expense`).
+    //  2) UNION CPC (`ozon_perf_sku_stats`) + CPO (`ozon_perf_cpo_daily`).
+    //  3) Эвристика по `ozon_transactions`.
     type AdsRow = { bucket: string; ads_kopecks: number };
+    const expenseResult = await db.execute<AdsRow>(sql`
+      SELECT
+        to_char(date_trunc(${granLit}, ex.date::timestamp), 'YYYY-MM-DD') AS bucket,
+        COALESCE(SUM(ex.total_spent_kopecks), 0) AS ads_kopecks
+      FROM ${ozonPerfExpenseDaily} ex
+      WHERE ex.tenant_id = ${session.tenantId}
+        ${accountCondExp}
+        AND ex.date >= ${fromIso}::date
+        AND ex.date < ${toIso}::date
+      GROUP BY 1
+      ORDER BY 1
+    `);
+    const expenseRows: AdsRow[] = Array.isArray(expenseResult)
+      ? (expenseResult as AdsRow[])
+      : (((expenseResult as unknown) as { rows: AdsRow[] }).rows ?? []);
     const perfResult = await db.execute<AdsRow>(sql`
       WITH cpc_daily AS (
         SELECT
@@ -200,9 +222,12 @@ export async function GET(req: NextRequest) {
       ? (perfResult as AdsRow[])
       : (((perfResult as unknown) as { rows: AdsRow[] }).rows ?? []);
 
-    let adsSource: 'performance' | 'transactions-heuristic' | 'none' = 'none';
+    let adsSource: 'expense' | 'performance' | 'transactions-heuristic' | 'none' = 'none';
     const adsByBucket = new Map<string, number>();
-    if (perfRows.length > 0) {
+    if (expenseRows.length > 0) {
+      adsSource = 'expense';
+      for (const r of expenseRows) adsByBucket.set(r.bucket, Number(r.ads_kopecks) / 100);
+    } else if (perfRows.length > 0) {
       adsSource = 'performance';
       for (const r of perfRows) adsByBucket.set(r.bucket, Number(r.ads_kopecks) / 100);
     } else {

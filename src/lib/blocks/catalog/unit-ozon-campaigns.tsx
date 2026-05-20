@@ -125,12 +125,20 @@ function RenderOzonCampaigns({ instance }: BlockRenderProps) {
     statsAreAccountWide: false,
   };
   useBlockValuePublisher(instance.id, {
+    value: summary.expenseRub,
     totalExpenseRub: summary.expenseRub,
     totalOrders: summary.orders,
     totalOrdersRub: summary.ordersRub,
     avgDrrPct: summary.drrPct,
     campaignsCount: data?.rows.length ?? 0,
     activeCampaignsCount: (data?.rows ?? []).filter((r) => r.state?.includes('RUNNING')).length,
+    label: instance.appearance?.title ?? 'Ozon · Кампании',
+    __labels:
+      'value=Расход на рекламу,totalExpenseRub=Расход на рекламу,' +
+      'totalOrders=Заказы с рекламы,totalOrdersRub=Выручка с рекламы,' +
+      'avgDrrPct=Средний ДРР (%),campaignsCount=Всего кампаний,' +
+      'activeCampaignsCount=Активных кампаний',
+    __money: 'value,totalExpenseRub,totalOrdersRub',
   });
 
   // Авторасчёт ширин таблицы.

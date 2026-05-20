@@ -20,6 +20,7 @@ import {
   ozonTransactions,
   ozonPerfSkuStats,
   ozonPerfCpoDaily,
+  ozonPerfExpenseDaily,
   ozonAnalyticsDaily,
 } from '@/lib/db/schema/marketplaces';
 
@@ -48,8 +49,15 @@ export type OzonKpiResponse = {
   };
   /** День → revenue/orders/ads для sparkline. */
   byDay: Array<{ date: string; revenueRub: number; orders: number; adsRub: number }>;
-  /** Источник рекламных данных (для бейджа "приблизительно"). */
-  adsSource: 'performance' | 'transactions-heuristic' | 'none';
+  /**
+   * Источник рекламных данных:
+   *  - `expense`: эталонный `ozon_perf_expense_daily` (Performance API
+   *    `/statistics/expense`) — покрывает все типы кампаний + бонусы.
+   *  - `performance`: CPC из `ozon_perf_sku_stats` + CPO из `ozon_perf_cpo_daily`.
+   *  - `transactions-heuristic`: эвристика по `ozon_transactions.operation_type`.
+   *  - `none`: данных нет.
+   */
+  adsSource: 'expense' | 'performance' | 'transactions-heuristic' | 'none';
   /** Источник продаж: 'analytics-api' = ozon_analytics_daily, 'orders-fallback' = ozon_orders. */
   ordersSource: 'analytics-api' | 'orders-fallback';
   /** Режим сравнения (echo из query). */
@@ -77,7 +85,7 @@ async function getAggregateForRange(args: {
   orders: number;
   ads: number;
   byDay: DayAgg[];
-  adsSource: 'performance' | 'transactions-heuristic' | 'none';
+  adsSource: 'expense' | 'performance' | 'transactions-heuristic' | 'none';
   ordersSource: 'analytics-api' | 'orders-fallback';
 }> {
   const { tenantId, accountId, from, to } = args;
@@ -92,6 +100,9 @@ async function getAggregateForRange(args: {
     : sql``;
   const accountCondCpo = accountId
     ? sql`AND cd.account_id = ${accountId}`
+    : sql``;
+  const accountCondExp = accountId
+    ? sql`AND ex.account_id = ${accountId}`
     : sql``;
   const accountCondTx = accountId ? sql`AND tx.account_id = ${accountId}` : sql``;
   const accountCondAnalytics = accountId
@@ -174,9 +185,35 @@ async function getAggregateForRange(args: {
     ? (ordersResult as Row[])
     : (((ordersResult as unknown) as { rows: Row[] }).rows ?? []);
 
-  // Реклама: UNION CPC/CPM (per-SKU) + CPO (агрегат по магазину).
-  // CPC из ozon_perf_sku_stats, CPO из ozon_perf_cpo_daily — суммируются per-day.
+  // Реклама — приоритет:
+  // 1) `ozon_perf_expense_daily` (эталон Performance API `/statistics/expense`,
+  //    покрывает все типы кампаний + бонусы).
+  // 2) UNION CPC (`ozon_perf_sku_stats`) + CPO (`ozon_perf_cpo_daily`).
+  // 3) Эвристика `ozon_transactions.operation_type`.
   type AdsRow = { day: string; ads_kopecks: number };
+
+  const expenseResult = await db.execute<AdsRow>(sql`
+    SELECT
+      to_char(ex.date, 'YYYY-MM-DD') AS day,
+      COALESCE(SUM(ex.total_spent_kopecks), 0) AS ads_kopecks
+    FROM ${ozonPerfExpenseDaily} ex
+    WHERE ex.tenant_id = ${tenantId}
+      ${accountCondExp}
+      AND ex.date >= ${fromIso}::date
+      AND ex.date < ${toIso}::date
+    GROUP BY ex.date
+    ORDER BY ex.date
+  `);
+  const expenseRows: AdsRow[] = Array.isArray(expenseResult)
+    ? (expenseResult as AdsRow[])
+    : (((expenseResult as unknown) as { rows: AdsRow[] }).rows ?? []);
+
+  let adsSource: 'expense' | 'performance' | 'transactions-heuristic' | 'none' = 'none';
+  let adsByDay = new Map<string, number>();
+  if (expenseRows.length > 0) {
+    adsSource = 'expense';
+    for (const r of expenseRows) adsByDay.set(r.day, Number(r.ads_kopecks) / 100);
+  } else {
   const perfResult = await db.execute<AdsRow>(sql`
     WITH cpc_daily AS (
       SELECT
@@ -216,8 +253,6 @@ async function getAggregateForRange(args: {
     ? (perfResult as AdsRow[])
     : (((perfResult as unknown) as { rows: AdsRow[] }).rows ?? []);
 
-  let adsSource: 'performance' | 'transactions-heuristic' | 'none' = 'none';
-  let adsByDay = new Map<string, number>();
   if (perfRows.length > 0) {
     adsSource = 'performance';
     for (const r of perfRows) adsByDay.set(r.day, Number(r.ads_kopecks) / 100);
@@ -245,6 +280,7 @@ async function getAggregateForRange(args: {
       : (((txResult as unknown) as { rows: AdsRow[] }).rows ?? []);
     if (txRows.length > 0) adsSource = 'transactions-heuristic';
     adsByDay = new Map(txRows.map((r) => [r.day, Number(r.ads_kopecks) / 100]));
+  }
   }
 
   // Merge by day.

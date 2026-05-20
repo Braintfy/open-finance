@@ -1,5 +1,63 @@
 # Changelog
 
+## [0.18.20] - 2026-05-20
+
+Большой пакет правок для Ozon-маркетплейса: эталонный источник Ads (`/statistics/expense`), редизайн «Динамики» (rich-вариант графика), pinned-колонка в Аналитике, новый блок «Остатки по кластерам» (география), фикс пустых значений в модалке связей через `mergeLiveFields` + расширенные publishers/server-fields, и доработка days-of-stock с fallback на `metadata.turnoverDays`.
+
+### Added
+
+- **Эталонный Ads-источник** через Performance `GET /api/client/statistics/expense`:
+  - `src/lib/marketplaces/ozon/performance/endpoints.ts` — `getExpenseDaily()` + типы (`ExpenseDailyRow`).
+  - Новый sync-stage `perfExpenseDaily` (`src/lib/marketplaces/ozon/sync/perf-expense-daily.ts`) и таблица `ozon_perf_expense_daily` (`src/lib/db/schema/marketplaces.ts`).
+  - API-маршруты (`/api/marketplaces/analytics/ozon`, `/ozon/kpi`, `/ozon/timeseries`) теперь берут `adsRub` из `expense_daily` (есть данные → `adsSource='expense'`), с прежним fallback на CPC+CPO и эвристику транзакций.
+  - UI-баннер «Эталон Ads» в блоках «Аналитика» и «Динамика» когда источник = `expense`.
+  - `docs/OZON_ADS_GAP.md` — explainer почему могут быть расхождения с ЛК.
+- **Кластеры (география) Ozon** — два новых endpoint'а и блок:
+  - `getClusterList()` (Performance `/api/client/cluster/list`) + sync-stage `clusters` + таблица `ozon_clusters` (warehouse → cluster).
+  - `analyticsStockOnWarehouses()` (Seller `/v1/analytics/stock_on_warehouses`) + sync-stage `warehouseStocks` + таблица `ozon_warehouse_stocks` (per-SKU per-warehouse + resolved cluster).
+  - Новый API-маршрут `GET /api/marketplaces/ozon/cluster-stocks-v2` — агрегирует остатки по кластеру + опционально продажи/выручку за период через JOIN `ozon_orders.raw->>'warehouseName'` → `ozon_warehouse_stocks.cluster_id`.
+  - Новый блок `unit.ozon-warehouse-clusters` (`src/lib/blocks/catalog/unit-ozon-warehouse-clusters.tsx`) — таблица с прогресс-баром «Доля, %», 3-режимная сортировка, конфигурируемые колонки в settings, publisher для модалки связей. Добавлен в default layout `marketplaces-ozon-dashboard` под Аналитикой.
+  - Старый `unit.ozon-stock-clusters` переименован в «Остатки по типу склада» — разрез по FBO/FBS/Cross-border.
+- **Pinned колонка в «Аналитика»**:
+  - `config.pinnedColumns` (default `['name']`) — массив закреплённых ключей.
+  - Sticky-positioning с накопительным `left` offset, `z-index`, `bg-card`, разделитель `box-shadow`. Pinned-колонки не draggable.
+  - Секция «Закреплённые колонки» в settings-form с чекбоксами.
+- **Days-of-stock UX**:
+  - Бейдж с единицей «дн.» + цветовые пороги (rose/amber/emerald) + tooltip про источник.
+  - Опциональный fallback на Ozon turnover (`metadata.turnoverDays`) через `config.useOzonTurnover` — переключатель в settings.
+- **Динамика — rich-вариант графика**:
+  - `chart-shell.tsx` получил `variant='rich'`: gradient под area, multi-Y-axis (`yAxes: ChartYAxis[]`), кастомный `RichTooltipContent` (rounded-xl, цветные dots, форматирование значений).
+  - `unit-ozon-chart.tsx`: `revenueRub` рендерится как Area при `chartType='line'`, цветные axes по типу метрики (rub/orders/pct), inline-кнопка «Метрики (N/M)» с выпадающим чек-листом, publisher с `__labels`/`__money`.
+- **Publishers** для модалки связей:
+  - `unit.ozon-warehouse-clusters` — `value/totalStock/free/reserved/promised/skuCount/ordersInPeriod/revenueInPeriod/clustersCount` + `__labels`/`__money`.
+  - `unit.ozon-stock-clusters` — `value/totalStock/rowsCount` (раньше publisher отсутствовал).
+  - `unit.ozon-campaigns`, `unit.ozon-search-phrases` — добавлен `value` + `__labels`/`__money` (раньше только сырые ключи).
+- **Сервер fieldsForBlock** в `api/blocks/sources/route.ts`:
+  - `unit.ozon-kpi` и `unit.ozon-chart` — теперь возвращают реальные значения (через `getOzonAnalyticsTotals`), а не `null`.
+  - Добавлен полный набор полей для `unit.ozon-warehouse-clusters`.
+- **mergeLiveFields в модалке** (`unit-cell-binding-dialog.tsx`) — портирован из `excel-cell.tsx`: для удалённых блоков накладываем live-значения и money-флаги, дедуплицируем блоки, которые уже видны в live-секции.
+- **Smoke-тесты** (`scripts/test-ozon-analytics.ts`): pinnedColumns default, multi-pin, useOzonTurnover toggle, pinned-reorder algorithm. Всего 84 PASS / 0 FAIL.
+
+### Fixed
+
+- **`unit-ozon-analytics-queries.ts`**: CTE `order_items` теперь выбирает `cancelled_at, returned_at` из `o` — без них FILTER в `agg_orders` падал/давал 0. Это фиксило модалку, где totals «Аналитики» показывались как 0.
+- **`perf-sku-stats.ts`**: `SEARCH_PROMO` убран из `SEARCH_PROMO_ADV_OBJECTS` для CPC per-SKU (он CPO-based, обрабатывается `perfCpoDaily`/`perfExpenseDaily`). Это устраняло двойной счёт расхода.
+
+### Changed
+
+- `OZON_FULL_STAGES` — добавлены `perfExpenseDaily`, `clusters`, `warehouseStocks` (в логичном порядке для full sync). `DEFAULT_OZON_SYNC_SETTINGS` включают их по умолчанию. `STAGE_LABELS` обновлены в `settings/integrations` и `sync-all-button`.
+- `OzonKpiResponse.adsSource` и `OzonAnalyticsResponse.adsSource` расширены до `'expense' | 'performance' | 'transactions-heuristic' | 'none'`.
+- Default layout `marketplaces-ozon-dashboard` — новый блок «Остатки по кластерам» вставлен под «Аналитикой», все нижестоящие блоки сдвинуты вниз.
+
+### Migration
+
+```bash
+pnpm db:generate
+pnpm db:push
+```
+
+Создаст таблицы `ozon_perf_expense_daily`, `ozon_clusters`, `ozon_warehouse_stocks`. После — перейти в Настройки → Интеграции → Ozon, поставить галки на новые стейджи (`Расход рекламы (эталон)`, `Кластеры`, `Остатки по складам`) и запустить sync.
+
 ## [0.18.19] - 2026-05-19
 
 UX-доработка таблицы «Ozon · Аналитика» (scroll, 3-mode sort, DnD-перестановка колонок, copy для артикула/SKU, переименование ФБО/ФБС → FBO/FBS) и устранение пустых значений в модалке «Связать ячейку с источником» для 5 Ozon-блоков (добавлены publishers с `value`/`__labels`/`__money`).

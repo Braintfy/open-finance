@@ -57,6 +57,19 @@ export type OzonSyncSettings = {
    * См. ozon_perf_cpo_daily.
    */
   perfCpoDaily?: boolean;
+  /**
+   * Sync эталонного расхода по кампаниям через
+   * `GET /api/client/statistics/expense`. Покрывает ВСЕ типы кампаний
+   * (SKU/SEARCH_PROMO/ALL_SKU_PROMO/BANNER/VIDEO_BANNER) — primary
+   * источник total adsRub. См. ozon_perf_expense_daily.
+   */
+  perfExpenseDaily?: boolean;
+  /**
+   * Sync справочника географических кластеров Ozon и FBO-остатков по
+   * складам. См. ozon_clusters + ozon_warehouse_stocks.
+   */
+  clusters?: boolean;
+  warehouseStocks?: boolean;
   perfPhrases?: boolean;
   /** Окно perf-статистики в днях. По умолчанию 30 (max 62 — лимит Ozon API). */
   perfWindowDays?: number;
@@ -150,8 +163,11 @@ export type SyncJobKind =
   | 'perfCampaigns'
   | 'perfSkuStats'
   | 'perfCpoDaily'
+  | 'perfExpenseDaily'
   | 'perfPhrases'
-  | 'analyticsData';
+  | 'analyticsData'
+  | 'clusters'
+  | 'warehouseStocks';
 
 export type SyncJobStatus = 'pending' | 'running' | 'success' | 'partial' | 'error';
 
@@ -465,6 +481,127 @@ export const ozonPerfCpoDaily = pgTable(
   ],
 );
 
+/**
+ * Дневной агрегат расхода по кампаниям из Performance API
+ * `GET /api/client/statistics/expense`. Эталонный источник total
+ * (включает SKU/SEARCH_PROMO/ALL_SKU_PROMO/BANNER/VIDEO_BANNER + бонусы) —
+ * именно эту цифру селлер видит в рекламном кабинете Ozon.
+ *
+ * Используется как primary `adsRub` в KPI/analytics, с fallback на
+ * CPC (`ozon_perf_sku_stats`) + CPO (`ozon_perf_cpo_daily`) при отсутствии
+ * данных.
+ */
+export const ozonPerfExpenseDaily = pgTable(
+  'ozon_perf_expense_daily',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    accountId: uuid('account_id')
+      .notNull()
+      .references(() => marketplaceAccounts.id, { onDelete: 'cascade' }),
+    /** День в Europe/Moscow (date без TZ). */
+    date: date('date').notNull(),
+    /** ID кампании из Ozon Performance (строка). */
+    campaignId: varchar('campaign_id', { length: 50 }).notNull(),
+    /** advObjectType (SKU/SEARCH_PROMO/ALL_SKU_PROMO/BANNER/VIDEO_BANNER). */
+    advObjectType: varchar('adv_object_type', { length: 20 }),
+    /** Расход средств в копейках. */
+    moneySpentKopecks: bigint('money_spent_kopecks', { mode: 'number' }).notNull().default(0),
+    /** Расход бонусов в копейках. */
+    bonusSpentKopecks: bigint('bonus_spent_kopecks', { mode: 'number' }).notNull().default(0),
+    /** Итого расход (money+bonus) в копейках. */
+    totalSpentKopecks: bigint('total_spent_kopecks', { mode: 'number' }).notNull().default(0),
+    raw: jsonb('raw').$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex('ozon_perf_expense_daily_uniq').on(t.accountId, t.date, t.campaignId),
+    index('ozon_perf_expense_daily_tenant_date_idx').on(t.tenantId, t.date),
+    index('ozon_perf_expense_daily_account_date_idx').on(t.accountId, t.date),
+  ],
+);
+
+/**
+ * Справочник географических кластеров Ozon (Москва и МО, СПб,
+ * Дальний Восток…). Источник — Performance API `/api/client/cluster/list`.
+ * Используется для маппинга `warehouse_name` из Seller stock_on_warehouses
+ * в человекочитаемое название кластера.
+ */
+export const ozonClusters = pgTable(
+  'ozon_clusters',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    accountId: uuid('account_id')
+      .notNull()
+      .references(() => marketplaceAccounts.id, { onDelete: 'cascade' }),
+    /** ID кластера из Performance API. */
+    clusterId: varchar('cluster_id', { length: 50 }).notNull(),
+    clusterName: varchar('cluster_name', { length: 200 }).notNull(),
+    /** FULFILLMENT | DROPOFF | CROSSDOCK | прочее. */
+    clusterType: varchar('cluster_type', { length: 40 }),
+    /** Список warehouse_name, входящих в кластер. */
+    warehouseNames: jsonb('warehouse_names').$type<string[]>().notNull().default([]),
+    raw: jsonb('raw').$type<Record<string, unknown>>().notNull().default({}),
+    syncedAt: timestamp('synced_at').defaultNow().notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex('ozon_clusters_account_cluster_idx').on(t.accountId, t.clusterId),
+    index('ozon_clusters_tenant_idx').on(t.tenantId),
+  ],
+);
+
+/**
+ * Остатки FBO по складам из Seller `/v1/analytics/stock_on_warehouses`.
+ * Каждая строка — `(account, sku, warehouse_name)`. Кластер и его название
+ * подставляются при upsert через справочник `ozon_clusters` (если есть);
+ * иначе остаются null и UI группирует такие строки в «Без кластера».
+ */
+export const ozonWarehouseStocks = pgTable(
+  'ozon_warehouse_stocks',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    accountId: uuid('account_id')
+      .notNull()
+      .references(() => marketplaceAccounts.id, { onDelete: 'cascade' }),
+    /** SKU из Ozon (FBO). */
+    sku: varchar('sku', { length: 200 }).notNull(),
+    /** offer_id / артикул продавца. */
+    offerId: varchar('offer_id', { length: 200 }),
+    /** Название склада (например «Хоругвино»). */
+    warehouseName: varchar('warehouse_name', { length: 200 }).notNull(),
+    /** Кластер (если резолвится через ozon_clusters). */
+    clusterId: varchar('cluster_id', { length: 50 }),
+    clusterName: varchar('cluster_name', { length: 200 }),
+    clusterType: varchar('cluster_type', { length: 40 }),
+    /** Доступно к продаже. */
+    freeToSellAmount: integer('free_to_sell_amount').notNull().default(0),
+    /** Ожидается (в пути). */
+    promisedAmount: integer('promised_amount').notNull().default(0),
+    /** Зарезервировано. */
+    reservedAmount: integer('reserved_amount').notNull().default(0),
+    raw: jsonb('raw').$type<Record<string, unknown>>().notNull().default({}),
+    fetchedAt: timestamp('fetched_at').defaultNow().notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex('ozon_warehouse_stocks_uniq').on(t.accountId, t.sku, t.warehouseName),
+    index('ozon_warehouse_stocks_tenant_idx').on(t.tenantId),
+    index('ozon_warehouse_stocks_account_cluster_idx').on(t.accountId, t.clusterId),
+  ],
+);
+
 export const ozonPerfPhrases = pgTable(
   'ozon_perf_phrases',
   {
@@ -513,3 +650,9 @@ export type OzonAnalyticsDaily = typeof ozonAnalyticsDaily.$inferSelect;
 export type NewOzonAnalyticsDaily = typeof ozonAnalyticsDaily.$inferInsert;
 export type OzonPerfCpoDaily = typeof ozonPerfCpoDaily.$inferSelect;
 export type NewOzonPerfCpoDaily = typeof ozonPerfCpoDaily.$inferInsert;
+export type OzonPerfExpenseDaily = typeof ozonPerfExpenseDaily.$inferSelect;
+export type NewOzonPerfExpenseDaily = typeof ozonPerfExpenseDaily.$inferInsert;
+export type OzonCluster = typeof ozonClusters.$inferSelect;
+export type NewOzonCluster = typeof ozonClusters.$inferInsert;
+export type OzonWarehouseStock = typeof ozonWarehouseStocks.$inferSelect;
+export type NewOzonWarehouseStock = typeof ozonWarehouseStocks.$inferInsert;

@@ -118,12 +118,19 @@ function RenderOzonSearchPhrases({ instance }: BlockRenderProps) {
     return { views, clicks, orders, expense };
   }, [rows]);
   useBlockValuePublisher(instance.id, {
+    value: totals.expense,
     totalViews: totals.views,
     totalClicks: totals.clicks,
     totalOrders: totals.orders,
     totalExpenseRub: totals.expense,
     avgCtrPct: totals.views > 0 ? (totals.clicks / totals.views) * 100 : null,
     phrasesCount: rows.length,
+    label: instance.appearance?.title ?? 'Ozon · Поисковые фразы',
+    __labels:
+      'value=Расход на фразы,totalViews=Всего показов,totalClicks=Всего кликов,' +
+      'totalOrders=Заказы с фраз,totalExpenseRub=Расход на фразы,' +
+      'avgCtrPct=Средний CTR (%),phrasesCount=Уникальных фраз',
+    __money: 'value,totalExpenseRub',
   });
 
   const widths = useMemo(

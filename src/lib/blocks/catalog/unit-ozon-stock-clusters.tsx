@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { z } from 'zod';
 import { Warehouse } from 'lucide-react';
 import { Card } from '@/components/ui/card';
+import { useBlockValuePublisher } from '@/lib/blocks/values';
 import { OzonAccountSelector } from '@/components/marketplaces/ozon-account-selector';
 import type {
   BlockDef,
@@ -71,6 +72,21 @@ function RenderOzonStockClusters({ instance }: BlockRenderProps) {
     fetchData();
   }, [fetchData]);
 
+  const totalStock = useMemo(
+    () => (data?.rows ?? []).reduce((s, r) => s + r.stock, 0),
+    [data],
+  );
+
+  useBlockValuePublisher(instance.id, {
+    value: totalStock,
+    totalStock,
+    rowsCount: data?.rows.length ?? 0,
+    label: instance.appearance?.title ?? 'Ozon · Остатки по складам',
+    __labels:
+      'value=Всего остатков (шт),totalStock=Всего остатков (шт),' +
+      'rowsCount=Типов склада',
+  });
+
   return (
     <Card className="flex h-full flex-col overflow-hidden p-0">
       <div className="border-b border-border/40 px-3 py-2 text-[11px] font-medium text-muted-foreground">
@@ -134,9 +150,9 @@ function SettingsForm({ config, onChange }: BlockSettingsFormProps) {
 
 export const UnitOzonStockClustersBlock: BlockDef = {
   type: 'unit.ozon-stock-clusters',
-  displayName: 'Ozon · Остатки по складам',
+  displayName: 'Ozon · Остатки по типу склада',
   description:
-    'Распределение текущих остатков по типу склада: FBO (Ozon), FBS (продавец), Cross-border.',
+    'Распределение текущих остатков по типу склада: FBO (Ozon), FBS (продавец), Cross-border. Для географических кластеров используйте блок «Остатки по кластерам».',
   category: 'tables',
   icon: Warehouse,
   defaultSize: { w: 6, h: 5 },

@@ -24,8 +24,11 @@ const STAGE_LABELS: Record<OzonStageKind, string> = {
   perfSkuStats: 'Реклама CPC/CPM (per-SKU)',
   perfCpoDaily: 'Реклама CPO (Оплата за заказ)',
   perfPhrases: 'Поисковые фразы',
+  perfExpenseDaily: 'Расход рекламы (эталон)',
   turnover: 'Оборачиваемость',
   analyticsData: 'Аналитика продаж (Seller API)',
+  clusters: 'Кластеры (география)',
+  warehouseStocks: 'Остатки по складам',
 };
 
 export function SyncAllButton() {

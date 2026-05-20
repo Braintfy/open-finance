@@ -183,6 +183,29 @@ console.log('\n# OzonAnalyticsBlockConfigSchema');
   expect(r2.primaryImage === null, 'primaryImage по умолчанию null');
 }
 
+// 12d. pinnedColumns по умолчанию = ['name'] (v0.18.20).
+{
+  const cfg = OzonAnalyticsBlockConfigSchema.parse({});
+  expect(
+    Array.isArray(cfg.pinnedColumns) && cfg.pinnedColumns.includes('name'),
+    'pinnedColumns по умолчанию закрепляет name',
+  );
+  expect(cfg.useOzonTurnover === false, 'useOzonTurnover дефолт = false');
+}
+
+// 12e. pinnedColumns кастомизируется (опция «закрепить article»).
+{
+  const cfg = OzonAnalyticsBlockConfigSchema.parse({
+    pinnedColumns: ['name', 'article'],
+    useOzonTurnover: true,
+  });
+  expect(
+    cfg.pinnedColumns.length === 2 && cfg.pinnedColumns.includes('article'),
+    'pinnedColumns поддерживает мульти-pin (name + article)',
+  );
+  expect(cfg.useOzonTurnover === true, 'useOzonTurnover опция работает');
+}
+
 console.log('\n# resolvePeriod');
 
 // 13. preset '7d' даёт 7 дней
@@ -373,6 +396,35 @@ console.log('\n# OzonAnalyticsTable column order & sort');
   const fbs = COLUMN_DEFS.find((c) => c.key === 'deliveredFbs');
   expect(fbo?.label === 'FBO', 'deliveredFbo label = FBO');
   expect(fbs?.label === 'FBS', 'deliveredFbs label = FBS');
+}
+
+// 27b. Pinned columns reordering — pinned всегда первыми.
+{
+  const byKey = new Map(COLUMN_DEFS.map((c) => [c.key, c]));
+  const enabled: TableColumnKey[] = ['sku', 'article', 'name', 'revenueRub'];
+  const pinned: TableColumnKey[] = ['name'];
+  // Same algorithm as in OzonAnalyticsTable.
+  const ordered = [
+    ...pinned.filter((k) => enabled.includes(k)),
+    ...enabled.filter((k) => !pinned.includes(k)),
+  ];
+  expect(
+    ordered.join(',') === 'name,sku,article,revenueRub',
+    'pinned name выносится в начало',
+  );
+
+  // Когда пин на двух колонках — порядок pinned сохраняется.
+  const pinned2: TableColumnKey[] = ['name', 'article'];
+  const ordered2 = [
+    ...pinned2.filter((k) => enabled.includes(k)),
+    ...enabled.filter((k) => !pinned2.includes(k)),
+  ];
+  expect(
+    ordered2.join(',') === 'name,article,sku,revenueRub',
+    'multi-pin — порядок pinned [name,article] сохраняется',
+  );
+  // sanity: byKey не должен потерять метаданные после переупорядочивания.
+  for (const key of ordered2) expect(byKey.has(key), `byKey знает ${key}`);
 }
 
 // 28. sort=null → pass-through (rows возвращаются как есть).

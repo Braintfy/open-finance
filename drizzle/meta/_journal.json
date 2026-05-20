@@ -15,6 +15,13 @@
       "when": 1778971605615,
       "tag": "0001_smart_george_stacy",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1779269265784,
+      "tag": "0002_wise_doomsday",
+      "breakpoints": true
     }
   ]
 }

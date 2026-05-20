@@ -5,11 +5,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { z } from 'zod';
-import { AlertTriangle, LineChart as LineIcon } from 'lucide-react';
+import { AlertTriangle, LineChart as LineIcon, SlidersHorizontal } from 'lucide-react';
+import { useBlockValuePublisher } from '@/lib/blocks/values';
 import { Card } from '@/components/ui/card';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
-import { ChartShell, type ChartSeries } from '@/components/blocks/chart-shell';
+import { ChartShell, type ChartSeries, type ChartYAxis } from '@/components/blocks/chart-shell';
 import {
   PeriodPicker,
   resolvePeriod,
@@ -51,12 +52,17 @@ function parseConfig(raw: unknown): OzonChartBlockConfig {
   return OzonChartBlockConfigSchema.parse(raw ?? {});
 }
 
-const SERIES_DEFS: Record<keyof OzonChartBlockConfig['visibleSeries'], { label: string; color: string; yAxisId?: 'left' | 'right' }> = {
-  revenueRub: { label: 'Выручка ₽', color: '#10b981' },
-  orders: { label: 'Заказы', color: '#0ea5e9' },
-  adsRub: { label: 'Расход ₽', color: '#f43f5e' },
-  drrPct: { label: 'ДРР %', color: '#f59e0b', yAxisId: 'right' },
-  aovRub: { label: 'Средний чек ₽', color: '#8b5cf6' },
+type SeriesKey = keyof OzonChartBlockConfig['visibleSeries'];
+
+const SERIES_DEFS: Record<
+  SeriesKey,
+  { label: string; color: string; yAxisId: 'rub' | 'orders' | 'pct'; isMoney: boolean }
+> = {
+  revenueRub: { label: 'Выручка ₽', color: '#10b981', yAxisId: 'rub', isMoney: true },
+  orders: { label: 'Заказы', color: '#0ea5e9', yAxisId: 'orders', isMoney: false },
+  adsRub: { label: 'Расход ₽', color: '#f43f5e', yAxisId: 'rub', isMoney: true },
+  drrPct: { label: 'ДРР %', color: '#f59e0b', yAxisId: 'pct', isMoney: false },
+  aovRub: { label: 'Средний чек ₽', color: '#8b5cf6', yAxisId: 'rub', isMoney: true },
 };
 
 function formatRubShort(value: number): string {
@@ -65,8 +71,14 @@ function formatRubShort(value: number): string {
   return Math.round(value).toString();
 }
 
-function RenderOzonChart({ instance }: BlockRenderProps) {
+function formatIntShort(value: number): string {
+  if (Math.abs(value) >= 1_000) return (value / 1_000).toFixed(1) + 'K';
+  return Math.round(value).toString();
+}
+
+function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
   const config = useMemo(() => parseConfig(instance.config), [instance.config]);
+  const [metricsOpen, setMetricsOpen] = useState(false);
   const [period, setPeriod] = useState<PeriodValue>({
     preset: config.periodPreset as PeriodPreset,
     customFrom: config.customFrom,
@@ -136,23 +148,95 @@ function RenderOzonChart({ instance }: BlockRenderProps) {
 
   const series: ChartSeries[] = useMemo(() => {
     const out: ChartSeries[] = [];
-    for (const key of Object.keys(config.visibleSeries) as Array<
-      keyof OzonChartBlockConfig['visibleSeries']
-    >) {
+    for (const key of Object.keys(config.visibleSeries) as SeriesKey[]) {
       if (!config.visibleSeries[key]) continue;
       const def = SERIES_DEFS[key];
+      // Revenue — area для эффекта «градиента под линией» из референса;
+      // adsRub/orders — остаются типом config.chartType (line/area/bar).
+      const type =
+        key === 'revenueRub' && config.chartType === 'line' ? 'area' : config.chartType;
       out.push({
         key,
         label: def.label,
         color: def.color,
-        type: config.chartType,
+        type,
         yAxisId: def.yAxisId,
       });
     }
     return out;
   }, [config.visibleSeries, config.chartType]);
 
-  const showRight = useMemo(() => series.some((s) => s.yAxisId === 'right'), [series]);
+  // Цветные Y-оси: одна на каждый «масштаб». colored: true для основной серии
+  // соответствующего масштаба, чтобы ticks/axisLine были цветные.
+  const yAxes: ChartYAxis[] = useMemo(() => {
+    const used = new Set(series.map((s) => s.yAxisId as 'rub' | 'orders' | 'pct'));
+    const axes: ChartYAxis[] = [];
+    if (used.has('rub')) {
+      const primary = series.find((s) => s.yAxisId === 'rub');
+      axes.push({
+        id: 'rub',
+        color: primary?.color ?? '#10b981',
+        orientation: 'left',
+        colored: true,
+        formatter: (v) => formatRubShort(v),
+      });
+    }
+    if (used.has('orders')) {
+      axes.push({
+        id: 'orders',
+        color: '#0ea5e9',
+        orientation: 'right',
+        colored: true,
+        formatter: (v) => formatIntShort(v),
+      });
+    }
+    if (used.has('pct')) {
+      axes.push({
+        id: 'pct',
+        color: '#f59e0b',
+        orientation: 'right',
+        colored: true,
+        formatter: (v) => `${v.toFixed(0)}%`,
+      });
+    }
+    return axes;
+  }, [series]);
+
+  const totals = useMemo(() => {
+    if (!data) return { revenue: 0, orders: 0, ads: 0 };
+    let revenue = 0;
+    let orders = 0;
+    let ads = 0;
+    for (const p of data.points) {
+      revenue += p.revenueRub ?? 0;
+      orders += p.orders ?? 0;
+      ads += p.adsRub ?? 0;
+    }
+    return { revenue, orders, ads };
+  }, [data]);
+
+  useBlockValuePublisher(instance.id, {
+    value: totals.revenue * 100,
+    revenue: totals.revenue * 100,
+    ads: totals.ads * 100,
+    orders: totals.orders,
+    drr: totals.revenue > 0 ? (totals.ads / totals.revenue) * 100 : 0,
+    label: instance.appearance?.title ?? 'Ozon · Динамика',
+    __money: 'value,revenue,ads',
+    __labels:
+      'value=Выручка / период,revenue=Выручка / период,ads=Реклама / период,' +
+      'orders=Заказы / период,drr=ДРР %',
+  });
+
+  const enabledCount = Object.values(config.visibleSeries).filter(Boolean).length;
+  const totalCount = Object.keys(SERIES_DEFS).length;
+
+  function patchSeries(key: SeriesKey, on: boolean) {
+    onConfigChange?.({
+      ...config,
+      visibleSeries: { ...config.visibleSeries, [key]: on },
+    } as unknown as Record<string, unknown>);
+  }
 
   return (
     <Card className="flex h-full flex-col overflow-hidden p-3">
@@ -169,6 +253,63 @@ function RenderOzonChart({ instance }: BlockRenderProps) {
           <option value="week">по неделям</option>
           <option value="month">по месяцам</option>
         </select>
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setMetricsOpen((v) => !v)}
+            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-input bg-background px-2 text-[11px] text-foreground hover:border-primary/40"
+          >
+            <SlidersHorizontal className="h-3 w-3" />
+            Метрики ({enabledCount}/{totalCount})
+          </button>
+          {metricsOpen && (
+            <>
+              <button
+                aria-hidden
+                tabIndex={-1}
+                className="fixed inset-0 z-10 cursor-default"
+                onClick={() => setMetricsOpen(false)}
+              />
+              <div className="absolute left-0 top-full z-20 mt-1 w-60 rounded-md border border-border/60 bg-card p-2 shadow-lg">
+                <div className="mb-1 px-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+                  Видимые серии
+                </div>
+                <div className="space-y-1">
+                  {(Object.keys(SERIES_DEFS) as SeriesKey[]).map((key) => {
+                    const def = SERIES_DEFS[key];
+                    const on = config.visibleSeries[key];
+                    return (
+                      <label
+                        key={key}
+                        className="flex cursor-pointer items-center justify-between gap-2 rounded px-1 py-1 text-[11px] hover:bg-accent"
+                      >
+                        <span className="flex items-center gap-1.5">
+                          <span
+                            className="h-2 w-2 shrink-0 rounded-full"
+                            style={{ backgroundColor: def.color }}
+                          />
+                          {def.label}
+                        </span>
+                        <Switch
+                          checked={on}
+                          onCheckedChange={(next) => patchSeries(key, next)}
+                        />
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+        {data?.adsSource === 'expense' && (
+          <span
+            className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+            title="Расход — эталон Performance API /statistics/expense (все типы кампаний + бонусы)."
+          >
+            Эталон Ads
+          </span>
+        )}
         {data?.ordersSource === 'orders-fallback' && (
           <span
             className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950 dark:text-amber-300"
@@ -202,10 +343,19 @@ function RenderOzonChart({ instance }: BlockRenderProps) {
             data={data.points}
             series={series}
             xKey="date"
-            height={260}
-            showRightAxis={showRight}
-            formatY={(v) => formatRubShort(v)}
-            formatYRight={(v) => v.toFixed(0) + '%'}
+            height={380}
+            variant="rich"
+            yAxes={yAxes}
+            formatTooltipLabel={(label) => {
+              if (typeof label !== 'string') return String(label ?? '');
+              const d = new Date(label);
+              if (Number.isNaN(d.getTime())) return label;
+              return d.toLocaleDateString('ru-RU', {
+                day: '2-digit',
+                month: 'short',
+                year: 'numeric',
+              });
+            }}
             formatTooltipValue={(v, name) => {
               const num = Number(v);
               if (!Number.isFinite(num)) return String(v);

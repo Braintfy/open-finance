@@ -233,6 +233,188 @@ export async function downloadReport(
 }
 
 // ---------------------------------------------------------------------------
+// /api/client/statistics/expense — эталонный отчёт расхода по кампаниям.
+// ---------------------------------------------------------------------------
+//
+// Этот endpoint отдаёт **per-day per-campaign** агрегат расхода **по всем
+// типам кампаний** (SKU/SEARCH_PROMO/ALL_SKU_PROMO/BANNER/VIDEO_BANNER),
+// включая бонусы/абонент-плату. Именно эту цифру видит селлер в Ozon
+// рекламном кабинете в разделе «Расход» и именно её мы используем как
+// эталон store-total для adsRub.
+//
+// Возвращает JSON со списком кампаний и массивом дневных значений.
+// См. docs.ozon.ru/api/performance → Statistics/Expense.
+
+const ExpenseDailyValueSchema = z
+  .object({
+    date: z.string().optional(),
+    moneySpent: z.string().or(z.number()).optional(),
+    bonusSpent: z.string().or(z.number()).optional(),
+    total: z.string().or(z.number()).optional(),
+  })
+  .passthrough();
+
+const ExpenseDailyCampaignSchema = z
+  .object({
+    campaignId: z
+      .string()
+      .or(z.number().transform((n) => String(n)))
+      .optional(),
+    title: z.string().optional(),
+    advObjectType: z.string().optional(),
+    rows: z.array(ExpenseDailyValueSchema).optional(),
+    values: z.array(ExpenseDailyValueSchema).optional(),
+  })
+  .passthrough();
+
+const ExpenseDailyResponseSchema = z
+  .object({
+    list: z.array(ExpenseDailyCampaignSchema).optional(),
+    campaigns: z.array(ExpenseDailyCampaignSchema).optional(),
+    items: z.array(ExpenseDailyCampaignSchema).optional(),
+  })
+  .passthrough();
+
+export type ExpenseDailyRow = {
+  date: string; // YYYY-MM-DD
+  campaignId: string | null;
+  advObjectType: string | null;
+  moneySpentRub: number;
+  bonusSpentRub: number;
+  totalSpentRub: number;
+};
+
+/**
+ * Запрашивает дневной расход по всем кампаниям через
+ * `GET /api/client/statistics/expense`. Возвращает плоский массив строк
+ * с уже нормализованной датой `YYYY-MM-DD`.
+ *
+ * Эталонный источник total расхода (включает банеры/видео/all_sku_promo и
+ * бонусы) — используется как primary `adsRub` в KPI и аналитике.
+ */
+export async function getExpenseDaily(
+  client: OzonPerformanceClient,
+  args: { dateFrom: string; dateTo: string; campaignIds?: string[] },
+): Promise<ExpenseDailyRow[]> {
+  const params: Record<string, string | undefined> = {
+    dateFrom: args.dateFrom,
+    dateTo: args.dateTo,
+    from: toRfc3339(args.dateFrom, false),
+    to: toRfc3339(args.dateTo, true),
+  };
+  if (args.campaignIds && args.campaignIds.length > 0) {
+    // Ozon принимает несколько campaignId в query — повторяющимися параметрами.
+    // Поскольку OzonPerformanceClient.get принимает плоский объект,
+    // CSV-список через запятую — наиболее устойчивый формат (если API
+    // не примет, парсер просто отдаст пустой list и мы получим warning).
+    params['campaignIds'] = args.campaignIds.join(',');
+  }
+  const data = (await client.get(
+    '/api/client/statistics/expense',
+    params,
+    ExpenseDailyResponseSchema,
+  )) as
+    | {
+        list?: Array<z.infer<typeof ExpenseDailyCampaignSchema>>;
+        campaigns?: Array<z.infer<typeof ExpenseDailyCampaignSchema>>;
+        items?: Array<z.infer<typeof ExpenseDailyCampaignSchema>>;
+      }
+    | undefined;
+
+  const campaigns = data?.list ?? data?.campaigns ?? data?.items ?? [];
+  const out: ExpenseDailyRow[] = [];
+  for (const camp of campaigns) {
+    const rows = camp.rows ?? camp.values ?? [];
+    for (const r of rows) {
+      const date = normalizeDate(r.date ?? null);
+      if (!date) continue;
+      const moneySpent = parseRuNumber(String(r.moneySpent ?? ''));
+      const bonusSpent = parseRuNumber(String(r.bonusSpent ?? ''));
+      const total = r.total !== undefined
+        ? parseRuNumber(String(r.total))
+        : moneySpent + bonusSpent;
+      out.push({
+        date,
+        campaignId: camp.campaignId ?? null,
+        advObjectType: camp.advObjectType ?? null,
+        moneySpentRub: moneySpent,
+        bonusSpentRub: bonusSpent,
+        totalSpentRub: total,
+      });
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// /api/client/cluster/list — справочник кластеров и складов.
+// ---------------------------------------------------------------------------
+//
+// Возвращает кластеры (географические объединения складов: Москва и МО,
+// СПб, Дальний Восток…) и список складов в каждом кластере. Используется
+// для маппинга `warehouse_name` из Seller `stock_on_warehouses` в
+// человекочитаемое название кластера.
+
+const ClusterWarehouseSchema = z
+  .object({
+    id: z.string().or(z.number()).optional(),
+    name: z.string().optional(),
+    type: z.string().optional(),
+  })
+  .passthrough();
+
+const ClusterSchema = z
+  .object({
+    id: z.string().or(z.number()).optional(),
+    name: z.string().optional(),
+    type: z.string().optional(),
+    warehouses: z.array(ClusterWarehouseSchema).optional(),
+  })
+  .passthrough();
+
+const ClusterListResponseSchema = z
+  .object({
+    list: z.array(ClusterSchema).optional(),
+    clusters: z.array(ClusterSchema).optional(),
+  })
+  .passthrough();
+
+export type PerfCluster = {
+  clusterId: string;
+  clusterName: string;
+  clusterType: string | null;
+  warehouseNames: string[];
+};
+
+export async function getClusterList(
+  client: OzonPerformanceClient,
+): Promise<PerfCluster[]> {
+  const data = (await client.get(
+    '/api/client/cluster/list',
+    undefined,
+    ClusterListResponseSchema,
+  )) as
+    | { list?: Array<z.infer<typeof ClusterSchema>>; clusters?: Array<z.infer<typeof ClusterSchema>> }
+    | undefined;
+  const list = data?.list ?? data?.clusters ?? [];
+  const out: PerfCluster[] = [];
+  for (const c of list) {
+    const id = c.id !== undefined ? String(c.id) : '';
+    if (!id) continue;
+    const warehouses = (c.warehouses ?? [])
+      .map((w) => (w.name ?? '').trim())
+      .filter((n) => n.length > 0);
+    out.push({
+      clusterId: id,
+      clusterName: (c.name ?? '').trim() || `Кластер ${id}`,
+      clusterType: c.type ?? null,
+      warehouseNames: warehouses,
+    });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // /api/client/statistics/campaign/media — медиа-статистика по кампаниям
 // ---------------------------------------------------------------------------
 

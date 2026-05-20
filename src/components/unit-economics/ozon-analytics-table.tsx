@@ -290,6 +290,7 @@ function ProductThumb({ url, name }: { url: string | null; name: string }) {
 export function OzonAnalyticsTable({
   rows,
   enabledColumns,
+  pinnedColumns = [],
   onReorderColumns,
   sort,
   onSortChange,
@@ -298,9 +299,15 @@ export function OzonAnalyticsTable({
   showProductImage = false,
   showDrrColor = true,
   showStockColor = true,
+  useOzonTurnover = false,
 }: {
   rows: OzonAnalyticsRow[];
   enabledColumns: TableColumnKey[];
+  /**
+   * Закреплённые слева колонки (sticky). Они всегда идут первыми в таблице,
+   * не участвуют в DnD-сортировке и имеют `position: sticky; left: …`.
+   */
+  pinnedColumns?: TableColumnKey[];
   /**
    * Колбек для DnD-перестановки колонок. Получает новый порядок ключей.
    * Если не передан — DnD-handles не рендерятся (read-only).
@@ -316,18 +323,36 @@ export function OzonAnalyticsTable({
   showDrrColor?: boolean;
   /** Цветная подсветка ячейки «Остаток» и «Дней». По умолчанию true. */
   showStockColor?: boolean;
+  /**
+   * Использовать `daysOfStockOzon` из Ozon Seller Turnover вместо
+   * расчётного `daysOfStock = stock / salesPerDay`. Если у строки нет
+   * значения Ozon — fallback на расчётный.
+   */
+  useOzonTurnover?: boolean;
 }) {
   // Порядок колонок задаётся `enabledColumns` (это `config.visibleColumns`
-  // блока). Раньше brался из COLUMN_DEFS, что игнорировало пользовательскую
-  // перестановку через DnD.
+  // блока). Закреплённые (`pinnedColumns`) всегда идут первыми в указанном
+  // порядке — даже если в enabledColumns они стоят в другом месте.
+  const orderedKeys = useMemo<TableColumnKey[]>(() => {
+    const pinnedSet = new Set(pinnedColumns);
+    const remaining = enabledColumns.filter((k) => !pinnedSet.has(k));
+    // pinnedColumns берём ТОЛЬКО те, которые есть в enabledColumns —
+    // иначе закреплённая «скрытая» колонка показалась бы в шапке.
+    const enabledSet = new Set(enabledColumns);
+    const pins = pinnedColumns.filter((k) => enabledSet.has(k));
+    return [...pins, ...remaining];
+  }, [enabledColumns, pinnedColumns]);
+
   const columns = useMemo(() => {
     const byKey = new Map<TableColumnKey, ColumnDef>(
       COLUMN_DEFS.map((c) => [c.key, c]),
     );
-    return enabledColumns
+    return orderedKeys
       .map((key) => byKey.get(key))
       .filter((c): c is ColumnDef => Boolean(c));
-  }, [enabledColumns]);
+  }, [orderedKeys]);
+
+  const pinnedSet = useMemo(() => new Set(pinnedColumns), [pinnedColumns]);
 
   // sort=null значит «не сортировать» — отдаём rows как пришло из API
   // (естественный порядок: revenue desc по умолчанию из бэкенда).
@@ -392,12 +417,19 @@ export function OzonAnalyticsTable({
       if (!onReorderColumns) return;
       const { active, over } = e;
       if (!over || active.id === over.id) return;
+      // Pinned колонки не двигаются — но drag над ними возможен.
+      if (
+        pinnedSet.has(active.id as TableColumnKey) ||
+        pinnedSet.has(over.id as TableColumnKey)
+      ) {
+        return;
+      }
       const oldIdx = enabledColumns.indexOf(active.id as TableColumnKey);
       const newIdx = enabledColumns.indexOf(over.id as TableColumnKey);
       if (oldIdx < 0 || newIdx < 0) return;
       onReorderColumns(arrayMove(enabledColumns, oldIdx, newIdx) as TableColumnKey[]);
     },
-    [enabledColumns, onReorderColumns],
+    [enabledColumns, onReorderColumns, pinnedSet],
   );
 
   // Cycle: none → desc → asc → none. Третий клик по той же колонке сбрасывает
@@ -417,6 +449,19 @@ export function OzonAnalyticsTable({
 
   const totalWidth = columns.reduce((sum, col) => sum + (colWidths[col.key] ?? col.defaultPx), 0);
 
+  // Считаем cumulative left offset для каждой sticky-колонки.
+  // Только подряд идущие в начале pinned-колонки получают sticky.
+  const stickyOffsets = useMemo(() => {
+    const out = new Map<TableColumnKey, number>();
+    let acc = 0;
+    for (const col of columns) {
+      if (!pinnedSet.has(col.key)) break;
+      out.set(col.key, acc);
+      acc += colWidths[col.key] ?? col.defaultPx;
+    }
+    return out;
+  }, [columns, pinnedSet, colWidths]);
+
   return (
     <div className="relative w-full">
       <table className="border-collapse text-[12px]" style={{ width: `${totalWidth}px`, tableLayout: 'fixed' }}>
@@ -434,6 +479,13 @@ export function OzonAnalyticsTable({
                 {columns.map((col) => {
                   const active = sort?.key === col.key;
                   const w = colWidths[col.key] ?? col.defaultPx;
+                  const stickyLeft = stickyOffsets.get(col.key);
+                  const isPinned = stickyLeft !== undefined;
+                  // Последняя из подряд идущих pinned-колонок получает
+                  // визуальную границу (тень справа), чтобы отделить
+                  // sticky-блок от скроллящейся таблицы.
+                  const isLastPinned =
+                    isPinned && !stickyOffsets.has(columns[columns.indexOf(col) + 1]?.key);
                   return (
                     <SortableHeaderCell
                       key={col.key}
@@ -441,7 +493,9 @@ export function OzonAnalyticsTable({
                       width={w}
                       active={active}
                       sortDir={sort?.dir}
-                      draggable={Boolean(onReorderColumns)}
+                      draggable={Boolean(onReorderColumns) && !isPinned}
+                      stickyLeft={stickyLeft}
+                      isLastPinned={isLastPinned}
                       onSortClick={() => toggleSort(col.key)}
                       onResizeStart={(e) => handleResizeStart(e, col.key)}
                     />
@@ -612,13 +666,53 @@ export function OzonAnalyticsTable({
                           formatInt(stock)
                         );
                         break;
-                      case 'daysOfStock':
-                        body = row.daysOfStock !== null ? `${row.daysOfStock}` : '—';
-                        extraClass =
-                          showStockColor && (st === 'danger' || st === 'warning')
-                            ? TONE_CLASSES[st]
-                            : '';
+                      case 'daysOfStock': {
+                        const effectiveDays =
+                          useOzonTurnover && row.daysOfStockOzon !== null && row.daysOfStockOzon !== undefined
+                            ? row.daysOfStockOzon
+                            : row.daysOfStock;
+                        const sourceLabel =
+                          useOzonTurnover && row.daysOfStockOzon !== null && row.daysOfStockOzon !== undefined
+                            ? 'Ozon Turnover'
+                            : 'расчёт stock / salesPerDay';
+                        if (effectiveDays === null) {
+                          body = (
+                            <span
+                              className="text-muted-foreground"
+                              title={
+                                stock > 0
+                                  ? 'Нет продаж за период — расчёт «дней хватит» невозможен. Возьмите большее окно или включите fallback на Ozon Turnover в настройках.'
+                                  : 'Остаток = 0 — дней хватит = 0.'
+                              }
+                            >
+                              —
+                            </span>
+                          );
+                        } else {
+                          const tone = stockTone(effectiveDays, stock);
+                          const displayDays = Number.isInteger(effectiveDays)
+                            ? effectiveDays
+                            : Math.round(effectiveDays * 10) / 10;
+                          body = showStockColor ? (
+                            <span
+                              className={cn(
+                                'inline-flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-[11px] font-medium',
+                                TONE_BG[tone],
+                                TONE_CLASSES[tone],
+                              )}
+                              title={`Остаток ${formatInt(stock)} шт, продаж/день ${(row.qtyDelivered / Math.max(periodDays, 1)).toFixed(1)}. Хватит на ${displayDays} дн. (${sourceLabel})`}
+                            >
+                              {displayDays}
+                              <span className="opacity-70">дн.</span>
+                            </span>
+                          ) : (
+                            <span className="tabular-nums" title={sourceLabel}>
+                              {displayDays} <span className="opacity-70">дн.</span>
+                            </span>
+                          );
+                        }
                         break;
+                      }
                       case 'buyoutPct':
                         body = formatPct(row.buyoutPct);
                         break;
@@ -647,6 +741,19 @@ export function OzonAnalyticsTable({
                         body = formatPct(salesShareVal);
                         break;
                     }
+                    const stickyLeft = stickyOffsets.get(col.key);
+                    const isPinned = stickyLeft !== undefined;
+                    const isLastPinned =
+                      isPinned && !stickyOffsets.has(columns[columns.indexOf(col) + 1]?.key);
+                    const cellStyle: React.CSSProperties = isPinned
+                      ? {
+                          position: 'sticky',
+                          left: stickyLeft,
+                          zIndex: 10,
+                          backgroundColor: 'hsl(var(--card))',
+                          boxShadow: isLastPinned ? '2px 0 4px -2px rgba(0,0,0,0.08)' : undefined,
+                        }
+                      : {};
                     return (
                       <td
                         key={col.key}
@@ -655,6 +762,7 @@ export function OzonAnalyticsTable({
                           col.align === 'right' ? 'text-right' : 'text-left',
                           extraClass,
                         )}
+                        style={cellStyle}
                       >
                         {body}
                       </td>
@@ -681,6 +789,8 @@ function SortableHeaderCell({
   active,
   sortDir,
   draggable,
+  stickyLeft,
+  isLastPinned,
   onSortClick,
   onResizeStart,
 }: {
@@ -689,17 +799,31 @@ function SortableHeaderCell({
   active: boolean;
   sortDir: 'asc' | 'desc' | undefined;
   draggable: boolean;
+  /** Если задан — колонка sticky слева на этом offset (px). */
+  stickyLeft?: number;
+  /** Эта колонка — последняя из sticky-блока (нужна для box-shadow границы). */
+  isLastPinned?: boolean;
   onSortClick: () => void;
   onResizeStart: (e: React.MouseEvent) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id: col.key });
+    useSortable({ id: col.key, disabled: !draggable });
+  const isPinned = stickyLeft !== undefined;
   const style: React.CSSProperties = {
     width: `${width}px`,
     transform: CSS.Translate.toString(transform),
     transition,
-    zIndex: isDragging ? 50 : undefined,
+    zIndex: isDragging ? 50 : isPinned ? 30 : undefined,
     opacity: isDragging ? 0.85 : undefined,
+    ...(isPinned
+      ? {
+          position: 'sticky',
+          left: stickyLeft,
+          // shadow на правом крае последней pinned колонки.
+          boxShadow: isLastPinned ? '2px 0 4px -2px rgba(0,0,0,0.08)' : undefined,
+          backgroundColor: 'hsl(var(--card))',
+        }
+      : {}),
   };
   const sortHint = col.sortable
     ? `${col.hint ?? col.label} · клик: убывание → возрастание → без сортировки`

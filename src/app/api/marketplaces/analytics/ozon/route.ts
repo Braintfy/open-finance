@@ -13,6 +13,7 @@ import {
   ozonTransactions,
   ozonPerfSkuStats,
   ozonPerfCpoDaily,
+  ozonPerfExpenseDaily,
   ozonAnalyticsDaily,
 } from '@/lib/db/schema/marketplaces';
 import type { OzonAnalyticsRow } from '@/lib/blocks/catalog/unit-ozon-analytics-types';
@@ -43,7 +44,7 @@ export type OzonAnalyticsResponse = {
     productsWithSales: number;
   };
   period: { from: string; to: string };
-  adsSource: 'performance' | 'transactions-heuristic' | 'none';
+  adsSource: 'expense' | 'performance' | 'transactions-heuristic' | 'none';
   /** Источник данных продаж: 'analytics-api' = ozon_analytics_daily, 'orders-fallback' = ozon_orders. */
   ordersSource: 'analytics-api' | 'orders-fallback';
   /** Есть CPO расход в периоде (влияет на UI бейдж ≅). */
@@ -115,6 +116,7 @@ export async function GET(req: NextRequest) {
     const accountCondTx = accountId ? sql`AND tx.account_id = ${accountId}` : sql``;
     const accountCondPerf = accountId ? sql`AND ps.account_id = ${accountId}` : sql``;
     const accountCondCpo = accountId ? sql`AND cd.account_id = ${accountId}` : sql``;
+    const accountCondExp = accountId ? sql`AND ex.account_id = ${accountId}` : sql``;
     const accountCondAnalytics = accountId ? sql`AND ad.account_id = ${accountId}` : sql``;
     const accountCondScheme = accountId ? sql`AND o2.account_id = ${accountId}` : sql``;
     const accountCondUp = accountId
@@ -137,6 +139,23 @@ export async function GET(req: NextRequest) {
       ? (cpoResult as CpoTotalRow[])
       : (((cpoResult as unknown) as { rows: CpoTotalRow[] }).rows ?? []);
     const cpoTotalRub = Number(cpoTotalRows[0]?.ads_kopecks ?? 0) / 100;
+
+    // Эталон Performance API — `/statistics/expense` (покрывает все типы кампаний
+    // + бонусы). Если есть данные — используем как primary total adsRub
+    // вместо CPC+CPO суммы. См. ozon_perf_expense_daily.
+    const expenseResult = await db.execute<CpoTotalRow>(sql`
+      SELECT COALESCE(SUM(ex.total_spent_kopecks), 0)::bigint AS ads_kopecks
+      FROM ${ozonPerfExpenseDaily} ex
+      WHERE ex.tenant_id = ${session.tenantId}
+        ${accountCondExp}
+        AND ex.date >= ${fromIso}::date
+        AND ex.date < ${toIso}::date
+    `);
+    const expenseTotalRows: CpoTotalRow[] = Array.isArray(expenseResult)
+      ? (expenseResult as CpoTotalRow[])
+      : (((expenseResult as unknown) as { rows: CpoTotalRow[] }).rows ?? []);
+    const expenseTotalRub = Number(expenseTotalRows[0]?.ads_kopecks ?? 0) / 100;
+    const hasExpenseData = expenseTotalRub > 0;
 
     // Определяем источник рекламных данных: perf_sku_stats (primary) → transactions (fallback).
     type AdsCheckRow = { cnt: number };
@@ -210,9 +229,11 @@ export async function GET(req: NextRequest) {
         GROUP BY tx.sku
       )`;
 
-    let adsSource: 'performance' | 'transactions-heuristic' | 'none' = hasPerfData
-      ? 'performance'
-      : 'none';
+    let adsSource: 'expense' | 'performance' | 'transactions-heuristic' | 'none' = hasExpenseData
+      ? 'expense'
+      : hasPerfData
+        ? 'performance'
+        : 'none';
 
     type Raw = {
       productId: string;
@@ -225,6 +246,7 @@ export async function GET(req: NextRequest) {
       price_kopecks: number;
       cost_kopecks: number;
       marketing_price_rub: number | string | null;
+      turnover_days_meta: number | string | null;
       delivered: number;
       delivered_fbo: number | string;
       delivered_fbs: number | string;
@@ -403,6 +425,7 @@ export async function GET(req: NextRequest) {
         ${unitProducts.priceKopecks} AS price_kopecks,
         ${unitProducts.costKopecks} AS cost_kopecks,
         (${unitProducts.metadata}->>'priceWithSpp')::numeric AS marketing_price_rub,
+        (${unitProducts.metadata}->>'turnoverDays')::numeric AS turnover_days_meta,
         COALESCE(ao.delivered, 0)::int AS delivered,
         COALESCE(sch.delivered_fbo, 0)::int AS delivered_fbo,
         COALESCE(sch.delivered_fbs, 0)::int AS delivered_fbs,
@@ -466,6 +489,7 @@ export async function GET(req: NextRequest) {
       adsCpcRub: number;
       buyoutPct: number | null;
       daysOfStock: number | null;
+      daysOfStockOzon: number | null;
       views: number;
       clicks: number;
       cartAdds: number;
@@ -484,6 +508,14 @@ export async function GET(req: NextRequest) {
       const velocity = qtyDelivered > 0 ? qtyDelivered / periodDays : 0;
       const daysOfStock =
         velocity > 0 ? Math.round((stockTotal / velocity) * 10) / 10 : null;
+      // Ozon Turnover: дни, как считает сам Ozon в Seller-кабинете
+      // (`/v1/analytics/turnover/stocks`). Может быть null если sync turnover
+      // не запускался или товар не покрыт.
+      const daysOfStockOzonRaw = r.turnover_days_meta;
+      const daysOfStockOzon =
+        daysOfStockOzonRaw !== null && daysOfStockOzonRaw !== undefined
+          ? Number(daysOfStockOzonRaw)
+          : null;
 
       const marketingPrice = Number(r.marketing_price_rub ?? 0);
       const basePrice = Number(r.price_kopecks ?? 0) / 100;
@@ -509,6 +541,7 @@ export async function GET(req: NextRequest) {
         adsCpcRub,
         buyoutPct,
         daysOfStock,
+        daysOfStockOzon: Number.isFinite(daysOfStockOzon as number) ? daysOfStockOzon : null,
         views: Number(r.perf_views ?? 0),
         clicks: Number(r.perf_clicks ?? 0),
         cartAdds: Number(r.perf_cart_adds ?? 0),
@@ -590,6 +623,7 @@ export async function GET(req: NextRequest) {
         drrPct,
         buyoutPct: r.buyoutPct,
         daysOfStock: r.daysOfStock,
+        daysOfStockOzon: r.daysOfStockOzon,
         views: r.views,
         clicks: r.clicks,
         cartAdds: r.cartAdds,
@@ -623,14 +657,21 @@ export async function GET(req: NextRequest) {
       },
     );
     totals.adsCpoRub = cpoTotalRub;
-    totals.adsRub = totals.adsCpcRub + cpoTotalRub;
+    // Total adsRub:
+    //  - Если есть expense_daily — это эталон (включает баннеры/видео/all_sku_promo
+    //    и бонусы), CPC+CPO считаются подмножествами.
+    //  - Иначе — CPC (per-SKU) + CPO (агрегат). Per-SKU adsRub в rows[] остаётся
+    //    CPC-only + alloc CPO пропорционально выручке (логика ниже не меняется).
+    totals.adsRub = hasExpenseData
+      ? expenseTotalRub
+      : totals.adsCpcRub + cpoTotalRub;
     totals.drrPct =
       totals.revenueRub > 0 && totals.adsRub > 0
         ? (totals.adsRub / totals.revenueRub) * 100
         : null;
 
     // Если не perf и есть ads данные → значит из транзакций.
-    if (!hasPerfData && totals.adsCpcRub > 0) {
+    if (!hasPerfData && !hasExpenseData && totals.adsCpcRub > 0) {
       adsSource = 'transactions-heuristic';
     }
     // CPO source = performance (из ozon_perf_cpo_daily).

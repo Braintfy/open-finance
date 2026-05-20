@@ -312,6 +312,21 @@ Open Finance = настраиваемый Lego-конструктор интер
 4. `scripts/test-ozon-analytics.ts` (test row factory).
 Иначе TS error на required field.
 
+### Ozon v0.18.20 — Ads expense + кластеры + pinned + days-of-stock
+
+- **Эталон Ads** (`Performance /api/client/statistics/expense`). Sync-stage `perfExpenseDaily` пишет в таблицу `ozon_perf_expense_daily`. API-маршруты (`/analytics/ozon`, `/kpi`, `/timeseries`) приоритезируют этот источник; `adsSource='expense'` отображается в UI-баннере (Аналитика, Динамика). Fallback цепочка: `expense → performance (CPC+CPO) → transactions-heuristic → none`. Подробности в `docs/OZON_ADS_GAP.md`.
+- **`SEARCH_PROMO` убран из CPC pipeline** (`perf-sku-stats.ts`) — он CPO-based, иначе двойной счёт. CPO кампании обрабатываются `perfCpoDaily`/`perfExpenseDaily`.
+- **Кластеры (география)** — таблицы `ozon_clusters` (warehouse_name → cluster), `ozon_warehouse_stocks` (per-SKU per-warehouse + resolved cluster). Sync-stages: `clusters` (Performance `/api/client/cluster/list`), `warehouseStocks` (Seller `/v1/analytics/stock_on_warehouses`). API-маршрут `/api/marketplaces/ozon/cluster-stocks-v2` JOIN-ит warehouse_name из `ozon_orders.raw` для расчёта заказов/выручки по кластеру за период.
+- **Новый блок `unit.ozon-warehouse-clusters`** (`src/lib/blocks/catalog/unit-ozon-warehouse-clusters.tsx`) — таблица с прогресс-баром «Доля, %», 3-режимная сортировка, конфигурируемые колонки в settings, publisher для модалки связей. По умолчанию в layout `marketplaces-ozon-dashboard` ниже Аналитики.
+- **Старый `unit.ozon-stock-clusters`** переименован в «Остатки по типу склада» (FBO/FBS/Cross-border). Не путать с новым.
+- **Pinned колонка в Аналитике**: `config.pinnedColumns` (default `['name']`). Sticky `left` + накопительный offset, `bg-card`, `box-shadow` разделитель, pinned не draggable. UI в settings-form.
+- **Days-of-stock**: бейдж + единица «дн.» + цветовые пороги (rose/amber/emerald) + tooltip про источник. Опц. fallback на `metadata.turnoverDays` через `config.useOzonTurnover`.
+- **Динамика — rich-вариант**: `chart-shell.tsx` имеет `variant='rich'` (gradient под area, `yAxes: ChartYAxis[]`, кастомный `RichTooltipContent`). `unit-ozon-chart.tsx`: revenue как Area, цветные axes по типу метрики, inline-кнопка «Метрики (N/M)».
+- **Модалка связей — `mergeLiveFields`** ([`src/components/unit-economics/unit-cell-binding-dialog.tsx`](src/components/unit-economics/unit-cell-binding-dialog.tsx)) — портирован из `excel-cell.tsx`. Накладывает live-значения и money-флаги на удалённые fields. Дедупликация: блоки из live-секции не дублируются из remote.
+- **`unit-ozon-analytics-queries.ts` SQL fix**: CTE `order_items` теперь выбирает `cancelled_at, returned_at` из `o` — без них FILTER в `agg_orders` давал 0.
+- **`fieldsForBlock`** в `/api/blocks/sources/route.ts` теперь возвращает реальные значения для `unit.ozon-kpi` и `unit.ozon-chart` (через `getOzonAnalyticsTotals`). Добавлены полные поля для `unit.ozon-warehouse-clusters`, `unit.ozon-stock-clusters`, `unit.ozon-campaigns`, `unit.ozon-search-phrases`.
+- **Миграция БД**: `pnpm db:generate && pnpm db:push` создаёт 3 новые таблицы. После — включить новые стейджи в Настройки → Интеграции → Ozon.
+
 ### Ozon Аналитика таблица: visibleColumns = порядок+видимость (v0.18.19)
 
 - `OzonAnalyticsTable` рендерит columns как `enabledColumns.map(key => byKey.get(key))` — порядок диктует `config.visibleColumns`, не `COLUMN_DEFS`. Та же логика в XLSX-экспорте. Backward-compat через `DEFAULT_VISIBLE_COLUMNS`.

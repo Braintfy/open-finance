@@ -71,6 +71,8 @@ export async function getOzonAnalyticsTotals(
       SELECT
         o.id,
         o.status,
+        o.cancelled_at,
+        o.returned_at,
         (it->>'offerId')::text AS offer_id,
         COALESCE(NULLIF(it->>'price', '')::numeric, 0) AS item_price_rub,
         COALESCE(NULLIF(it->>'quantity', '')::numeric, 0) AS item_qty

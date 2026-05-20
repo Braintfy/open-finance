@@ -45,6 +45,12 @@ export type OzonAnalyticsRow = {
   drrPct: number | null;
   buyoutPct: number | null;
   daysOfStock: number | null;
+  /**
+   * Дни оборачиваемости из Ozon Seller `/v1/analytics/turnover/stocks`
+   * (как считает сам Ozon в кабинете). null если sync turnover не
+   * запускался или товар не покрыт.
+   */
+  daysOfStockOzon?: number | null;
   views: number;
   clicks: number;
   cartAdds: number;
@@ -153,6 +159,51 @@ export const OzonAnalyticsBlockConfigSchema = z.object({
   showDrrColor: z.boolean().default(true),
   /** Цветная подсветка ячейки «Остаток» и «Дней». Default on. */
   showStockColor: z.boolean().default(true),
+  /**
+   * Закреплённые слева колонки (sticky). Порядок имеет значение —
+   * левее в массиве = левее на экране. По умолчанию закреплён `name`
+   * (как самая важная колонка для идентификации товара).
+   * Закреплённые колонки не участвуют в DnD-сортировке заголовков.
+   */
+  pinnedColumns: z
+    .array(
+      z.enum([
+        'article',
+        'name',
+        'sku',
+        'priceRub',
+        'costRub',
+        'marginRub',
+        'delivered',
+        'deliveredFbo',
+        'deliveredFbs',
+        'qtyDelivered',
+        'cancelled',
+        'returned',
+        'returnPct',
+        'revenueRub',
+        'adsRub',
+        'drrPct',
+        'stock',
+        'daysOfStock',
+        'buyoutPct',
+        'views',
+        'clicks',
+        'ctr',
+        'cartAdds',
+        'cpc',
+        'cpm',
+        'salesPerDay',
+        'salesShare',
+      ]),
+    )
+    .default(['name']),
+  /**
+   * Использовать `metadata.turnoverDays` (Seller `/v1/analytics/turnover/stocks`)
+   * для колонки «Дней хватит остатка» вместо расчёта `stock / salesPerDay`.
+   * Если данных нет — fallback на расчётный (старый поведение).
+   */
+  useOzonTurnover: z.boolean().default(false),
 });
 
 export type OzonAnalyticsBlockConfig = z.infer<typeof OzonAnalyticsBlockConfigSchema>;

@@ -33,9 +33,12 @@ export const OZON_FULL_STAGES = [
   'realization',
   'transactions',
   'turnover',
+  'clusters',
+  'warehouseStocks',
   'perfCampaigns',
   'perfSkuStats',
   'perfCpoDaily',
+  'perfExpenseDaily',
   'perfPhrases',
 ] as const;
 
@@ -59,10 +62,13 @@ export const DEFAULT_OZON_SYNC_SETTINGS: Required<
     | 'perfCampaigns'
     | 'perfSkuStats'
     | 'perfCpoDaily'
+    | 'perfExpenseDaily'
     | 'perfPhrases'
     | 'perfWindowDays'
     | 'analyticsData'
     | 'analyticsWindowDays'
+    | 'clusters'
+    | 'warehouseStocks'
   >
 > = {
   products: true,
@@ -81,9 +87,12 @@ export const DEFAULT_OZON_SYNC_SETTINGS: Required<
   perfCampaigns: true,
   perfSkuStats: true,
   perfCpoDaily: true,
+  perfExpenseDaily: true,
   perfPhrases: false,
   perfWindowDays: 30,
   analyticsData: true,
+  clusters: true,
+  warehouseStocks: true,
   // Без Premium даты ограничены 3 месяцами; для Premium Plus можно больше,
   // но 90 дней — разумный baseline для блока аналитики.
   analyticsWindowDays: 90,
@@ -106,10 +115,13 @@ export const OzonSyncSettingsSchema = z
     perfCampaigns: z.boolean().optional(),
     perfSkuStats: z.boolean().optional(),
     perfCpoDaily: z.boolean().optional(),
+    perfExpenseDaily: z.boolean().optional(),
     perfPhrases: z.boolean().optional(),
     perfWindowDays: z.number().int().min(1).max(365).optional(),
     analyticsData: z.boolean().optional(),
     analyticsWindowDays: z.number().int().min(1).max(365).optional(),
+    clusters: z.boolean().optional(),
+    warehouseStocks: z.boolean().optional(),
   })
   .strict();
 

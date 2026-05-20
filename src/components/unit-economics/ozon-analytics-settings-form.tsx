@@ -12,7 +12,9 @@ import {
   Link as LinkIcon,
   Loader2,
   Paintbrush,
+  Pin,
   ShoppingBag,
+  TrendingUp,
 } from 'lucide-react';
 import Link from 'next/link';
 import { Switch } from '@/components/ui/switch';
@@ -79,7 +81,18 @@ export function OzonAnalyticsSettingsForm({
     const next = on
       ? Array.from(new Set([...value.visibleColumns, key]))
       : value.visibleColumns.filter((k) => k !== key);
-    onChange({ ...value, visibleColumns: next });
+    // Если колонку отключили — выпиливаем её и из pinnedColumns тоже.
+    const nextPinned = on
+      ? value.pinnedColumns
+      : value.pinnedColumns.filter((k) => k !== key);
+    onChange({ ...value, visibleColumns: next, pinnedColumns: nextPinned });
+  }
+
+  function togglePinned(key: TableColumnKey, on: boolean) {
+    const next = on
+      ? Array.from(new Set([...value.pinnedColumns, key]))
+      : value.pinnedColumns.filter((k) => k !== key);
+    onChange({ ...value, pinnedColumns: next });
   }
 
   return (
@@ -231,6 +244,63 @@ export function OzonAnalyticsSettingsForm({
             hint="Красный <7 дней / оранжевый <14 / нейтральный <30 / зелёный ≥30."
             checked={value.showStockColor}
             onChange={(on) => onChange({ ...value, showStockColor: on })}
+          />
+        </div>
+      </section>
+
+      {/* Закреплённые колонки */}
+      <section className="space-y-1.5">
+        <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          <span className="inline-flex items-center gap-1.5">
+            <Pin className="h-3 w-3" />
+            Закреплённые колонки
+          </span>
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          Закреплённые колонки остаются видимыми при горизонтальной прокрутке.
+          Они всегда идут первыми (в указанном порядке) и не участвуют в
+          перетаскивании заголовков.
+        </p>
+        <div className="grid grid-cols-2 gap-1.5">
+          {value.visibleColumns.map((key) => {
+            const col = COLUMN_DEFS.find((c) => c.key === key);
+            if (!col) return null;
+            const isPinned = value.pinnedColumns.includes(key);
+            return (
+              <button
+                key={key}
+                type="button"
+                onClick={() => togglePinned(key, !isPinned)}
+                className={
+                  'inline-flex items-center justify-between gap-1.5 rounded-md border px-2 py-1 text-[11px] transition-colors ' +
+                  (isPinned
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-border/60 bg-background hover:bg-accent')
+                }
+              >
+                <span className="truncate">{col.label}</span>
+                {isPinned && <Pin className="h-3 w-3 shrink-0 fill-current" />}
+              </button>
+            );
+          })}
+        </div>
+      </section>
+
+      {/* Параметры расчёта */}
+      <section className="space-y-1.5">
+        <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          <span className="inline-flex items-center gap-1.5">
+            <TrendingUp className="h-3 w-3" />
+            Параметры расчёта
+          </span>
+        </div>
+        <div className="space-y-1 rounded border border-border/60 bg-card">
+          <ToggleRow
+            icon={<TrendingUp className="h-3.5 w-3.5" />}
+            label="Использовать Ozon Turnover"
+            hint="Колонка «Дней хватит остатка» берётся из Seller /v1/analytics/turnover/stocks (как в кабинете Ozon). Если данных нет — fallback на расчёт stock / salesPerDay."
+            checked={value.useOzonTurnover}
+            onChange={(on) => onChange({ ...value, useOzonTurnover: on })}
           />
         </div>
       </section>

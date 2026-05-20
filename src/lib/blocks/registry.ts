@@ -23,6 +23,7 @@ import { UnitOzonKpiBlock } from './catalog/unit-ozon-kpi';
 import { UnitOzonChartBlock } from './catalog/unit-ozon-chart';
 import { UnitOzonTopAdsBlock } from './catalog/unit-ozon-top-ads';
 import { UnitOzonStockClustersBlock } from './catalog/unit-ozon-stock-clusters';
+import { UnitOzonWarehouseClustersBlock } from './catalog/unit-ozon-warehouse-clusters';
 import { UnitOzonSearchPhrasesBlock } from './catalog/unit-ozon-search-phrases';
 import { UnitOzonCampaignsBlock } from './catalog/unit-ozon-campaigns';
 import { UnitOzonDataHealthBlock } from './catalog/unit-ozon-data-health';
@@ -126,6 +127,11 @@ const BLOCK_META: Record<
     recommendedFor: ['marketplaces-ozon-dashboard'],
     iconName: 'Warehouse',
   },
+  'unit.ozon-warehouse-clusters': {
+    tags: ['marketplace', 'analytics', 'ozon', 'inventory', 'clusters'],
+    recommendedFor: ['marketplaces-ozon-dashboard'],
+    iconName: 'Map',
+  },
   'unit.ozon-search-phrases': {
     tags: ['marketplace', 'analytics', 'ozon', 'ads', 'performance'],
     recommendedFor: ['marketplaces-ozon-dashboard'],
@@ -202,6 +208,7 @@ const ALL_BLOCKS: BlockDef[] = [
   UnitOzonChartBlock,
   UnitOzonTopAdsBlock,
   UnitOzonStockClustersBlock,
+  UnitOzonWarehouseClustersBlock,
   UnitOzonSearchPhrasesBlock,
   UnitOzonCampaignsBlock,
   UnitOzonDataHealthBlock,
@@ -390,13 +397,14 @@ export const DEFAULT_LAYOUTS: Record<string, PageLayout> = {
       { id: 'mp-ozon-kpi', type: 'unit.ozon-kpi', x: 0, y: 0, w: 12, h: 4 },
       { id: 'mp-ozon-chart', type: 'unit.ozon-chart', x: 0, y: 4, w: 12, h: 6 },
       { id: 'mp-ozon-analytics', type: 'unit.ozon-analytics', x: 0, y: 10, w: 12, h: 10 },
-      { id: 'mp-ozon-top-ads', type: 'unit.ozon-top-ads', x: 0, y: 20, w: 8, h: 6 },
-      { id: 'mp-ozon-data-health', type: 'unit.ozon-data-health', x: 8, y: 20, w: 4, h: 6 },
-      { id: 'mp-ozon-campaigns', type: 'unit.ozon-campaigns', x: 0, y: 26, w: 6, h: 6 },
-      { id: 'mp-ozon-search-phrases', type: 'unit.ozon-search-phrases', x: 6, y: 26, w: 6, h: 6 },
-      { id: 'mp-ozon-stock-clusters', type: 'unit.ozon-stock-clusters', x: 0, y: 32, w: 6, h: 5 },
-      { id: 'mp-ozon-abc', type: 'unit.ozon-abc', x: 6, y: 32, w: 6, h: 7 },
-      { id: 'mp-ozon-ai-insights', type: 'unit.ozon-ai-insights', x: 0, y: 39, w: 6, h: 6 },
+      { id: 'mp-ozon-warehouse-clusters', type: 'unit.ozon-warehouse-clusters', x: 0, y: 20, w: 12, h: 6 },
+      { id: 'mp-ozon-top-ads', type: 'unit.ozon-top-ads', x: 0, y: 26, w: 8, h: 6 },
+      { id: 'mp-ozon-data-health', type: 'unit.ozon-data-health', x: 8, y: 26, w: 4, h: 6 },
+      { id: 'mp-ozon-campaigns', type: 'unit.ozon-campaigns', x: 0, y: 32, w: 6, h: 6 },
+      { id: 'mp-ozon-search-phrases', type: 'unit.ozon-search-phrases', x: 6, y: 32, w: 6, h: 6 },
+      { id: 'mp-ozon-stock-clusters', type: 'unit.ozon-stock-clusters', x: 0, y: 38, w: 6, h: 5 },
+      { id: 'mp-ozon-abc', type: 'unit.ozon-abc', x: 6, y: 38, w: 6, h: 7 },
+      { id: 'mp-ozon-ai-insights', type: 'unit.ozon-ai-insights', x: 0, y: 45, w: 6, h: 6 },
     ],
     hiddenSections: [],
   },
