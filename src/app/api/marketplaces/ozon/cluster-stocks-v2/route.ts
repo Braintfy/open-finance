@@ -1,8 +1,12 @@
 // PURPOSE: Остатки по географическим кластерам Ozon. Источник —
-// ozon_warehouse_stocks (Seller `/v1/analytics/stock_on_warehouses`) +
-// ozon_clusters (Performance `/api/client/cluster/list` маппинг
+// ozon_warehouse_stocks (Seller `POST /v2/analytics/stock_on_warehouses`) +
+// ozon_clusters (Seller `POST /v1/cluster/list`, маппинг
 // warehouse_name → cluster). Опционально — продажи и выручка за период
 // из ozon_orders по `raw->>'warehouseName'`.
+//
+// v0.18.22: оба источника переведены на Seller API. Раньше `cluster/list`
+// ошибочно дёргали через Performance API (→ 404) и `stock_on_warehouses`
+// бил по deprecated `/v1` (→ 404).
 
 import { NextResponse, type NextRequest } from 'next/server';
 import { sql } from 'drizzle-orm';

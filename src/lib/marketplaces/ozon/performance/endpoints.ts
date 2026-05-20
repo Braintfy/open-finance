@@ -436,6 +436,36 @@ export async function getExpenseDaily(
     }
   }
 
+  // v0.18.22: расширенный warning если JSON ответил, но мы не выудили ни
+  // одной строки. Помогает отличить «реально нет данных» от «zod-парсер
+  // распарсил пустой shape» (например, если Ozon переименовал поля).
+  if (out.length === 0 && data !== undefined) {
+    const topKeys = Object.keys((data as Record<string, unknown>) ?? {});
+    const totalDailyEntries = campaigns.reduce(
+      (acc, c) =>
+        acc +
+        (c.rows?.length ?? 0) +
+        (c.values?.length ?? 0) +
+        (c.daily_results?.length ?? 0) +
+        (c.dailyResults?.length ?? 0),
+      0,
+    );
+    console.warn('[expense] /expense/json returned data but 0 parsed rows', {
+      dateRange: `${args.dateFrom}..${args.dateTo}`,
+      params,
+      topKeys,
+      campaignsCount: campaigns.length,
+      totalDailyEntries,
+      // Дамп первого кампания чтобы видеть какие поля реально пришли.
+      sampleCampaign: campaigns[0]
+        ? {
+            keys: Object.keys((campaigns[0] as unknown as Record<string, unknown>) ?? {}),
+            campaignId: campaigns[0].campaignId ?? campaigns[0].id ?? null,
+          }
+        : null,
+    });
+  }
+
   // 2. CSV fallback — на случай если Ozon вернул что-то странное / endpoint
   //    `/json` оказался недоступен / в JSON 0 строк а в кабинете расход есть.
   if (out.length === 0) {
@@ -448,18 +478,28 @@ export async function getExpenseDaily(
       );
       const csvRows = parseExpenseCsv(csvText);
       if (csvRows.length > 0) {
-        console.info('[expense] JSON empty, CSV fallback returned', csvRows.length, 'rows');
+        console.info('[expense] JSON empty → CSV fallback', {
+          rows: csvRows.length,
+          dateRange: `${args.dateFrom}..${args.dateTo}`,
+        });
         return csvRows;
       }
+      // CSV тоже пустой — это «реально нет данных» (никакой рекламы за период).
+      console.info('[expense] both JSON and CSV empty — assuming no ads spend', {
+        dateRange: `${args.dateFrom}..${args.dateTo}`,
+        params,
+        csvLen: csvText?.length ?? 0,
+      });
     } catch (e) {
       console.warn('[expense] CSV fallback failed:', e);
     }
   }
 
   if (out.length === 0) {
-    console.warn('[expense] zero rows', {
+    console.warn('[expense] zero rows (final)', {
       campaignsCount: campaigns.length,
       dateRange: `${args.dateFrom}..${args.dateTo}`,
+      hadJson: data !== undefined,
     });
   }
 
@@ -469,72 +509,13 @@ export async function getExpenseDaily(
 // parseCsvLine используется ниже (определён в основном CSV-блоке).
 
 // ---------------------------------------------------------------------------
-// /api/client/cluster/list — справочник кластеров и складов.
+// /api/client/cluster/list — УДАЛЕНО (v0.18.22).
 // ---------------------------------------------------------------------------
 //
-// Возвращает кластеры (географические объединения складов: Москва и МО,
-// СПб, Дальний Восток…) и список складов в каждом кластере. Используется
-// для маппинга `warehouse_name` из Seller `stock_on_warehouses` в
-// человекочитаемое название кластера.
-
-const ClusterWarehouseSchema = z
-  .object({
-    id: z.string().or(z.number()).optional(),
-    name: z.string().optional(),
-    type: z.string().optional(),
-  })
-  .passthrough();
-
-const ClusterSchema = z
-  .object({
-    id: z.string().or(z.number()).optional(),
-    name: z.string().optional(),
-    type: z.string().optional(),
-    warehouses: z.array(ClusterWarehouseSchema).optional(),
-  })
-  .passthrough();
-
-const ClusterListResponseSchema = z
-  .object({
-    list: z.array(ClusterSchema).optional(),
-    clusters: z.array(ClusterSchema).optional(),
-  })
-  .passthrough();
-
-export type PerfCluster = {
-  clusterId: string;
-  clusterName: string;
-  clusterType: string | null;
-  warehouseNames: string[];
-};
-
-export async function getClusterList(
-  client: OzonPerformanceClient,
-): Promise<PerfCluster[]> {
-  const data = (await client.get(
-    '/api/client/cluster/list',
-    undefined,
-    ClusterListResponseSchema,
-  )) as
-    | { list?: Array<z.infer<typeof ClusterSchema>>; clusters?: Array<z.infer<typeof ClusterSchema>> }
-    | undefined;
-  const list = data?.list ?? data?.clusters ?? [];
-  const out: PerfCluster[] = [];
-  for (const c of list) {
-    const id = c.id !== undefined ? String(c.id) : '';
-    if (!id) continue;
-    const warehouses = (c.warehouses ?? [])
-      .map((w) => (w.name ?? '').trim())
-      .filter((n) => n.length > 0);
-    out.push({
-      clusterId: id,
-      clusterName: (c.name ?? '').trim() || `Кластер ${id}`,
-      clusterType: c.type ?? null,
-      warehouseNames: warehouses,
-    });
-  }
-  return out;
-}
+// Раньше тут жил `getClusterList` для Performance API, но эндпойнт
+// `cluster/list` есть ТОЛЬКО в Seller API. Performance возвращает 404.
+// Сейчас справочник кластеров читается через
+// `getClusterListSeller` из `../endpoints.ts` (POST /v1/cluster/list).
 
 // ---------------------------------------------------------------------------
 // /api/client/statistics/campaign/media — медиа-статистика по кампаниям

@@ -1,5 +1,57 @@
 # Changelog
 
+## [0.18.22] - 2026-05-20
+
+Серия hotfixes после v0.18.21: блок «Остатки по кластерам» вернул реальные данные (Seller API v2 + Seller `cluster/list` вместо Performance), повторно починили hydration в OzonAnalyticsTable (`useId()` вместо `<table>`-обёртки — корнем был не порядок DOM, а недетерминированный `aria-describedby` id у dnd-kit), исключили текущий день из графика «Динамика» (он зануляет тренды), добавили иерархические подкатегории в модалку привязок «Аналитика Ozon», поверх KPI-блока — badge источника рекламных данных (`Эталон Ads` / `CPC+CPO` / `Реклама ≈`).
+
+### Fixed
+
+- **Блок «Остатки по кластерам» — 404 на cluster/list и stock_on_warehouses** (`src/lib/marketplaces/ozon/endpoints.ts` + `src/lib/marketplaces/ozon/performance/endpoints.ts` + `src/lib/marketplaces/ozon/sync/clusters.ts` + `src/lib/marketplaces/ozon/sync/warehouse-stocks.ts` + `src/lib/marketplaces/ozon/sync/full.ts`):
+  Корневые причины (подтверждено через документацию Ozon Performance API 2.0 + Context7):
+  - `getClusterList` дёргал `/api/client/cluster/list` через **Performance API клиент**, но эндпойнт `cluster/list` есть ТОЛЬКО в **Seller API**: `POST /v1/cluster/list`.
+  - `analyticsStockOnWarehouses` использовал `/v1/analytics/stock_on_warehouses` — путь снят с поддержки, актуальный — `POST /v2/analytics/stock_on_warehouses`.
+  Изменения:
+  - Новая функция `getClusterListSeller(client, { clusterIds?, clusterType? })` в `endpoints.ts` + zod-схема `{ clusters: [{ id, name?, type?, warehouses?, logistic_clusters? }] }`. Возвращает `ClusterListItem[]` (id/name/type/warehouseNames) — формат совместим со старым `PerfCluster`, чтобы downstream-код в `clusters-v2`-route не менялся.
+  - `OZON_API_VERSION_MAP.analyticsStockOnWarehouses`: `/v1/...` → `/v2/...`; добавлен `clusterList: '/v1/cluster/list'`.
+  - Удалены `getClusterList`/`ClusterListResponseSchema`/`ClusterSchema`/`ClusterWarehouseSchema` из Performance модуля (они там жили ошибочно).
+  - `syncClustersStage` теперь использует `ctx.client` (Seller) вместо `ctx.perfClient`; убран ранний `return` на `!ctx.perfClient`.
+  - `PERF_STAGES` больше не содержит `clusters` — стейдж не требует Performance API креды.
+- **Hydration mismatch в OzonAnalyticsTable (DndDescribedBy-N)** (`src/components/unit-economics/ozon-analytics-table.tsx`):
+  В v0.18.21 перенесли `<DndContext>` за пределы `<table>`, но warning остался: `<DndContext>` без явного `id` использует глобальный counter (`useUniqueId`), который инкрементируется в порядке монтирования и расходится между SSR (`-0`) и клиентом (`-3` после монтирования других DndContext-инстансов в drag-grid layout). Фикс: добавлен `useId()` (детерминированный SSR-safe id) → `<DndContext id={dndId} ...>`. ARIA-id теперь стабильный.
+- **«Динамика» — текущий день ломал шкалы** (`src/lib/blocks/catalog/unit-ozon-chart.tsx`):
+  Сегодняшний бакет содержит частичные данные (выручка/реклама зануляются к концу дня по мере прихода новых заказов), ломая визуальные тренды и тоталы. Решение: новый `visiblePoints = data.points.filter(p => p.date < todayLocalISO())`. На этом фильтрованном массиве считаются `ordersMax`, `totals` (revenue/orders/ads) и рендерится chart. Появился badge «Сегодня скрыт» с tooltip «Текущий день скрыт — данные не полные» рядом с другими source-бейджами.
+
+### Added
+
+- **Иерархические подкатегории в модалке связей «Аналитика Ozon»** (`src/app/api/blocks/sources/route.ts` + `src/lib/unit-economics/use-live-block-values.ts` + `src/components/unit-economics/unit-cell-binding-dialog.tsx`):
+  Раньше для блоков с одинаковым типом (например, два «Ozon · аналитика · 7 дней» и «Ozon · аналитика · 30 дней») в модалке нельзя было визуально отличить, какие поля относятся к какому периоду, и были риски смешать данные.
+  - L1 (экземпляр блока): `SourceBlock.instanceLabel: string` — `{typeLabel} · {periodLabel}{titleSuffix} — {pageLabel}`, где `periodLabel` ∈ {`Сегодня`, `Вчера`, `7 дней`, `14 дней`, `30 дней`, `Текущий месяц`, `Всё время`, `19 мая–25 мая 2026`}. Хелпер `periodPresetLabel()` парсит `cfg.periodPreset` + `customFrom/customTo`.
+  - L2 (назначение поля): `SourceField.group?: string` — `Текущий период` / `Прошлый период` / `Δ изменения` / `Top-SKU` / `Остатки` / `Метаданные`. Хелпер `groupForOzonField()` назначает группу по имени поля (`Prev$` → прошлый, `delta*` → δ, `top1*` + `avgDrr` + `maxDrr` → Top-SKU, `stock*` + `*Stock$` + `totalStockValueRub` + `skuCount` → Остатки, `label` → Метаданные, остальное → Текущий период).
+  - Декорирование группой применяется только для `unit.ozon-*` блоков (`decorateOzonGroups()`), остальные категории идут плоским списком.
+  - В UI модалки (`unit-cell-binding-dialog.tsx`): для блоков категории `Аналитика Ozon` заголовок-экземпляр кликабельный (ChevronDown/ChevronRight) и сворачивает L2-секции; внутри блока — мелкие подзаголовки `Текущий период` / `Прошлый период` / `Δ изменения` / `Top-SKU` / `Остатки` / `Метаданные` с чипами полей. Для других категорий поведение не изменилось.
+- **Badge источника рекламных данных в Ozon · KPI** (`src/lib/blocks/catalog/unit-ozon-kpi.tsx`):
+  По `data.adsSource` показываем UI-индикатор источника:
+  - `expense` → зелёный «Эталон Ads» (tooltip про Performance API `/statistics/expense` — все типы кампаний + бонусы).
+  - `performance` → синий «CPC+CPO» (CPC из perf_sku_stats + CPO из perf_cpo_daily — fallback с пометкой «запустите perfExpenseDaily для точных цифр»).
+  - `transactions-heuristic` → жёлтый «Реклама ≈» (как раньше).
+
+### Changed
+
+- **`getExpenseDaily` — расширенная диагностика пустых ответов** (`src/lib/marketplaces/ozon/performance/endpoints.ts`):
+  Если `/expense/json` возвращает структуру (с `list`/`campaigns`/`items`), но из неё ноль строк после парсинга — теперь печатается warning с `topKeys`, `campaignsCount`, `totalDailyEntries`, `sampleCampaign` (ключи + campaignId) и `params` запроса. Помогает отличить «реально нет данных» от «Ozon переименовал поле и Zod-парсер ничего не выудил». CSV-fallback `/expense` (без `/json`) сохранён — при пустом JSON делаем повторный запрос, парсим CSV вручную. Если оба пустые — печатается финальный warning с подсказкой «оба источника пустые → нет рекламы за период».
+
+### Tooling
+
+- **`scripts/test-ozon-warehouse-stocks.ts` — `--live` режим** (`scripts/test-ozon-warehouse-stocks.ts`):
+  Опциональный флаг `--live` дёргает Seller API напрямую: `POST /v1/cluster/list` + `POST /v2/analytics/stock_on_warehouses`. Выводит число клиентов, имена первых 3 кластеров, число строк остатков и первые 2 SKU@склад. Помогает изолированно воспроизвести 404/empty без полного sync-пайплайна. Запуск: `pnpm tsx scripts/test-ozon-warehouse-stocks.ts <accountId> --live`.
+- **`scripts/test-ozon-analytics.ts` — live probe для getExpenseDaily** (`scripts/test-ozon-analytics.ts`):
+  Новый необязательный блок (`--live <accountId>`) дёргает `getExpenseDaily(perfClient, { dateFrom, dateTo })` без БД-агрегации, печатает `rows.length`, `sum(totalSpentRub)` и первую строку — позволяет воспроизвести пустой ответ Ozon без полного sync-пайплайна. Не assertion: для CI этот блок не выполняется. Добавлен тест №33: проверка наличия `useId()` + `<DndContext id={dndId}>` в analytics-table.
+
+### Migration & operator notes
+
+- После апдейта **обязательно** перезапустить sync стейджи `clusters` и `warehouseStocks` для всех Ozon-аккаунтов — старые попытки шли через ошибочные эндпойнты (404), таблицы `ozon_clusters` и `ozon_warehouse_stocks` могут быть пустыми/устаревшими.
+- В блоке «Ozon · Динамика» сегодняшняя точка отсутствует. Это сделано осознанно: тренды по часу-неполному дню ломают визуал, чарт ждёт завтрашней синхронизации. Бейдж «Сегодня скрыт» показывается прямо в блоке.
+
 ## [0.18.21] - 2026-05-20
 
 Чистый rebuild пяти критических регрессий после v0.18.20: hydration error в таблице, переработанный «Динамика» (dual-axis, компактный, без копирования референса), починка пустых данных в «Остатках по кластерам» и в колонке «Дней», увеличение полноты Performance API expense (JSON endpoint вместо CSV), расширение модалки связей категории «Аналитика Ozon» (top-1 SKU + previous-period + δ% + real-данные для кампаний/фраз/кластеров).

@@ -1,29 +1,26 @@
-// PURPOSE: Sync справочника географических кластеров Ozon через Performance
-// API `/api/client/cluster/list`. Используется для маппинга
+// PURPOSE: Sync справочника географических кластеров Ozon через Seller
+// API `POST /v1/cluster/list`. Используется для маппинга
 // warehouse_name → cluster_name в блоке «Остатки по кластерам».
+//
+// История: раньше пытались дёргать `/api/client/cluster/list` через
+// Performance API клиент — этот путь не существует и возвращает 404.
+// С v0.18.22 справочник читается из Seller API.
 
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { ozonClusters } from '@/lib/db/schema/marketplaces';
-import { getClusterList } from '../performance/endpoints';
+import { getClusterListSeller } from '../endpoints';
 import { runStageWithTiming, type StageContext, type StageResult } from './types';
 
 export async function syncClustersStage(ctx: StageContext): Promise<StageResult> {
   return runStageWithTiming(async () => {
-    if (!ctx.perfClient) {
-      return {
-        itemsProcessed: 0,
-        ok: false,
-        error: 'Performance API не подключён — справочник кластеров недоступен',
-      };
-    }
-
-    const list = await getClusterList(ctx.perfClient);
+    // Performance API больше не нужен — справочник кластеров живёт в Seller API.
+    const list = await getClusterListSeller(ctx.client);
     if (list.length === 0) {
       return {
         itemsProcessed: 0,
         ok: true,
-        warnings: ['Performance API вернул пустой список кластеров.'],
+        warnings: ['Seller API вернул пустой список кластеров (POST /v1/cluster/list).'],
       };
     }
 

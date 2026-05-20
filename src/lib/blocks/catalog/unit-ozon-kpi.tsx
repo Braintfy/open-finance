@@ -244,6 +244,25 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
             Postings (legacy)
           </span>
         )}
+        {/* Badge источника рекламных данных. Помогает быстро понять,
+            почему «Расход» отличается от кабинета Ozon — эталон или
+            fallback. v0.18.22. */}
+        {data?.adsSource === 'expense' && (
+          <span
+            className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+            title="Расход — эталон Performance API /statistics/expense (все типы кампаний + бонусы)."
+          >
+            Эталон Ads
+          </span>
+        )}
+        {data?.adsSource === 'performance' && (
+          <span
+            className="inline-flex items-center gap-1 rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-medium text-sky-700 dark:bg-sky-950 dark:text-sky-300"
+            title="Расход рассчитан из CPC (perf_sku_stats) + CPO (perf_cpo_daily). Запустите sync «Эталон расхода рекламы» (perfExpenseDaily) для точных цифр из Ozon Performance API."
+          >
+            CPC+CPO
+          </span>
+        )}
         {data?.adsSource === 'transactions-heuristic' && (
           <span
             className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950 dark:text-amber-300"

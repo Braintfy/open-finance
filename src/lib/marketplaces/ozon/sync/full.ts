@@ -68,7 +68,8 @@ const PERF_STAGES: ReadonlySet<OzonStageKind> = new Set([
   'perfCpoDaily',
   'perfExpenseDaily',
   'perfPhrases',
-  'clusters', // cluster list — Performance API
+  // Note: `clusters` ушёл из этого списка в v0.18.22 — `/v1/cluster/list`
+  // живёт в Seller API, Performance API клиент для него не нужен.
 ]);
 
 export type RunFullSyncArgs = {

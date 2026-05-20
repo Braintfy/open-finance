@@ -4,7 +4,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { Link2, Unlink, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, Link2, Unlink, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -100,9 +100,49 @@ function mergeLiveFields(
       label: current?.label ?? sourceFieldLabel(name),
       value: liveValues[key] ?? current?.value ?? null,
       format: moneyFields.has(name) ? 'money' : current?.format,
+      // Сохраняем `group` из исходного определения поля (он назначается
+      // на сервере в sources/route.ts). Live-блоки без `group` останутся
+      // плоскими — и это OK, для них в UI нет L2 подзаголовков.
+      group: current?.group,
     });
   });
   return { ...block, fields: Array.from(byName.values()) };
+}
+
+/**
+ * Порядок L2-подкатегорий внутри секции Ozon-блока в модалке связей.
+ * Иные группы (если появятся новые префиксы полей) попадают в конец.
+ */
+const OZON_FIELD_GROUP_ORDER: readonly string[] = [
+  'Текущий период',
+  'Прошлый период',
+  'Δ изменения',
+  'Top-SKU',
+  'Остатки',
+  'Итоги по магазину',
+  'Метаданные',
+];
+
+function fieldGroupRank(group: string | undefined): number {
+  if (!group) return OZON_FIELD_GROUP_ORDER.length + 1;
+  const i = OZON_FIELD_GROUP_ORDER.indexOf(group);
+  return i === -1 ? OZON_FIELD_GROUP_ORDER.length : i;
+}
+
+/** Сгруппировать `fields` по `field.group` в порядке OZON_FIELD_GROUP_ORDER. */
+function groupOzonFields(
+  fields: SourceField[],
+): Array<{ group: string | undefined; items: SourceField[] }> {
+  const map = new Map<string | undefined, SourceField[]>();
+  for (const f of fields) {
+    const key = f.group;
+    const arr = map.get(key) ?? [];
+    arr.push(f);
+    map.set(key, arr);
+  }
+  return Array.from(map.entries())
+    .map(([group, items]) => ({ group, items }))
+    .sort((a, b) => fieldGroupRank(a.group) - fieldGroupRank(b.group));
 }
 
 export function UnitCellBindingDialog({
@@ -120,6 +160,19 @@ export function UnitCellBindingDialog({
   const { pages: remotePages, loading } = useRemoteBlockSources(open);
   const [search, setSearch] = useState('');
   const [pageFilter, setPageFilter] = useState<string>('all');
+  // ID Ozon-блоков, у которых L2-секции временно свёрнуты. По умолчанию
+  // ВСЕ раскрыты — чтобы пользователь видел все доступные привязки сразу.
+  // Клик по заголовку экземпляра тоглит состояние.
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+
+  function toggleCollapsed(blockId: string) {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(blockId)) next.delete(blockId);
+      else next.add(blockId);
+      return next;
+    });
+  }
 
   const allPages = useMemo<SourcePage[]>(() => {
     const liveById = new Map(availableLive.map((b) => [b.blockId, b.fields]));
@@ -314,21 +367,55 @@ export function UnitCellBindingDialog({
                     const secondaryFields = block.fields.filter(
                       (f) => f.name !== 'value' && f.name !== 'label' && f.name !== 'raw',
                     );
+
+                    // Для категории «Аналитика Ozon» собираем поля по
+                    // L2-подкатегориям (Текущий период / Прошлый / Δ /
+                    // Top-SKU / Остатки / Метаданные), для остальных
+                    // оставляем плоский список.
+                    const isOzon = block.category === 'Аналитика Ozon';
+                    const grouped = isOzon ? groupOzonFields(secondaryFields) : null;
+                    const isCollapsed = collapsed.has(block.blockId);
+
                     return (
                       <div
                         key={`${page.pageKey}:${block.blockId}`}
                         className="border-b border-border/30 px-3 py-2 transition last:border-b-0 hover:bg-accent/20"
                       >
                         <div className="space-y-2">
-                          <div className="min-w-0">
-                            <div className="truncate text-xs font-medium text-foreground">
-                              {block.label}
+                          {/* Заголовок экземпляра. Для Ozon — кликабельный
+                              с chevron, разворачивает/сворачивает L2-секции. */}
+                          {isOzon ? (
+                            <button
+                              type="button"
+                              onClick={() => toggleCollapsed(block.blockId)}
+                              className="flex w-full items-start gap-1.5 text-left"
+                              title="Развернуть / свернуть подкатегории полей"
+                            >
+                              {isCollapsed ? (
+                                <ChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                              ) : (
+                                <ChevronDown className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                              )}
+                              <div className="min-w-0 flex-1">
+                                <div className="truncate text-xs font-medium text-foreground">
+                                  {block.instanceLabel ?? block.label}
+                                </div>
+                                <div className="text-[10px] text-muted-foreground">
+                                  {block.category} · {block.typeLabel}
+                                </div>
+                              </div>
+                            </button>
+                          ) : (
+                            <div className="min-w-0">
+                              <div className="truncate text-xs font-medium text-foreground">
+                                {block.label}
+                              </div>
+                              <div className="text-[10px] text-muted-foreground">
+                                {block.category} · {block.typeLabel}
+                              </div>
                             </div>
-                            <div className="text-[10px] text-muted-foreground">
-                              {block.category} · {block.typeLabel}
-                            </div>
-                          </div>
-                          {primaryField && (
+                          )}
+                          {(!isOzon || !isCollapsed) && primaryField && (
                             <button
                               type="button"
                               onClick={() => pickField(block, primaryField)}
@@ -346,7 +433,39 @@ export function UnitCellBindingDialog({
                               </span>
                             </button>
                           )}
-                          {secondaryFields.length > 0 && (
+                          {!isCollapsed && grouped && grouped.length > 0 && (
+                            <div className="space-y-2">
+                              {grouped.map(({ group, items }) =>
+                                items.length === 0 ? null : (
+                                  <div key={group ?? '__none__'} className="space-y-1">
+                                    <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/80">
+                                      {group ?? 'Другое'}
+                                    </div>
+                                    <div className="flex flex-wrap gap-1">
+                                      {items.map((field) => {
+                                        const preview = previewSourceValue(field);
+                                        return (
+                                          <button
+                                            key={field.name}
+                                            type="button"
+                                            onClick={() => pickField(block, field)}
+                                            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] ring-1 ring-border/50 transition hover:bg-primary/5 hover:ring-primary/40"
+                                            title={`${field.label} = ${preview}`}
+                                          >
+                                            <span className="font-medium text-foreground/80">
+                                              {field.label}
+                                            </span>
+                                            <span className="text-muted-foreground">{preview}</span>
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                ),
+                              )}
+                            </div>
+                          )}
+                          {!isOzon && secondaryFields.length > 0 && (
                             <div className="flex flex-wrap gap-1">
                               {secondaryFields.map((field) => {
                                 const preview = previewSourceValue(field);

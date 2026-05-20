@@ -312,6 +312,58 @@ Open Finance = настраиваемый Lego-конструктор интер
 4. `scripts/test-ozon-analytics.ts` (test row factory).
 Иначе TS error на required field.
 
+### Ozon v0.18.22 — warehouse stocks / clusters / hydration / chart / bindings
+
+Hotfixes после v0.18.21. **Главное: блок «Остатки по кластерам» теперь читает из правильных Seller API эндпойнтов, hydration в OzonAnalyticsTable пофикшен окончательно (через useId), «Динамика» исключает сегодня.**
+
+1. **`cluster/list` и `stock_on_warehouses` — оба переведены на Seller API**:
+   - `getClusterList` исторически дёргал `/api/client/cluster/list` через Performance API клиент → **404 на любом аккаунте**. Эндпойнт живёт ТОЛЬКО в Seller API: `POST /v1/cluster/list`. Перенесён в `src/lib/marketplaces/ozon/endpoints.ts` как `getClusterListSeller(client, { clusterIds?, clusterType? })` с zod-схемой `{ clusters: [{ id, name, type, warehouses?, logistic_clusters? }] }`. Возвращает `ClusterListItem[]` (id/name/type/warehouseNames) — совместим со старым `PerfCluster`.
+   - `analyticsStockOnWarehouses` — путь поднят с deprecated `/v1/analytics/stock_on_warehouses` на актуальный `POST /v2/analytics/stock_on_warehouses`. Контракт совпадает (response `{ result: { rows: [...] } }`).
+   - `syncClustersStage` использует `ctx.client` (Seller), а не `ctx.perfClient`. `PERF_STAGES` больше не содержит `clusters` — стейдж не требует Performance API креды.
+   - **Грабли**: при добавлении любого «cluster»/«warehouse» эндпойнта проверять, в каком API он живёт. Документация Ozon Performance API содержит ссылки на сторонние Seller-методы, но Performance клиент туда обращаться НЕ должен (другая base URL, другой auth).
+   - **Диагностика**: `pnpm tsx scripts/test-ozon-warehouse-stocks.ts <accountId> --live` — флаг `--live` дёргает оба эндпойнта напрямую и печатает число клиентов + первые SKU.
+   - **Operator note**: после апдейта **обязательно** перезапустить sync стейджи `clusters` и `warehouseStocks` для всех Ozon-аккаунтов; таблицы могли быть пустыми/устаревшими из-за 404.
+
+2. **Hydration в OzonAnalyticsTable — корень: `aria-describedby` от dnd-kit**:
+   В v0.18.21 перенесли `<DndContext>` за пределы `<table>`, но warning остался: `<DndContext>` без явного `id` использует глобальный counter (`useUniqueId`), который инкрементируется в порядке монтирования. SSR пишет `DndDescribedBy-0`, клиент — `DndDescribedBy-3` (после монтирования других DndContext-инстансов в grid layout). Фикс: `import { useId } from 'react'; const dndId = useId(); <DndContext id={dndId} ...>`. `useId()` SSR-safe и одинаков на сервере/клиенте.
+   - **Грабли**: ВСЕГДА передавать `id={useId()}` в `<DndContext>` если на странице может быть несколько dnd-контекстов или если используется SSR. То же касается любых компонентов с глобальным счётчиком id.
+
+3. **«Динамика» — исключение текущего дня**:
+   Сегодняшний бакет содержит частичные данные (выручка/реклама растут к концу дня по мере прихода новых заказов). На графике это видно как «провал» в последней точке, тоталы получаются заниженными. Фикс в `src/lib/blocks/catalog/unit-ozon-chart.tsx`: `visiblePoints = data.points.filter(p => p.date < todayLocalISO())`. На этом массиве считаются `ordersMax`, `totals` и рендерится chart. Появился badge «Сегодня скрыт» с tooltip-объяснением.
+
+4. **Иерархические подкатегории в модалке связей «Аналитика Ozon»** — два уровня:
+   - L1 (экземпляр блока): `SourceBlock.instanceLabel: string` — формат `{typeLabel} · {periodLabel} ({title}) — {pageLabel}`, где `periodLabel` — pretty-text от `cfg.periodPreset` + `customFrom/customTo` (хелпер `periodPresetLabel()` в `sources/route.ts`). Помогает отличить два «Ozon · аналитика · 7 дней» от «Ozon · аналитика · 30 дней» на разных страницах.
+   - L2 (назначение поля): `SourceField.group?: string` — `Текущий период` / `Прошлый период` / `Δ изменения` / `Top-SKU` / `Остатки` / `Метаданные`. Хелпер `groupForOzonField()`:
+     - `delta*` → `Δ изменения`
+     - `*Prev` → `Прошлый период`
+     - `top1*` + `avgDrr` + `maxDrr` → `Top-SKU`
+     - `stock*` / `*Stock$` / `totalStockValueRub` / `skuCount` → `Остатки`
+     - `label` → `Метаданные`
+     - всё остальное → `Текущий период`
+   - Применяется ТОЛЬКО для `unit.ozon-*` блоков (`decorateOzonGroups()`). Остальные категории — без изменений.
+   - UI (`unit-cell-binding-dialog.tsx`): для блоков категории `Аналитика Ozon` заголовок-экземпляр кликабельный (Chevron toggle), внутри — мелкие подзаголовки групп. Прочие категории идут плоским списком как раньше.
+
+5. **`getExpenseDaily` — расширенная диагностика и CSV fallback (расширены)**:
+   Если `/expense/json` вернёт структуру (`list`/`campaigns`/`items`/`rows`), но 0 распарсенных строк — warning теперь содержит `topKeys`, `campaignsCount`, `totalDailyEntries`, `sampleCampaign.keys`, `params` запроса. CSV fallback запускается автоматически; если оба пустые — финальный warning с пометкой «реально нет данных».
+   - В KPI-блоке `unit-ozon-kpi.tsx` добавлены badge источника рекламных данных: `Эталон Ads` (`expense`), `CPC+CPO` (`performance`), `Реклама ≈` (`transactions-heuristic`). Помогает пользователю понять, почему «Расход» отличается от Ozon кабинета.
+
+**Архитектурный flow после v0.18.22**:
+```mermaid
+flowchart LR
+  syncClustersStage --> SellerAPI1["Seller POST /v1/cluster/list"]
+  syncWarehouseStocks --> SellerAPI2["Seller POST /v2/analytics/stock_on_warehouses"]
+  SellerAPI1 --> ozon_clusters
+  SellerAPI2 --> ozon_warehouse_stocks
+  ozon_clusters & ozon_warehouse_stocks --> route["/cluster-stocks-v2"]
+  route --> Block["unit-ozon-warehouse-clusters"]
+  AnalyticsTable["<DndContext id={useId()}>"] --> NoHydrationWarn[no hydration warning]
+  Chart["unit-ozon-chart"] --> Filter["visiblePoints (without today)"]
+  SourcesAPI["/api/blocks/sources"] --> Group["L2 group per field"]
+  Group --> BindingModal["иерархический рендер для Аналитики Ozon"]
+```
+
+---
+
 ### Ozon v0.18.21 — fixes batch (hydration / expense JSON / days-fallback / cluster diag / modal full)
 
 **5 критических регрессий после v0.18.20**, исправлены в одном проходе:

@@ -11,6 +11,13 @@ export type SourceField = {
   label: string;
   value: number | string | null;
   format?: 'money' | 'number' | 'text';
+  /**
+   * L2-подкатегория поля внутри блока. Используется только для
+   * `Аналитика Ozon` (`Текущий период` / `Прошлый период` / `Δ изменения` /
+   * `Top-SKU` / `Остатки` / `Метаданные`). Для прочих блоков undefined →
+   * UI рендерит плоский список без подзаголовков.
+   */
+  group?: string;
 };
 
 export type SourceBlock = {
@@ -22,6 +29,13 @@ export type SourceBlock = {
   category: string;
   label: string;
   fields: SourceField[];
+  /**
+   * L1-метка экземпляра блока (например, `Ozon · аналитика · 7 дней
+   * (Главная)`). Используется в модалке связей категории «Аналитика
+   * Ozon» как заголовок группы блоков. Для не-Ozon блоков может быть
+   * проставлено как `{label} — {pageLabel}` (фоллбек).
+   */
+  instanceLabel?: string;
 };
 
 export type SourcePage = {

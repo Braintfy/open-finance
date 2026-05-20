@@ -6,7 +6,7 @@
 
 'use client';
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useId, useMemo, useRef, useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
@@ -449,6 +449,13 @@ export function OzonAnalyticsTable({
 
   const totalWidth = columns.reduce((sum, col) => sum + (colWidths[col.key] ?? col.defaultPx), 0);
 
+  // Детерминированный id для DndContext: без него dnd-kit использует
+  // глобальный counter (`useUniqueId`), который инкрементируется в
+  // порядке монтирования и расходится между SSR и клиентом — отсюда
+  // hydration warning `aria-describedby="DndDescribedBy-0"` vs `-3`.
+  // `useId()` SSR-safe и одинаков на сервере/клиенте.
+  const dndId = useId();
+
   // Считаем cumulative left offset для каждой sticky-колонки.
   // Только подряд идущие в начале pinned-колонки получают sticky.
   const stickyOffsets = useMemo(() => {
@@ -470,6 +477,7 @@ export function OzonAnalyticsTable({
     // вложенности — `useSortable` внутри `SortableHeaderCell` находит
     // их через React context.
     <DndContext
+      id={dndId}
       sensors={sensors}
       collisionDetection={closestCenter}
       onDragEnd={handleDragEnd}

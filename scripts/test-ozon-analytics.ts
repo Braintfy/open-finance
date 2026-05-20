@@ -520,5 +520,112 @@ console.log('\n# OzonAnalyticsTable column order & sort');
   );
 }
 
-console.log(`\n## ${passed} PASS · ${failed} FAIL\n`);
-if (failed > 0) process.exit(1);
+// 33. v0.18.22: hydration fix через useId() в DndContext.
+{
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const fs = require('node:fs') as typeof import('node:fs');
+  const src = fs.readFileSync(
+    'src/components/unit-economics/ozon-analytics-table.tsx',
+    'utf-8',
+  );
+  expect(
+    src.includes('useId') && /<DndContext\s+id=\{dndId\}/.test(src),
+    'v0.18.22: DndContext получает детерминированный id из useId()',
+  );
+}
+
+function printSummaryAndExit() {
+  console.log(`\n## ${passed} PASS · ${failed} FAIL\n`);
+  if (failed > 0) process.exit(1);
+  process.exit(0);
+}
+
+// 34. v0.18.22: getExpenseDaily — live проба (опционально, по флагу --live).
+// Запуск: pnpm tsx scripts/test-ozon-analytics.ts --live <accountId>
+//
+// Дёргает /expense/json без БД-агрегации, чтобы воспроизвести пустой
+// ответ. НЕ часть автоматических CI-тестов — просто диагностический
+// блок, который выводит rows.length и сумму расхода.
+async function expenseLiveProbe() {
+  const accountId = process.argv.find(
+    (a, i) => i > 1 && !a.startsWith('--'),
+  );
+  if (!accountId) {
+    console.error('\n--live требует <accountId> аргументом.');
+    return;
+  }
+  console.log('\n# --live: getExpenseDaily probe');
+
+  const { db } = await import('../src/lib/db/client');
+  const { marketplaceAccounts } = await import(
+    '../src/lib/db/schema/marketplaces'
+  );
+  const { decryptAccountPerfSecret } = await import(
+    '../src/lib/marketplaces/queries'
+  );
+  const { OzonPerformanceClient } = await import(
+    '../src/lib/marketplaces/ozon/performance/client'
+  );
+  const { getExpenseDaily } = await import(
+    '../src/lib/marketplaces/ozon/performance/endpoints'
+  );
+  const { eq } = await import('drizzle-orm');
+
+  const accounts = await db
+    .select()
+    .from(marketplaceAccounts)
+    .where(eq(marketplaceAccounts.id, accountId));
+  const acc = accounts[0];
+  if (!acc) {
+    console.error(`Account ${accountId} не найден.`);
+    return;
+  }
+  const perfSecret = decryptAccountPerfSecret(acc);
+  if (!acc.perfClientId || !perfSecret) {
+    console.error(
+      'У аккаунта не настроены perf_client_id / perf_client_secret_enc.',
+    );
+    return;
+  }
+  const client = new OzonPerformanceClient({
+    accountId: acc.id,
+    clientId: acc.perfClientId,
+    clientSecret: perfSecret,
+  });
+
+  const today = new Date();
+  const dateTo = today.toISOString().slice(0, 10);
+  const from = new Date(today.getTime() - 7 * 24 * 3600 * 1000);
+  const dateFrom = from.toISOString().slice(0, 10);
+
+  console.log(`  dateRange: ${dateFrom}..${dateTo}`);
+  const rows = await getExpenseDaily(client, { dateFrom, dateTo });
+  const total = rows.reduce((s, r) => s + r.totalSpentRub, 0);
+  console.log(
+    `  rows.length=${rows.length}, sum(totalSpentRub)=${total.toFixed(2)}₽`,
+  );
+  console.log(
+    '  sample[0]:',
+    rows[0]
+      ? {
+          date: rows[0].date,
+          campaignId: rows[0].campaignId,
+          advObjectType: rows[0].advObjectType,
+          total: rows[0].totalSpentRub,
+        }
+      : '(empty)',
+  );
+  console.log('  (live probe — не assertion)');
+}
+
+if (process.argv.includes('--live')) {
+  expenseLiveProbe()
+    .catch((e) => {
+      console.error('  live probe failed:', e);
+    })
+    .finally(() => {
+      printSummaryAndExit();
+    });
+} else {
+  printSummaryAndExit();
+}

@@ -25,6 +25,14 @@ type SourceField = {
   label: string;
   value: number | string | null;
   format?: 'money' | 'number' | 'text';
+  /**
+   * L2-подкатегория поля внутри блока (для модалки связей):
+   * `Текущий период` / `Прошлый период` / `Δ изменения` / `Top-SKU` /
+   * `Остатки` / `Итоги по магазину` / `Метаданные`. Если не задано —
+   * UI кладёт в `Текущий период` (дефолт). Только Ozon-блоки группируют
+   * поля; для остальных оставляем undefined.
+   */
+  group?: string;
 };
 
 type SourceBlock = {
@@ -36,6 +44,14 @@ type SourceBlock = {
   category: string;
   label: string;
   fields: SourceField[];
+  /**
+   * L1-метка экземпляра блока (для модалки связей категории `Аналитика
+   * Ozon`). Формат: `Ozon · аналитика · 7 дней (Главная)`. Включает
+   * period preset → читабельный текст, чтобы пользователь не путал
+   * блок «Ozon · аналитика · 7 дней» с «Ozon · аналитика · 30 дней» на
+   * разных страницах.
+   */
+  instanceLabel: string;
 };
 
 const DEFAULT_PAGE_KEYS = [
@@ -138,6 +154,122 @@ function typeMeta(type: string): { label: string; category: string } {
 function titleOf(block: BlockInstance): string {
   const cfg = block.config ?? {};
   return String(block.appearance?.title ?? cfg.title ?? typeMeta(block.type).label);
+}
+
+/** Pretty label для periodPreset из cfg Ozon-блока. Используется в L1. */
+function periodPresetLabel(
+  preset: string | undefined,
+  from: string | null | undefined,
+  to: string | null | undefined,
+): string | null {
+  switch (preset) {
+    case 'today':
+      return 'Сегодня';
+    case 'yesterday':
+      return 'Вчера';
+    case '7d':
+      return '7 дней';
+    case '14d':
+      return '14 дней';
+    case '30d':
+      return '30 дней';
+    case 'mtd':
+      return 'Текущий месяц';
+    case 'all_time':
+      return 'Всё время';
+    case 'custom': {
+      if (!from || !to) return 'Произвольный период';
+      try {
+        const dFrom = new Date(from);
+        const dTo = new Date(to);
+        if (Number.isNaN(dFrom.getTime()) || Number.isNaN(dTo.getTime())) {
+          return 'Произвольный период';
+        }
+        const fmt = (d: Date) =>
+          d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
+        return `${fmt(dFrom)}–${fmt(dTo)} ${dTo.getFullYear()}`;
+      } catch {
+        return 'Произвольный период';
+      }
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * Группа поля внутри Ozon-блока (L2 в модалке связей).
+ * Эвристика по name: префиксы/суффиксы говорят о назначении поля.
+ *
+ * Правила (порядок важен):
+ *   - `delta*`          → `Δ изменения`
+ *   - `*Prev` (суффикс) → `Прошлый период`
+ *   - `top1*` или avgDrr/maxDrr → `Top-SKU`
+ *   - `stock*` / `*Stock*` / `reserved*` / `promised*` / `freeStock` /
+ *     `totalStockValue*` → `Остатки`
+ *   - `label` → `Метаданные` (служебное поле «Название»)
+ *   - всё остальное → `Текущий период`
+ */
+function groupForOzonField(name: string): string {
+  if (name.startsWith('delta')) return 'Δ изменения';
+  if (/Prev$/.test(name)) return 'Прошлый период';
+  if (
+    name.startsWith('top1') ||
+    name === 'avgDrr' ||
+    name === 'maxDrr'
+  ) {
+    return 'Top-SKU';
+  }
+  if (
+    /^(stock|freeStock|reservedStock|promisedStock)/.test(name) ||
+    /Stock$/.test(name) ||
+    name === 'totalStockValueRub' ||
+    name === 'skuCount'
+  ) {
+    return 'Остатки';
+  }
+  if (name === 'label') return 'Метаданные';
+  return 'Текущий период';
+}
+
+/** Назначить `group` всем полям Ozon-блока (in-place, возвращает тот же массив). */
+function decorateOzonGroups(fields: SourceField[]): SourceField[] {
+  for (const f of fields) {
+    if (!f.group) f.group = groupForOzonField(f.name);
+  }
+  return fields;
+}
+
+/**
+ * Строит L1-instanceLabel блока: `{typeLabel} · {periodLabel} ({pageLabel})`.
+ * Для блоков без периода (например, Остатки-по-кластерам) — `{typeLabel} ({pageLabel})`.
+ * Для не-Ozon блоков — просто `{label} ({pageLabel})`, чтобы UI всегда имел
+ * фоллбек.
+ */
+function buildInstanceLabel(args: {
+  type: string;
+  typeLabel: string;
+  label: string;
+  pageLabel: string;
+  config: Record<string, unknown> | undefined;
+}): string {
+  const cfg = args.config ?? {};
+  const isOzon = args.type.startsWith('unit.ozon-');
+  if (isOzon) {
+    const preset = typeof cfg.periodPreset === 'string' ? cfg.periodPreset : undefined;
+    const periodLabel = periodPresetLabel(
+      preset,
+      typeof cfg.customFrom === 'string' ? cfg.customFrom : null,
+      typeof cfg.customTo === 'string' ? cfg.customTo : null,
+    );
+    const base = periodLabel ? `${args.typeLabel} · ${periodLabel}` : args.typeLabel;
+    // Дополнительно показываем заголовок блока в скобках, чтобы
+    // отличить два «Ozon · аналитика · 7 дней» на одной странице.
+    const titleSuffix =
+      args.label && args.label !== args.typeLabel ? ` (${args.label})` : '';
+    return `${base}${titleSuffix} — ${args.pageLabel}`;
+  }
+  return `${args.label} — ${args.pageLabel}`;
 }
 
 function periodStart(period: string | undefined): Date | undefined {
@@ -885,19 +1017,34 @@ export async function GET() {
     const blocks = await Promise.all(layout.blocks.map(async (block) => {
       const meta = typeMeta(block.type);
       const label = titleOf(block);
+      const pLabel = pageLabel(pageKey);
       const fields = await fieldsForBlock(block, tenantId, monthlySummary, currencyRatesByCode);
+      const allFields: SourceField[] = [
+        ...fields,
+        { name: 'label', label: 'Название', value: label },
+      ];
+      // Для Ozon-блоков проставляем L2-группу (отображается как подзаголовок
+      // внутри секции экземпляра в модалке привязок). Прочие блоки идут
+      // плоским списком — group остаётся undefined.
+      if (block.type.startsWith('unit.ozon-')) {
+        decorateOzonGroups(allFields);
+      }
       return {
         blockId: block.id,
         pageKey,
-        pageLabel: pageLabel(pageKey),
+        pageLabel: pLabel,
         type: block.type,
         typeLabel: meta.label,
         category: meta.category,
         label,
-        fields: [
-          ...fields,
-          { name: 'label', label: 'Название', value: label },
-        ],
+        fields: allFields,
+        instanceLabel: buildInstanceLabel({
+          type: block.type,
+          typeLabel: meta.label,
+          label,
+          pageLabel: pLabel,
+          config: block.config,
+        }),
       } satisfies SourceBlock;
     }));
     // Сортировка: по категории (CATEGORY_ORDER), потом по label.

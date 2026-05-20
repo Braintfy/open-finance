@@ -8,6 +8,7 @@
 // 2. соответствующий sync/*.ts маппинг;
 // 3. docs/MARKETPLACES_OZON.md (когда заведём — см. mini-plan в PLAN.md).
 
+import { z } from 'zod';
 import { OzonClient, OzonApiError } from './client';
 import {
   SellerInfoSchema,
@@ -37,7 +38,13 @@ export const OZON_API_VERSION_MAP = {
   financeRealization: '/v2/finance/realization',
   financeTransactionList: '/v3/finance/transaction/list',
   analyticsTurnoverStocks: '/v1/analytics/turnover/stocks',
-  analyticsStockOnWarehouses: '/v1/analytics/stock_on_warehouses',
+  // v2 заменяет deprecated `/v1/analytics/stock_on_warehouses` (тот же
+  // запрос/ответ, новый путь — см. docs.ozon.ru/api/seller).
+  analyticsStockOnWarehouses: '/v2/analytics/stock_on_warehouses',
+  // Справочник географических кластеров. Раньше пытались бить по
+  // Performance API (`/api/client/cluster/list`) — оттуда приходил 404,
+  // эндпойнт живёт ТОЛЬКО в Seller API.
+  clusterList: '/v1/cluster/list',
   analyticsData: '/v1/analytics/data',
 } as const;
 
@@ -239,12 +246,19 @@ export async function analyticsTurnoverStocks(
 }
 
 /**
- * Получает остатки по складам через `/v1/analytics/stock_on_warehouses`.
+ * Получает остатки по складам через `/v2/analytics/stock_on_warehouses`.
  * Отдаёт строки `(sku, item_code, item_name, warehouse_name, *_amount)` —
  * **по конкретным FBO-складам**. Маппинг склад→географический кластер
- * выполняется отдельно через Performance API `/v1/cluster/list`.
+ * выполняется отдельно через Seller API `/v1/cluster/list`
+ * (см. `getClusterListSeller` ниже).
  *
  * Пагинация — по `offset/limit` (max 1000 на запрос).
+ *
+ * История путей:
+ *  - `/v1/analytics/stock_on_warehouses` — снят с поддержки (404 на новых
+ *    аккаунтах).
+ *  - `/v2/analytics/stock_on_warehouses` — текущий путь, контракт совпадает
+ *    с v1: ответ `{ result: { rows: [...] } }`.
  */
 export async function analyticsStockOnWarehouses(
   client: OzonClient,
@@ -264,6 +278,115 @@ export async function analyticsStockOnWarehouses(
 
   const rows = data?.result?.rows ?? data?.rows ?? [];
   return { rows };
+}
+
+// ---- /v1/cluster/list (Seller API) ---------------------------------------
+
+const ClusterWarehouseSellerSchema = z
+  .object({
+    warehouse_id: z.union([z.string(), z.number()]).optional(),
+    name: z.string().optional(),
+    type: z.string().optional(),
+  })
+  .passthrough();
+
+const LogisticClusterSellerSchema = z
+  .object({
+    id: z.union([z.string(), z.number()]).optional(),
+    name: z.string().optional(),
+    type: z.string().optional(),
+    warehouses: z.array(ClusterWarehouseSellerSchema).optional(),
+  })
+  .passthrough();
+
+const ClusterSellerSchema = z
+  .object({
+    id: z.union([z.string(), z.number()]).optional(),
+    name: z.string().optional(),
+    type: z.string().optional(),
+    // У некоторых аккаунтов кластер — это сразу контейнер складов.
+    warehouses: z.array(ClusterWarehouseSellerSchema).optional(),
+    // У других — складские группы спрятаны на один уровень глубже.
+    logistic_clusters: z.array(LogisticClusterSellerSchema).optional(),
+  })
+  .passthrough();
+
+const ClusterListSellerResponseSchema = z
+  .object({
+    clusters: z.array(ClusterSellerSchema).optional(),
+    // На некоторых аккаунтах поле называется `list` — поддерживаем оба варианта.
+    list: z.array(ClusterSellerSchema).optional(),
+  })
+  .passthrough();
+
+export type ClusterListItem = {
+  clusterId: string;
+  clusterName: string;
+  clusterType: string | null;
+  /** Имена ВСЕХ складов кластера (включая вложенные logistic_clusters). */
+  warehouseNames: string[];
+};
+
+/**
+ * Справочник географических кластеров Ozon (Москва, СПб, Юг, Урал и т.д.)
+ * с привязкой имён складов к каждому кластеру.
+ *
+ * Используется в blocks `Остатки по типу склада` и `Остатки по кластерам`
+ * для агрегации остатков по географии.
+ *
+ * Документация: docs.ozon.ru/api/seller, метод `/v1/cluster/list`. Это
+ * **Seller API**, а не Performance API (исторически ошибочно вызывали
+ * через Performance клиент — отсюда 404).
+ *
+ * Параметры:
+ *  - `clusterIds` — фильтр по ID кластеров. Если пусто (`[]`) — все.
+ *  - `clusterType` — `CLUSTER_TYPE_OZON` (по умолчанию) или
+ *    `CLUSTER_TYPE_CIS` (для аккаунтов СНГ). На большинстве RU-аккаунтов
+ *    нужен только Ozon.
+ */
+export async function getClusterListSeller(
+  client: OzonClient,
+  args?: { clusterIds?: string[]; clusterType?: 'CLUSTER_TYPE_OZON' | 'CLUSTER_TYPE_CIS' },
+): Promise<ClusterListItem[]> {
+  const data = (await client.post(
+    OZON_API_VERSION_MAP.clusterList,
+    {
+      cluster_ids: args?.clusterIds ?? [],
+      cluster_type: args?.clusterType ?? 'CLUSTER_TYPE_OZON',
+    },
+    ClusterListSellerResponseSchema,
+  )) as
+    | {
+        clusters?: Array<z.infer<typeof ClusterSellerSchema>>;
+        list?: Array<z.infer<typeof ClusterSellerSchema>>;
+      }
+    | undefined;
+
+  const list = data?.clusters ?? data?.list ?? [];
+  const out: ClusterListItem[] = [];
+  for (const c of list) {
+    const id = c.id !== undefined ? String(c.id) : '';
+    if (!id) continue;
+    const warehouseNames: string[] = [];
+    for (const w of c.warehouses ?? []) {
+      const name = (w.name ?? '').trim();
+      if (name) warehouseNames.push(name);
+    }
+    for (const lc of c.logistic_clusters ?? []) {
+      for (const w of lc.warehouses ?? []) {
+        const name = (w.name ?? '').trim();
+        if (name) warehouseNames.push(name);
+      }
+    }
+    out.push({
+      clusterId: id,
+      clusterName: (c.name ?? '').trim() || `Кластер ${id}`,
+      clusterType: c.type ?? null,
+      // dedup на случай если склад торчит и на верхнем уровне и в logistic_clusters.
+      warehouseNames: Array.from(new Set(warehouseNames)),
+    });
+  }
+  return out;
 }
 
 /**

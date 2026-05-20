@@ -7,8 +7,12 @@
 // Запуск:
 //   pnpm tsx scripts/test-ozon-warehouse-stocks.ts
 //   pnpm tsx scripts/test-ozon-warehouse-stocks.ts <accountId>
+//   pnpm tsx scripts/test-ozon-warehouse-stocks.ts <accountId> --live
+//     ↑ --live дополнительно дёргает Seller API напрямую:
+//        POST /v1/cluster/list и POST /v2/analytics/stock_on_warehouses
+//        чтобы воспроизвести 404/empty без полного sync-пайплайна.
 //
-// Скрипт read-only.
+// Скрипт read-only (write в БД не делает).
 
 import { eq, sql } from 'drizzle-orm';
 import { db } from '../src/lib/db/client';
@@ -18,15 +22,27 @@ import {
   ozonClusters,
   ozonOrders,
 } from '../src/lib/db/schema/marketplaces';
+import { decryptAccountApiKey } from '../src/lib/marketplaces/queries';
+import { OzonClient } from '../src/lib/marketplaces/ozon/client';
+import {
+  getClusterListSeller,
+  analyticsStockOnWarehouses,
+} from '../src/lib/marketplaces/ozon/endpoints';
 
 async function main() {
-  const filterAccountId = process.argv[2] ?? null;
+  const filterAccountId = process.argv[2] && !process.argv[2].startsWith('--')
+    ? process.argv[2]
+    : null;
+  const live = process.argv.includes('--live');
 
   console.log('=== Ozon warehouse stocks / clusters diagnostic ===');
   if (filterAccountId) {
     console.log(`Filter by accountId: ${filterAccountId}`);
   } else {
     console.log('No accountId filter — checking all active Ozon accounts.');
+  }
+  if (live) {
+    console.log('Mode: --live (will hit Seller API: /v1/cluster/list + /v2/analytics/stock_on_warehouses)');
   }
 
   const accounts = await db
@@ -36,6 +52,8 @@ async function main() {
       name: marketplaceAccounts.name,
       marketplace: marketplaceAccounts.marketplace,
       status: marketplaceAccounts.status,
+      clientId: marketplaceAccounts.clientId,
+      apiKeyEnc: marketplaceAccounts.apiKeyEnc,
     })
     .from(marketplaceAccounts)
     .where(
@@ -132,6 +150,38 @@ async function main() {
       `  ozon_orders (30d) rows:               ${ordersAgg.cnt}`,
       `(with raw.warehouseName=${ordersAgg.with_wh_name})`,
     );
+
+    // 4. Live Seller API sanity-call (по --live флагу)
+    if (live && acc.clientId && acc.apiKeyEnc) {
+      try {
+        const apiKey = decryptAccountApiKey({
+          apiKeyEnc: acc.apiKeyEnc,
+        } as unknown as Parameters<typeof decryptAccountApiKey>[0]);
+        const client = new OzonClient({ clientId: acc.clientId, apiKey });
+
+        console.log('  --- Live Seller API check ---');
+        try {
+          const clusters = await getClusterListSeller(client);
+          console.log(
+            `  POST /v1/cluster/list:                ✓ clusters=${clusters.length}`,
+            clusters.slice(0, 3).map((c) => `${c.clusterId}:${c.clusterName} (${c.warehouseNames.length} wh)`).join(', '),
+          );
+        } catch (e) {
+          console.error('  POST /v1/cluster/list:                ✗', e instanceof Error ? e.message : e);
+        }
+        try {
+          const stocks = await analyticsStockOnWarehouses(client, { limit: 50 });
+          console.log(
+            `  POST /v2/analytics/stock_on_warehouses: ✓ rows=${stocks.rows.length}`,
+            stocks.rows.slice(0, 2).map((r) => `${r.sku ?? '?'}@${r.warehouse_name ?? '?'}=${r.free_to_sell_amount ?? 0}`).join(', '),
+          );
+        } catch (e) {
+          console.error('  POST /v2/analytics/stock_on_warehouses: ✗', e instanceof Error ? e.message : e);
+        }
+      } catch (e) {
+        console.error('  Live API check skipped: cannot decrypt api_key:', e instanceof Error ? e.message : e);
+      }
+    }
 
     // Diagnosis suggestion
     const diags: string[] = [];

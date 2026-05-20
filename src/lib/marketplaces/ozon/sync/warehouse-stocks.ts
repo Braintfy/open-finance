@@ -1,8 +1,10 @@
 // PURPOSE: Sync остатков FBO по конкретным складам через Seller API
-// `/v1/analytics/stock_on_warehouses`. Маппит warehouse_name → кластер
+// `/v2/analytics/stock_on_warehouses`. Маппит warehouse_name → кластер
 // через справочник ozon_clusters (опционально — если sync clusters прошёл).
 //
 // Данные используются в блоке «Остатки по кластерам».
+//
+// v0.18.22: путь поднят с /v1 → /v2 (v1 снят с поддержки Ozon, отвечает 404).
 
 import { sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';

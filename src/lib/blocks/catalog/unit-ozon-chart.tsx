@@ -5,7 +5,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { z } from 'zod';
-import { AlertTriangle, LineChart as LineIcon, SlidersHorizontal } from 'lucide-react';
+import { AlertTriangle, Info, LineChart as LineIcon, SlidersHorizontal } from 'lucide-react';
 import { useBlockValuePublisher } from '@/lib/blocks/values';
 import { Card } from '@/components/ui/card';
 import { Switch } from '@/components/ui/switch';
@@ -91,6 +91,15 @@ function formatRubShort(value: number): string {
 function formatIntShort(value: number): string {
   if (Math.abs(value) >= 1_000) return (value / 1_000).toFixed(1) + 'K';
   return Math.round(value).toString();
+}
+
+/** Текущая дата в TZ браузера, формат YYYY-MM-DD (для сравнения с p.date). */
+function todayLocalISO(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 }
 
 function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
@@ -193,16 +202,39 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
     return out;
   }, [config.visibleSeries, config.chartType]);
 
+  // v0.18.22: Исключаем текущий день из графика.
+  // Причина: данные «сегодня» неполные — выручка / реклама обнуляются к
+  // концу дня по мере прихода новых заказов, шкала и тренды визуально
+  // ломаются. Точка ещё «дозревает», поэтому до завтрашней синхронизации
+  // правильнее её скрыть.
+  // Сравнение делается по локальной TZ браузера, точка трактуется как
+  // «сегодня» если её date >= today (учитываем недельную/месячную
+  // гранулярность — там бакет начинается с понедельника/1-го числа и
+  // тоже содержит «сегодня»).
+  const visiblePoints = useMemo(() => {
+    if (!data?.points) return [];
+    const today = todayLocalISO();
+    return data.points.filter((p) => {
+      const d = (p.date ?? '').slice(0, 10);
+      return d.length === 10 ? d < today : true;
+    });
+  }, [data]);
+
+  const hiddenTodayPoint = useMemo(() => {
+    if (!data?.points) return false;
+    const today = todayLocalISO();
+    return data.points.some((p) => (p.date ?? '').slice(0, 10) >= today);
+  }, [data]);
+
   // Считаем dataMax заказов отдельно, чтобы прижать bars к нижней четверти.
   const ordersMax = useMemo(() => {
-    if (!data || !data.points) return 0;
     let m = 0;
-    for (const p of data.points) {
+    for (const p of visiblePoints) {
       const v = Number(p.orders ?? 0);
       if (v > m) m = v;
     }
     return m;
-  }, [data]);
+  }, [visiblePoints]);
 
   // Y-оси: нейтральные ticks (muted-foreground), без копирования цвета серий.
   // rubLeft (revenue/aov) — main левая ось, rubRight (ads) — собственный
@@ -262,17 +294,18 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
   }, [series, ordersMax]);
 
   const totals = useMemo(() => {
-    if (!data) return { revenue: 0, orders: 0, ads: 0 };
     let revenue = 0;
     let orders = 0;
     let ads = 0;
-    for (const p of data.points) {
+    // Тоталы считаем по visiblePoints (без «сегодня») — иначе badge
+    // вверху будет показывать одно число, а сумма по чарту — другое.
+    for (const p of visiblePoints) {
       revenue += p.revenueRub ?? 0;
       orders += p.orders ?? 0;
       ads += p.adsRub ?? 0;
     }
     return { revenue, orders, ads };
-  }, [data]);
+  }, [visiblePoints]);
 
   useBlockValuePublisher(instance.id, {
     value: totals.revenue * 100,
@@ -361,6 +394,15 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
             </>
           )}
         </div>
+        {hiddenTodayPoint && (
+          <span
+            className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground"
+            title="Текущий день скрыт — данные не полные. Точка «сегодня» дозревает в течение суток, поэтому исключена из графика и тоталов."
+          >
+            <Info className="h-2.5 w-2.5" />
+            Сегодня скрыт
+          </span>
+        )}
         {data?.adsSource === 'expense' && (
           <span
             className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
@@ -421,13 +463,13 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
           <div className="flex h-full items-center justify-center text-center text-[12px] text-muted-foreground">
             {error}
           </div>
-        ) : !data || data.points.length === 0 ? (
+        ) : !data || visiblePoints.length === 0 ? (
           <div className="flex h-full items-center justify-center text-center text-[12px] text-muted-foreground">
             {loading ? 'Загрузка…' : 'Нет данных для отображения'}
           </div>
         ) : (
           <ChartShell
-            data={data.points}
+            data={visiblePoints}
             series={series}
             xKey="date"
             height={260}
