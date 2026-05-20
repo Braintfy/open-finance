@@ -12,12 +12,17 @@ import {
   ozonOrders,
   ozonTransactions,
   ozonPerfSkuStats,
-  ozonPerfCpoDaily,
-  ozonPerfExpenseDaily,
   ozonAnalyticsDaily,
 } from '@/lib/db/schema/marketplaces';
 import type { OzonAnalyticsRow } from '@/lib/blocks/catalog/unit-ozon-analytics-types';
 import { getRedis } from '@/lib/redis';
+import { getOzonAdsTotals, type OzonAdsSource } from '@/lib/marketplaces/ozon/ads-totals';
+import { OZON_ANALYTICS_CACHE_VERSION } from '@/lib/marketplaces/ozon/analytics-cache';
+import {
+  parseOzonPeriodFromRequest,
+  resolveOzonQueryPeriod,
+  type OzonQueryPeriod,
+} from '@/lib/marketplaces/ozon/query-period';
 
 // Re-export для существующих импортов API-роуты.
 export type { OzonAnalyticsRow };
@@ -43,19 +48,18 @@ export type OzonAnalyticsResponse = {
     drrPct: number | null;
     productsWithSales: number;
   };
-  period: { from: string; to: string };
-  adsSource: 'expense' | 'performance' | 'transactions-heuristic' | 'none';
+  period: OzonQueryPeriod;
+  adsSource: OzonAdsSource;
   /** Источник данных продаж: 'analytics-api' = ozon_analytics_daily, 'orders-fallback' = ozon_orders. */
   ordersSource: 'analytics-api' | 'orders-fallback';
   /** Есть CPO расход в периоде (влияет на UI бейдж ≅). */
   hasCpoExpense: boolean;
+  reconciliationGapPct: number | null;
+  expenseByAdvType: Array<{ advObjectType: string | null; adsRub: number }>;
 };
 
 /** TTL Redis-кэша для аналитики, секунды. Sync переписывает данные не чаще раза в час. */
 const ANALYTICS_CACHE_TTL_SEC = 3600;
-
-/** Bump ключ кэша при изменении формы response (v0.18.17 — +primaryImage). */
-const CACHE_VERSION = 'v3';
 
 /**
  * Эвристика для классификации транзакций Ozon как «рекламные».
@@ -69,12 +73,6 @@ const ADS_FILTER_SQL = sql`(
   OR lower(operation_type) LIKE '%marketing%'
 )`;
 
-function parseDate(value: string | null, fallback: Date): Date {
-  if (!value) return fallback;
-  const d = new Date(value);
-  return Number.isFinite(d.getTime()) ? d : fallback;
-}
-
 export async function GET(req: NextRequest) {
   try {
     const session = await auth();
@@ -83,24 +81,21 @@ export async function GET(req: NextRequest) {
     }
     const url = new URL(req.url);
     const accountId = url.searchParams.get('accountId');
+    const resolvedPeriod =
+      parseOzonPeriodFromRequest(
+        url.searchParams.get('fromDate'),
+        url.searchParams.get('toDateExclusive'),
+        url.searchParams.get('from'),
+        url.searchParams.get('to'),
+      ) ?? resolveOzonQueryPeriod('30d');
+
+    const { fromDate, toDateExclusive } = resolvedPeriod;
+
+    const fromMs = new Date(fromDate + 'T00:00:00Z').getTime();
+    const toExMs = new Date(toDateExclusive + 'T00:00:00Z').getTime();
+    const periodDays = Math.max(1, Math.round((toExMs - fromMs) / (24 * 3600 * 1000)));
+
     const now = new Date();
-    const defaultFrom = new Date(now.getTime() - 30 * 24 * 3600 * 1000);
-    const from = parseDate(url.searchParams.get('from'), defaultFrom);
-    const to = parseDate(url.searchParams.get('to'), now);
-
-    if (from >= to) {
-      return NextResponse.json(
-        { ok: false, error: 'Invalid period: from >= to' },
-        { status: 400 },
-      );
-    }
-    // postgres.js не сериализует Date в raw sql-template'ах — передаём ISO-строки.
-    const fromIso = from.toISOString();
-    const toIso = to.toISOString();
-
-    const periodDays = Math.max(1, Math.round((to.getTime() - from.getTime()) / (24 * 3600 * 1000)));
-
-    // Окно для fallback-velocity (30 дней от now). Используется когда в
     // текущем `period` qty_delivered = 0 — типично для коротких окон 7d
     // на товарах с медленным оборотом. См. поле daysOfStockFallback30d.
     const fallbackWindowDays = 30;
@@ -109,7 +104,7 @@ export async function GET(req: NextRequest) {
 
     // Redis-кэш: блок аналитики переоткрывается часто, sync переписывает данные
     // максимум раз в час. Ключ зависит от tenant + accountId + период.
-    const cacheKey = `analytics:ozon:${CACHE_VERSION}:${session.tenantId}:${accountId ?? 'all'}:${fromIso}:${toIso}`;
+    const cacheKey = `analytics:ozon:${OZON_ANALYTICS_CACHE_VERSION}:${session.tenantId}:${accountId ?? 'all'}:${fromDate}:${toDateExclusive}`;
     try {
       const cached = await getRedis().get(cacheKey);
       if (cached) {
@@ -122,56 +117,30 @@ export async function GET(req: NextRequest) {
     const accountCondOrders = accountId ? sql`AND o.account_id = ${accountId}` : sql``;
     const accountCondTx = accountId ? sql`AND tx.account_id = ${accountId}` : sql``;
     const accountCondPerf = accountId ? sql`AND ps.account_id = ${accountId}` : sql``;
-    const accountCondCpo = accountId ? sql`AND cd.account_id = ${accountId}` : sql``;
-    const accountCondExp = accountId ? sql`AND ex.account_id = ${accountId}` : sql``;
     const accountCondAnalytics = accountId ? sql`AND ad.account_id = ${accountId}` : sql``;
     const accountCondScheme = accountId ? sql`AND o2.account_id = ${accountId}` : sql``;
     const accountCondUp = accountId
       ? sql`AND ${unitProducts.marketplaceAccountId} = ${accountId}`
       : sql``;
 
-    // CPO расход (агрегат по магазину за период).
-    // CPO не имеет per-SKU detail, поэтому берём одним числом и распределяем
-    // по SKU пропорционально выручке на Node.
-    type CpoTotalRow = { ads_kopecks: number };
-    const cpoResult = await db.execute<CpoTotalRow>(sql`
-      SELECT COALESCE(SUM(cd.expense_kopecks), 0)::bigint AS ads_kopecks
-      FROM ${ozonPerfCpoDaily} cd
-      WHERE cd.tenant_id = ${session.tenantId}
-        ${accountCondCpo}
-        AND cd.date >= ${fromIso}::date
-        AND cd.date < ${toIso}::date
-    `);
-    const cpoTotalRows: CpoTotalRow[] = Array.isArray(cpoResult)
-      ? (cpoResult as CpoTotalRow[])
-      : (((cpoResult as unknown) as { rows: CpoTotalRow[] }).rows ?? []);
-    const cpoTotalRub = Number(cpoTotalRows[0]?.ads_kopecks ?? 0) / 100;
+    // Единый источник total ads (expense → CPC+CPO → transactions).
+    const adsTotals = await getOzonAdsTotals({
+      tenantId: session.tenantId,
+      accountId,
+      fromDate,
+      toDateExclusive,
+    });
+    const cpoTotalRub = adsTotals.breakdown.cpoRub;
+    const adsSource = adsTotals.adsSource;
 
-    // Эталон Performance API — `/statistics/expense` (покрывает все типы кампаний
-    // + бонусы). Если есть данные — используем как primary total adsRub
-    // вместо CPC+CPO суммы. См. ozon_perf_expense_daily.
-    const expenseResult = await db.execute<CpoTotalRow>(sql`
-      SELECT COALESCE(SUM(ex.total_spent_kopecks), 0)::bigint AS ads_kopecks
-      FROM ${ozonPerfExpenseDaily} ex
-      WHERE ex.tenant_id = ${session.tenantId}
-        ${accountCondExp}
-        AND ex.date >= ${fromIso}::date
-        AND ex.date < ${toIso}::date
-    `);
-    const expenseTotalRows: CpoTotalRow[] = Array.isArray(expenseResult)
-      ? (expenseResult as CpoTotalRow[])
-      : (((expenseResult as unknown) as { rows: CpoTotalRow[] }).rows ?? []);
-    const expenseTotalRub = Number(expenseTotalRows[0]?.ads_kopecks ?? 0) / 100;
-    const hasExpenseData = expenseTotalRub > 0;
-
-    // Определяем источник рекламных данных: perf_sku_stats (primary) → transactions (fallback).
+    // Определяем источник рекламных данных per-SKU: perf_sku_stats → transactions.
     type AdsCheckRow = { cnt: number };
     const perfCheck = await db.execute<AdsCheckRow>(sql`
       SELECT COUNT(*)::int AS cnt FROM ${ozonPerfSkuStats} ps
       WHERE ps.tenant_id = ${session.tenantId}
         ${accountCondPerf}
-        AND ps.date >= ${fromIso}::date
-        AND ps.date < ${toIso}::date
+        AND ps.date >= ${fromDate}::date
+        AND ps.date < ${toDateExclusive}::date
       LIMIT 1
     `);
     const perfCheckRows: AdsCheckRow[] = Array.isArray(perfCheck)
@@ -185,8 +154,8 @@ export async function GET(req: NextRequest) {
       SELECT COUNT(*)::int AS cnt FROM ${ozonAnalyticsDaily} ad
       WHERE ad.tenant_id = ${session.tenantId}
         ${accountCondAnalytics}
-        AND ad.date >= ${fromIso}::date
-        AND ad.date < ${toIso}::date
+        AND ad.date >= ${fromDate}::date
+        AND ad.date < ${toDateExclusive}::date
       LIMIT 1
     `);
     const analyticsCheckRows: AdsCheckRow[] = Array.isArray(analyticsCheck)
@@ -212,8 +181,8 @@ export async function GET(req: NextRequest) {
         FROM ${ozonPerfSkuStats} ps
         WHERE ps.tenant_id = ${session.tenantId}
           ${accountCondPerf}
-          AND ps.date >= ${fromIso}::date
-          AND ps.date < ${toIso}::date
+          AND ps.date >= ${fromDate}::date
+          AND ps.date < ${toDateExclusive}::date
         GROUP BY ps.sku
       )`
       : sql`
@@ -229,18 +198,14 @@ export async function GET(req: NextRequest) {
         FROM ${ozonTransactions} tx
         WHERE tx.tenant_id = ${session.tenantId}
           ${accountCondTx}
-          AND tx.operation_date >= ${fromIso}::timestamp
-          AND tx.operation_date < ${toIso}::timestamp
+          AND tx.operation_date >= ${fromDate}::timestamp
+          AND tx.operation_date < ${toDateExclusive}::timestamp
           AND tx.sku IS NOT NULL
           AND ${ADS_FILTER_SQL}
         GROUP BY tx.sku
       )`;
 
-    let adsSource: 'expense' | 'performance' | 'transactions-heuristic' | 'none' = hasExpenseData
-      ? 'expense'
-      : hasPerfData
-        ? 'performance'
-        : 'none';
+    // CTE для per-SKU рекламы (views/clicks/CPC) — отдельно от store-total.
 
     type Raw = {
       productId: string;
@@ -316,8 +281,8 @@ export async function GET(req: NextRequest) {
         CROSS JOIN LATERAL jsonb_array_elements(o2.items) AS it
         WHERE o2.tenant_id = ${session.tenantId}
           ${accountCondScheme}
-          AND o2.order_created_at >= ${fromIso}::timestamp
-          AND o2.order_created_at < ${toIso}::timestamp
+          AND o2.order_created_at >= ${fromDate}::timestamp
+          AND o2.order_created_at < ${toDateExclusive}::timestamp
           AND COALESCE(it->>'offerId', '') <> ''
         GROUP BY (it->>'offerId')::text
       )`;
@@ -344,8 +309,8 @@ export async function GET(req: NextRequest) {
         FROM ${ozonAnalyticsDaily} ad
         WHERE ad.tenant_id = ${session.tenantId}
           ${accountCondAnalytics}
-          AND ad.date >= ${fromIso}::date
-          AND ad.date < ${toIso}::date
+          AND ad.date >= ${fromDate}::date
+          AND ad.date < ${toDateExclusive}::date
         GROUP BY ad.sku
       ),
       -- Fallback для basic-tier (cancellations/returns в analytics_daily = 0):
@@ -363,8 +328,8 @@ export async function GET(req: NextRequest) {
         CROSS JOIN LATERAL jsonb_array_elements(o.items) AS it
         WHERE o.tenant_id = ${session.tenantId}
           ${accountCondOrders}
-          AND o.order_created_at >= ${fromIso}::timestamp
-          AND o.order_created_at < ${toIso}::timestamp
+          AND o.order_created_at >= ${fromDate}::timestamp
+          AND o.order_created_at < ${toDateExclusive}::timestamp
           AND COALESCE(it->>'offerId', '') <> ''
         GROUP BY (it->>'offerId')::text
       )`
@@ -385,8 +350,8 @@ export async function GET(req: NextRequest) {
         CROSS JOIN LATERAL jsonb_array_elements(o.items) AS it
         WHERE o.tenant_id = ${session.tenantId}
           ${accountCondOrders}
-          AND o.order_created_at >= ${fromIso}::timestamp
-          AND o.order_created_at < ${toIso}::timestamp
+          AND o.order_created_at >= ${fromDate}::timestamp
+          AND o.order_created_at < ${toDateExclusive}::timestamp
       ),
       agg_orders AS (
         SELECT
@@ -606,8 +571,8 @@ export async function GET(req: NextRequest) {
             SELECT DISTINCT ps.sku FROM ${ozonPerfSkuStats} ps
             WHERE ps.tenant_id = ${session.tenantId}
               ${accountCondPerf}
-              AND ps.date >= ${fromIso}::date
-              AND ps.date < ${toIso}::date
+              AND ps.date >= ${fromDate}::date
+              AND ps.date < ${toDateExclusive}::date
             LIMIT 3
           `);
           const adsSample: SampleAdsRow[] = Array.isArray(adsSampleResult)
@@ -703,36 +668,22 @@ export async function GET(req: NextRequest) {
       },
     );
     totals.adsCpoRub = cpoTotalRub;
-    // Total adsRub:
-    //  - Если есть expense_daily — это эталон (включает баннеры/видео/all_sku_promo
-    //    и бонусы), CPC+CPO считаются подмножествами.
-    //  - Иначе — CPC (per-SKU) + CPO (агрегат). Per-SKU adsRub в rows[] остаётся
-    //    CPC-only + alloc CPO пропорционально выручке (логика ниже не меняется).
-    totals.adsRub = hasExpenseData
-      ? expenseTotalRub
-      : totals.adsCpcRub + cpoTotalRub;
+    totals.adsRub = adsTotals.adsRub;
     totals.drrPct =
       totals.revenueRub > 0 && totals.adsRub > 0
         ? (totals.adsRub / totals.revenueRub) * 100
         : null;
 
-    // Если не perf и есть ads данные → значит из транзакций.
-    if (!hasPerfData && !hasExpenseData && totals.adsCpcRub > 0) {
-      adsSource = 'transactions-heuristic';
-    }
-    // CPO source = performance (из ozon_perf_cpo_daily).
-    if (cpoTotalRub > 0 && adsSource === 'none') {
-      adsSource = 'performance';
-    }
-
     const payload: OzonAnalyticsResponse = {
       ok: true,
       rows,
       totals,
-      period: { from: from.toISOString(), to: to.toISOString() },
+      period: resolvedPeriod,
       adsSource,
       ordersSource,
       hasCpoExpense,
+      reconciliationGapPct: adsTotals.reconciliationGapPct,
+      expenseByAdvType: adsTotals.expenseByAdvType,
     };
 
     // Запись в кэш — best-effort.

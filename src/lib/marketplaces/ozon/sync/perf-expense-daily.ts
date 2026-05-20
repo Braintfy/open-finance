@@ -2,25 +2,32 @@
 // Performance API `GET /api/client/statistics/expense`. Покрывает ВСЕ
 // типы кампаний (SKU/SEARCH_PROMO/ALL_SKU_PROMO/BANNER/VIDEO_BANNER) +
 // бонусы. Primary источник total adsRub в KPI/Аналитике.
-//
-// Архитектура:
-//   1. Берём окно `perfWindowDays` (clamp до 62).
-//   2. Запрос expense с retry по уменьшающимся окнам / lag'ам.
-//   3. Удаляем старые строки этого окна, upsert per-day per-campaign.
 
 import { sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { ozonPerfExpenseDaily } from '@/lib/db/schema/marketplaces';
-import { getExpenseDaily } from '../performance/endpoints';
+import { getExpenseDaily, sumExpenseRows } from '../performance/endpoints';
 import { OzonPerfApiError } from '../performance/client';
 import { rublesToKopecks } from '@/lib/unit-economics/types';
 import { runStageWithTiming, type StageContext, type StageResult } from './types';
 import { buildPerfPeriod, type PerfPeriod } from './perf-period';
+import { invalidateOzonAnalyticsCache } from '../analytics-cache';
 
 const MAX_WINDOW_DAYS = 62;
 
 const RETRY_WINDOWS = [30, 14, 7] as const;
 const RETRY_END_LAGS = [1, 2, 3, 4, 7] as const;
+
+/** Синтетический campaignId для строк без id (store-level / CSV без id). */
+function resolveCampaignId(row: {
+  date: string;
+  campaignId: string | null;
+  advObjectType: string | null;
+}): string {
+  if (row.campaignId && String(row.campaignId).trim()) return String(row.campaignId).trim();
+  const type = row.advObjectType ?? 'unknown';
+  return `__store__:${type}:${row.date}`;
+}
 
 export async function syncPerfExpenseDailyStage(
   ctx: StageContext,
@@ -82,6 +89,14 @@ export async function syncPerfExpenseDailyStage(
       };
     }
 
+    const expenseSum = sumExpenseRows(rows);
+    if (rows.length === 0) {
+      warnings.push(
+        'Performance API expense: за выбранный период нет расхода (или endpoint не вернул данные). ' +
+          'Если в кабинете Ozon расход есть — проверьте период sync и наличие кампаний.',
+      );
+    }
+
     await db.execute(sql`
       DELETE FROM ${ozonPerfExpenseDaily}
       WHERE tenant_id = ${ctx.tenantId}
@@ -91,15 +106,17 @@ export async function syncPerfExpenseDailyStage(
     `);
 
     let processed = 0;
+    let skippedNoId = 0;
     for (const r of rows) {
-      if (!r.campaignId) continue;
+      const campaignId = resolveCampaignId(r);
+      if (!r.campaignId) skippedNoId += 1;
       await db
         .insert(ozonPerfExpenseDaily)
         .values({
           tenantId: ctx.tenantId,
           accountId: ctx.accountId,
           date: r.date,
-          campaignId: r.campaignId,
+          campaignId,
           advObjectType: r.advObjectType,
           moneySpentKopecks: rublesToKopecks(r.moneySpentRub),
           bonusSpentKopecks: rublesToKopecks(r.bonusSpentRub),
@@ -125,11 +142,21 @@ export async function syncPerfExpenseDailyStage(
       ctx.onProgress?.(processed, rows.length);
     }
 
-    if (processed === 0 && rows.length === 0) {
+    if (skippedNoId > 0) {
       warnings.push(
-        'Performance API expense: за выбранный период нет расхода (или endpoint не вернул данные). ' +
-          'Если в кабинете Ozon расход есть — проверьте период sync и наличие кампаний.',
+        `${skippedNoId} строк expense без campaignId — сохранены с синтетическим id (__store__:type:date).`,
       );
+    }
+
+    if (processed > 0) {
+      warnings.push(
+        `Expense sync: ${processed} строк, сумма ${Math.round(expenseSum).toLocaleString('ru-RU')} ₽ за ${period.dateFrom}…${period.dateTo}.`,
+      );
+    }
+
+    const cacheDeleted = await invalidateOzonAnalyticsCache(ctx.tenantId, ctx.accountId);
+    if (cacheDeleted > 0) {
+      warnings.push(`Analytics cache: удалено ${cacheDeleted} ключ(ей).`);
     }
 
     return { itemsProcessed: processed, itemsTotal: rows.length, warnings };

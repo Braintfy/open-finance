@@ -56,17 +56,21 @@ expense_daily (если есть данные). Это значит, что **с
 Если расход в Open Finance ≠ кабинету Ozon:
 
 ```bash
-# 1. Просмотреть последний sync summary
-# Settings → Синхронизация → expand «Performance API expense (эталон)»
-# — там видны warnings и itemsProcessed/itemsTotal.
+# 1. Live probe: API vs DB vs CPC+CPO
+pnpm tsx scripts/debug-ozon-expense.ts <accountId> --from 2026-04-20 --to 2026-05-20
 
-# 2. Прямая проверка `/statistics/expense` за тот же период
+# 2. Per-SKU CSV format (если views/clicks = 0)
 pnpm tsx scripts/debug-ozon-perf-csv.ts <accountId>
 
-# 3. Сверка с кабинетом
-# Кабинет → Реклама → Аналитика → Расход → выбрать тот же период
-# и сравнить с totals.adsRub из API /api/marketplaces/analytics/ozon.
+# 3. Re-sync (Settings → Синхронизация)
+# perfExpenseDaily → perfCpoDaily → perfSkuStats
+
+# 4. Сверка с кабинетом
+# Ozon LK → Реклама → Аналитика → Расход → тот же период (MSC)
+# KPI / Analytics / Chart должны показывать один adsRub при одном пресете «30d»
 ```
+
+**Критерии успеха (v0.18.23):** KPI = Chart = Analytics footer `adsRub` (±0.1%); `adsSource=expense`; live expense ≈ Ozon LK (±2% с учётом lag −1 day).
 
 ## История
 

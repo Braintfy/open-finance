@@ -113,8 +113,8 @@ export async function getOzonCampaignsTotals(
   const accountCondPerf = accountId ? sql`AND ${ozonPerfSkuStats.accountId} = ${accountId}` : sql``;
 
   const period = resolvePeriod(periodPreset, customFrom, customTo);
-  const fromIso = period.from.toISOString();
-  const toIso = period.to.toISOString();
+  const fromDate = period.msc.fromDate;
+  const toDateExclusive = period.msc.toDateExclusive;
 
   // 1. Кампании (counts).
   type CampRow = { total: number | string; active: number | string };
@@ -146,8 +146,8 @@ export async function getOzonCampaignsTotals(
     FROM ${ozonPerfSkuStats}
     WHERE ${ozonPerfSkuStats.tenantId} = ${tenantId}
       ${accountCondPerf}
-      AND ${ozonPerfSkuStats.date} >= ${fromIso}::date
-      AND ${ozonPerfSkuStats.date} < ${toIso}::date
+      AND ${ozonPerfSkuStats.date} >= ${fromDate}::date
+      AND ${ozonPerfSkuStats.date} < ${toDateExclusive}::date
   `);
   const statsRows: StatsRow[] = Array.isArray(statsResult)
     ? (statsResult as StatsRow[])
@@ -195,8 +195,8 @@ export async function getOzonSearchPhrasesTotals(
 ): Promise<OzonSearchPhrasesTotals> {
   const accountCondPhr = accountId ? sql`AND ${ozonPerfPhrases.accountId} = ${accountId}` : sql``;
   const period = resolvePeriod(periodPreset, customFrom, customTo);
-  const fromIso = period.from.toISOString();
-  const toIso = period.to.toISOString();
+  const fromDate = period.msc.fromDate;
+  const toDateExclusive = period.msc.toDateExclusive;
 
   type AggRow = {
     phrases: number | string;
@@ -215,8 +215,8 @@ export async function getOzonSearchPhrasesTotals(
     FROM ${ozonPerfPhrases}
     WHERE ${ozonPerfPhrases.tenantId} = ${tenantId}
       ${accountCondPhr}
-      AND ${ozonPerfPhrases.date} >= ${fromIso}::date
-      AND ${ozonPerfPhrases.date} < ${toIso}::date
+      AND ${ozonPerfPhrases.date} >= ${fromDate}::date
+      AND ${ozonPerfPhrases.date} < ${toDateExclusive}::date
   `);
   const rows: AggRow[] = Array.isArray(result)
     ? (result as AggRow[])

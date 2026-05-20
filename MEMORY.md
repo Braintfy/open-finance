@@ -312,6 +312,24 @@ Open Finance = настраиваемый Lego-конструктор интер
 4. `scripts/test-ozon-analytics.ts` (test row factory).
 Иначе TS error на required field.
 
+### Ozon v0.18.23 — ads unification + expense undercount fix
+
+**Проблема:** KPI (172K), Analytics footer (185K CPC+CPO), Ozon LK (312K) — разные цифры при «30 дней».
+
+**Корневые причины:**
+1. Два `resolvePeriod` (UTC 30d vs local 31d) + Redis cache v3.
+2. KPI gate `expenseRows.length>0` vs Analytics `sum>0` + разные date boundaries.
+3. JSON expense без абонентского счёта; CSV fallback только при 0 rows.
+4. CPO sync только ALL_SKU_PROMO — SEARCH_PROMO (~216K в LK) не попадал в `ozon_perf_cpo_daily`.
+
+**Решение:**
+- [`src/lib/marketplaces/ozon/query-period.ts`](src/lib/marketplaces/ozon/query-period.ts) — MSC `fromDate` / `toDateExclusive`.
+- [`src/lib/marketplaces/ozon/ads-totals.ts`](src/lib/marketplaces/ozon/ads-totals.ts) — `getOzonAdsTotals()` для kpi/timeseries/analytics/queries.
+- [`getExpenseDaily`](src/lib/marketplaces/ozon/performance/endpoints.ts) — account spend, flat rows, CSV validation.
+- [`perf-cpo-daily.ts`](src/lib/marketplaces/ozon/sync/perf-cpo-daily.ts) — SEARCH_PROMO из expense + max с ALL_SKU report.
+- Диагностика: `pnpm tsx scripts/debug-ozon-expense.ts <accountId> --from YYYY-MM-DD --to YYYY-MM-DD`.
+- После deploy: re-sync `perfExpenseDaily` → `perfCpoDaily` → `perfSkuStats`.
+
 ### Ozon v0.18.22 — warehouse stocks / clusters / hydration / chart / bindings
 
 Hotfixes после v0.18.21. **Главное: блок «Остатки по кластерам» теперь читает из правильных Seller API эндпойнтов, hydration в OzonAnalyticsTable пофикшен окончательно (через useId), «Динамика» исключает сегодня.**

@@ -108,8 +108,8 @@ function RenderOzonAnalytics({ instance, onConfigChange }: BlockRenderProps) {
       const period = resolvePeriod(periodPreset, customFrom, customTo);
       const params = new URLSearchParams({
         accountId: config.accountId,
-        from: period.from.toISOString(),
-        to: period.to.toISOString(),
+        fromDate: period.msc.fromDate,
+        toDateExclusive: period.msc.toDateExclusive,
       });
       const res = await fetch(`/api/marketplaces/analytics/ozon?${params}`);
       const data: unknown = await res.json();
@@ -420,11 +420,17 @@ function RenderOzonAnalytics({ instance, onConfigChange }: BlockRenderProps) {
               label="Реклама"
               value={formatRub(response.totals.adsRub)}
               subtitle={
-                response.totals.adsCpoRub > 0
+                response.adsSource === 'performance' && response.totals.adsCpoRub > 0
                   ? `CPC: ${formatRub(response.totals.adsCpcRub)} · CPO: ${formatRub(response.totals.adsCpoRub)}`
-                  : undefined
+                  : response.adsSource === 'expense'
+                    ? `Expense (все типы) · CPC≈${formatRub(response.totals.adsCpcRub)} · CPO≈${formatRub(response.totals.adsCpoRub)}`
+                    : undefined
               }
-              subtitleTitle="CPC/CPM — per-SKU из Search Promo. CPO — агрегат по магазину (Оплата за заказ), распределён по SKU пропорционально выручке."
+              subtitleTitle={
+                response.adsSource === 'expense'
+                  ? 'Total — эталон expense_daily. CPC/CPO — breakdown (может не суммироваться в total).'
+                  : 'CPC/CPM — per-SKU. CPO — агрегат по магазину, распределён по SKU пропорционально выручке.'
+              }
             />
             <Totals label="ДРР" value={formatPct(response.totals.drrPct)} tone={response.totals.drrPct !== null && response.totals.drrPct > 20 ? 'warning' : 'neutral'} />
             <Totals
@@ -440,6 +446,15 @@ function RenderOzonAnalytics({ instance, onConfigChange }: BlockRenderProps) {
             <Totals label="Товары с продажами" value={`${response.totals.productsWithSales} / ${rows.length}`} />
           </div>
           {/* Source badges: показывают откуда взяты числа. */}
+          {response.reconciliationGapPct !== null &&
+            response.reconciliationGapPct > 5 && (
+            <div className="flex flex-wrap items-center gap-1.5 border-b border-border/40 bg-amber-50 px-3 py-1 text-[10px] text-amber-700 dark:bg-amber-950/30 dark:text-amber-300">
+              <span className="font-medium">Расхождение expense vs CPC+CPO: {response.reconciliationGapPct.toFixed(1)}%.</span>
+              <span className="text-amber-700/80 dark:text-amber-400/70">
+                Total взят из expense (эталон). Перезапустите perfExpenseDaily + perfCpoDaily.
+              </span>
+            </div>
+          )}
           {response.adsSource === 'expense' && (
             <div className="flex flex-wrap items-center gap-1.5 border-b border-border/40 bg-emerald-50 px-3 py-1 text-[10px] text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300">
               <span className="font-medium">Эталон Performance API (expense).</span>

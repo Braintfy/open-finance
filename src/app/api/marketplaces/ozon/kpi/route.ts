@@ -1,32 +1,24 @@
 // PURPOSE: KPI агрегаты Ozon (выручка/заказы/реклама/ДРР/AOV/CPO) за период
 // + delta vs прошлый период + sparkline по дням. Tenant-scoped.
 //
-// Источник продаж — двухуровневый (как в /analytics/ozon после v0.18.13):
-//   - primary: ozon_analytics_daily (Seller `/v1/analytics/data`) — точно как
-//     в Seller-кабинете Ozon.
-//   - fallback: ozon_orders с broader-фильтром (не cancelled/returned) —
-//     используется только когда analytics_daily пустая.
-//
-// Реклама:
-//   - ozon_perf_sku_stats (если есть) — CPC/CPM расход + ozon_perf_cpo_daily — CPO агрегат
-//   - fallback на ozon_transactions с эвристикой LIKE '%promot%|advertis|marketing'
+// Период — MSC YYYY-MM-DD (`fromDate` / `toDateExclusive`).
+// Реклама — единый модуль `getOzonAdsTotals`.
 
 import { NextResponse, type NextRequest } from 'next/server';
 import { sql } from 'drizzle-orm';
 import { auth } from '@/lib/auth';
 import { db } from '@/lib/db/client';
+import { ozonOrders, ozonAnalyticsDaily } from '@/lib/db/schema/marketplaces';
+import { getOzonAdsTotals, type OzonAdsSource } from '@/lib/marketplaces/ozon/ads-totals';
 import {
-  ozonOrders,
-  ozonTransactions,
-  ozonPerfSkuStats,
-  ozonPerfCpoDaily,
-  ozonPerfExpenseDaily,
-  ozonAnalyticsDaily,
-} from '@/lib/db/schema/marketplaces';
+  getPreviousOzonQueryPeriod,
+  parseOzonPeriodFromRequest,
+  shiftOzonQueryPeriod,
+  type OzonQueryPeriod,
+} from '@/lib/marketplaces/ozon/query-period';
 
 export const runtime = 'nodejs';
 
-/** Режим сравнения для delta-бейджей. */
 export type CompareMode = 'previous' | 'week-ago';
 
 export type OzonKpiResponse = {
@@ -47,76 +39,51 @@ export type OzonKpiResponse = {
     aovRub: number | null;
     cpoRub: number | null;
   };
-  /** День → revenue/orders/ads для sparkline. */
   byDay: Array<{ date: string; revenueRub: number; orders: number; adsRub: number }>;
-  /**
-   * Источник рекламных данных:
-   *  - `expense`: эталонный `ozon_perf_expense_daily` (Performance API
-   *    `/statistics/expense`) — покрывает все типы кампаний + бонусы.
-   *  - `performance`: CPC из `ozon_perf_sku_stats` + CPO из `ozon_perf_cpo_daily`.
-   *  - `transactions-heuristic`: эвристика по `ozon_transactions.operation_type`.
-   *  - `none`: данных нет.
-   */
-  adsSource: 'expense' | 'performance' | 'transactions-heuristic' | 'none';
-  /** Источник продаж: 'analytics-api' = ozon_analytics_daily, 'orders-fallback' = ozon_orders. */
+  adsSource: OzonAdsSource;
   ordersSource: 'analytics-api' | 'orders-fallback';
-  /** Режим сравнения (echo из query). */
   compareMode: CompareMode;
-  /** Человеческий label для UI tooltip'а: "Прошлый период" / "Неделя назад". */
   compareLabel: string;
-  /** Диапазон previous (для отладки/tooltip). ISO. */
-  previousRange: { from: string; to: string };
+  previousRange: { fromDate: string; toDateExclusive: string };
+  period: OzonQueryPeriod;
+  adsBreakdown: {
+    expenseRub: number;
+    cpcRub: number;
+    cpoRub: number;
+    moneyRub: number;
+    bonusRub: number;
+  };
+  reconciliationGapPct: number | null;
 };
 
 type DayAgg = {
   date: string;
   revenue_rub: number;
   orders_count: number;
-  ads_kopecks: number;
 };
 
-async function getAggregateForRange(args: {
+async function getOrdersForRange(args: {
   tenantId: string;
   accountId: string | null;
-  from: Date;
-  to: Date;
+  fromDate: string;
+  toDateExclusive: string;
 }): Promise<{
   revenue: number;
   orders: number;
-  ads: number;
   byDay: DayAgg[];
-  adsSource: 'expense' | 'performance' | 'transactions-heuristic' | 'none';
   ordersSource: 'analytics-api' | 'orders-fallback';
 }> {
-  const { tenantId, accountId, from, to } = args;
-  // postgres.js не сериализует Date в raw sql-template'ах — передаём ISO-строки.
-  const fromIso = from.toISOString();
-  const toIso = to.toISOString();
-  const accountCondOrders = accountId
-    ? sql`AND o.account_id = ${accountId}`
-    : sql``;
-  const accountCondPerf = accountId
-    ? sql`AND ps.account_id = ${accountId}`
-    : sql``;
-  const accountCondCpo = accountId
-    ? sql`AND cd.account_id = ${accountId}`
-    : sql``;
-  const accountCondExp = accountId
-    ? sql`AND ex.account_id = ${accountId}`
-    : sql``;
-  const accountCondTx = accountId ? sql`AND tx.account_id = ${accountId}` : sql``;
-  const accountCondAnalytics = accountId
-    ? sql`AND ad.account_id = ${accountId}`
-    : sql``;
+  const { tenantId, accountId, fromDate, toDateExclusive } = args;
+  const accountCondOrders = accountId ? sql`AND o.account_id = ${accountId}` : sql``;
+  const accountCondAnalytics = accountId ? sql`AND ad.account_id = ${accountId}` : sql``;
 
-  // Определяем источник продаж: ozon_analytics_daily (primary) → ozon_orders (legacy).
   type CheckRow = { cnt: number };
   const analyticsCheck = await db.execute<CheckRow>(sql`
     SELECT COUNT(*)::int AS cnt FROM ${ozonAnalyticsDaily} ad
     WHERE ad.tenant_id = ${tenantId}
       ${accountCondAnalytics}
-      AND ad.date >= ${fromIso}::date
-      AND ad.date < ${toIso}::date
+      AND ad.date >= ${fromDate}::date
+      AND ad.date < ${toDateExclusive}::date
     LIMIT 1
   `);
   const analyticsCheckRows: CheckRow[] = Array.isArray(analyticsCheck)
@@ -127,11 +94,7 @@ async function getAggregateForRange(args: {
     ? 'analytics-api'
     : 'orders-fallback';
 
-  type Row = {
-    day: string;
-    revenue_rub: number;
-    orders_count: number;
-  };
+  type Row = { day: string; revenue_rub: number; orders_count: number };
   const ordersResult = await db.execute<Row>(
     hasAnalyticsData
       ? sql`
@@ -142,8 +105,8 @@ async function getAggregateForRange(args: {
         FROM ${ozonAnalyticsDaily} ad
         WHERE ad.tenant_id = ${tenantId}
           ${accountCondAnalytics}
-          AND ad.date >= ${fromIso}::date
-          AND ad.date < ${toIso}::date
+          AND ad.date >= ${fromDate}::date
+          AND ad.date < ${toDateExclusive}::date
         GROUP BY ad.date
         ORDER BY ad.date
       `
@@ -151,22 +114,15 @@ async function getAggregateForRange(args: {
         WITH order_items AS (
           SELECT
             o.id,
-            o.status,
-            o.cancelled_at,
-            o.returned_at,
             date_trunc('day', o.order_created_at AT TIME ZONE 'UTC') AS day,
-            (it->>'offerId')::text AS offer_id,
             COALESCE(NULLIF(it->>'price', '')::numeric, 0) AS price_rub,
             COALESCE(NULLIF(it->>'quantity', '')::numeric, 0) AS qty
           FROM ${ozonOrders} o
           CROSS JOIN LATERAL jsonb_array_elements(o.items) AS it
           WHERE o.tenant_id = ${tenantId}
             ${accountCondOrders}
-            AND o.order_created_at >= ${fromIso}::timestamp
-            AND o.order_created_at < ${toIso}::timestamp
-            -- delivered = всё кроме явно отменённого/возвращённого
-            -- (включая awaiting_deliver/delivering). На коротком окне строгий
-            -- 'delivered' даёт провал — заказы ещё в пути.
+            AND o.order_created_at >= ${fromDate}::timestamp
+            AND o.order_created_at < ${toDateExclusive}::timestamp
             AND o.cancelled_at IS NULL
             AND o.returned_at IS NULL
             AND lower(o.status) NOT LIKE '%cancel%'
@@ -185,134 +141,61 @@ async function getAggregateForRange(args: {
     ? (ordersResult as Row[])
     : (((ordersResult as unknown) as { rows: Row[] }).rows ?? []);
 
-  // Реклама — приоритет:
-  // 1) `ozon_perf_expense_daily` (эталон Performance API `/statistics/expense`,
-  //    покрывает все типы кампаний + бонусы).
-  // 2) UNION CPC (`ozon_perf_sku_stats`) + CPO (`ozon_perf_cpo_daily`).
-  // 3) Эвристика `ozon_transactions.operation_type`.
-  type AdsRow = { day: string; ads_kopecks: number };
-
-  const expenseResult = await db.execute<AdsRow>(sql`
-    SELECT
-      to_char(ex.date, 'YYYY-MM-DD') AS day,
-      COALESCE(SUM(ex.total_spent_kopecks), 0) AS ads_kopecks
-    FROM ${ozonPerfExpenseDaily} ex
-    WHERE ex.tenant_id = ${tenantId}
-      ${accountCondExp}
-      AND ex.date >= ${fromIso}::date
-      AND ex.date < ${toIso}::date
-    GROUP BY ex.date
-    ORDER BY ex.date
-  `);
-  const expenseRows: AdsRow[] = Array.isArray(expenseResult)
-    ? (expenseResult as AdsRow[])
-    : (((expenseResult as unknown) as { rows: AdsRow[] }).rows ?? []);
-
-  let adsSource: 'expense' | 'performance' | 'transactions-heuristic' | 'none' = 'none';
-  let adsByDay = new Map<string, number>();
-  if (expenseRows.length > 0) {
-    adsSource = 'expense';
-    for (const r of expenseRows) adsByDay.set(r.day, Number(r.ads_kopecks) / 100);
-  } else {
-  const perfResult = await db.execute<AdsRow>(sql`
-    WITH cpc_daily AS (
-      SELECT
-        ps.date AS day,
-        SUM(ps.expense_kopecks) AS kopecks
-      FROM ${ozonPerfSkuStats} ps
-      WHERE ps.tenant_id = ${tenantId}
-        ${accountCondPerf}
-        AND ps.date >= ${fromIso}::date
-        AND ps.date < ${toIso}::date
-      GROUP BY ps.date
-    ),
-    cpo_daily AS (
-      SELECT
-        cd.date AS day,
-        SUM(cd.expense_kopecks) AS kopecks
-      FROM ${ozonPerfCpoDaily} cd
-      WHERE cd.tenant_id = ${tenantId}
-        ${accountCondCpo}
-        AND cd.date >= ${fromIso}::date
-        AND cd.date < ${toIso}::date
-      GROUP BY cd.date
-    ),
-    combined AS (
-      SELECT day, kopecks FROM cpc_daily
-      UNION ALL
-      SELECT day, kopecks FROM cpo_daily
-    )
-    SELECT
-      to_char(day, 'YYYY-MM-DD') AS day,
-      COALESCE(SUM(kopecks), 0) AS ads_kopecks
-    FROM combined
-    GROUP BY day
-    ORDER BY day
-  `);
-  const perfRows: AdsRow[] = Array.isArray(perfResult)
-    ? (perfResult as AdsRow[])
-    : (((perfResult as unknown) as { rows: AdsRow[] }).rows ?? []);
-
-  if (perfRows.length > 0) {
-    adsSource = 'performance';
-    for (const r of perfRows) adsByDay.set(r.day, Number(r.ads_kopecks) / 100);
-  } else {
-    // Fallback: эвристика по транзакциям.
-    const txResult = await db.execute<AdsRow>(sql`
-      SELECT
-        to_char(date_trunc('day', tx.operation_date AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
-        COALESCE(SUM(ABS(tx.amount_kopecks)), 0) AS ads_kopecks
-      FROM ${ozonTransactions} tx
-      WHERE tx.tenant_id = ${tenantId}
-        ${accountCondTx}
-        AND tx.operation_date >= ${fromIso}::timestamp
-        AND tx.operation_date < ${toIso}::timestamp
-        AND (
-          lower(tx.operation_type) LIKE '%promot%'
-          OR lower(tx.operation_type) LIKE '%advertis%'
-          OR lower(tx.operation_type) LIKE '%marketing%'
-        )
-      GROUP BY 1
-      ORDER BY 1
-    `);
-    const txRows: AdsRow[] = Array.isArray(txResult)
-      ? (txResult as AdsRow[])
-      : (((txResult as unknown) as { rows: AdsRow[] }).rows ?? []);
-    if (txRows.length > 0) adsSource = 'transactions-heuristic';
-    adsByDay = new Map(txRows.map((r) => [r.day, Number(r.ads_kopecks) / 100]));
-  }
-  }
-
-  // Merge by day.
-  const dayMap = new Map<string, DayAgg>();
-  for (const r of ordersRows) {
-    dayMap.set(r.day, {
-      date: r.day,
-      revenue_rub: Number(r.revenue_rub),
-      orders_count: Number(r.orders_count),
-      ads_kopecks: 0,
-    });
-  }
-  for (const [day, adsRub] of adsByDay) {
-    const existing = dayMap.get(day);
-    if (existing) {
-      existing.ads_kopecks = adsRub * 100;
-    } else {
-      dayMap.set(day, {
-        date: day,
-        revenue_rub: 0,
-        orders_count: 0,
-        ads_kopecks: adsRub * 100,
-      });
-    }
-  }
-  const byDay = Array.from(dayMap.values()).sort((a, b) => a.date.localeCompare(b.date));
-
+  const byDay = ordersRows.map((r) => ({
+    date: r.day,
+    revenue_rub: Number(r.revenue_rub),
+    orders_count: Number(r.orders_count),
+  }));
   const revenue = byDay.reduce((s, r) => s + r.revenue_rub, 0);
   const orders = byDay.reduce((s, r) => s + r.orders_count, 0);
-  const ads = byDay.reduce((s, r) => s + r.ads_kopecks / 100, 0);
+  return { revenue, orders, byDay, ordersSource };
+}
 
-  return { revenue, orders, ads, byDay, adsSource, ordersSource };
+async function getAggregateForRange(args: {
+  tenantId: string;
+  accountId: string | null;
+  fromDate: string;
+  toDateExclusive: string;
+}) {
+  const [orders, ads] = await Promise.all([
+    getOrdersForRange(args),
+    getOzonAdsTotals(args),
+  ]);
+
+  const dayMap = new Map<
+    string,
+    { date: string; revenueRub: number; orders: number; adsRub: number }
+  >();
+  for (const r of orders.byDay) {
+    dayMap.set(r.date, {
+      date: r.date,
+      revenueRub: r.revenue_rub,
+      orders: r.orders_count,
+      adsRub: 0,
+    });
+  }
+  for (const r of ads.byDay) {
+    const existing = dayMap.get(r.date);
+    if (existing) existing.adsRub = r.adsRub;
+    else
+      dayMap.set(r.date, {
+        date: r.date,
+        revenueRub: 0,
+        orders: 0,
+        adsRub: r.adsRub,
+      });
+  }
+
+  return {
+    revenue: orders.revenue,
+    orders: orders.orders,
+    ads: ads.adsRub,
+    byDay: Array.from(dayMap.values()).sort((a, b) => a.date.localeCompare(b.date)),
+    adsSource: ads.adsSource,
+    ordersSource: orders.ordersSource,
+    adsBreakdown: ads.breakdown,
+    reconciliationGapPct: ads.reconciliationGapPct,
+  };
 }
 
 export async function GET(req: NextRequest) {
@@ -323,40 +206,40 @@ export async function GET(req: NextRequest) {
     }
     const url = new URL(req.url);
     const accountId = url.searchParams.get('accountId');
-    const fromStr = url.searchParams.get('from');
-    const toStr = url.searchParams.get('to');
-    if (!fromStr || !toStr) {
+    const period = parseOzonPeriodFromRequest(
+      url.searchParams.get('fromDate'),
+      url.searchParams.get('toDateExclusive'),
+      url.searchParams.get('from'),
+      url.searchParams.get('to'),
+    );
+    if (!period) {
       return NextResponse.json(
-        { ok: false, error: 'from/to required (ISO)' },
+        { ok: false, error: 'fromDate/toDateExclusive required (YYYY-MM-DD MSC)' },
         { status: 400 },
       );
     }
-    const from = new Date(fromStr);
-    const to = new Date(toStr);
-    if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime())) {
-      return NextResponse.json({ ok: false, error: 'Invalid date' }, { status: 400 });
-    }
+
     const compareMode: CompareMode =
       url.searchParams.get('compareMode') === 'week-ago' ? 'week-ago' : 'previous';
-    const lengthMs = to.getTime() - from.getTime();
-    // previous: эталонный вариант — сдвиг на длину выбранного периода назад.
-    // week-ago: сдвиг на 7 дней назад (день-к-дню, учитывает weekly seasonality).
-    const shiftMs = compareMode === 'week-ago' ? 7 * 24 * 3600 * 1000 : lengthMs;
-    const prevFrom = new Date(from.getTime() - shiftMs);
-    const prevTo =
+    const prevPeriod =
       compareMode === 'week-ago'
-        ? new Date(to.getTime() - shiftMs)
-        : new Date(from.getTime());
+        ? shiftOzonQueryPeriod(period, -7)
+        : getPreviousOzonQueryPeriod(period);
     const compareLabel =
       compareMode === 'week-ago' ? 'Неделя назад' : 'Прошлый период';
 
     const [current, previous] = await Promise.all([
-      getAggregateForRange({ tenantId: session.tenantId, accountId, from, to }),
       getAggregateForRange({
         tenantId: session.tenantId,
         accountId,
-        from: prevFrom,
-        to: prevTo,
+        fromDate: period.fromDate,
+        toDateExclusive: period.toDateExclusive,
+      }),
+      getAggregateForRange({
+        tenantId: session.tenantId,
+        accountId,
+        fromDate: prevPeriod.fromDate,
+        toDateExclusive: prevPeriod.toDateExclusive,
       }),
     ]);
 
@@ -378,17 +261,18 @@ export async function GET(req: NextRequest) {
       ok: true,
       current: deriveKpi(current),
       previous: deriveKpi(previous),
-      byDay: current.byDay.map((d) => ({
-        date: d.date,
-        revenueRub: d.revenue_rub,
-        orders: d.orders_count,
-        adsRub: d.ads_kopecks / 100,
-      })),
+      byDay: current.byDay,
       adsSource: current.adsSource,
       ordersSource: current.ordersSource,
       compareMode,
       compareLabel,
-      previousRange: { from: prevFrom.toISOString(), to: prevTo.toISOString() },
+      previousRange: {
+        fromDate: prevPeriod.fromDate,
+        toDateExclusive: prevPeriod.toDateExclusive,
+      },
+      period,
+      adsBreakdown: current.adsBreakdown,
+      reconciliationGapPct: current.reconciliationGapPct,
     };
 
     return NextResponse.json(response);

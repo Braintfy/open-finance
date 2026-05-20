@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.18.23] - 2026-05-20
+
+Унификация рекламных метрик Ozon между KPI / Динамика / Аналитика и исправление undercount vs Ozon LK (expense parser + CPO SEARCH_PROMO).
+
+### Fixed
+
+- **Рассинхрон ads между блоками (172K vs 185K)** — единый MSC-период (`query-period.ts`) и единая агрегация (`ads-totals.ts`) для KPI, timeseries, analytics API и block queries. API принимает `fromDate`/`toDateExclusive` (YYYY-MM-DD MSC).
+- **JSON expense parser** — учёт абонентского счёта (`prepaidMoneySpent` / aliases), flat JSON rows, CSV validation pass (prefer CSV если sum выше), убраны лишние `from`/`to` RFC3339 params.
+- **perf-expense-daily** — synthetic `campaignId` для строк без id; не дропаем store-level rows.
+- **perf-cpo-daily** — SEARCH_PROMO («Оплата за заказ: выбранные товары») из expense breakdown + merge с ALL_SKU отчётом (max).
+- **perf-sku-stats** — upsert assignment вместо `+=` (fix double-count при re-sync).
+- **Analytics UI** — subtitle CPC/CPO только при `adsSource=performance`; reconciliation warning при gap >5%.
+
+### Added
+
+- `src/lib/marketplaces/ozon/query-period.ts` — MSC period для всех Ozon-блоков.
+- `src/lib/marketplaces/ozon/ads-totals.ts` — единый `getOzonAdsTotals()`.
+- `scripts/debug-ozon-expense.ts` — live vs DB vs Ozon LK сверка.
+- Analytics cache bump `v4`; KPI response + `period` MSC + `adsBreakdown`.
+
 ## [0.18.22] - 2026-05-20
 
 Серия hotfixes после v0.18.21: блок «Остатки по кластерам» вернул реальные данные (Seller API v2 + Seller `cluster/list` вместо Performance), повторно починили hydration в OzonAnalyticsTable (`useId()` вместо `<table>`-обёртки — корнем был не порядок DOM, а недетерминированный `aria-describedby` id у dnd-kit), исключили текущий день из графика «Динамика» (он зануляет тренды), добавили иерархические подкатегории в модалку привязок «Аналитика Ozon», поверх KPI-блока — badge источника рекламных данных (`Эталон Ads` / `CPC+CPO` / `Реклама ≈`).

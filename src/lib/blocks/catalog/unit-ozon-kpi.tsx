@@ -15,6 +15,9 @@ import { StatCard } from '@/components/blocks/stat-card';
 import {
   PeriodPicker,
   resolvePeriod,
+  resolveOzonPeriod,
+  ozonPeriodToSearchParams,
+  describePeriod,
   type PeriodPreset,
   type PeriodValue,
 } from '@/components/blocks/period-picker';
@@ -136,11 +139,9 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
     setLoading(true);
     setError(null);
     try {
-      const range = resolvePeriod(period.preset, period.customFrom, period.customTo);
-      const params = new URLSearchParams({
+      const msc = resolveOzonPeriod(period.preset, period.customFrom, period.customTo);
+      const params = ozonPeriodToSearchParams(msc, {
         accountId: config.accountId,
-        from: range.from.toISOString(),
-        to: range.to.toISOString(),
         compareMode,
       });
       const res = await fetch(`/api/marketplaces/ozon/kpi?${params}`);
@@ -218,6 +219,17 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
     <Card className="flex h-full flex-col overflow-hidden p-3">
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <PeriodPicker value={period} onChange={setPeriod} compact />
+        {data?.period && (
+          <span
+            className="text-[10px] text-muted-foreground"
+            title="Период в Europe/Moscow — как в кабинете Ozon"
+          >
+            {describePeriod({
+              from: new Date(data.period.fromDate + 'T00:00:00Z'),
+              to: new Date(data.period.toDateExclusive + 'T00:00:00Z'),
+            })}
+          </span>
+        )}
         <div
           className="inline-flex items-center gap-1 text-[11px] text-muted-foreground"
           title="Бейджи ↗/↘ справа от каждой метрики показывают изменение относительно этого baseline'а."

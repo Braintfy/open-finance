@@ -14,6 +14,8 @@ import { ChartShell, type ChartSeries, type ChartYAxis } from '@/components/bloc
 import {
   PeriodPicker,
   resolvePeriod,
+  resolveOzonPeriod,
+  ozonPeriodToSearchParams,
   type PeriodPreset,
   type PeriodValue,
 } from '@/components/blocks/period-picker';
@@ -139,11 +141,11 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
     setLoading(true);
     setError(null);
     try {
-      const range = resolvePeriod(period.preset, period.customFrom, period.customTo);
-      const params = new URLSearchParams({
+      const msc = resolveOzonPeriod(period.preset, period.customFrom, period.customTo, {
+        excludeToday: true,
+      });
+      const params = ozonPeriodToSearchParams(msc, {
         accountId: config.accountId,
-        from: range.from.toISOString(),
-        to: range.to.toISOString(),
         granularity,
       });
       const res = await fetch(`/api/marketplaces/ozon/timeseries?${params}`);

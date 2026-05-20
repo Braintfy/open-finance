@@ -28,6 +28,7 @@ import { OzonPerfApiError } from '../performance/client';
 import { rublesToKopecks } from '@/lib/unit-economics/types';
 import { runStageWithTiming, type StageContext, type StageResult } from './types';
 import { buildPerfPeriod, describePeriod, type PerfPeriod } from './perf-period';
+import { invalidateOzonAnalyticsCache } from '../analytics-cache';
 
 /**
  * Какие adv_object_type обрабатываются стейджем per-SKU CPC.
@@ -236,12 +237,12 @@ export async function syncPerfSkuStatsStage(ctx: StageContext): Promise<StageRes
                 ozonPerfSkuStats.campaignId,
               ],
               set: {
-                views: sql`${ozonPerfSkuStats.views} + ${parsed.views}`,
-                clicks: sql`${ozonPerfSkuStats.clicks} + ${parsed.clicks}`,
-                cartAdds: sql`${ozonPerfSkuStats.cartAdds} + ${parsed.cartAdds}`,
-                orders: sql`${ozonPerfSkuStats.orders} + ${parsed.orders}`,
-                ordersKopecks: sql`${ozonPerfSkuStats.ordersKopecks} + ${rublesToKopecks(parsed.ordersRub)}`,
-                expenseKopecks: sql`${ozonPerfSkuStats.expenseKopecks} + ${rublesToKopecks(parsed.expenseRub)}`,
+                views: parsed.views,
+                clicks: parsed.clicks,
+                cartAdds: parsed.cartAdds,
+                orders: parsed.orders,
+                ordersKopecks: rublesToKopecks(parsed.ordersRub),
+                expenseKopecks: rublesToKopecks(parsed.expenseRub),
                 raw,
               },
             });
@@ -263,6 +264,11 @@ export async function syncPerfSkuStatsStage(ctx: StageContext): Promise<StageRes
         const msg = e instanceof Error ? e.message : String(e);
         warnings.push(`Кампания ${campaignId}: ${msg}`);
       }
+    }
+
+    const cacheDeleted = await invalidateOzonAnalyticsCache(ctx.tenantId, ctx.accountId);
+    if (cacheDeleted > 0) {
+      warnings.push(`Analytics cache: удалено ${cacheDeleted} ключ(ей).`);
     }
 
     return { itemsProcessed: processed, itemsTotal: totalRows, warnings };

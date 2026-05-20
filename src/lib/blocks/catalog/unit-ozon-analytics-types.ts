@@ -4,6 +4,14 @@
 
 import { z } from 'zod';
 import type { TableColumnKey } from '@/components/unit-economics/ozon-analytics-table';
+import {
+  resolveOzonQueryPeriod,
+  ozonQueryPeriodToLegacyDates,
+  ozonPeriodToSearchParams,
+  describeOzonQueryPeriod,
+  type OzonQueryPeriod,
+  type ResolveOzonQueryPeriodOptions,
+} from '@/lib/marketplaces/ozon/query-period';
 
 /**
  * Pure-row аналитики Ozon. Дублирует тип из API route, но без impl-зависимостей
@@ -220,39 +228,27 @@ export const OzonAnalyticsBlockConfigSchema = z.object({
 
 export type OzonAnalyticsBlockConfig = z.infer<typeof OzonAnalyticsBlockConfigSchema>;
 
-/** Преобразует preset в from/to. customFrom/customTo используется при 'custom'. */
+export type { OzonQueryPeriod, ResolveOzonQueryPeriodOptions };
+
+/** MSC-период для API (предпочтительно). */
+export function resolveOzonAnalyticsPeriod(
+  preset: OzonAnalyticsPeriodPreset,
+  customFrom: string | null,
+  customTo: string | null,
+  options?: ResolveOzonQueryPeriodOptions,
+): OzonQueryPeriod {
+  return resolveOzonQueryPeriod(preset, customFrom, customTo, options);
+}
+
+/** Legacy `{ from, to }` + helpers для fetch. */
 export function resolvePeriod(
   preset: OzonAnalyticsPeriodPreset,
   customFrom: string | null,
   customTo: string | null,
-): { from: Date; to: Date } {
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const tomorrow = new Date(today.getTime() + 24 * 3600 * 1000);
-
-  switch (preset) {
-    case 'today':
-      return { from: today, to: tomorrow };
-    case 'yesterday': {
-      const yesterday = new Date(today.getTime() - 24 * 3600 * 1000);
-      return { from: yesterday, to: today };
-    }
-    case '7d':
-      return { from: new Date(today.getTime() - 7 * 24 * 3600 * 1000), to: tomorrow };
-    case '14d':
-      return { from: new Date(today.getTime() - 14 * 24 * 3600 * 1000), to: tomorrow };
-    case '30d':
-      return { from: new Date(today.getTime() - 30 * 24 * 3600 * 1000), to: tomorrow };
-    case 'mtd': {
-      const mtd = new Date(now.getFullYear(), now.getMonth(), 1);
-      return { from: mtd, to: tomorrow };
-    }
-    case 'custom': {
-      const from = customFrom ? new Date(customFrom) : new Date(today.getTime() - 30 * 24 * 3600 * 1000);
-      const to = customTo ? new Date(customTo) : tomorrow;
-      return { from, to };
-    }
-    default:
-      return { from: new Date(today.getTime() - 30 * 24 * 3600 * 1000), to: tomorrow };
-  }
+  options?: ResolveOzonQueryPeriodOptions,
+): { from: Date; to: Date; msc: OzonQueryPeriod } {
+  const msc = resolveOzonQueryPeriod(preset, customFrom, customTo, options);
+  return { ...ozonQueryPeriodToLegacyDates(msc), msc };
 }
+
+export { ozonPeriodToSearchParams, describeOzonQueryPeriod };

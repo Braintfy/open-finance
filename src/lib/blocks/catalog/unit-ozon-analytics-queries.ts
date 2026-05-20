@@ -14,12 +14,14 @@ import { db } from '@/lib/db/client';
 import { unitProducts } from '@/lib/db/schema/unit-economics';
 import {
   ozonOrders,
-  ozonTransactions,
-  ozonPerfExpenseDaily,
   ozonPerfSkuStats,
-  ozonPerfCpoDaily,
 } from '@/lib/db/schema/marketplaces';
-import { resolvePeriod, type OzonAnalyticsPeriodPreset } from './unit-ozon-analytics-types';
+import { getOzonAdsTotals } from '@/lib/marketplaces/ozon/ads-totals';
+import {
+  getPreviousOzonQueryPeriod,
+  resolveOzonQueryPeriod,
+} from '@/lib/marketplaces/ozon/query-period';
+import { type OzonAnalyticsPeriodPreset } from './unit-ozon-analytics-types';
 
 export type OzonAnalyticsTotals = {
   revenueRub: number;
@@ -72,12 +74,6 @@ export type OzonAnalyticsTotals = {
   adsSource: 'expense' | 'performance' | 'transactions-heuristic' | 'none';
 };
 
-const ADS_FILTER_SQL = sql`(
-  lower(operation_type) LIKE '%promot%'
-  OR lower(operation_type) LIKE '%advertis%'
-  OR lower(operation_type) LIKE '%marketing%'
-)`;
-
 /**
  * Быстрый серверный расчёт агрегатов аналитики Ozon.
  * Возвращает totals + top-1 SKU + опц. previous period — ~150ms.
@@ -90,10 +86,8 @@ export async function getOzonAnalyticsTotals(
   customTo: string | null = null,
   options: { includePrevious?: boolean } = {},
 ): Promise<OzonAnalyticsTotals> {
-  const period = resolvePeriod(periodPreset, customFrom, customTo);
-  const fromIso = period.from.toISOString();
-  const toIso = period.to.toISOString();
-  const totals = await runAggregate(tenantId, accountId, fromIso, toIso);
+  const msc = resolveOzonQueryPeriod(periodPreset, customFrom, customTo);
+  const totals = await runAggregate(tenantId, accountId, msc.fromDate, msc.toDateExclusive);
 
   // --- Previous period (опционально) ------------------------------------
   let revenuePrev: number | null = null;
@@ -103,18 +97,16 @@ export async function getOzonAnalyticsTotals(
   let deltaAdsPct: number | null = null;
   let deltaOrdersPct: number | null = null;
   if (options.includePrevious) {
-    const periodMs = period.to.getTime() - period.from.getTime();
-    const prevTo = period.from;
-    const prevFrom = new Date(period.from.getTime() - periodMs);
-    const prev = await runAggregate(
+    const prev = getPreviousOzonQueryPeriod(msc);
+    const prevTotals = await runAggregate(
       tenantId,
       accountId,
-      prevFrom.toISOString(),
-      prevTo.toISOString(),
+      prev.fromDate,
+      prev.toDateExclusive,
     );
-    revenuePrev = prev.revenueRub;
-    adsPrev = prev.adsRub;
-    ordersPrev = prev.delivered;
+    revenuePrev = prevTotals.revenueRub;
+    adsPrev = prevTotals.adsRub;
+    ordersPrev = prevTotals.delivered;
     deltaRevenuePct = computeDeltaPct(totals.revenueRub, revenuePrev);
     deltaAdsPct = computeDeltaPct(totals.adsRub, adsPrev);
     deltaOrdersPct = computeDeltaPct(totals.delivered, ordersPrev);
@@ -149,95 +141,23 @@ type CoreTotals = Omit<
 async function runAggregate(
   tenantId: string,
   accountId: string | null,
-  fromIso: string,
-  toIso: string,
+  fromDate: string,
+  toDateExclusive: string,
 ): Promise<CoreTotals> {
   const accountCondOrders = accountId ? sql`AND o.account_id = ${accountId}` : sql``;
-  const accountCondTx = accountId ? sql`AND tx.account_id = ${accountId}` : sql``;
-  const accountCondExp = accountId ? sql`AND ex.account_id = ${accountId}` : sql``;
   const accountCondPerf = accountId ? sql`AND ps.account_id = ${accountId}` : sql``;
-  const accountCondCpo = accountId ? sql`AND cd.account_id = ${accountId}` : sql``;
   const accountCondUp = accountId
     ? sql`AND ${unitProducts.marketplaceAccountId} = ${accountId}`
     : sql``;
 
-  // 1. Эталон ads — `ozon_perf_expense_daily` (включает CPC + CPO + банеры
-  //    + видео + бонусы + абонент). Сравнивается с цифрой в Ozon Seller
-  //    кабинете «Расход». Если данные есть — это primary source.
-  type SumRow = { v: string | number };
-  const expenseResult = await db.execute<SumRow>(sql`
-    SELECT COALESCE(SUM(ex.total_spent_kopecks), 0)::bigint AS v
-    FROM ${ozonPerfExpenseDaily} ex
-    WHERE ex.tenant_id = ${tenantId}
-      ${accountCondExp}
-      AND ex.date >= ${fromIso}::date
-      AND ex.date < ${toIso}::date
-  `);
-  const expenseRows: SumRow[] = Array.isArray(expenseResult)
-    ? (expenseResult as SumRow[])
-    : (((expenseResult as unknown) as { rows: SumRow[] }).rows ?? []);
-  const expenseTotalKopecks = Number(expenseRows[0]?.v ?? 0);
-  const hasExpense = expenseTotalKopecks > 0;
-
-  // 2. Performance — CPC из `ozon_perf_sku_stats` + CPO агрегат.
-  const perfCpcResult = await db.execute<SumRow>(sql`
-    SELECT COALESCE(SUM(ps.expense_kopecks), 0)::bigint AS v
-    FROM ${ozonPerfSkuStats} ps
-    WHERE ps.tenant_id = ${tenantId}
-      ${accountCondPerf}
-      AND ps.date >= ${fromIso}::date
-      AND ps.date < ${toIso}::date
-  `);
-  const perfCpcRows: SumRow[] = Array.isArray(perfCpcResult)
-    ? (perfCpcResult as SumRow[])
-    : (((perfCpcResult as unknown) as { rows: SumRow[] }).rows ?? []);
-  const perfCpcKopecks = Number(perfCpcRows[0]?.v ?? 0);
-
-  const perfCpoResult = await db.execute<SumRow>(sql`
-    SELECT COALESCE(SUM(cd.expense_kopecks), 0)::bigint AS v
-    FROM ${ozonPerfCpoDaily} cd
-    WHERE cd.tenant_id = ${tenantId}
-      ${accountCondCpo}
-      AND cd.date >= ${fromIso}::date
-      AND cd.date < ${toIso}::date
-  `);
-  const perfCpoRows: SumRow[] = Array.isArray(perfCpoResult)
-    ? (perfCpoResult as SumRow[])
-    : (((perfCpoResult as unknown) as { rows: SumRow[] }).rows ?? []);
-  const perfCpoKopecks = Number(perfCpoRows[0]?.v ?? 0);
-  const hasPerf = perfCpcKopecks + perfCpoKopecks > 0;
-
-  // 3. Transactions — heuristic fallback.
-  const txAdsResult = await db.execute<SumRow>(sql`
-    SELECT COALESCE(SUM(ABS(tx.amount_kopecks)), 0)::bigint AS v
-    FROM ${ozonTransactions} tx
-    WHERE tx.tenant_id = ${tenantId}
-      ${accountCondTx}
-      AND tx.operation_date >= ${fromIso}::timestamp
-      AND tx.operation_date < ${toIso}::timestamp
-      AND tx.sku IS NOT NULL
-      AND ${ADS_FILTER_SQL}
-  `);
-  const txAdsRows: SumRow[] = Array.isArray(txAdsResult)
-    ? (txAdsResult as SumRow[])
-    : (((txAdsResult as unknown) as { rows: SumRow[] }).rows ?? []);
-  const txAdsKopecks = Number(txAdsRows[0]?.v ?? 0);
-
-  let adsKopecks = 0;
-  let adsSource: CoreTotals['adsSource'] = 'none';
-  if (hasExpense) {
-    adsKopecks = expenseTotalKopecks;
-    adsSource = 'expense';
-  } else if (hasPerf) {
-    adsKopecks = perfCpcKopecks + perfCpoKopecks;
-    adsSource = 'performance';
-  } else if (txAdsKopecks > 0) {
-    adsKopecks = txAdsKopecks;
-    adsSource = 'transactions-heuristic';
-  }
-  const adsRub = adsKopecks / 100;
-
-  // 4. Заказы / выручка / стоки + per-product (для top-1 SKU и avgDrr).
+  const adsTotals = await getOzonAdsTotals({
+    tenantId,
+    accountId,
+    fromDate,
+    toDateExclusive,
+  });
+  const adsRub = adsTotals.adsRub;
+  const adsSource = adsTotals.adsSource;
   type PerProductRow = {
     product_id: string;
     article: string | null;
@@ -266,8 +186,8 @@ async function runAggregate(
       CROSS JOIN LATERAL jsonb_array_elements(o.items) AS it
       WHERE o.tenant_id = ${tenantId}
         ${accountCondOrders}
-        AND o.order_created_at >= ${fromIso}::timestamp
-        AND o.order_created_at < ${toIso}::timestamp
+        AND o.order_created_at >= ${fromDate}::timestamp
+        AND o.order_created_at < ${toDateExclusive}::timestamp
     ),
     agg_orders AS (
       SELECT
@@ -309,8 +229,8 @@ async function runAggregate(
       FROM ${ozonPerfSkuStats} ps
       WHERE ps.tenant_id = ${tenantId}
         ${accountCondPerf}
-        AND ps.date >= ${fromIso}::date
-        AND ps.date < ${toIso}::date
+        AND ps.date >= ${fromDate}::date
+        AND ps.date < ${toDateExclusive}::date
       GROUP BY ps.sku
     )
     SELECT

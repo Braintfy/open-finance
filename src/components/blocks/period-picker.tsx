@@ -9,15 +9,15 @@ import { useState } from 'react';
 import { Calendar } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import {
+  describeOzonQueryPeriod,
+  getPreviousOzonQueryPeriod,
+  ozonQueryPeriodToLegacyDates,
+  resolveOzonQueryPeriod,
+  type OzonPeriodPreset,
+} from '@/lib/marketplaces/ozon/query-period';
 
-export type PeriodPreset =
-  | 'today'
-  | 'yesterday'
-  | '7d'
-  | '14d'
-  | '30d'
-  | 'mtd'
-  | 'custom';
+export type PeriodPreset = OzonPeriodPreset;
 
 export type Period = { from: Date; to: Date };
 
@@ -37,87 +37,64 @@ const PRESET_LABELS: Record<Exclude<PeriodPreset, 'custom'>, string> = {
   mtd: 'Текущий месяц',
 };
 
+export type ResolvePeriodOptions = {
+  now?: Date;
+  /** Исключить сегодня (MSC) — для chart. */
+  excludeToday?: boolean;
+};
+
 /**
- * Pure-функция: разрешить пресет в реальный диапазон. UTC.
- * `to` всегда — конец сегодняшнего дня (или конец customTo) — exclusive
- * сравнивать через `<` в SQL и `< to` в JS.
+ * Pure-функция: разрешить пресет в диапазон (legacy Date + MSC dates внутри).
+ * Границы — календарные дни Europe/Moscow; `to` exclusive для SQL `<`.
  */
 export function resolvePeriod(
   preset: PeriodPreset,
   customFrom?: string | null,
   customTo?: string | null,
-  now: Date = new Date(),
+  nowOrOptions: Date | ResolvePeriodOptions = new Date(),
 ): Period {
-  const todayStart = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
-  );
-  const tomorrowStart = new Date(todayStart.getTime() + 24 * 60 * 60 * 1000);
+  const options =
+    nowOrOptions instanceof Date ? { now: nowOrOptions } : nowOrOptions;
+  const msc = resolveOzonQueryPeriod(preset, customFrom, customTo, options);
+  return ozonQueryPeriodToLegacyDates(msc);
+}
 
-  if (preset === 'custom') {
-    const from = customFrom ? new Date(customFrom + 'T00:00:00Z') : todayStart;
-    const toDate = customTo ? new Date(customTo + 'T00:00:00Z') : tomorrowStart;
-    // to — exclusive (плюс один день).
-    const to = new Date(toDate.getTime() + 24 * 60 * 60 * 1000);
-    return { from, to };
-  }
-
-  if (preset === 'today') return { from: todayStart, to: tomorrowStart };
-  if (preset === 'yesterday') {
-    return {
-      from: new Date(todayStart.getTime() - 24 * 60 * 60 * 1000),
-      to: todayStart,
-    };
-  }
-  if (preset === '7d') {
-    return {
-      from: new Date(todayStart.getTime() - 6 * 24 * 60 * 60 * 1000),
-      to: tomorrowStart,
-    };
-  }
-  if (preset === '14d') {
-    return {
-      from: new Date(todayStart.getTime() - 13 * 24 * 60 * 60 * 1000),
-      to: tomorrowStart,
-    };
-  }
-  if (preset === '30d') {
-    return {
-      from: new Date(todayStart.getTime() - 29 * 24 * 60 * 60 * 1000),
-      to: tomorrowStart,
-    };
-  }
-  // mtd: с первого числа этого месяца.
-  return {
-    from: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)),
-    to: tomorrowStart,
-  };
+/** MSC-период для API query params (`fromDate`, `toDateExclusive`). */
+export function resolveOzonPeriod(
+  preset: PeriodPreset,
+  customFrom?: string | null,
+  customTo?: string | null,
+  options: ResolvePeriodOptions = {},
+) {
+  return resolveOzonQueryPeriod(preset, customFrom, customTo, options);
 }
 
 /**
  * Pure-функция: получить предыдущий период такой же длины (для «vs прошлый»).
- *   period.to - period.from = 7 дней → previous = [from-7, to-7).
  */
 export function getPreviousPeriod(period: Period): Period {
-  const length = period.to.getTime() - period.from.getTime();
-  return {
-    from: new Date(period.from.getTime() - length),
-    to: new Date(period.from.getTime()),
-  };
+  const fromDate = period.from.toISOString().slice(0, 10);
+  const toDateExclusive = period.to.toISOString().slice(0, 10);
+  const prev = getPreviousOzonQueryPeriod({
+    fromDate,
+    toDateExclusive,
+    timezone: 'Europe/Moscow',
+  });
+  return ozonQueryPeriodToLegacyDates(prev);
 }
 
-/**
- * Формирует короткое человеко-читаемое описание периода.
- */
+/** Формирует короткое описание периода в MSC. */
 export function describePeriod(period: Period): string {
-  const fmt = (d: Date) =>
-    d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
-  // to — exclusive, для отображения вычитаем сутки.
-  const inclusiveTo = new Date(period.to.getTime() - 24 * 60 * 60 * 1000);
-  const sameDay =
-    period.from.toISOString().slice(0, 10) === inclusiveTo.toISOString().slice(0, 10);
-  if (sameDay) return fmt(period.from);
-  return `${fmt(period.from)} — ${fmt(inclusiveTo)}`;
+  return describeOzonQueryPeriod({
+    fromDate: period.from.toISOString().slice(0, 10),
+    toDateExclusive: period.to.toISOString().slice(0, 10),
+    timezone: 'Europe/Moscow',
+  });
 }
+
+export {
+  ozonPeriodToSearchParams,
+} from '@/lib/marketplaces/ozon/query-period';
 
 export type PeriodPickerProps = {
   value: PeriodValue;

@@ -258,6 +258,12 @@ const ExpenseDailyValueSchema = z
     money_spent: z.string().or(z.number()).optional(),
     bonusSpent: z.string().or(z.number()).optional(),
     bonus_spent: z.string().or(z.number()).optional(),
+    prepaidMoneySpent: z.string().or(z.number()).optional(),
+    prepaid_money_spent: z.string().or(z.number()).optional(),
+    moneySpentAccount: z.string().or(z.number()).optional(),
+    money_spent_account: z.string().or(z.number()).optional(),
+    accountSpent: z.string().or(z.number()).optional(),
+    account_spent: z.string().or(z.number()).optional(),
     total: z.string().or(z.number()).optional(),
     total_spent: z.string().or(z.number()).optional(),
   })
@@ -321,6 +327,96 @@ function pickStr(v: CampaignLoose, names: Array<keyof CampaignLoose>): string | 
     if (typeof raw === 'number') return String(raw);
   }
   return null;
+}
+
+function pickAccountSpend(v: ValueLoose): number {
+  const rec = v as Record<string, unknown>;
+  const names = [
+    'prepaidMoneySpent',
+    'prepaid_money_spent',
+    'moneySpentAccount',
+    'money_spent_account',
+    'accountSpent',
+    'account_spent',
+    'prepaidSpent',
+    'prepaid_spent',
+  ];
+  for (const n of names) {
+    const raw = rec[n];
+    if (raw !== undefined && raw !== null && raw !== '') {
+      return parseRuNumber(String(raw));
+    }
+  }
+  return 0;
+}
+
+function buildExpenseRow(args: {
+  date: string;
+  camp: CampaignLoose;
+  daily: ValueLoose;
+}): ExpenseDailyRow {
+  const { date, camp, daily } = args;
+  const money = pickNum(daily, ['moneySpent', 'money_spent']);
+  const account = pickAccountSpend(daily);
+  const bonus = pickNum(daily, ['bonusSpent', 'bonus_spent']);
+  const totalRaw = pickNum(daily, ['total', 'total_spent']);
+  const total = totalRaw > 0 ? totalRaw : money + account + bonus;
+  return {
+    date,
+    campaignId: pickStr(camp, ['campaignId', 'id']),
+    advObjectType: pickStr(camp, ['advObjectType', 'adv_object_type']),
+    moneySpentRub: money + account,
+    bonusSpentRub: bonus,
+    totalSpentRub: total,
+  };
+}
+
+function parseExpenseJsonRows(
+  data: z.infer<typeof ExpenseDailyResponseSchema> | undefined,
+): ExpenseDailyRow[] {
+  if (!data) return [];
+  const campaigns: CampaignLoose[] =
+    data.list ?? data.campaigns ?? data.items ?? data.rows ?? [];
+  const out: ExpenseDailyRow[] = [];
+
+  for (const camp of campaigns) {
+    const dailyRows =
+      camp.rows ?? camp.values ?? camp.daily_results ?? camp.dailyResults ?? [];
+    if (dailyRows.length > 0) {
+      for (const r of dailyRows) {
+        const date = normalizeDate(r.date ?? null);
+        if (!date) continue;
+        out.push(buildExpenseRow({ date, camp, daily: r }));
+      }
+      continue;
+    }
+    // Flat shape: campaign object IS a daily row (date + spend on same level).
+    const flatDate = normalizeDate(
+      (camp as Record<string, unknown>).date as string | null | undefined,
+    );
+    if (flatDate) {
+      out.push(buildExpenseRow({ date: flatDate, camp, daily: camp as ValueLoose }));
+    }
+  }
+
+  return out;
+}
+
+export function sumExpenseRows(rows: ExpenseDailyRow[]): number {
+  return rows.reduce((s, r) => s + r.totalSpentRub, 0);
+}
+
+async function fetchExpenseCsv(
+  client: OzonPerformanceClient,
+  params: Record<string, string | undefined>,
+): Promise<ExpenseDailyRow[]> {
+  const csvText = await client.get<string>(
+    '/api/client/statistics/expense',
+    params,
+    undefined,
+    { binary: true },
+  );
+  return parseExpenseCsv(csvText);
 }
 
 /**
@@ -393,14 +489,11 @@ export async function getExpenseDaily(
   const params: Record<string, string | undefined> = {
     dateFrom: args.dateFrom,
     dateTo: args.dateTo,
-    from: toRfc3339(args.dateFrom, false),
-    to: toRfc3339(args.dateTo, true),
   };
   if (args.campaignIds && args.campaignIds.length > 0) {
     params['campaignIds'] = args.campaignIds.join(',');
   }
 
-  // 1. JSON endpoint (правильный для нашего use-case).
   let data: z.infer<typeof ExpenseDailyResponseSchema> | undefined;
   try {
     data = (await client.get(
@@ -409,54 +502,18 @@ export async function getExpenseDaily(
       ExpenseDailyResponseSchema,
     )) as z.infer<typeof ExpenseDailyResponseSchema> | undefined;
   } catch (e) {
-    console.warn('[expense] /expense/json failed, will try CSV fallback:', e);
+    console.warn('[expense] /expense/json failed, will try CSV:', e);
   }
 
-  const campaigns: CampaignLoose[] =
-    data?.list ?? data?.campaigns ?? data?.items ?? data?.rows ?? [];
-  const out: ExpenseDailyRow[] = [];
-  for (const camp of campaigns) {
-    const dailyRows =
-      camp.rows ?? camp.values ?? camp.daily_results ?? camp.dailyResults ?? [];
-    for (const r of dailyRows) {
-      const date = normalizeDate(r.date ?? null);
-      if (!date) continue;
-      const money = pickNum(r, ['moneySpent', 'money_spent']);
-      const bonus = pickNum(r, ['bonusSpent', 'bonus_spent']);
-      const totalRaw = pickNum(r, ['total', 'total_spent']);
-      const total = totalRaw > 0 ? totalRaw : money + bonus;
-      out.push({
-        date,
-        campaignId: pickStr(camp, ['campaignId', 'id']),
-        advObjectType: pickStr(camp, ['advObjectType', 'adv_object_type']),
-        moneySpentRub: money,
-        bonusSpentRub: bonus,
-        totalSpentRub: total,
-      });
-    }
-  }
+  const jsonRows = parseExpenseJsonRows(data);
 
-  // v0.18.22: расширенный warning если JSON ответил, но мы не выудили ни
-  // одной строки. Помогает отличить «реально нет данных» от «zod-парсер
-  // распарсил пустой shape» (например, если Ozon переименовал поля).
-  if (out.length === 0 && data !== undefined) {
-    const topKeys = Object.keys((data as Record<string, unknown>) ?? {});
-    const totalDailyEntries = campaigns.reduce(
-      (acc, c) =>
-        acc +
-        (c.rows?.length ?? 0) +
-        (c.values?.length ?? 0) +
-        (c.daily_results?.length ?? 0) +
-        (c.dailyResults?.length ?? 0),
-      0,
-    );
+  if (jsonRows.length === 0 && data !== undefined) {
+    const campaigns: CampaignLoose[] =
+      data.list ?? data.campaigns ?? data.items ?? data.rows ?? [];
     console.warn('[expense] /expense/json returned data but 0 parsed rows', {
       dateRange: `${args.dateFrom}..${args.dateTo}`,
-      params,
-      topKeys,
+      topKeys: Object.keys((data as Record<string, unknown>) ?? {}),
       campaignsCount: campaigns.length,
-      totalDailyEntries,
-      // Дамп первого кампания чтобы видеть какие поля реально пришли.
       sampleCampaign: campaigns[0]
         ? {
             keys: Object.keys((campaigns[0] as unknown as Record<string, unknown>) ?? {}),
@@ -466,44 +523,50 @@ export async function getExpenseDaily(
     });
   }
 
-  // 2. CSV fallback — на случай если Ozon вернул что-то странное / endpoint
-  //    `/json` оказался недоступен / в JSON 0 строк а в кабинете расход есть.
-  if (out.length === 0) {
-    try {
-      const csvText = await client.get<string>(
-        '/api/client/statistics/expense',
-        params,
-        undefined,
-        { binary: true },
-      );
-      const csvRows = parseExpenseCsv(csvText);
-      if (csvRows.length > 0) {
-        console.info('[expense] JSON empty → CSV fallback', {
-          rows: csvRows.length,
-          dateRange: `${args.dateFrom}..${args.dateTo}`,
-        });
-        return csvRows;
-      }
-      // CSV тоже пустой — это «реально нет данных» (никакой рекламы за период).
-      console.info('[expense] both JSON and CSV empty — assuming no ads spend', {
-        dateRange: `${args.dateFrom}..${args.dateTo}`,
-        params,
-        csvLen: csvText?.length ?? 0,
-      });
-    } catch (e) {
-      console.warn('[expense] CSV fallback failed:', e);
-    }
+  let csvRows: ExpenseDailyRow[] = [];
+  try {
+    csvRows = await fetchExpenseCsv(client, params);
+  } catch (e) {
+    console.warn('[expense] CSV fetch failed:', e);
   }
 
-  if (out.length === 0) {
-    console.warn('[expense] zero rows (final)', {
-      campaignsCount: campaigns.length,
+  const jsonSum = sumExpenseRows(jsonRows);
+  const csvSum = sumExpenseRows(csvRows);
+
+  if (csvRows.length > 0 && (jsonRows.length === 0 || csvSum > jsonSum * 1.01)) {
+    if (jsonRows.length > 0 && csvSum > jsonSum) {
+      console.info('[expense] CSV sum > JSON sum — using CSV as source of truth', {
+        dateRange: `${args.dateFrom}..${args.dateTo}`,
+        jsonSum: Math.round(jsonSum),
+        csvSum: Math.round(csvSum),
+        jsonRows: jsonRows.length,
+        csvRows: csvRows.length,
+      });
+    } else if (jsonRows.length === 0) {
+      console.info('[expense] JSON empty → CSV fallback', {
+        rows: csvRows.length,
+        dateRange: `${args.dateFrom}..${args.dateTo}`,
+        csvSum: Math.round(csvSum),
+      });
+    }
+    return csvRows;
+  }
+
+  if (jsonRows.length === 0 && csvRows.length === 0) {
+    console.info('[expense] both JSON and CSV empty — assuming no ads spend', {
       dateRange: `${args.dateFrom}..${args.dateTo}`,
-      hadJson: data !== undefined,
     });
   }
 
-  return out;
+  if (jsonRows.length === 0) {
+    console.warn('[expense] zero rows (final)', {
+      dateRange: `${args.dateFrom}..${args.dateTo}`,
+      hadJson: data !== undefined,
+      csvLen: csvRows.length,
+    });
+  }
+
+  return jsonRows;
 }
 
 // parseCsvLine используется ниже (определён в основном CSV-блоке).
