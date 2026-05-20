@@ -30,7 +30,10 @@ const VisibleSeriesSchema = z.object({
   revenueRub: z.boolean().default(true),
   orders: z.boolean().default(true),
   adsRub: z.boolean().default(true),
+  // ДРР % выведен из чарта в KPI-badge сверху, но даём опцию вернуть
+  // его линией для тех, кому привычнее.
   drrPct: z.boolean().default(false),
+  // AOV — узкий use-case, по умолчанию скрыт (мешает читать выручку).
   aovRub: z.boolean().default(false),
 });
 
@@ -53,16 +56,30 @@ function parseConfig(raw: unknown): OzonChartBlockConfig {
 }
 
 type SeriesKey = keyof OzonChartBlockConfig['visibleSeries'];
+// Axis IDs:
+//   - rubLeft  : выручка (большой масштаб 100K-1M+)
+//   - rubRight : расход (меньший масштаб 1K-10K) — собственная ось чтобы
+//                линия расхода не сливалась с нулём на фоне выручки
+//   - orders   : заказы (bars в нижней трети, скрытая ось — domain x3)
+//   - pct      : ДРР % (опц. правая, поверх расхода)
+//   - aov      : AOV ₽ (опц. левая, как выручка)
+type AxisId = 'rubLeft' | 'rubRight' | 'orders' | 'pct';
 
 const SERIES_DEFS: Record<
   SeriesKey,
-  { label: string; color: string; yAxisId: 'rub' | 'orders' | 'pct'; isMoney: boolean }
+  {
+    label: string;
+    color: string;
+    yAxisId: AxisId;
+    isMoney: boolean;
+    type: 'line' | 'area' | 'bar';
+  }
 > = {
-  revenueRub: { label: 'Выручка ₽', color: '#10b981', yAxisId: 'rub', isMoney: true },
-  orders: { label: 'Заказы', color: '#0ea5e9', yAxisId: 'orders', isMoney: false },
-  adsRub: { label: 'Расход ₽', color: '#f43f5e', yAxisId: 'rub', isMoney: true },
-  drrPct: { label: 'ДРР %', color: '#f59e0b', yAxisId: 'pct', isMoney: false },
-  aovRub: { label: 'Средний чек ₽', color: '#8b5cf6', yAxisId: 'rub', isMoney: true },
+  revenueRub: { label: 'Выручка ₽', color: '#10b981', yAxisId: 'rubLeft', isMoney: true, type: 'area' },
+  adsRub:     { label: 'Расход ₽',  color: '#ef4444', yAxisId: 'rubRight', isMoney: true, type: 'line' },
+  orders:     { label: 'Заказы',    color: '#94a3b8', yAxisId: 'orders',   isMoney: false, type: 'bar' },
+  drrPct:     { label: 'ДРР %',     color: '#f59e0b', yAxisId: 'pct',      isMoney: false, type: 'line' },
+  aovRub:     { label: 'Средний чек ₽', color: '#8b5cf6', yAxisId: 'rubLeft', isMoney: true, type: 'line' },
 };
 
 function formatRubShort(value: number): string {
@@ -151,56 +168,98 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
     for (const key of Object.keys(config.visibleSeries) as SeriesKey[]) {
       if (!config.visibleSeries[key]) continue;
       const def = SERIES_DEFS[key];
-      // Revenue — area для эффекта «градиента под линией» из референса;
-      // adsRub/orders — остаются типом config.chartType (line/area/bar).
+      // Тип берётся из SERIES_DEFS (revenue=area, ads/aov/drr=line, orders=bar).
+      // config.chartType сохраняется как override только для revenue
+      // (на случай если юзер хочет bar/line вместо area).
       const type =
-        key === 'revenueRub' && config.chartType === 'line' ? 'area' : config.chartType;
+        key === 'revenueRub' && config.chartType !== 'line'
+          ? config.chartType
+          : def.type;
       out.push({
         key,
         label: def.label,
         color: def.color,
         type,
         yAxisId: def.yAxisId,
+        // adsRub — тонкая линия 2.5px, чтобы выделяться на фоне area.
+        strokeWidth: key === 'adsRub' ? 2.5 : key === 'aovRub' ? 1.5 : 2,
+        // aovRub — пунктир (вторичная метрика).
+        strokeDasharray: key === 'aovRub' ? '4 3' : undefined,
+        // Bars для orders — узкие и полупрозрачные, как фон.
+        barSize: key === 'orders' ? 6 : undefined,
+        fillOpacity: key === 'orders' ? 0.5 : undefined,
       });
     }
     return out;
   }, [config.visibleSeries, config.chartType]);
 
-  // Цветные Y-оси: одна на каждый «масштаб». colored: true для основной серии
-  // соответствующего масштаба, чтобы ticks/axisLine были цветные.
+  // Считаем dataMax заказов отдельно, чтобы прижать bars к нижней четверти.
+  const ordersMax = useMemo(() => {
+    if (!data || !data.points) return 0;
+    let m = 0;
+    for (const p of data.points) {
+      const v = Number(p.orders ?? 0);
+      if (v > m) m = v;
+    }
+    return m;
+  }, [data]);
+
+  // Y-оси: нейтральные ticks (muted-foreground), без копирования цвета серий.
+  // rubLeft (revenue/aov) — main левая ось, rubRight (ads) — собственный
+  // масштаб справа (чтобы ads не сливался с нулём), orders — скрытая
+  // ось с domain [0, ordersMax × 4] прижимает bars к нижней четверти.
   const yAxes: ChartYAxis[] = useMemo(() => {
-    const used = new Set(series.map((s) => s.yAxisId as 'rub' | 'orders' | 'pct'));
+    const used = new Set(series.map((s) => s.yAxisId));
     const axes: ChartYAxis[] = [];
-    if (used.has('rub')) {
-      const primary = series.find((s) => s.yAxisId === 'rub');
+    if (used.has('rubLeft')) {
       axes.push({
-        id: 'rub',
-        color: primary?.color ?? '#10b981',
+        id: 'rubLeft',
+        color: 'hsl(var(--muted-foreground))',
         orientation: 'left',
-        colored: true,
+        colored: false,
+        domain: ['auto', 'dataMax'],
         formatter: (v) => formatRubShort(v),
+        width: 48,
+      });
+    }
+    if (used.has('rubRight')) {
+      axes.push({
+        id: 'rubRight',
+        color: 'hsl(var(--muted-foreground))',
+        orientation: 'right',
+        colored: false,
+        domain: ['auto', 'dataMax'],
+        formatter: (v) => formatRubShort(v),
+        width: 48,
       });
     }
     if (used.has('orders')) {
+      // Скрытая ось — bars видны, но шкала не загромождает чарт.
+      // Чтобы bars занимали только нижнюю ~25% графика, считаем dataMax
+      // по data и умножаем на 4. Recharts не умеет 'dataMax * N' строкой,
+      // поэтому считаем число явно ниже (см. ordersMax).
       axes.push({
         id: 'orders',
-        color: '#0ea5e9',
+        color: 'hsl(var(--muted-foreground))',
         orientation: 'right',
-        colored: true,
+        hide: true,
+        domain: [0, ordersMax > 0 ? ordersMax * 4 : 1],
         formatter: (v) => formatIntShort(v),
       });
     }
     if (used.has('pct')) {
       axes.push({
         id: 'pct',
-        color: '#f59e0b',
+        color: 'hsl(var(--muted-foreground))',
         orientation: 'right',
-        colored: true,
+        colored: false,
+        domain: [0, 'dataMax'],
         formatter: (v) => `${v.toFixed(0)}%`,
+        width: 36,
       });
     }
     return axes;
-  }, [series]);
+  }, [series, ordersMax]);
 
   const totals = useMemo(() => {
     if (!data) return { revenue: 0, orders: 0, ads: 0 };
@@ -328,6 +387,34 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
             Реклама ≈
           </span>
         )}
+        {/* KPI-badges по сводным метрикам периода. ДРР вынесен из чарта
+            (был «третьей осью %», не помещался без шума). */}
+        <div className="ml-auto flex items-center gap-2 text-[11px]">
+          {totals.revenue > 0 && (
+            <span className="rounded-md bg-emerald-50 px-2 py-1 dark:bg-emerald-950/40">
+              <span className="text-muted-foreground">Выручка </span>
+              <span className="font-semibold text-emerald-700 tabular-nums dark:text-emerald-300">
+                {formatRubShort(totals.revenue)} ₽
+              </span>
+            </span>
+          )}
+          {totals.ads > 0 && (
+            <span className="rounded-md bg-rose-50 px-2 py-1 dark:bg-rose-950/40">
+              <span className="text-muted-foreground">Расход </span>
+              <span className="font-semibold text-rose-700 tabular-nums dark:text-rose-300">
+                {formatRubShort(totals.ads)} ₽
+              </span>
+            </span>
+          )}
+          {totals.revenue > 0 && totals.ads > 0 && (
+            <span className="rounded-md bg-amber-50 px-2 py-1 dark:bg-amber-950/40">
+              <span className="text-muted-foreground">ДРР </span>
+              <span className="font-semibold text-amber-700 tabular-nums dark:text-amber-300">
+                {((totals.ads / totals.revenue) * 100).toFixed(1)}%
+              </span>
+            </span>
+          )}
+        </div>
       </div>
       <div className="min-h-0 flex-1">
         {error ? (
@@ -343,7 +430,7 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
             data={data.points}
             series={series}
             xKey="date"
-            height={380}
+            height={260}
             variant="rich"
             yAxes={yAxes}
             formatTooltipLabel={(label) => {

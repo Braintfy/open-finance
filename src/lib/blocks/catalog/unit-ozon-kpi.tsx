@@ -177,18 +177,41 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
 
   // Публикуем KPI как источники для cell-binding (модалка «Связать ячейку»).
   // Ключи и лейблы match'атся с /api/blocks/sources fieldsForBlock.
+  // Previous-period поля и delta% — для цельной модалки связей и hero-блоков.
+  const prevRevenue = data?.previous.revenueRub ?? 0;
+  const prevOrders = data?.previous.orders ?? 0;
+  const prevAds = data?.previous.adsRub ?? 0;
+  const currRevenue = data?.current.revenueRub ?? 0;
+  const currOrders = data?.current.orders ?? 0;
+  const currAds = data?.current.adsRub ?? 0;
+  const deltaRevenuePct =
+    prevRevenue > 0 ? Math.round(((currRevenue - prevRevenue) / prevRevenue) * 1000) / 10 : 0;
+  const deltaOrdersPct =
+    prevOrders > 0 ? Math.round(((currOrders - prevOrders) / prevOrders) * 1000) / 10 : 0;
+  const deltaAdsPct =
+    prevAds > 0 ? Math.round(((currAds - prevAds) / prevAds) * 1000) / 10 : 0;
+
   useBlockValuePublisher(instance.id, {
-    value: data?.current.revenueRub ?? 0,
-    revenue: data?.current.revenueRub ?? 0,
-    orders: data?.current.orders ?? 0,
-    ads: data?.current.adsRub ?? 0,
+    value: currRevenue,
+    revenue: currRevenue,
+    orders: currOrders,
+    ads: currAds,
     drr: data?.current.drrPct ?? 0,
     aov: data?.current.aovRub ?? 0,
     cpo: data?.current.cpoRub ?? 0,
+    revenuePrev: prevRevenue,
+    ordersPrev: prevOrders,
+    adsPrev: prevAds,
+    deltaRevenuePct,
+    deltaOrdersPct,
+    deltaAdsPct,
     __labels:
       'value=Выручка / период,revenue=Выручка / период,orders=Заказы / период,' +
-      'ads=Расход на рекламу,drr=ДРР %,aov=Средний чек,cpo=Средний CPO',
-    __money: 'value,revenue,ads,aov,cpo',
+      'ads=Расход на рекламу,drr=ДРР %,aov=Средний чек,cpo=Средний CPO,' +
+      'revenuePrev=Выручка / прошлый период,ordersPrev=Заказы / прошлый период,' +
+      'adsPrev=Реклама / прошлый период,deltaRevenuePct=Δ Выручка %,' +
+      'deltaOrdersPct=Δ Заказы %,deltaAdsPct=Δ Реклама %',
+    __money: 'value,revenue,ads,aov,cpo,revenuePrev,adsPrev',
   });
 
   return (

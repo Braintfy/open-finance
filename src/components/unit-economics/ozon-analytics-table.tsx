@@ -463,17 +463,23 @@ export function OzonAnalyticsTable({
   }, [columns, pinnedSet, colWidths]);
 
   return (
-    <div className="relative w-full">
-      <table className="border-collapse text-[12px]" style={{ width: `${totalWidth}px`, tableLayout: 'fixed' }}>
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCenter}
-          onDragEnd={handleDragEnd}
-        >
-          <SortableContext
-            items={columns.map((c) => c.key)}
-            strategy={horizontalListSortingStrategy}
-          >
+    // DndContext + SortableContext ВЫНЕСЕНЫ из <table>: dnd-kit рендерит
+    // невидимый <div> для ARIA (DndDescribedBy-N), который недопустим
+    // внутри <table> по HTML-стандарту и вызывает hydration mismatch в
+    // React 19. Контекстные провайдеры работают независимо от глубины
+    // вложенности — `useSortable` внутри `SortableHeaderCell` находит
+    // их через React context.
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCenter}
+      onDragEnd={handleDragEnd}
+    >
+      <SortableContext
+        items={columns.map((c) => c.key)}
+        strategy={horizontalListSortingStrategy}
+      >
+        <div className="relative w-full">
+          <table className="border-collapse text-[12px]" style={{ width: `${totalWidth}px`, tableLayout: 'fixed' }}>
             <thead className="sticky top-0 z-10 bg-card">
               <tr>
                 {columns.map((col) => {
@@ -503,9 +509,7 @@ export function OzonAnalyticsTable({
                 })}
               </tr>
             </thead>
-          </SortableContext>
-        </DndContext>
-        <tbody>
+            <tbody>
           {sorted.length === 0 ? (
             <tr>
               <td
@@ -667,21 +671,37 @@ export function OzonAnalyticsTable({
                         );
                         break;
                       case 'daysOfStock': {
-                        const effectiveDays =
-                          useOzonTurnover && row.daysOfStockOzon !== null && row.daysOfStockOzon !== undefined
-                            ? row.daysOfStockOzon
-                            : row.daysOfStock;
-                        const sourceLabel =
-                          useOzonTurnover && row.daysOfStockOzon !== null && row.daysOfStockOzon !== undefined
-                            ? 'Ozon Turnover'
-                            : 'расчёт stock / salesPerDay';
+                        // Приоритет источников (default useOzonTurnover=true с v0.18.21):
+                        //   1. Ozon Turnover (если есть и флаг включён)
+                        //   2. Расчёт за текущий период (если qty_delivered > 0)
+                        //   3. 30-дневный fallback (velocity за последние 30 дн)
+                        //   4. null → «—»
+                        let effectiveDays: number | null = null;
+                        let sourceLabel = '';
+                        if (
+                          useOzonTurnover &&
+                          row.daysOfStockOzon !== null &&
+                          row.daysOfStockOzon !== undefined
+                        ) {
+                          effectiveDays = row.daysOfStockOzon;
+                          sourceLabel = 'Ozon Turnover (Seller API)';
+                        } else if (row.daysOfStock !== null) {
+                          effectiveDays = row.daysOfStock;
+                          sourceLabel = 'расчёт stock / salesPerDay (тек. период)';
+                        } else if (
+                          row.daysOfStockFallback30d !== null &&
+                          row.daysOfStockFallback30d !== undefined
+                        ) {
+                          effectiveDays = row.daysOfStockFallback30d;
+                          sourceLabel = 'fallback: velocity за 30 дн.';
+                        }
                         if (effectiveDays === null) {
                           body = (
                             <span
                               className="text-muted-foreground"
                               title={
                                 stock > 0
-                                  ? 'Нет продаж за период — расчёт «дней хватит» невозможен. Возьмите большее окно или включите fallback на Ozon Turnover в настройках.'
+                                  ? 'Нет продаж ни в выбранном периоде, ни за последние 30 дней. Включите Ozon Turnover в настройках или возьмите большее окно.'
                                   : 'Остаток = 0 — дней хватит = 0.'
                               }
                             >
@@ -772,9 +792,11 @@ export function OzonAnalyticsTable({
               );
             })
           )}
-        </tbody>
-      </table>
-    </div>
+            </tbody>
+          </table>
+        </div>
+      </SortableContext>
+    </DndContext>
   );
 }
 

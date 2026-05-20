@@ -51,6 +51,12 @@ export type OzonAnalyticsRow = {
    * запускался или товар не покрыт.
    */
   daysOfStockOzon?: number | null;
+  /**
+   * Fallback `daysOfStock` посчитанный по 30-дневному окну продаж
+   * (если в текущем периоде qtyDelivered = 0 и расчёт прямой невозможен).
+   * Используется когда нет ни Ozon Turnover, ни сегодняшних продаж.
+   */
+  daysOfStockFallback30d?: number | null;
   views: number;
   clicks: number;
   cartAdds: number;
@@ -200,10 +206,16 @@ export const OzonAnalyticsBlockConfigSchema = z.object({
     .default(['name']),
   /**
    * Использовать `metadata.turnoverDays` (Seller `/v1/analytics/turnover/stocks`)
-   * для колонки «Дней хватит остатка» вместо расчёта `stock / salesPerDay`.
-   * Если данных нет — fallback на расчётный (старый поведение).
+   * для колонки «Дней хватит остатка» как primary source. Если данных
+   * Ozon Turnover нет — приоритет: `daysOfStock` (текущий период) →
+   * `daysOfStockFallback30d` (velocity по 30-дневному окну) → null.
+   *
+   * Default `true` (с v0.18.21): чаще всего на узких 7d-окнах нет продаж,
+   * расчётный daysOfStock получается null и колонка показывала «—»
+   * массово. Ozon Turnover берётся напрямую из Seller-кабинета и
+   * стабильно покрывает большинство SKU.
    */
-  useOzonTurnover: z.boolean().default(false),
+  useOzonTurnover: z.boolean().default(true),
 });
 
 export type OzonAnalyticsBlockConfig = z.infer<typeof OzonAnalyticsBlockConfigSchema>;

@@ -100,6 +100,13 @@ export async function GET(req: NextRequest) {
 
     const periodDays = Math.max(1, Math.round((to.getTime() - from.getTime()) / (24 * 3600 * 1000)));
 
+    // Окно для fallback-velocity (30 дней от now). Используется когда в
+    // текущем `period` qty_delivered = 0 — типично для коротких окон 7d
+    // на товарах с медленным оборотом. См. поле daysOfStockFallback30d.
+    const fallbackWindowDays = 30;
+    const fallbackFromIso = new Date(now.getTime() - fallbackWindowDays * 24 * 3600 * 1000).toISOString();
+    const fallbackToIso = now.toISOString();
+
     // Redis-кэш: блок аналитики переоткрывается часто, sync переписывает данные
     // максимум раз в час. Ключ зависит от tenant + accountId + период.
     const cacheKey = `analytics:ozon:${CACHE_VERSION}:${session.tenantId}:${accountId ?? 'all'}:${fromIso}:${toIso}`;
@@ -253,12 +260,37 @@ export async function GET(req: NextRequest) {
       cancelled: number;
       returned: number;
       qty_delivered: number | string;
+      qty_30d: number | string;
       revenue_kopecks: number | string;
       ads_kopecks: number | string;
       perf_views: number | string;
       perf_clicks: number | string;
       perf_cart_adds: number | string;
     };
+
+    // Velocity-fallback за 30-дневное окно: считаем qty_delivered по
+    // offer_id за последние 30 дней (независимо от текущего period). Если
+    // в текущем period qty_delivered = 0, фронт использует эту velocity
+    // для расчёта daysOfStockFallback30d.
+    const velocity30Cte = sql`
+      velocity_30d AS (
+        SELECT
+          (it->>'offerId')::text AS offer_id,
+          SUM(NULLIF(it->>'quantity', '')::numeric) FILTER (
+            WHERE o.cancelled_at IS NULL
+              AND o.returned_at IS NULL
+              AND lower(o.status) NOT LIKE '%cancel%'
+              AND lower(o.status) NOT LIKE '%return%'
+          ) AS qty_30d
+        FROM ${ozonOrders} o
+        CROSS JOIN LATERAL jsonb_array_elements(o.items) AS it
+        WHERE o.tenant_id = ${session.tenantId}
+          ${accountCondOrders}
+          AND o.order_created_at >= ${fallbackFromIso}::timestamp
+          AND o.order_created_at < ${fallbackToIso}::timestamp
+          AND COALESCE(it->>'offerId', '') <> ''
+        GROUP BY (it->>'offerId')::text
+      )`;
 
     // FBO/FBS разделение всегда из ozon_orders (независимо от primary source).
     // Объединяем по offer_id — это поле есть во всех схемах.
@@ -413,7 +445,8 @@ export async function GET(req: NextRequest) {
     const rawResult = await db.execute<Raw>(sql`
       WITH ${ordersCte},
       ${adsCte},
-      ${schemeCte}
+      ${schemeCte},
+      ${velocity30Cte}
       SELECT
         ${unitProducts.id}::text AS "productId",
         ${unitProducts.article} AS article,
@@ -432,6 +465,7 @@ export async function GET(req: NextRequest) {
         ${cancelledExpr} AS cancelled,
         ${returnedExpr} AS returned,
         COALESCE(ao.qty_delivered, 0) AS qty_delivered,
+        COALESCE(v30.qty_30d, 0) AS qty_30d,
         COALESCE(ao.revenue_rub * 100, 0) AS revenue_kopecks,
         COALESCE(ad.ads_kopecks, 0) AS ads_kopecks,
         COALESCE(ad.perf_views, 0) AS perf_views,
@@ -440,6 +474,7 @@ export async function GET(req: NextRequest) {
       FROM ${unitProducts}
       ${ordersJoin}
       LEFT JOIN agg_scheme sch ON sch.offer_id = ${unitProducts.article}
+      LEFT JOIN velocity_30d v30 ON v30.offer_id = ${unitProducts.article}
       LEFT JOIN LATERAL (
         SELECT
           SUM(ad.ads_kopecks) AS ads_kopecks,
@@ -490,6 +525,7 @@ export async function GET(req: NextRequest) {
       buyoutPct: number | null;
       daysOfStock: number | null;
       daysOfStockOzon: number | null;
+      daysOfStockFallback30d: number | null;
       views: number;
       clicks: number;
       cartAdds: number;
@@ -515,6 +551,14 @@ export async function GET(req: NextRequest) {
       const daysOfStockOzon =
         daysOfStockOzonRaw !== null && daysOfStockOzonRaw !== undefined
           ? Number(daysOfStockOzonRaw)
+          : null;
+      // 30-day velocity fallback: на узких окнах (7d) обычно нет продаж →
+      // velocity = 0 → daysOfStock = null. Считаем по средней за 30 дней.
+      const qty30d = Number(r.qty_30d ?? 0);
+      const velocity30d = qty30d > 0 ? qty30d / fallbackWindowDays : 0;
+      const daysOfStockFallback30d =
+        velocity30d > 0 && stockTotal > 0
+          ? Math.round((stockTotal / velocity30d) * 10) / 10
           : null;
 
       const marketingPrice = Number(r.marketing_price_rub ?? 0);
@@ -542,6 +586,7 @@ export async function GET(req: NextRequest) {
         buyoutPct,
         daysOfStock,
         daysOfStockOzon: Number.isFinite(daysOfStockOzon as number) ? daysOfStockOzon : null,
+        daysOfStockFallback30d,
         views: Number(r.perf_views ?? 0),
         clicks: Number(r.perf_clicks ?? 0),
         cartAdds: Number(r.perf_cart_adds ?? 0),
@@ -624,6 +669,7 @@ export async function GET(req: NextRequest) {
         buyoutPct: r.buyoutPct,
         daysOfStock: r.daysOfStock,
         daysOfStockOzon: r.daysOfStockOzon,
+        daysOfStockFallback30d: r.daysOfStockFallback30d,
         views: r.views,
         clicks: r.clicks,
         cartAdds: r.cartAdds,

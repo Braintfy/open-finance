@@ -1,5 +1,71 @@
 # Changelog
 
+## [0.18.21] - 2026-05-20
+
+Чистый rebuild пяти критических регрессий после v0.18.20: hydration error в таблице, переработанный «Динамика» (dual-axis, компактный, без копирования референса), починка пустых данных в «Остатках по кластерам» и в колонке «Дней», увеличение полноты Performance API expense (JSON endpoint вместо CSV), расширение модалки связей категории «Аналитика Ozon» (top-1 SKU + previous-period + δ% + real-данные для кампаний/фраз/кластеров).
+
+### Fixed
+
+- **Hydration error в Analytics-таблице** (`src/components/unit-economics/ozon-analytics-table.tsx`):
+  `<DndContext>` рендерился как прямой child `<table>` и dnd-kit вставлял невидимый `<div id="DndDescribedBy-N">` для ARIA, нарушая HTML-стандарт и вызывая React 19 hydration mismatch. Перенёс `DndContext` + `SortableContext` так, чтобы они оборачивали внешний `<div className="relative w-full">`, оставив в `<table>` только `<thead>`/`<tbody>`. Контекстные провайдеры работают независимо от глубины — `useSortable` в `SortableHeaderCell` находит их через React context.
+- **Performance API expense — неполные данные** (`src/lib/marketplaces/ozon/performance/endpoints.ts`):
+  `GET /api/client/statistics/expense` возвращает **CSV по умолчанию**, а JSON — только при добавлении `/json` в URL (см. doc Ozon Performance 2.0 → `GetCampaignExpense`). Старый код звал без `/json` → Zod парсил CSV как JSON → undefined → все строки дропались тихо → `ozon_perf_expense_daily` пустой → KPI/Analytics проваливались на CPC+CPO heuristic (неполную). Исправление:
+  - URL: `/api/client/statistics/expense` → `/api/client/statistics/expense/json`.
+  - Терпимая Zod-схема с алиасами `money_spent`/`moneySpent`, `bonus_spent`/`bonusSpent`, `daily_results`/`rows`/`values` для массива дней, `id`/`campaignId`.
+  - CSV-fallback `parseExpenseCsv()` — на случай если Ozon вернёт CSV: парсим текст вручную (`;`-разделитель, RU-числа, нормализация даты).
+  - `console.warn('[expense] zero rows', ...)` чтобы будущая регрессия не замалчивалась.
+- **Колонка «Дней» снова пустая** (`src/app/api/marketplaces/analytics/ozon/route.ts` + `src/lib/blocks/catalog/unit-ozon-analytics-types.ts` + `src/components/unit-economics/ozon-analytics-table.tsx`):
+  На узких окнах 7d у медленно оборачивающихся товаров `qtyDelivered = 0` → `velocity = 0` → `daysOfStock = null` → массовый «—» в колонке. Фикс:
+  - Default `useOzonTurnover: true` (раньше `false`) — Ozon Turnover из Seller-кабинета берётся как primary.
+  - Новый CTE `velocity_30d` в analytics route: считает qty_delivered по offer_id за последние 30 дней независимо от текущего period.
+  - Новое поле `daysOfStockFallback30d` в `OzonAnalyticsRow` — fallback velocity за 30 дней.
+  - В UI приоритет: `daysOfStockOzon` (Ozon Turnover) → `daysOfStock` (текущий period) → `daysOfStockFallback30d` (30-дневная средняя) → «—» с tooltip почему. Каждый источник имеет свой sourceLabel в title.
+- **Блок «Остатки по кластерам» — нет данных** (`src/app/api/marketplaces/ozon/cluster-stocks-v2/route.ts` + `src/lib/blocks/catalog/unit-ozon-warehouse-clusters.tsx`):
+  - В JOIN `ozon_orders ↔ ozon_warehouse_stocks` убрал строгий `accountCondStocks` (товар продаётся с разных аккаунтов, но кластеризация по `warehouse_name` всё равно работает).
+  - Добавлен `meta.diagnostic` в ответ API: `warehouseStocksCount`, `clustersCount`, `lastWarehouseStocksFetchAt`.
+  - Empty-state блока теперь показывает actionable карточку: какие именно sync-стейджи нужно запустить (с числами текущего состояния), с CTA-ссылкой на `/settings/integrations`.
+  - Если warehouse_stocks > 0, но clusters = 0 — banner «Справочник кластеров пуст (Performance API). Остатки сгруппированы „Без кластера“».
+
+### Changed
+
+- **Редизайн «Ozon · Динамика» — dual-axis компактный** (`src/lib/blocks/catalog/unit-ozon-chart.tsx` + `src/components/blocks/chart-shell.tsx`):
+  - Новая схема осей: **rubLeft** (выручка/AOV ₽), **rubRight** (расход ₽, собственный масштаб — чтобы линия расхода не сливалась с нулём), **orders** (заказы как тонкие серые bars в нижней четверти графика, скрытая ось domain=[0, ordersMax×4]). Убрана ось `pct`.
+  - ДРР вынесен из чарта в **KPI-badge** над графиком (Выручка / Расход / ДРР %). Без шума в чарте.
+  - Высота 380 → 260px, шрифты осей 11 → 10px, нейтральный цвет ticks/axisLine (`muted-foreground`, без цветовой привязки к сериям).
+  - Vertical-grid убран, только горизонтальная сетка `stroke-opacity: 0.3`.
+  - `revenueRub` — area с градиентом, `adsRub` — линия 2.5px, `aovRub` — пунктир 1.5px, `orders` — bars barSize=6.
+- **`ChartShell` extended** (`src/components/blocks/chart-shell.tsx`):
+  - `ChartYAxis` теперь поддерживает `domain` (per-axis), `hide` (скрыть ось целиком), `width` (кастомная ширина). Используется в Динамике для скрытой orders-оси и rubRight-оси с собственным масштабом.
+  - `ChartSeries` поддерживает `strokeWidth`, `strokeDasharray`, `barSize`, `fillOpacity` per-series.
+  - Mixed series (area + line + bar в одном графике) — автоматически используется `ComposedChart` вместо `LineChart`/`AreaChart`.
+- **`getOzonAnalyticsTotals`** (`src/lib/blocks/catalog/unit-ozon-analytics-queries.ts`) полностью переписан:
+  - **Источник ads приоритизирован**: `ozon_perf_expense_daily` (эталон) → `ozon_perf_sku_stats + ozon_perf_cpo_daily` (CPC+CPO) → `ozon_transactions` (heuristic). Цифры теперь идентичны Аналитике/Кампаниям/Динамике в модалке связей.
+  - Добавлены **top-1 SKU метрики**: `top1Revenue`, `top1Article`, `top1Name`, `top1Drr`, `top1Ads`, `avgDrr`, `maxDrr`, `totalStockValueRub`.
+  - Добавлен флаг `includePrevious: true` → возвращает `revenuePrev`/`adsPrev`/`ordersPrev` + `deltaRevenuePct`/`deltaAdsPct`/`deltaOrdersPct` через второй query на сдвинутом окне.
+  - Per-product CTE с JOIN на `agg_ads_sku` (по sku + offer_id + article) для точного top-1 SKU.
+- **Publisher `unit.ozon-analytics`** (`src/lib/blocks/catalog/unit-ozon-analytics.tsx`) теперь публикует ещё 8 полей: `top1Revenue`, `top1Article`, `top1Name`, `top1Drr`, `top1Ads`, `avgDrr`, `maxDrr`, `totalStockValueRub` с правильными `__money` и `__labels`.
+- **Publisher `unit.ozon-kpi`** (`src/lib/blocks/catalog/unit-ozon-kpi.tsx`) добавлены previous-period поля (`revenuePrev`/`ordersPrev`/`adsPrev`) и delta% поля (`deltaRevenuePct`/`deltaOrdersPct`/`deltaAdsPct`) с правильными labels.
+- **`fieldsForBlock` в `api/blocks/sources/route.ts`**:
+  - `unit.ozon-analytics`: 28 полей (включая top1/avg/max/prev/delta).
+  - `unit.ozon-kpi`: 13 полей (добавлены prev/delta).
+  - `unit.ozon-stock-clusters`, `unit.ozon-warehouse-clusters`: реальные значения через новый `getOzonClusterStocksTotals` (вместо null).
+  - `unit.ozon-campaigns`, `unit.ozon-search-phrases`: реальные значения через новые `getOzonCampaignsTotals` / `getOzonSearchPhrasesTotals` (вместо null).
+
+### Added
+
+- `src/lib/blocks/catalog/unit-ozon-cluster-queries.ts` — новый файл с server-side helpers:
+  - `getOzonClusterStocksTotals(tenantId, accountId)` — `totalStock`, `freeStock`, `reservedStock`, `promisedStock`, `skuCount`, `clustersCount`, `warehouseStocksCount`.
+  - `getOzonCampaignsTotals(tenantId, accountId, period)` — `campaignsCount`, `activeCampaignsCount`, `totalExpenseRub`, `totalOrders`, `totalOrdersRub`, `avgDrrPct`.
+  - `getOzonSearchPhrasesTotals(tenantId, accountId, period)` — `phrasesCount`, `totalExpenseRub`, `totalOrders`, `totalClicks`, `totalViews`, `avgCtrPct`.
+- `scripts/test-ozon-warehouse-stocks.ts` — read-only диагностический скрипт. Считает строки в `ozon_warehouse_stocks` / `ozon_clusters` / `ozon_orders` per-account, печатает рекомендации какие sync-стейджи запустить.
+- 4 новых теста в `scripts/test-ozon-analytics.ts`: default `useOzonTurnover=true`, `daysOfStockFallback30d` в row, expense endpoint url = `/json`, CSV-fallback parser существует, `<DndContext>` ПЕРЕД `<table>` (hydration check через regex по исходнику). Всего 90 PASS / 0 FAIL.
+
+### Migrations
+
+Не требуются — все правки на уровне API/UI/queries, схема БД не меняется.
+
+---
+
 ## [0.18.20] - 2026-05-20
 
 Большой пакет правок для Ozon-маркетплейса: эталонный источник Ads (`/statistics/expense`), редизайн «Динамики» (rich-вариант графика), pinned-колонка в Аналитике, новый блок «Остатки по кластерам» (география), фикс пустых значений в модалке связей через `mergeLiveFields` + расширенные publishers/server-fields, и доработка days-of-stock с fallback на `metadata.turnoverDays`.

@@ -12,6 +12,11 @@ import { getCurrencyRates } from '@/lib/currency/queries';
 import type { CurrencyRate } from '@/lib/currency/types';
 import type { BlockInstance } from '@/lib/blocks/types';
 import { getOzonAnalyticsTotals } from '@/lib/blocks/catalog/unit-ozon-analytics-queries';
+import {
+  getOzonClusterStocksTotals,
+  getOzonCampaignsTotals,
+  getOzonSearchPhrasesTotals,
+} from '@/lib/blocks/catalog/unit-ozon-cluster-queries';
 import { OzonAnalyticsBlockConfigSchema } from '@/lib/blocks/catalog/unit-ozon-analytics-types';
 import FormulaParser, { MAX_COLUMN, MAX_ROW } from 'fast-formula-parser';
 
@@ -497,6 +502,7 @@ async function fieldsForBlock(
         parsed.periodPreset,
         parsed.customFrom,
         parsed.customTo,
+        { includePrevious: true },
       );
       return [
         { name: 'value', label: 'Выручка / период', value: Math.round(t.revenueRub * 100), format: 'money' },
@@ -513,6 +519,22 @@ async function fieldsForBlock(
         { name: 'rowsCount', label: 'Всего товаров', value: t.rowsCount, format: 'number' },
         { name: 'stockTotal', label: 'Остатки (шт)', value: t.stockTotal, format: 'number' },
         { name: 'avgBuyoutPct', label: 'Средний выкуп %', value: t.avgBuyoutPct, format: 'number' },
+        // --- Top-1 SKU метрики ---
+        { name: 'top1Revenue', label: 'Выручка топ-1 SKU', value: Math.round(t.top1Revenue * 100), format: 'money' },
+        { name: 'top1Article', label: 'Артикул топ-1 SKU', value: t.top1Article ?? '', format: 'text' },
+        { name: 'top1Name', label: 'Название топ-1 SKU', value: t.top1Name ?? '', format: 'text' },
+        { name: 'top1Drr', label: 'ДРР топ-1 SKU %', value: t.top1Drr, format: 'number' },
+        { name: 'top1Ads', label: 'Реклама топ-1 SKU', value: Math.round(t.top1Ads * 100), format: 'money' },
+        { name: 'avgDrr', label: 'Средний ДРР по SKU %', value: t.avgDrr, format: 'number' },
+        { name: 'maxDrr', label: 'Максимальный ДРР %', value: t.maxDrr, format: 'number' },
+        { name: 'totalStockValueRub', label: 'Стоимость остатков', value: Math.round(t.totalStockValueRub * 100), format: 'money' },
+        // --- Previous period (для δ-бейджей) ---
+        { name: 'revenuePrev', label: 'Выручка / прошлый период', value: t.revenuePrev !== null ? Math.round(t.revenuePrev * 100) : null, format: 'money' },
+        { name: 'adsPrev', label: 'Реклама / прошлый период', value: t.adsPrev !== null ? Math.round(t.adsPrev * 100) : null, format: 'money' },
+        { name: 'ordersPrev', label: 'Заказы / прошлый период', value: t.ordersPrev, format: 'number' },
+        { name: 'deltaRevenuePct', label: 'Δ Выручка %', value: t.deltaRevenuePct, format: 'number' },
+        { name: 'deltaAdsPct', label: 'Δ Реклама %', value: t.deltaAdsPct, format: 'number' },
+        { name: 'deltaOrdersPct', label: 'Δ Заказы %', value: t.deltaOrdersPct, format: 'number' },
       ];
     } catch (e) {
       console.error('[blocks/sources] ozon-analytics totals failed:', e);
@@ -538,7 +560,9 @@ async function fieldsForBlock(
     const customFrom = typeof cfg.customFrom === 'string' ? cfg.customFrom : null;
     const customTo = typeof cfg.customTo === 'string' ? cfg.customTo : null;
     try {
-      const t = await getOzonAnalyticsTotals(tenantId, accountId, periodPreset, customFrom, customTo);
+      const t = await getOzonAnalyticsTotals(tenantId, accountId, periodPreset, customFrom, customTo, {
+        includePrevious: true,
+      });
       const aov = t.delivered > 0 ? Math.round((t.revenueRub / t.delivered) * 100) : null;
       const cpo = t.delivered > 0 && t.adsRub > 0
         ? Math.round((t.adsRub / t.delivered) * 100)
@@ -551,6 +575,13 @@ async function fieldsForBlock(
         { name: 'drr', label: 'ДРР %', value: t.drrPct !== null ? Math.round(t.drrPct * 10) / 10 : null, format: 'number' },
         { name: 'aov', label: 'Средний чек', value: aov, format: 'money' },
         { name: 'cpo', label: 'Средний CPO', value: cpo, format: 'money' },
+        // --- Previous period (для δ-бейджей в модалке) ---
+        { name: 'revenuePrev', label: 'Выручка / прошлый период', value: t.revenuePrev !== null ? Math.round(t.revenuePrev * 100) : null, format: 'money' },
+        { name: 'ordersPrev', label: 'Заказы / прошлый период', value: t.ordersPrev, format: 'number' },
+        { name: 'adsPrev', label: 'Реклама / прошлый период', value: t.adsPrev !== null ? Math.round(t.adsPrev * 100) : null, format: 'money' },
+        { name: 'deltaRevenuePct', label: 'Δ Выручка %', value: t.deltaRevenuePct, format: 'number' },
+        { name: 'deltaOrdersPct', label: 'Δ Заказы %', value: t.deltaOrdersPct, format: 'number' },
+        { name: 'deltaAdsPct', label: 'Δ Реклама %', value: t.deltaAdsPct, format: 'number' },
       ];
     } catch (e) {
       console.error('[blocks/sources] ozon-kpi totals failed:', e);
@@ -608,50 +639,120 @@ async function fieldsForBlock(
     ];
   }
   if (block.type === 'unit.ozon-stock-clusters') {
-    // Поля синхронизированы с useBlockValuePublisher в unit-ozon-stock-clusters.tsx.
-    return [
-      { name: 'value', label: 'Всего остатков (шт)', value: null, format: 'number' },
-      { name: 'totalStock', label: 'Всего остатков (шт)', value: null, format: 'number' },
-      { name: 'rowsCount', label: 'Типов склада', value: null, format: 'number' },
-    ];
+    const cfg = block.config ?? {};
+    const accountId = typeof cfg.accountId === 'string' ? cfg.accountId : null;
+    try {
+      const t = await getOzonClusterStocksTotals(tenantId, accountId);
+      return [
+        { name: 'value', label: 'Всего остатков (шт)', value: t.totalStock, format: 'number' },
+        { name: 'totalStock', label: 'Всего остатков (шт)', value: t.totalStock, format: 'number' },
+        { name: 'rowsCount', label: 'Типов склада', value: t.skuCount, format: 'number' },
+      ];
+    } catch (e) {
+      console.error('[blocks/sources] ozon-stock-clusters totals failed:', e);
+      return [
+        { name: 'value', label: 'Всего остатков (шт)', value: null, format: 'number' },
+        { name: 'totalStock', label: 'Всего остатков (шт)', value: null, format: 'number' },
+        { name: 'rowsCount', label: 'Типов склада', value: null, format: 'number' },
+      ];
+    }
   }
   if (block.type === 'unit.ozon-warehouse-clusters') {
-    // Поля синхронизированы с useBlockValuePublisher в unit-ozon-warehouse-clusters.tsx.
-    return [
-      { name: 'value', label: 'Всего остатков (шт)', value: null, format: 'number' },
-      { name: 'totalStock', label: 'Всего остатков (шт)', value: null, format: 'number' },
-      { name: 'freeStock', label: 'Свободно (шт)', value: null, format: 'number' },
-      { name: 'reservedStock', label: 'В резерве (шт)', value: null, format: 'number' },
-      { name: 'promisedStock', label: 'Ожидается (шт)', value: null, format: 'number' },
-      { name: 'skuCount', label: 'SKU', value: null, format: 'number' },
-      { name: 'ordersInPeriod', label: 'Заказов / период', value: null, format: 'number' },
-      { name: 'revenueInPeriod', label: 'Выручка / период', value: null, format: 'money' },
-      { name: 'clustersCount', label: 'Кластеров', value: null, format: 'number' },
-    ];
+    const cfg = block.config ?? {};
+    const accountId = typeof cfg.accountId === 'string' ? cfg.accountId : null;
+    try {
+      const t = await getOzonClusterStocksTotals(tenantId, accountId);
+      return [
+        { name: 'value', label: 'Всего остатков (шт)', value: t.totalStock, format: 'number' },
+        { name: 'totalStock', label: 'Всего остатков (шт)', value: t.totalStock, format: 'number' },
+        { name: 'freeStock', label: 'Свободно (шт)', value: t.freeStock, format: 'number' },
+        { name: 'reservedStock', label: 'В резерве (шт)', value: t.reservedStock, format: 'number' },
+        { name: 'promisedStock', label: 'Ожидается (шт)', value: t.promisedStock, format: 'number' },
+        { name: 'skuCount', label: 'SKU', value: t.skuCount, format: 'number' },
+        // ordersInPeriod/revenueInPeriod зависят от периода блока — в модалке
+        // показываем null (значения будут от run-time publisher на клиенте).
+        { name: 'ordersInPeriod', label: 'Заказов / период', value: null, format: 'number' },
+        { name: 'revenueInPeriod', label: 'Выручка / период', value: null, format: 'money' },
+        { name: 'clustersCount', label: 'Кластеров', value: t.clustersCount, format: 'number' },
+      ];
+    } catch (e) {
+      console.error('[blocks/sources] ozon-warehouse-clusters totals failed:', e);
+      return [
+        { name: 'value', label: 'Всего остатков (шт)', value: null, format: 'number' },
+        { name: 'totalStock', label: 'Всего остатков (шт)', value: null, format: 'number' },
+        { name: 'freeStock', label: 'Свободно (шт)', value: null, format: 'number' },
+        { name: 'reservedStock', label: 'В резерве (шт)', value: null, format: 'number' },
+        { name: 'promisedStock', label: 'Ожидается (шт)', value: null, format: 'number' },
+        { name: 'skuCount', label: 'SKU', value: null, format: 'number' },
+        { name: 'ordersInPeriod', label: 'Заказов / период', value: null, format: 'number' },
+        { name: 'revenueInPeriod', label: 'Выручка / период', value: null, format: 'money' },
+        { name: 'clustersCount', label: 'Кластеров', value: null, format: 'number' },
+      ];
+    }
   }
   if (block.type === 'unit.ozon-search-phrases') {
-    // Синхронизированы с useBlockValuePublisher в unit-ozon-search-phrases.tsx.
-    return [
-      { name: 'value', label: 'Фраз', value: null, format: 'number' },
-      { name: 'phrasesCount', label: 'Количество фраз', value: null, format: 'number' },
-      { name: 'totalExpenseRub', label: 'Расход на рекламу', value: null, format: 'money' },
-      { name: 'totalOrders', label: 'Заказы', value: null, format: 'number' },
-      { name: 'totalClicks', label: 'Клики', value: null, format: 'number' },
-      { name: 'totalViews', label: 'Показы', value: null, format: 'number' },
-      { name: 'avgCtrPct', label: 'Средний CTR %', value: null, format: 'number' },
-    ];
+    const cfg = block.config ?? {};
+    const accountId = typeof cfg.accountId === 'string' ? cfg.accountId : null;
+    const periodPreset = (typeof cfg.periodPreset === 'string'
+      ? cfg.periodPreset
+      : '30d') as Parameters<typeof getOzonSearchPhrasesTotals>[2];
+    const customFrom = typeof cfg.customFrom === 'string' ? cfg.customFrom : null;
+    const customTo = typeof cfg.customTo === 'string' ? cfg.customTo : null;
+    try {
+      const t = await getOzonSearchPhrasesTotals(tenantId, accountId, periodPreset, customFrom, customTo);
+      return [
+        { name: 'value', label: 'Фраз', value: t.phrasesCount, format: 'number' },
+        { name: 'phrasesCount', label: 'Количество фраз', value: t.phrasesCount, format: 'number' },
+        { name: 'totalExpenseRub', label: 'Расход на рекламу', value: Math.round(t.totalExpenseRub * 100), format: 'money' },
+        { name: 'totalOrders', label: 'Заказы', value: t.totalOrders, format: 'number' },
+        { name: 'totalClicks', label: 'Клики', value: t.totalClicks, format: 'number' },
+        { name: 'totalViews', label: 'Показы', value: t.totalViews, format: 'number' },
+        { name: 'avgCtrPct', label: 'Средний CTR %', value: t.avgCtrPct, format: 'number' },
+      ];
+    } catch (e) {
+      console.error('[blocks/sources] ozon-search-phrases totals failed:', e);
+      return [
+        { name: 'value', label: 'Фраз', value: null, format: 'number' },
+        { name: 'phrasesCount', label: 'Количество фраз', value: null, format: 'number' },
+        { name: 'totalExpenseRub', label: 'Расход на рекламу', value: null, format: 'money' },
+        { name: 'totalOrders', label: 'Заказы', value: null, format: 'number' },
+        { name: 'totalClicks', label: 'Клики', value: null, format: 'number' },
+        { name: 'totalViews', label: 'Показы', value: null, format: 'number' },
+        { name: 'avgCtrPct', label: 'Средний CTR %', value: null, format: 'number' },
+      ];
+    }
   }
   if (block.type === 'unit.ozon-campaigns') {
-    // Синхронизированы с useBlockValuePublisher в unit-ozon-campaigns.tsx.
-    return [
-      { name: 'value', label: 'Кампаний', value: null, format: 'number' },
-      { name: 'campaignsCount', label: 'Кампаний всего', value: null, format: 'number' },
-      { name: 'activeCampaignsCount', label: 'Активных', value: null, format: 'number' },
-      { name: 'totalExpenseRub', label: 'Расход на рекламу', value: null, format: 'money' },
-      { name: 'totalOrders', label: 'Заказы', value: null, format: 'number' },
-      { name: 'totalOrdersRub', label: 'Выручка с рекламы', value: null, format: 'money' },
-      { name: 'avgDrrPct', label: 'Средний ДРР %', value: null, format: 'number' },
-    ];
+    const cfg = block.config ?? {};
+    const accountId = typeof cfg.accountId === 'string' ? cfg.accountId : null;
+    const periodPreset = (typeof cfg.periodPreset === 'string'
+      ? cfg.periodPreset
+      : '30d') as Parameters<typeof getOzonCampaignsTotals>[2];
+    const customFrom = typeof cfg.customFrom === 'string' ? cfg.customFrom : null;
+    const customTo = typeof cfg.customTo === 'string' ? cfg.customTo : null;
+    try {
+      const t = await getOzonCampaignsTotals(tenantId, accountId, periodPreset, customFrom, customTo);
+      return [
+        { name: 'value', label: 'Кампаний', value: t.campaignsCount, format: 'number' },
+        { name: 'campaignsCount', label: 'Кампаний всего', value: t.campaignsCount, format: 'number' },
+        { name: 'activeCampaignsCount', label: 'Активных', value: t.activeCampaignsCount, format: 'number' },
+        { name: 'totalExpenseRub', label: 'Расход на рекламу', value: Math.round(t.totalExpenseRub * 100), format: 'money' },
+        { name: 'totalOrders', label: 'Заказы', value: t.totalOrders, format: 'number' },
+        { name: 'totalOrdersRub', label: 'Выручка с рекламы', value: Math.round(t.totalOrdersRub * 100), format: 'money' },
+        { name: 'avgDrrPct', label: 'Средний ДРР %', value: t.avgDrrPct, format: 'number' },
+      ];
+    } catch (e) {
+      console.error('[blocks/sources] ozon-campaigns totals failed:', e);
+      return [
+        { name: 'value', label: 'Кампаний', value: null, format: 'number' },
+        { name: 'campaignsCount', label: 'Кампаний всего', value: null, format: 'number' },
+        { name: 'activeCampaignsCount', label: 'Активных', value: null, format: 'number' },
+        { name: 'totalExpenseRub', label: 'Расход на рекламу', value: null, format: 'money' },
+        { name: 'totalOrders', label: 'Заказы', value: null, format: 'number' },
+        { name: 'totalOrdersRub', label: 'Выручка с рекламы', value: null, format: 'money' },
+        { name: 'avgDrrPct', label: 'Средний ДРР %', value: null, format: 'number' },
+      ];
+    }
   }
   if (block.type === 'unit.ozon-data-health') {
     // Синхронизированы с useBlockValuePublisher в unit-ozon-data-health.tsx.

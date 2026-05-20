@@ -66,6 +66,8 @@ function row(over: Partial<OzonAnalyticsRow>): OzonAnalyticsRow {
     drrPct: over.drrPct ?? null,
     buyoutPct: over.buyoutPct ?? null,
     daysOfStock: over.daysOfStock ?? null,
+    daysOfStockOzon: over.daysOfStockOzon ?? null,
+    daysOfStockFallback30d: over.daysOfStockFallback30d ?? null,
     views: over.views ?? 0,
     clicks: over.clicks ?? 0,
     cartAdds: over.cartAdds ?? 0,
@@ -190,7 +192,8 @@ console.log('\n# OzonAnalyticsBlockConfigSchema');
     Array.isArray(cfg.pinnedColumns) && cfg.pinnedColumns.includes('name'),
     'pinnedColumns по умолчанию закрепляет name',
   );
-  expect(cfg.useOzonTurnover === false, 'useOzonTurnover дефолт = false');
+  // С v0.18.21 default = true (закрывает массово пустую колонку «Дней» на 7d).
+  expect(cfg.useOzonTurnover === true, 'useOzonTurnover дефолт = true (v0.18.21)');
 }
 
 // 12e. pinnedColumns кастомизируется (опция «закрепить article»).
@@ -448,6 +451,72 @@ console.log('\n# OzonAnalyticsTable column order & sort');
   expect(
     sorted.map((r) => r.productId).join(',') === 'B,A,C',
     'sort desc по revenueRub → B,A,C',
+  );
+}
+
+// 29. v0.18.21: default useOzonTurnover = true (исправляет массово пустую
+// колонку «Дней» на коротких окнах 7d).
+{
+  const cfg = OzonAnalyticsBlockConfigSchema.parse({});
+  expect(
+    cfg.useOzonTurnover === true,
+    'v0.18.21: default useOzonTurnover = true',
+  );
+}
+
+// 30. v0.18.21: OzonAnalyticsRow содержит поле daysOfStockFallback30d
+// (тип-уровень тест: компиляция = тест).
+{
+  const r = row({
+    daysOfStock: null,
+    daysOfStockOzon: null,
+    daysOfStockFallback30d: 12.5,
+  });
+  expect(
+    r.daysOfStockFallback30d === 12.5,
+    'v0.18.21: daysOfStockFallback30d из API доступен в row',
+  );
+}
+
+// 31. v0.18.21: expense endpoint URL переключён на /json
+// (читаем сам файл endpoints.ts и проверяем что в нём есть `/expense/json`).
+{
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const fs = require('node:fs') as typeof import('node:fs');
+  const src = fs.readFileSync(
+    'src/lib/marketplaces/ozon/performance/endpoints.ts',
+    'utf-8',
+  );
+  expect(
+    src.includes('/api/client/statistics/expense/json'),
+    'v0.18.21: expense endpoint url = /expense/json (JSON, не CSV)',
+  );
+  expect(
+    src.includes('parseExpenseCsv'),
+    'v0.18.21: CSV-fallback parser для expense есть',
+  );
+  expect(
+    /money_spent.*z\.string\(\)\.or\(z\.number\(\)\)/s.test(src) ||
+      src.includes('money_spent: z.string()'),
+    'v0.18.21: схема expense принимает snake_case money_spent',
+  );
+}
+
+// 32. v0.18.21: DndContext не находится внутри <table> (фикс hydration).
+// Парсим ozon-analytics-table.tsx и проверяем что строка `<table` идёт
+// ПОСЛЕ `<DndContext` в JSX.
+{
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const fs = require('node:fs') as typeof import('node:fs');
+  const src = fs.readFileSync(
+    'src/components/unit-economics/ozon-analytics-table.tsx',
+    'utf-8',
+  );
+  const dndIdx = src.indexOf('<DndContext');
+  const tableIdx = src.indexOf('<table ');
+  expect(
+    dndIdx > 0 && tableIdx > 0 && dndIdx < tableIdx,
+    'v0.18.21: <DndContext> размещён ПЕРЕД <table> (hydration fix)',
   );
 }
 

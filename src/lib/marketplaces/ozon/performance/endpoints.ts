@@ -233,7 +233,7 @@ export async function downloadReport(
 }
 
 // ---------------------------------------------------------------------------
-// /api/client/statistics/expense — эталонный отчёт расхода по кампаниям.
+// /api/client/statistics/expense/json — эталонный отчёт расхода по кампаниям.
 // ---------------------------------------------------------------------------
 //
 // Этот endpoint отдаёт **per-day per-campaign** агрегат расхода **по всем
@@ -242,15 +242,24 @@ export async function downloadReport(
 // рекламном кабинете в разделе «Расход» и именно её мы используем как
 // эталон store-total для adsRub.
 //
-// Возвращает JSON со списком кампаний и массивом дневных значений.
+// ВАЖНО (баг v0.18.20): официальный endpoint `/api/client/statistics/expense`
+// возвращает **CSV по умолчанию**, JSON — только если в URL добавить `/json`
+// (см. doc Ozon Performance API 2.0, раздел GetCampaignExpense). Если звать
+// без `/json` — Zod-парсер тихо отдаёт `undefined` и все строки дропаются.
+//
 // См. docs.ozon.ru/api/performance → Statistics/Expense.
 
+// Терпимая схема: Ozon в разное время использует camelCase/snake_case,
+// массив дней лежит то в `rows`, то в `values`, то в `daily_results`.
 const ExpenseDailyValueSchema = z
   .object({
     date: z.string().optional(),
     moneySpent: z.string().or(z.number()).optional(),
+    money_spent: z.string().or(z.number()).optional(),
     bonusSpent: z.string().or(z.number()).optional(),
+    bonus_spent: z.string().or(z.number()).optional(),
     total: z.string().or(z.number()).optional(),
+    total_spent: z.string().or(z.number()).optional(),
   })
   .passthrough();
 
@@ -260,10 +269,17 @@ const ExpenseDailyCampaignSchema = z
       .string()
       .or(z.number().transform((n) => String(n)))
       .optional(),
+    id: z
+      .string()
+      .or(z.number().transform((n) => String(n)))
+      .optional(),
     title: z.string().optional(),
     advObjectType: z.string().optional(),
+    adv_object_type: z.string().optional(),
     rows: z.array(ExpenseDailyValueSchema).optional(),
     values: z.array(ExpenseDailyValueSchema).optional(),
+    daily_results: z.array(ExpenseDailyValueSchema).optional(),
+    dailyResults: z.array(ExpenseDailyValueSchema).optional(),
   })
   .passthrough();
 
@@ -272,6 +288,7 @@ const ExpenseDailyResponseSchema = z
     list: z.array(ExpenseDailyCampaignSchema).optional(),
     campaigns: z.array(ExpenseDailyCampaignSchema).optional(),
     items: z.array(ExpenseDailyCampaignSchema).optional(),
+    rows: z.array(ExpenseDailyCampaignSchema).optional(),
   })
   .passthrough();
 
@@ -284,13 +301,90 @@ export type ExpenseDailyRow = {
   totalSpentRub: number;
 };
 
+type CampaignLoose = z.infer<typeof ExpenseDailyCampaignSchema>;
+type ValueLoose = z.infer<typeof ExpenseDailyValueSchema>;
+
+function pickNum(v: ValueLoose, names: Array<keyof ValueLoose>): number {
+  for (const n of names) {
+    const raw = v[n];
+    if (raw !== undefined && raw !== null && raw !== '') {
+      return parseRuNumber(String(raw));
+    }
+  }
+  return 0;
+}
+
+function pickStr(v: CampaignLoose, names: Array<keyof CampaignLoose>): string | null {
+  for (const n of names) {
+    const raw = v[n];
+    if (typeof raw === 'string' && raw.trim()) return raw;
+    if (typeof raw === 'number') return String(raw);
+  }
+  return null;
+}
+
+/**
+ * Парсит CSV-расход (`text/csv` от Ozon expense endpoint без `/json`-суффикса).
+ * Заголовки: «Дата;Кампания;Расход, ₽;Расход с абонентского счёта, ₽;Расход бонусов, ₽».
+ * Возвращает плоский массив дневных записей. Используется как fallback на
+ * случай если Ozon когда-нибудь сменит content-type или у нас задерётся
+ * URL без `/json`.
+ */
+function parseExpenseCsv(text: string): ExpenseDailyRow[] {
+  if (!text || !text.trim()) return [];
+  const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  if (lines.length < 2) return [];
+  // CSV Ozon: разделитель `;`, заголовок в первой строке.
+  const header = parseCsvLine(lines[0]).map((h) => h.trim().toLowerCase());
+  const idx = (...aliases: string[]): number => {
+    for (const a of aliases) {
+      const i = header.findIndex((h) => h.startsWith(a.toLowerCase()));
+      if (i !== -1) return i;
+    }
+    return -1;
+  };
+  const dateI = idx('дата', 'date');
+  const campaignI = idx('id кампании', 'campaign', 'кампания');
+  const moneyI = idx('расход, ₽', 'расход,₽', 'money_spent', 'moneyspent');
+  const bonusI = idx('расход бонусов', 'bonus_spent', 'bonusspent');
+  const accountI = idx('расход с абонентского счёта');
+  const totalI = idx('всего', 'total');
+  if (dateI < 0 || moneyI < 0) return [];
+  const out: ExpenseDailyRow[] = [];
+  for (let i = 1; i < lines.length; i += 1) {
+    const cells = parseCsvLine(lines[i]);
+    const date = normalizeDate(cells[dateI]);
+    if (!date) continue;
+    const money = parseRuNumber(cells[moneyI] ?? '');
+    const bonus = bonusI >= 0 ? parseRuNumber(cells[bonusI] ?? '') : 0;
+    const account = accountI >= 0 ? parseRuNumber(cells[accountI] ?? '') : 0;
+    const totalRaw = totalI >= 0 ? parseRuNumber(cells[totalI] ?? '') : 0;
+    const total = totalRaw > 0 ? totalRaw : money + bonus + account;
+    out.push({
+      date,
+      campaignId: campaignI >= 0 ? (cells[campaignI] ?? null) : null,
+      advObjectType: null,
+      moneySpentRub: money + account,
+      bonusSpentRub: bonus,
+      totalSpentRub: total,
+    });
+  }
+  return out;
+}
+
 /**
  * Запрашивает дневной расход по всем кампаниям через
- * `GET /api/client/statistics/expense`. Возвращает плоский массив строк
+ * `GET /api/client/statistics/expense/json`. Возвращает плоский массив строк
  * с уже нормализованной датой `YYYY-MM-DD`.
  *
  * Эталонный источник total расхода (включает банеры/видео/all_sku_promo и
  * бонусы) — используется как primary `adsRub` в KPI и аналитике.
+ *
+ * Двойная стратегия:
+ *  1. Сначала пытаемся `/expense/json` с Zod-парсингом (терпимая схема
+ *     с алиасами camelCase/snake_case + dailyResults/rows/values).
+ *  2. Если JSON-парсер вернул 0 строк ИЛИ упал с 4xx — fallback на
+ *     `/expense` (CSV) и парсим текст вручную.
  */
 export async function getExpenseDaily(
   client: OzonPerformanceClient,
@@ -303,48 +397,76 @@ export async function getExpenseDaily(
     to: toRfc3339(args.dateTo, true),
   };
   if (args.campaignIds && args.campaignIds.length > 0) {
-    // Ozon принимает несколько campaignId в query — повторяющимися параметрами.
-    // Поскольку OzonPerformanceClient.get принимает плоский объект,
-    // CSV-список через запятую — наиболее устойчивый формат (если API
-    // не примет, парсер просто отдаст пустой list и мы получим warning).
     params['campaignIds'] = args.campaignIds.join(',');
   }
-  const data = (await client.get(
-    '/api/client/statistics/expense',
-    params,
-    ExpenseDailyResponseSchema,
-  )) as
-    | {
-        list?: Array<z.infer<typeof ExpenseDailyCampaignSchema>>;
-        campaigns?: Array<z.infer<typeof ExpenseDailyCampaignSchema>>;
-        items?: Array<z.infer<typeof ExpenseDailyCampaignSchema>>;
-      }
-    | undefined;
 
-  const campaigns = data?.list ?? data?.campaigns ?? data?.items ?? [];
+  // 1. JSON endpoint (правильный для нашего use-case).
+  let data: z.infer<typeof ExpenseDailyResponseSchema> | undefined;
+  try {
+    data = (await client.get(
+      '/api/client/statistics/expense/json',
+      params,
+      ExpenseDailyResponseSchema,
+    )) as z.infer<typeof ExpenseDailyResponseSchema> | undefined;
+  } catch (e) {
+    console.warn('[expense] /expense/json failed, will try CSV fallback:', e);
+  }
+
+  const campaigns: CampaignLoose[] =
+    data?.list ?? data?.campaigns ?? data?.items ?? data?.rows ?? [];
   const out: ExpenseDailyRow[] = [];
   for (const camp of campaigns) {
-    const rows = camp.rows ?? camp.values ?? [];
-    for (const r of rows) {
+    const dailyRows =
+      camp.rows ?? camp.values ?? camp.daily_results ?? camp.dailyResults ?? [];
+    for (const r of dailyRows) {
       const date = normalizeDate(r.date ?? null);
       if (!date) continue;
-      const moneySpent = parseRuNumber(String(r.moneySpent ?? ''));
-      const bonusSpent = parseRuNumber(String(r.bonusSpent ?? ''));
-      const total = r.total !== undefined
-        ? parseRuNumber(String(r.total))
-        : moneySpent + bonusSpent;
+      const money = pickNum(r, ['moneySpent', 'money_spent']);
+      const bonus = pickNum(r, ['bonusSpent', 'bonus_spent']);
+      const totalRaw = pickNum(r, ['total', 'total_spent']);
+      const total = totalRaw > 0 ? totalRaw : money + bonus;
       out.push({
         date,
-        campaignId: camp.campaignId ?? null,
-        advObjectType: camp.advObjectType ?? null,
-        moneySpentRub: moneySpent,
-        bonusSpentRub: bonusSpent,
+        campaignId: pickStr(camp, ['campaignId', 'id']),
+        advObjectType: pickStr(camp, ['advObjectType', 'adv_object_type']),
+        moneySpentRub: money,
+        bonusSpentRub: bonus,
         totalSpentRub: total,
       });
     }
   }
+
+  // 2. CSV fallback — на случай если Ozon вернул что-то странное / endpoint
+  //    `/json` оказался недоступен / в JSON 0 строк а в кабинете расход есть.
+  if (out.length === 0) {
+    try {
+      const csvText = await client.get<string>(
+        '/api/client/statistics/expense',
+        params,
+        undefined,
+        { binary: true },
+      );
+      const csvRows = parseExpenseCsv(csvText);
+      if (csvRows.length > 0) {
+        console.info('[expense] JSON empty, CSV fallback returned', csvRows.length, 'rows');
+        return csvRows;
+      }
+    } catch (e) {
+      console.warn('[expense] CSV fallback failed:', e);
+    }
+  }
+
+  if (out.length === 0) {
+    console.warn('[expense] zero rows', {
+      campaignsCount: campaigns.length,
+      dateRange: `${args.dateFrom}..${args.dateTo}`,
+    });
+  }
+
   return out;
 }
+
+// parseCsvLine используется ниже (определён в основном CSV-блоке).
 
 // ---------------------------------------------------------------------------
 // /api/client/cluster/list — справочник кластеров и складов.

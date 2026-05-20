@@ -178,6 +178,25 @@ function RenderOzonAnalytics({ instance, onConfigChange }: BlockRenderProps) {
     };
   }, [rows, response?.totals.revenueRub]);
 
+  // Top-1 SKU (DESC by revenue) — для модалки связей и hero-блоков.
+  // Считаем на клиенте из rows (response уже отсортирован по revenue DESC).
+  const top1 = rows.length > 0 ? rows[0] : null;
+  // avg/max DRR по SKU с продажами и расходом.
+  const drrValues = rows
+    .map((r) => r.drrPct)
+    .filter((v): v is number => v !== null && Number.isFinite(v));
+  const avgDrr =
+    drrValues.length > 0
+      ? Math.round((drrValues.reduce((s, v) => s + v, 0) / drrValues.length) * 10) / 10
+      : 0;
+  const maxDrr =
+    drrValues.length > 0 ? Math.round(Math.max(...drrValues) * 10) / 10 : 0;
+  // Стоимость остатков = sum(costRub × (stockMarketplace + stockOwn)).
+  const totalStockValueRub = rows.reduce(
+    (s, r) => s + r.costRub * (r.stockMarketplace + r.stockOwn),
+    0,
+  );
+
   useBlockValuePublisher(instance.id, {
     value: (response?.totals.revenueRub ?? 0) * 100,
     revenue: (response?.totals.revenueRub ?? 0) * 100,
@@ -193,15 +212,30 @@ function RenderOzonAnalytics({ instance, onConfigChange }: BlockRenderProps) {
     rowsCount: rows.length,
     stockTotal: extendedTotals.stockTotal,
     avgBuyoutPct: extendedTotals.avgBuyoutPct ?? 0,
+    // --- Top-1 SKU метрики (новые в v0.18.21) ---
+    top1Revenue: (top1?.revenueRub ?? 0) * 100,
+    top1Article: top1?.article ?? '',
+    top1Name: top1?.name ?? '',
+    top1Drr: top1?.drrPct ?? 0,
+    top1Ads: (top1?.adsRub ?? 0) * 100,
+    avgDrr,
+    maxDrr,
+    totalStockValueRub: totalStockValueRub * 100,
     label: instance.appearance?.title ?? config.title,
-    __money: 'value,revenue,ads,totalCostRub,totalProfitRub',
+    __money:
+      'value,revenue,ads,totalCostRub,totalProfitRub,' +
+      'top1Revenue,top1Ads,totalStockValueRub',
     __labels:
       'value=Выручка / период,revenue=Выручка / период,ads=Реклама / период,' +
       'totalCostRub=Себестоимость проданного,totalProfitRub=Прибыль (выручка−себест),' +
       'drr=ДРР %,orders=Заказы доставлено,cancelled=Заказы отменено,' +
       'returned=Заказы возврат,qtyDelivered=Штук доставлено,' +
       'productsWithSales=Товары с продажами,rowsCount=Всего товаров,' +
-      'stockTotal=Остатки (шт),avgBuyoutPct=Средний выкуп %',
+      'stockTotal=Остатки (шт),avgBuyoutPct=Средний выкуп %,' +
+      'top1Revenue=Выручка топ-1 SKU,top1Article=Артикул топ-1 SKU,' +
+      'top1Name=Название топ-1 SKU,top1Drr=ДРР топ-1 SKU %,' +
+      'top1Ads=Реклама топ-1 SKU,avgDrr=Средний ДРР по SKU %,' +
+      'maxDrr=Максимальный ДРР %,totalStockValueRub=Стоимость остатков',
   });
 
   const handleExport = useCallback(() => {

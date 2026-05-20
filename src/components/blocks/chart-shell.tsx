@@ -6,8 +6,8 @@
 //   - 'compact' (default) — лёгкий вариант для маленьких карточек: одна
 //     левая ось, простой tooltip, без gradient.
 //   - 'rich' — дашбордный вариант: gradient area, rich-tooltip с цветными
-//     dots и max-width, **несколько Y-осей** (цветные ticks/axisLine
-//     соответствуют сериям). Используется в Ozon · Динамика.
+//     dots и max-width, **несколько Y-осей** с per-axis domain. Допускает
+//     mix line/area/bar (`<ComposedChart>`). Используется в Ozon · Динамика.
 
 'use client';
 
@@ -19,6 +19,7 @@ import {
   Area,
   BarChart,
   Bar,
+  ComposedChart,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -32,6 +33,14 @@ export type ChartSeries = {
   color: string;
   type?: 'line' | 'area' | 'bar';
   yAxisId?: 'left' | 'right' | string;
+  /** Толщина линии в px (default 2). */
+  strokeWidth?: number;
+  /** Пунктир (string, например '4 4'). */
+  strokeDasharray?: string;
+  /** Размер бара в px (для type='bar'). */
+  barSize?: number;
+  /** Прозрачность заливки (только для area/bar). */
+  fillOpacity?: number;
 };
 
 export type ChartYAxis = {
@@ -41,6 +50,16 @@ export type ChartYAxis = {
   formatter?: (value: number) => string;
   /** Сделать ось «осью этой серии» (ticks/axisLine цветные). */
   colored?: boolean;
+  /**
+   * Domain для оси. Рекомендуется `['auto', 'dataMax + 20%']` чтобы линии
+   * не упирались в верхний край, или `[0, 'dataMax * 3']` чтобы прижать
+   * bar-ось к нижней трети графика (для orders snake-bars в Динамике).
+   */
+  domain?: [number | 'auto' | 'dataMin', number | 'auto' | 'dataMax' | string];
+  /** Ширина оси в px (default 56). */
+  width?: number;
+  /** Скрыть ось целиком (только axisLine/ticks) — если ось нужна только для шкалы. */
+  hide?: boolean;
 };
 
 export type ChartShellProps = {
@@ -87,7 +106,17 @@ export function ChartShell({
 }: ChartShellProps) {
   const allBar = series.length > 0 && series.every((s) => s.type === 'bar');
   const allArea = series.length > 0 && series.every((s) => s.type === 'area');
-  const ChartCmp = allBar ? BarChart : allArea ? AreaChart : LineChart;
+  const allLine = series.length > 0 && series.every((s) => !s.type || s.type === 'line');
+  // Если серии mix (area + line + bar в одном графике) — нужен ComposedChart.
+  // Используется в Ozon · Динамика для dual-axis compact layout.
+  const isMixed = !allBar && !allArea && !allLine;
+  const ChartCmp = isMixed
+    ? ComposedChart
+    : allBar
+      ? BarChart
+      : allArea
+        ? AreaChart
+        : LineChart;
 
   // Compare: добавляем поля `${key}__compare` в data.
   const merged: Array<Record<string, unknown>> = data.map((d) => ({ ...d }));
@@ -129,14 +158,14 @@ export function ChartShell({
           )}
           <CartesianGrid
             strokeDasharray="3 3"
-            stroke={isRich ? 'hsl(var(--border) / 0.4)' : 'hsl(var(--border) / 0.5)'}
-            vertical={isRich}
+            stroke={isRich ? 'hsl(var(--border) / 0.3)' : 'hsl(var(--border) / 0.5)'}
+            vertical={false}
           />
           <XAxis
             dataKey={xKey}
             tickLine={false}
-            axisLine={isRich ? { stroke: 'hsl(var(--border))' } : false}
-            tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
+            axisLine={isRich ? { stroke: 'hsl(var(--border))', strokeOpacity: 0.4 } : false}
+            tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }}
           />
           {/* Y-оси */}
           {yAxes && yAxes.length > 0 ? (
@@ -145,6 +174,8 @@ export function ChartShell({
                 key={`y-${ax.id}`}
                 yAxisId={ax.id}
                 orientation={ax.orientation ?? 'left'}
+                hide={ax.hide}
+                domain={ax.domain ?? ['auto', 'auto']}
                 tickLine={
                   ax.colored
                     ? { stroke: ax.color, strokeOpacity: 0.4 }
@@ -156,11 +187,11 @@ export function ChartShell({
                     : false
                 }
                 tick={{
-                  fontSize: 11,
+                  fontSize: 10,
                   fill: ax.colored ? ax.color : 'hsl(var(--muted-foreground))',
                 }}
                 tickFormatter={ax.formatter}
-                width={56}
+                width={ax.width ?? 56}
               />
             ))
           ) : (
@@ -237,6 +268,8 @@ function renderSeries(
   const key = isCompare ? `${s.key}__compare` : s.key;
   const label = isCompare ? `${s.label} (${compareSuffix ?? 'прошлый'})` : s.label;
   const yId = (s.yAxisId ?? 'left') as 'left' | 'right';
+  const sw = s.strokeWidth ?? 2;
+  const dash = isCompare ? '4 4' : s.strokeDasharray;
 
   if (s.type === 'bar') {
     return (
@@ -246,7 +279,8 @@ function renderSeries(
         yAxisId={yId}
         name={label}
         fill={s.color}
-        fillOpacity={isCompare ? 0.4 : isRich ? 0.8 : 1}
+        fillOpacity={s.fillOpacity ?? (isCompare ? 0.4 : isRich ? 0.55 : 1)}
+        barSize={s.barSize}
         isAnimationActive={false}
       />
     );
@@ -260,11 +294,11 @@ function renderSeries(
         yAxisId={yId}
         name={label}
         stroke={s.color}
-        strokeWidth={2}
-        strokeDasharray={isCompare ? '4 4' : undefined}
+        strokeWidth={sw}
+        strokeDasharray={dash}
         strokeOpacity={isCompare ? 0.5 : 1}
         fill={isRich ? `url(#gradient-${s.key})` : s.color}
-        fillOpacity={isCompare ? 0.05 : isRich ? 1 : 0.2}
+        fillOpacity={s.fillOpacity ?? (isCompare ? 0.05 : isRich ? 1 : 0.2)}
         dot={false}
         activeDot={{ r: 4, stroke: s.color, strokeWidth: 2, fill: 'hsl(var(--card))' }}
         isAnimationActive={false}
@@ -279,8 +313,8 @@ function renderSeries(
       yAxisId={yId}
       name={label}
       stroke={s.color}
-      strokeWidth={2}
-      strokeDasharray={isCompare ? '4 4' : undefined}
+      strokeWidth={sw}
+      strokeDasharray={dash}
       strokeOpacity={isCompare ? 0.5 : 1}
       dot={false}
       activeDot={{ r: 4, stroke: s.color, strokeWidth: 2, fill: 'hsl(var(--card))' }}

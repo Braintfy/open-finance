@@ -312,6 +312,77 @@ Open Finance = настраиваемый Lego-конструктор интер
 4. `scripts/test-ozon-analytics.ts` (test row factory).
 Иначе TS error на required field.
 
+### Ozon v0.18.21 — fixes batch (hydration / expense JSON / days-fallback / cluster diag / modal full)
+
+**5 критических регрессий после v0.18.20**, исправлены в одном проходе:
+
+1. **Hydration error в Analytics-таблице** (`<div>` в `<table>`):
+   `<DndContext>` от `@dnd-kit/core` рендерит невидимый `<div id="DndDescribedBy-N">` для ARIA. Когда `<DndContext>` лежит внутри `<table>` — это нарушает HTML-стандарт и React 19 ругается hydration mismatch.
+   **Fix** (`src/components/unit-economics/ozon-analytics-table.tsx`): перенёс `DndContext` + `SortableContext` снаружи `<table>`, оборачивая внешний `<div className="relative w-full">`. Контекстные провайдеры работают независимо от глубины — `useSortable` в `SortableHeaderCell` находит их через React context.
+   **Грабли**: НЕ ставить никаких dnd-kit/portal-компонентов внутри `<table>` как прямой child. То же касается `<Dialog>`, `<Tooltip>` и подобных порталов. Только `<thead>`/`<tbody>`/`<tfoot>` допустимы.
+
+2. **Ozon expense API возвращает CSV по умолчанию** (`/api/client/statistics/expense`):
+   Согласно официальному dump `Ozon Performance API (2.0).md`, раздел `GetCampaignExpense`:
+   > «Формат отчёта — CSV. Чтобы запросить отчёт в формате JSON, добавьте в адрес метода `/json` и отправьте запрос по адресу `/api/client/statistics/expense/json`.»
+   
+   До v0.18.21 код звал URL без `/json` → Zod парсил CSV как JSON → undefined → все строки дропались → `ozon_perf_expense_daily` пустой → KPI/Analytics проваливались на CPC+CPO heuristic (неполную, т.к. не включает баннеры/видео/абонент). В кабинете Ozon селлер видел расход ×1.5-2 от того что показывало приложение.
+   
+   **Fix** (`src/lib/marketplaces/ozon/performance/endpoints.ts`):
+   - URL: `/api/client/statistics/expense` → `/api/client/statistics/expense/json`.
+   - Терпимая Zod-схема: алиасы `money_spent`/`moneySpent`, `bonus_spent`/`bonusSpent`, `daily_results`/`rows`/`values` для массива дней, `id`/`campaignId`.
+   - CSV-fallback `parseExpenseCsv()` — на случай если Ozon вернёт CSV: split по строкам с `;`-разделителем, RU-числа через `parseRuNumber`, нормализация даты через `normalizeDate`.
+   - `console.warn('[expense] zero rows', ...)` чтобы будущая регрессия не замалчивалась.
+   
+   **Грабли**: ВСЕГДА проверять content-type в Ozon-документации. Endpoint'ы Performance API могут отдавать CSV/JSON в зависимости от URL-суффикса (`/json` или `/csv`). Если данные через Zod проваливаются «тихо» → подозревать неправильный content-type.
+
+3. **Колонка «Дней» снова пустая на 7d-окнах**:
+   На узких окнах с медленным товаром `qtyDelivered = 0` → `velocity = 0` → `daysOfStock = null`. Старый default `useOzonTurnover=false` не использовал Seller Turnover как fallback.
+   
+   **Fix**:
+   - Default `useOzonTurnover: true` (`unit-ozon-analytics-types.ts`).
+   - Новый CTE `velocity_30d` в `/api/marketplaces/analytics/ozon` — считает qty_delivered по offer_id за последние 30 дней независимо от period.
+   - Поле `daysOfStockFallback30d` в `OzonAnalyticsRow`.
+   - UI приоритет (`ozon-analytics-table.tsx`): `daysOfStockOzon` → `daysOfStock` (текущий period) → `daysOfStockFallback30d` (30-дневный fallback) → «—» с tooltip.
+
+4. **Блок «Остатки по кластерам» пустой**:
+   API JOIN `ozon_orders ↔ ozon_warehouse_stocks` имел строгий `AND ws.account_id = ${accountId}` в условии JOIN. У некоторых аккаунтов это резало все ряды.
+   
+   **Fix** (`/api/marketplaces/ozon/cluster-stocks-v2/route.ts`):
+   - Убрал `accountCondStocks` из JOIN-условия (товар продаётся с разных аккаунтов, но кластеризация по warehouse_name всё равно работает).
+   - Добавлен `meta.diagnostic` в ответ: `warehouseStocksCount`, `clustersCount`, `lastWarehouseStocksFetchAt`.
+   - Empty-state блока (`unit-ozon-warehouse-clusters.tsx`) — actionable card: какие именно sync-стейджи нужно запустить (с числами), CTA на `/settings/integrations`.
+   - Banner «Справочник кластеров пуст» — когда warehouse_stocks > 0, но clusters = 0.
+   
+   **Диагностика**: `pnpm tsx scripts/test-ozon-warehouse-stocks.ts [accountId]` — read-only скрипт. Печатает счётчики `ozon_warehouse_stocks` / `ozon_clusters` / `ozon_orders` per-account и рекомендации.
+
+5. **Модалка связей «Аналитика Ozon» — мало данных**:
+   `getOzonAnalyticsTotals` тянул ads из `ozon_transactions` (heuristic), не использовал `ozon_perf_expense_daily`. Не было top-1 SKU, среднего/макс ДРР, previous-period.
+   
+   **Fix** (`src/lib/blocks/catalog/unit-ozon-analytics-queries.ts` полностью переписан):
+   - Ads-источник приоритет: `expense_daily` (эталон) → `perf_sku_stats + perf_cpo_daily` (CPC+CPO) → `transactions` (heuristic).
+   - Top-1 SKU: per-product CTE с JOIN на `agg_ads_sku` (по sku + offer_id + article-raw). Возвращает `top1Revenue`/`top1Article`/`top1Name`/`top1Drr`/`top1Ads`.
+   - Avg/Max ДРР: считается на Node по drrValues всех SKU с ads>0.
+   - Stock value: `cost × (stock_marketplace + stock_own)`.
+   - Previous period: флаг `includePrevious: true` → второй query на сдвинутом окне → `revenuePrev`/`adsPrev`/`ordersPrev` + δ%.
+
+**Архитектурный flow после фиксов**:
+```mermaid
+flowchart TB
+  UI[OzonAnalyticsTable] --> DnD[DndContext wraps div, not table]
+  Chart[unit-ozon-chart] --> Dual[Dual-axis compact h=260 + KPI ДРР]
+  Sync[syncPerfExpenseDaily] --> JSON[/expense/json]
+  JSON --> DB[(ozon_perf_expense_daily)]
+  Modal[/api/blocks/sources] --> Totals[getOzonAnalyticsTotals]
+  Totals --> Prev[+previous-period]
+  Totals --> Top1[+per-SKU top1]
+  Cluster[unit-ozon-warehouse-clusters] --> ClusterAPI[/cluster-stocks-v2]
+  ClusterAPI --> Diag[meta.diagnostic для empty state]
+```
+
+**Тесты**: 4 новых в `scripts/test-ozon-analytics.ts`, всего 90 PASS / 0 FAIL.
+
+---
+
 ### Ozon v0.18.20 — Ads expense + кластеры + pinned + days-of-stock
 
 - **Эталон Ads** (`Performance /api/client/statistics/expense`). Sync-stage `perfExpenseDaily` пишет в таблицу `ozon_perf_expense_daily`. API-маршруты (`/analytics/ozon`, `/kpi`, `/timeseries`) приоритезируют этот источник; `adsSource='expense'` отображается в UI-баннере (Аналитика, Динамика). Fallback цепочка: `expense → performance (CPC+CPO) → transactions-heuristic → none`. Подробности в `docs/OZON_ADS_GAP.md`.

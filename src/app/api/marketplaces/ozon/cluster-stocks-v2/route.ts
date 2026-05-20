@@ -10,6 +10,7 @@ import { auth } from '@/lib/auth';
 import { db } from '@/lib/db/client';
 import {
   ozonWarehouseStocks,
+  ozonClusters,
   ozonOrders,
 } from '@/lib/db/schema/marketplaces';
 
@@ -46,6 +47,17 @@ export type OzonClusterStocksResponse = {
     revenueInPeriod: number;
   };
   period: { from: string; to: string } | null;
+  /**
+   * Диагностика для empty-state UI. Когда `rows.length === 0`, фронт
+   * показывает actionable card («Запустите sync-стейджи: clusters +
+   * warehouseStocks») вместо пустого графика.
+   */
+  meta: {
+    warehouseStocksCount: number;
+    clustersCount: number;
+    /** ISO-дата последнего fetch warehouse_stocks (null если не было). */
+    lastWarehouseStocksFetchAt: string | null;
+  };
 };
 
 export async function GET(req: NextRequest) {
@@ -65,9 +77,42 @@ export async function GET(req: NextRequest) {
     const accountCondStocks = accountId
       ? sql`AND ws.account_id = ${accountId}`
       : sql``;
+    const accountCondClusters = accountId
+      ? sql`AND c.account_id = ${accountId}`
+      : sql``;
     const accountCondOrders = accountId
       ? sql`AND o.account_id = ${accountId}`
       : sql``;
+
+    // Диагностика: сколько строк в исходных таблицах для этого account.
+    // Используется фронтом чтобы показать «какие стейджи sync нужно
+    // запустить» вместо пустого графика.
+    type DiagRow = { warehouse_stocks_count: number; last_fetch: string | null };
+    const diagResult = await db.execute<DiagRow>(sql`
+      SELECT
+        COUNT(*)::int AS warehouse_stocks_count,
+        MAX(ws.fetched_at)::text AS last_fetch
+      FROM ${ozonWarehouseStocks} ws
+      WHERE ws.tenant_id = ${session.tenantId}
+        ${accountCondStocks}
+    `);
+    const diagRows: DiagRow[] = Array.isArray(diagResult)
+      ? (diagResult as DiagRow[])
+      : (((diagResult as unknown) as { rows: DiagRow[] }).rows ?? []);
+    const warehouseStocksCount = Number(diagRows[0]?.warehouse_stocks_count ?? 0);
+    const lastWarehouseStocksFetchAt = diagRows[0]?.last_fetch ?? null;
+
+    type ClusterCountRow = { clusters_count: number };
+    const clustersResult = await db.execute<ClusterCountRow>(sql`
+      SELECT COUNT(*)::int AS clusters_count
+      FROM ${ozonClusters} c
+      WHERE c.tenant_id = ${session.tenantId}
+        ${accountCondClusters}
+    `);
+    const clusterCountRows: ClusterCountRow[] = Array.isArray(clustersResult)
+      ? (clustersResult as ClusterCountRow[])
+      : (((clustersResult as unknown) as { rows: ClusterCountRow[] }).rows ?? []);
+    const clustersCount = Number(clusterCountRows[0]?.clusters_count ?? 0);
 
     type StockAggRow = {
       cluster_id: string | null;
@@ -128,7 +173,6 @@ export async function GET(req: NextRequest) {
         LEFT JOIN ${ozonWarehouseStocks} ws
           ON ws.tenant_id = ${session.tenantId}
           AND ws.warehouse_name = oi.warehouse_name
-          ${accountCondStocks}
         GROUP BY COALESCE(ws.cluster_id, '__none__')
       `);
       const ordersRows: OrderClusterRow[] = Array.isArray(ordersResult)
@@ -201,6 +245,11 @@ export async function GET(req: NextRequest) {
       rows,
       totals,
       period: hasPeriod && fromIso && toIso ? { from: fromIso, to: toIso } : null,
+      meta: {
+        warehouseStocksCount,
+        clustersCount,
+        lastWarehouseStocksFetchAt,
+      },
     } satisfies OzonClusterStocksResponse);
   } catch (e) {
     console.error('[marketplaces] GET /ozon/cluster-stocks-v2 failed:', e);

@@ -8,7 +8,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { z } from 'zod';
-import { Map as MapIcon, RefreshCw, AlertCircle } from 'lucide-react';
+import { Map as MapIcon, RefreshCw, AlertCircle, ExternalLink } from 'lucide-react';
+import Link from 'next/link';
 import { Card } from '@/components/ui/card';
 import {
   PeriodPicker,
@@ -130,6 +131,56 @@ function formatCell(row: OzonClusterStocksRow, key: ClusterColumnKey): string {
   }
 }
 
+/** Empty-state карточка: показываем когда rows = 0, со ссылкой на settings
+ *  и подсказкой какие стейджи sync нужно запустить. */
+function ClusterEmptyState({
+  meta,
+}: {
+  meta: OzonClusterStocksResponse['meta'];
+}) {
+  const needsStocks = meta.warehouseStocksCount === 0;
+  const needsClusters = meta.clustersCount === 0;
+  const lastFetch = meta.lastWarehouseStocksFetchAt
+    ? new Date(meta.lastWarehouseStocksFetchAt).toLocaleString('ru-RU')
+    : null;
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-[12px] text-muted-foreground">
+      <AlertCircle className="h-6 w-6 opacity-50" />
+      <div className="space-y-1">
+        <div className="font-medium text-foreground">Нет данных для отображения</div>
+        <div className="max-w-md">
+          Для блока «Остатки по кластерам» нужно запустить два стейджа
+          синхронизации:
+        </div>
+      </div>
+      <ul className="space-y-1 text-left text-[11px]">
+        <li className={needsStocks ? 'text-rose-700 dark:text-rose-300' : 'opacity-60 line-through'}>
+          • «Остатки по складам» (Seller API <code>/v1/analytics/stock_on_warehouses</code>):
+          {' '}
+          <span className="tabular-nums">{meta.warehouseStocksCount} строк</span>
+        </li>
+        <li className={needsClusters ? 'text-amber-700 dark:text-amber-300' : 'opacity-60 line-through'}>
+          • «Кластеры» (Performance API <code>/api/client/cluster/list</code>):
+          {' '}
+          <span className="tabular-nums">{meta.clustersCount} кластеров</span>
+        </li>
+      </ul>
+      {lastFetch && (
+        <div className="text-[10px] opacity-60">
+          Последний fetch warehouse_stocks: {lastFetch}
+        </div>
+      )}
+      <Link
+        href="/settings/integrations"
+        className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-card px-3 py-1.5 text-[11px] font-medium text-foreground hover:bg-accent"
+      >
+        Перейти в настройки синхронизации
+        <ExternalLink className="h-3 w-3" />
+      </Link>
+    </div>
+  );
+}
+
 function RenderOzonWarehouseClusters({ instance }: BlockRenderProps) {
   const config = useMemo(() => parseConfig(instance.config), [instance.config]);
   const [period, setPeriod] = useState<PeriodValue>({
@@ -221,6 +272,13 @@ function RenderOzonWarehouseClusters({ instance }: BlockRenderProps) {
   const visibleCols: ClusterColumnKey[] =
     config.visibleColumns.length > 0 ? config.visibleColumns : ['clusterName', 'totalStock'];
 
+  // Когда стоки есть, но справочник кластеров пуст — все ряды идут в
+  // «Без кластера». Показываем banner, чтобы пользователь понял почему.
+  const showClustersBanner =
+    !!data &&
+    data.meta.warehouseStocksCount > 0 &&
+    data.meta.clustersCount === 0;
+
   return (
     <Card className="flex h-full flex-col overflow-hidden p-0">
       <div className="flex flex-wrap items-center gap-2 border-b border-border/40 px-3 py-2">
@@ -235,6 +293,15 @@ function RenderOzonWarehouseClusters({ instance }: BlockRenderProps) {
           <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
         </button>
       </div>
+      {showClustersBanner && (
+        <div className="flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
+          <AlertCircle className="h-3 w-3 shrink-0" />
+          <span>
+            Справочник кластеров пуст (Performance API). Остатки сгруппированы
+            «Без кластера» — запустите стейдж «Кластеры» для геогруппировки.
+          </span>
+        </div>
+      )}
       <div className="min-h-0 flex-1 overflow-auto">
         {error ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-[12px] text-rose-700 dark:text-rose-300">
@@ -246,11 +313,7 @@ function RenderOzonWarehouseClusters({ instance }: BlockRenderProps) {
             {loading ? 'Загрузка…' : 'Нет данных'}
           </div>
         ) : rows.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-[12px] text-muted-foreground">
-            <AlertCircle className="h-5 w-5" />
-            Нет данных по кластерам. Запустите Sync со стейджами
-            «Кластеры» + «Остатки по кластерам».
-          </div>
+          <ClusterEmptyState meta={data.meta} />
         ) : (
           <table className="w-full text-[12px]">
             <thead className="sticky top-0 z-[1] bg-muted/40 text-[10px] uppercase tracking-wider text-muted-foreground">
