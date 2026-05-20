@@ -24,6 +24,7 @@ import {
 import { OzonAccountSelector } from '@/components/marketplaces/ozon-account-selector';
 import { OzonSyncSection } from '@/components/unit-economics/ozon-sync-section';
 import { useBlockValuePublisher } from '@/lib/blocks/values';
+import { usePersistedPeriodValue } from '@/lib/blocks/use-persisted-period';
 import type {
   BlockDef,
   BlockRenderProps,
@@ -111,10 +112,13 @@ const COMPARE_OPTIONS: Array<{ value: CompareMode; label: string; description: s
 
 function RenderOzonKpi({ instance }: BlockRenderProps) {
   const config = useMemo(() => parseConfig(instance.config), [instance.config]);
-  const [period, setPeriod] = useState<PeriodValue>({
-    preset: config.periodPreset as PeriodPreset,
-    customFrom: config.customFrom,
-    customTo: config.customTo,
+  const { value: period, setValue: setPeriod } = usePersistedPeriodValue({
+    instanceId: instance.id,
+    initial: {
+      preset: config.periodPreset,
+      customFrom: config.customFrom,
+      customTo: config.customTo,
+    },
   });
   const [compareMode, setCompareMode] = useState<CompareMode>(config.compareMode);
   const [data, setData] = useState<OzonKpiResponse | null>(null);

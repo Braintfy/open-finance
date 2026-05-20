@@ -33,6 +33,7 @@ import {
   type OzonAnalyticsBlockConfig,
   type OzonAnalyticsPeriodPreset,
 } from './unit-ozon-analytics-types';
+import { usePersistedPeriod } from '../use-persisted-period';
 import type { OzonAnalyticsResponse } from '@/app/api/marketplaces/analytics/ozon/route';
 
 function parseConfig(raw: unknown): OzonAnalyticsBlockConfig {
@@ -64,9 +65,21 @@ function RenderOzonAnalytics({ instance, onConfigChange }: BlockRenderProps) {
     : false;
 
   const [activeFilter, setActiveFilter] = useState<AnalyticsFilterId>(config.defaultFilter);
-  const [periodPreset, setPeriodPreset] = useState<OzonAnalyticsPeriodPreset>(config.periodPreset);
-  const [customFrom, setCustomFrom] = useState<string | null>(config.customFrom);
-  const [customTo, setCustomTo] = useState<string | null>(config.customTo);
+  const {
+    preset: periodPreset,
+    setPreset: setPeriodPreset,
+    customFrom,
+    setCustomFrom,
+    customTo,
+    setCustomTo,
+  } = usePersistedPeriod({
+    instanceId: instance.id,
+    initial: {
+      preset: config.periodPreset,
+      customFrom: config.customFrom,
+      customTo: config.customTo,
+    },
+  });
   const [response, setResponse] = useState<OzonAnalyticsResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -268,6 +281,10 @@ function RenderOzonAnalytics({ instance, onConfigChange }: BlockRenderProps) {
             return row.priceRub - row.costRub;
           case 'delivered':
             return row.delivered;
+          case 'deliveredFbo':
+            return row.deliveredFbo;
+          case 'deliveredFbs':
+            return row.deliveredFbs;
           case 'qtyDelivered':
             return row.qtyDelivered;
           case 'cancelled':
@@ -286,6 +303,10 @@ function RenderOzonAnalytics({ instance, onConfigChange }: BlockRenderProps) {
             return row.drrPct ?? '';
           case 'stock':
             return row.stockMarketplace + row.stockOwn;
+          case 'stockFbo':
+            return row.stockMarketplace;
+          case 'stockFbs':
+            return row.stockOwn;
           case 'daysOfStock':
             return row.daysOfStock ?? '';
           case 'buyoutPct':
@@ -420,15 +441,20 @@ function RenderOzonAnalytics({ instance, onConfigChange }: BlockRenderProps) {
               label="Реклама"
               value={formatRub(response.totals.adsRub)}
               subtitle={
-                response.adsSource === 'performance' && response.totals.adsCpoRub > 0
-                  ? `CPC: ${formatRub(response.totals.adsCpcRub)} · CPO: ${formatRub(response.totals.adsCpoRub)}`
-                  : response.adsSource === 'expense'
-                    ? `Expense (все типы) · CPC≈${formatRub(response.totals.adsCpcRub)} · CPO≈${formatRub(response.totals.adsCpoRub)}`
-                    : undefined
+                response.totals.adsCpcRub > 0 || response.totals.adsCpoRub > 0
+                  ? `CPC ≈ ${formatRub(response.totals.adsCpcRub)} · CPO ≈ ${formatRub(response.totals.adsCpoRub)}`
+                  : undefined
               }
               subtitleTitle={
                 response.adsSource === 'expense'
-                  ? 'Total — эталон expense_daily. CPC/CPO — breakdown (может не суммироваться в total).'
+                  ? `Источник: expense_daily (Performance API).
+Total включает все типы кампаний (SKU/SEARCH_PROMO/ALL_SKU_PROMO/BANNER/VIDEO) + бонусы — как в рекламном кабинете Ozon.
+CPC/CPO — breakdown per-SKU/CPO (может не суммироваться в total)${
+                      response.reconciliationGapPct !== null && response.reconciliationGapPct > 5
+                        ? `.
+Расхождение expense vs CPC+CPO: ${response.reconciliationGapPct.toFixed(1)}% — перезапустите perfExpenseDaily + perfCpoDaily.`
+                        : '.'
+                    }`
                   : 'CPC/CPM — per-SKU. CPO — агрегат по магазину, распределён по SKU пропорционально выручке.'
               }
             />
@@ -445,24 +471,9 @@ function RenderOzonAnalytics({ instance, onConfigChange }: BlockRenderProps) {
             />
             <Totals label="Товары с продажами" value={`${response.totals.productsWithSales} / ${rows.length}`} />
           </div>
-          {/* Source badges: показывают откуда взяты числа. */}
-          {response.reconciliationGapPct !== null &&
-            response.reconciliationGapPct > 5 && (
-            <div className="flex flex-wrap items-center gap-1.5 border-b border-border/40 bg-amber-50 px-3 py-1 text-[10px] text-amber-700 dark:bg-amber-950/30 dark:text-amber-300">
-              <span className="font-medium">Расхождение expense vs CPC+CPO: {response.reconciliationGapPct.toFixed(1)}%.</span>
-              <span className="text-amber-700/80 dark:text-amber-400/70">
-                Total взят из expense (эталон). Перезапустите perfExpenseDaily + perfCpoDaily.
-              </span>
-            </div>
-          )}
-          {response.adsSource === 'expense' && (
-            <div className="flex flex-wrap items-center gap-1.5 border-b border-border/40 bg-emerald-50 px-3 py-1 text-[10px] text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300">
-              <span className="font-medium">Эталон Performance API (expense).</span>
-              <span className="text-emerald-700/80 dark:text-emerald-400/70">
-                Расход покрывает все типы кампаний (SKU/SEARCH_PROMO/ALL_SKU_PROMO/BANNER/VIDEO) + бонусы — как в рекламном кабинете Ozon.
-              </span>
-            </div>
-          )}
+          {/* Source badges: оставлены только actionable warnings.
+              «Расхождение expense vs CPC+CPO» и «Эталон Performance API» переехали
+              в tooltip subtitle блока Реклама — не мешают сканированию таблицы. */}
           {response.ordersSource === 'orders-fallback' && (
             <div className="flex flex-wrap items-center gap-1.5 border-b border-border/40 bg-amber-50 px-3 py-1 text-[10px] text-amber-700 dark:bg-amber-950/30 dark:text-amber-300">
               <span className="font-medium">Аналитика из postings (legacy).</span>

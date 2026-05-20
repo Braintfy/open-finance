@@ -54,7 +54,7 @@ const COLUMN_GROUPS: Array<{
   },
   {
     title: 'Склад',
-    keys: ['stock', 'daysOfStock'],
+    keys: ['stock', 'stockFbo', 'stockFbs', 'daysOfStock'],
   },
 ];
 

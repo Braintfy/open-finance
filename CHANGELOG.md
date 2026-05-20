@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.18.25] - 2026-05-20
+
+Polish v2 для Ozon-блоков: единая логика подсветки склад/дни, новые колонки FBO/FBS, persistence периода между сессиями, цветные оси на чарте Динамика.
+
+### Fixed
+
+- **Подсветка колонок «Остаток» и «Дней» рассинхронизирована** (`src/components/unit-economics/ozon-analytics-table.tsx`): «Остаток» использовал `row.daysOfStock` для выбора tone, «Дней» — effective days (с приоритетом Ozon Turnover → расчётный → fallback30d). Когда основной `daysOfStock=null`, но был turnover/fallback, «Дней» получал цвет, а «Остаток» — дефолтный `ok` без подсветки. Вынесена общая функция `resolveEffectiveDays(row, useOzonTurnover)` — теперь обе колонки используют один и тот же effective days. Также tone `ok` (стало 14–30 дней) теперь имеет видимый светло-зелёный фон (раньше — прозрачный `bg-muted/30`).
+
+### Added
+
+- **Новые колонки `stockFbo` и `stockFbs`** (`src/components/unit-economics/ozon-analytics-table.tsx` + `unit-ozon-analytics-types.ts`): отдельная видимость остатков на складе Ozon (FBO) и продавца (FBS). Доступны через Settings → Видимые колонки → «Склад». «Остаток» сохраняет sum FBO+FBS с подсветкой; новые колонки — без цвета, нейтральный вид. Tooltip на «Остаток»: `FBO 192 + FBS 24 = 216 шт`. XLSX-экспорт обновлён (включая ранее отсутствовавшие `deliveredFbo`/`deliveredFbs`).
+- **`use-persisted-period.ts`** (`src/lib/blocks/use-persisted-period.ts`): hook сохраняет выбранный пользователем период в `localStorage[block:${instanceId}:period:v1]`. После refresh страницы период не сбрасывается на дефолт из config. Подключён ко всем Ozon-блокам: KPI, Chart, Top-ads, Analytics, Search-phrases, Campaigns, ABC, Warehouse-clusters, AI-insights. SSR-safe (lazy-restore через `useEffect`, не initial state). Изоляция по `instance.id` — один тип блока на дашборде имеет независимые периоды.
+
+### Changed
+
+- **Цветные оси на «Ozon · Динамика»** (`src/lib/blocks/catalog/unit-ozon-chart.tsx` + `src/components/blocks/chart-shell.tsx`): rubLeft (выручка / средний чек) — emerald, rubRight (расход) — red, pct (ДРР) — orange. Тики/линии осей окрашены в цвет своей серии (через `colored: true` в `ChartYAxis`), что визуально связывает линию со шкалой без дополнительных подписей. Margin/padding ChartShell ужаты (top 10→6, paddingTop legend 8→4, iconSize 8px), height 260→300. Подход аналогичен Yoolip Analytics.
+
+### Docs
+
+- **Yoolip Analytics сравнение** (`docs/OZON_ADS_GAP.md`): на 30-дневном окне (20 апр — 19 мая 2026) Yoolip показывает A ₽ расход, Open Finance — B ₽ (gap ~9.4%). Зафиксированы 4 гипотезы (inclusive vs exclusive период, lag «сегодня», per-SKU CPO/SEARCH_PROMO breakdown, `prepaidMoneySpent` corner-кейсы) и план закрытия gap к v0.18.26.
+
+## [0.18.24] - 2026-05-20
+
+UX-cleanup блока Ozon · Аналитика: убраны баннеры-плашки, единая семантика «Заказы / Товаров шт. / FBO+FBS», топ рекламы мигрирован на MSC-период.
+
+### Fixed
+
+- **Заказы ≠ FBO + FBS** (`src/app/api/marketplaces/analytics/ozon/route.ts`): раньше «Заказы» брались как `ordered_units` из `ozon_analytics_daily` (это сумма штук), а FBO/FBS — как `COUNT(DISTINCT orders.id)` из `ozon_orders`. Разные единицы измерения → сумма не сходилась (192 vs 162+25=187 в скрине пользователя). Фикс: `delivered = sch.delivered_fbo + sch.delivered_fbs` — теперь Заказы строго равно сумме FBO+FBS. Tooltip колонки «Заказы»: «количество заказов (= FBO + FBS)».
+- **Колонка «Штук» переименована в «Товаров шт.»** (`src/components/unit-economics/ozon-analytics-table.tsx` + `unit-ozon-analytics-types.ts`): хинт «сумма штук во всех заказах (в одном заказе может быть несколько штук)». В analytics-api режиме теперь приоритет — `SUM(items.quantity)` из `ozon_orders` через расширенный `agg_scheme` CTE (`qty_delivered_scheme`). Это работает на basic-tier (раньше колонка показывала 0, т.к. `delivered_units` доступно только Premium Plus). Колонка добавлена в `DEFAULT_VISIBLE_COLUMNS`.
+- **Топ рекламы — UTC-сдвиг периода** (`src/app/api/marketplaces/ozon/top-ads/route.ts` + `src/lib/blocks/catalog/unit-ozon-top-ads.tsx`): раньше передавали `from.toISOString()` / `to.toISOString()` и кастили `::date` — для MSK-пользователя midnight уходил в UTC предыдущего дня → ±1 день рассинхрон с KPI / Аналитикой. Фикс: клиент использует `resolveOzonPeriod` (MSC), передаёт `fromDate` / `toDateExclusive` YYYY-MM-DD; API принимает оба варианта через `parseOzonPeriodFromRequest` (legacy `from`/`to` остаются для обратной совместимости).
+
+### Removed
+
+- **Диагностические плашки в Ozon · Аналитика** (`src/lib/blocks/catalog/unit-ozon-analytics.tsx`):
+  - «Расхождение expense vs CPC+CPO: 53.8% …» — переехала в tooltip subtitle блока «Реклама».
+  - «Эталон Performance API (expense). Расход покрывает все типы …» — переехала в тот же tooltip.
+  Actionable warnings оставлены: «Аналитика из postings (legacy)», «Расход на рекламу не загружен», «Реклама из транзакций (эвристика)».
+
+### Changed
+
+- **Subtitle блока «Реклама» сокращён**: было `Expense (все типы) · CPC≈90 550 ₽ · CPO≈81 593 ₽`, стало `CPC ≈ 90 550 ₽ · CPO ≈ 81 593 ₽`. Длинная справка про источник, типы кампаний и reconciliation gap — в `title` hover.
+- **Tooltip колонки «Расход»** (`adsRub`): «Per-SKU расход: CPC + распределённый CPO (≅). Магазинный total (включая SEARCH_PROMO/BANNER) виден в шапке Реклама и обычно > Σ строк» — снимает confusing-вопрос «почему сумма строк меньше total».
+- **`OZON_ANALYTICS_CACHE_VERSION` → `v5`** (`src/lib/marketplaces/ozon/analytics-cache.ts`): изменилась семантика `delivered` и `qty_delivered` в response.
+
 ## [0.18.23] - 2026-05-20
 
 Унификация рекламных метрик Ozon между KPI / Динамика / Аналитика и исправление undercount vs Ozon LK (expense parser + CPO SEARCH_PROMO).

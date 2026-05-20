@@ -136,7 +136,7 @@ export function ChartShell({
   return (
     <div style={{ width: '100%', height }}>
       <ResponsiveContainer width="100%" height="100%">
-        <ChartCmp data={merged} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+        <ChartCmp data={merged} margin={{ top: 6, right: 12, left: 0, bottom: 0 }}>
           {isRich && (
             <defs>
               {series
@@ -249,7 +249,8 @@ export function ChartShell({
           )}
           <Legend
             iconType="circle"
-            wrapperStyle={{ fontSize: 11, paddingTop: 8 }}
+            iconSize={8}
+            wrapperStyle={{ fontSize: 11, paddingTop: 4, paddingLeft: 4 }}
           />
           {series.map((s) => renderSeries(s, false, isRich))}
           {compare && series.map((s) => renderSeries(s, true, isRich, compare.suffix))}

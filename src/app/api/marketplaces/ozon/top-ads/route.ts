@@ -7,6 +7,11 @@ import { auth } from '@/lib/auth';
 import { db } from '@/lib/db/client';
 import { ozonPerfSkuStats } from '@/lib/db/schema/marketplaces';
 import { unitProducts } from '@/lib/db/schema/unit-economics';
+import {
+  parseOzonPeriodFromRequest,
+  resolveOzonQueryPeriod,
+  type OzonQueryPeriod,
+} from '@/lib/marketplaces/ozon/query-period';
 
 export const runtime = 'nodejs';
 
@@ -26,6 +31,7 @@ export type OzonTopAdsResponse = {
     cpoRub: number | null;
     drrPct: number | null;
   }>;
+  period: OzonQueryPeriod;
 };
 
 export async function GET(req: NextRequest) {
@@ -36,24 +42,18 @@ export async function GET(req: NextRequest) {
     }
     const url = new URL(req.url);
     const accountId = url.searchParams.get('accountId');
-    const fromStr = url.searchParams.get('from');
-    const toStr = url.searchParams.get('to');
     const limitRaw = Number(url.searchParams.get('limit') ?? 50);
     const limit = Number.isFinite(limitRaw) ? Math.min(500, Math.max(1, limitRaw)) : 50;
-    if (!fromStr || !toStr) {
-      return NextResponse.json(
-        { ok: false, error: 'from/to required (ISO)' },
-        { status: 400 },
-      );
-    }
-    const from = new Date(fromStr);
-    const to = new Date(toStr);
-    if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime())) {
-      return NextResponse.json({ ok: false, error: 'Invalid date' }, { status: 400 });
-    }
-    // postgres.js не сериализует Date в raw sql-template'ах — передаём ISO-строки.
-    const fromIso = from.toISOString();
-    const toIso = to.toISOString();
+    // MSC-период предпочтительнее (как в kpi/analytics). Legacy from/to ISO
+    // принимаем через parseOzonPeriodFromRequest для обратной совместимости.
+    const resolvedPeriod =
+      parseOzonPeriodFromRequest(
+        url.searchParams.get('fromDate'),
+        url.searchParams.get('toDateExclusive'),
+        url.searchParams.get('from'),
+        url.searchParams.get('to'),
+      ) ?? resolveOzonQueryPeriod('30d');
+    const { fromDate, toDateExclusive } = resolvedPeriod;
 
     const accountCondPerf = accountId
       ? sql`AND ps.account_id = ${accountId}`
@@ -81,8 +81,8 @@ export async function GET(req: NextRequest) {
         FROM ${ozonPerfSkuStats} ps
         WHERE ps.tenant_id = ${session.tenantId}
           ${accountCondPerf}
-          AND ps.date >= ${fromIso}::date
-          AND ps.date < ${toIso}::date
+          AND ps.date >= ${fromDate}::date
+          AND ps.date < ${toDateExclusive}::date
         GROUP BY ps.sku
       )
       SELECT
@@ -128,7 +128,7 @@ export async function GET(req: NextRequest) {
       };
     });
 
-    return NextResponse.json({ ok: true, rows: out });
+    return NextResponse.json({ ok: true, rows: out, period: resolvedPeriod });
   } catch (e) {
     console.error('[marketplaces] GET /ozon/top-ads failed:', e);
     return NextResponse.json(

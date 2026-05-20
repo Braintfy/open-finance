@@ -258,6 +258,10 @@ export async function GET(req: NextRequest) {
       )`;
 
     // FBO/FBS разделение всегда из ozon_orders (независимо от primary source).
+    // Кроме разбивки по схемам, считаем суммарное количество **штук товара**
+    // (item_qty) — это единый источник правды для «Товаров шт.» и согласованности
+    // Заказы = FBO + FBS (количество заказов).
+    //
     // Объединяем по offer_id — это поле есть во всех схемах.
     const schemeCte = sql`
       agg_scheme AS (
@@ -276,7 +280,13 @@ export async function GET(req: NextRequest) {
               AND o2.returned_at IS NULL
               AND lower(o2.status) NOT LIKE '%cancel%'
               AND lower(o2.status) NOT LIKE '%return%'
-          ) AS delivered_fbs
+          ) AS delivered_fbs,
+          SUM(COALESCE(NULLIF(it->>'quantity', '')::numeric, 0)) FILTER (
+            WHERE o2.cancelled_at IS NULL
+              AND o2.returned_at IS NULL
+              AND lower(o2.status) NOT LIKE '%cancel%'
+              AND lower(o2.status) NOT LIKE '%return%'
+          ) AS qty_delivered_scheme
         FROM ${ozonOrders} o2
         CROSS JOIN LATERAL jsonb_array_elements(o2.items) AS it
         WHERE o2.tenant_id = ${session.tenantId}
@@ -424,12 +434,17 @@ export async function GET(req: NextRequest) {
         ${unitProducts.costKopecks} AS cost_kopecks,
         (${unitProducts.metadata}->>'priceWithSpp')::numeric AS marketing_price_rub,
         (${unitProducts.metadata}->>'turnoverDays')::numeric AS turnover_days_meta,
-        COALESCE(ao.delivered, 0)::int AS delivered,
+        -- Заказы = FBO + FBS (количество заказов, единый источник —
+        -- ozon_orders.scheme). Раньше брали ao.delivered (= ordered_units
+        -- из ozon_analytics_daily), что давало рассинхрон Заказы ≠ FBO+FBS.
+        (COALESCE(sch.delivered_fbo, 0) + COALESCE(sch.delivered_fbs, 0))::int AS delivered,
         COALESCE(sch.delivered_fbo, 0)::int AS delivered_fbo,
         COALESCE(sch.delivered_fbs, 0)::int AS delivered_fbs,
         ${cancelledExpr} AS cancelled,
         ${returnedExpr} AS returned,
-        COALESCE(ao.qty_delivered, 0) AS qty_delivered,
+        -- Товаров шт. = сумма units по non-cancelled/non-returned заказам.
+        -- Приоритет: agg_scheme (orders.items.quantity) → agg_orders fallback.
+        COALESCE(sch.qty_delivered_scheme, ao.qty_delivered, 0) AS qty_delivered,
         COALESCE(v30.qty_30d, 0) AS qty_30d,
         COALESCE(ao.revenue_rub * 100, 0) AS revenue_kopecks,
         COALESCE(ad.ads_kopecks, 0) AS ads_kopecks,

@@ -312,6 +312,46 @@ Open Finance = настраиваемый Lego-конструктор интер
 4. `scripts/test-ozon-analytics.ts` (test row factory).
 Иначе TS error на required field.
 
+### Ozon v0.18.25 — polish v2: единая подсветка склад/дни, FBO/FBS колонки, period persistence, цветные оси
+
+**Проблемы (со скринов и сравнения с Yoolip Analytics):**
+1. «Остаток» и «Дней» окрашивались по разным источникам — рассинхрон цветов на одной строке.
+2. В Settings не было возможности показать FBO/FBS остатки отдельно.
+3. Период (30д/7д/etc) сбрасывался на дефолт при refresh страницы.
+4. «Ozon · Динамика» — нейтральные серые оси, нет визуальной связи линия→шкала.
+5. Yoolip Analytics показывал A ₽ за тот же период, мы — B ₽ (gap ~9.4%).
+
+**Решение:**
+- `ozon-analytics-table.tsx`: вынесена `resolveEffectiveDays(row, useOzonTurnover)` — единая для обеих колонок (priority: Ozon Turnover → расчётный → fallback30d). Tone `ok` теперь имеет видимый светло-зелёный фон (`bg-emerald-50`). Добавлены новые колонки `stockFbo`/`stockFbs` (без подсветки, нейтральные). Tooltip «Остаток»: `FBO N + FBS M = Sum шт`.
+- `unit-ozon-analytics-types.ts`: расширены enum для `visibleColumns`/`pinnedColumns`.
+- `ozon-analytics-settings-form.tsx`: новые колонки в группе «Склад».
+- `unit-ozon-analytics.tsx` (XLSX export): добавлены `stockFbo`/`stockFbs` + ранее отсутствовавшие `deliveredFbo`/`deliveredFbs`.
+- `use-persisted-period.ts` (NEW): `usePersistedPeriod` + `usePersistedPeriodValue` для PeriodValue-формы. localStorage `block:${instanceId}:period:v1`, SSR-safe (восстановление через useEffect). Подключён к 9 Ozon-блокам: KPI, Chart, Top-ads, Analytics, Search-phrases, Campaigns, ABC, Warehouse-clusters, AI-insights.
+- `unit-ozon-chart.tsx`: rubLeft → emerald, rubRight → red, pct → orange (colored: true). Tick/axis окрашены в цвет серии. height 260→300, ChartShell margin top 10→6, Legend padding 8→4.
+- `docs/OZON_ADS_GAP.md`: добавлена секция «Сверка с конкурентами (Yoolip Analytics)» с 4 гипотезами разрыва и планом v0.18.26.
+
+**Trade-off:**
+- `ok` тон у DRR (10–20%) теперь зелёный (раньше нейтральный). Это окей — соответствует Yoolip-стилю.
+- Период живёт в localStorage, а не в `config`. UX preference изолирован per-browser/per-user; не записывается в БД.
+
+### Ozon v0.18.24 — UI cleanup + Заказы=FBO+FBS + top-ads MSC
+
+**Проблемы (со скрина пользователя):**
+1. Три баннера-плашки над таблицей засоряли UI («Расхождение expense vs CPC+CPO», «Эталон Performance API», ordersSource).
+2. Заказы (192) ≠ FBO (162) + FBS (25 = 187): разные единицы — `ordered_units` из `ozon_analytics_daily` vs `COUNT(orders)` из `ozon_orders`.
+3. Колонка «Штук» (qtyDelivered) показывала 0 на basic-tier (delivered_units доступно только Premium Plus).
+4. «Топ рекламы» — UTC-сдвиг периода через `from.toISOString()` ::date.
+
+**Решение:**
+- `unit-ozon-analytics.tsx`: убрал два диагностических баннера, информацию перенёс в tooltip subtitle блока Реклама. Subtitle сокращён: было `Expense (все типы) · CPC≈ · CPO≈`, стало `CPC ≈ · CPO ≈`.
+- `analytics/ozon/route.ts`: расширил `agg_scheme` CTE — добавил `qty_delivered_scheme` (SUM items.quantity по non-cancelled/non-returned). `delivered = sch.delivered_fbo + sch.delivered_fbs` (теперь Заказы строго = FBO + FBS). `qty_delivered = COALESCE(sch.qty_delivered_scheme, ao.qty_delivered, 0)` — теперь работает на basic-tier (источник ozon_orders).
+- `ozon-analytics-table.tsx`: label «Штук» → «Товаров шт.», hint про сумму штук. Добавлен tooltip колонки `adsRub` про per-SKU vs магазинный total.
+- `unit-ozon-analytics-types.ts`: `qtyDelivered` включён в `DEFAULT_VISIBLE_COLUMNS`.
+- `top-ads/route.ts` + `unit-ozon-top-ads.tsx`: миграция на MSC `fromDate`/`toDateExclusive` через `parseOzonPeriodFromRequest` + `resolveOzonPeriod`. Legacy `from`/`to` оставлены для совместимости.
+- `analytics-cache.ts`: bump до `v5` (изменилась семантика response).
+
+**Trade-off:** Заказы теперь не равны Ozon Seller-кабинету (там `ordered_units`), но совпадают с FBO+FBS. Если orders sync отстаёт от analytics_daily — Заказы могут быть < revenue из Seller-кабинета.
+
 ### Ozon v0.18.23 — ads unification + expense undercount fix
 
 **Проблема:** KPI (172K), Analytics footer (185K CPC+CPO), Ozon LK (312K) — разные цифры при «30 дней».

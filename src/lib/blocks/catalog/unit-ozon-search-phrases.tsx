@@ -17,6 +17,7 @@ import {
 import { OzonAccountSelector } from '@/components/marketplaces/ozon-account-selector';
 import { useMarketplaceAccounts } from '@/lib/marketplaces/use-accounts';
 import { useBlockValuePublisher } from '@/lib/blocks/values';
+import { usePersistedPeriodValue } from '@/lib/blocks/use-persisted-period';
 import { autoColumnWidth } from '@/lib/blocks/auto-column-width';
 import type {
   BlockDef,
@@ -41,10 +42,13 @@ function parseConfig(raw: unknown) {
 
 function RenderOzonSearchPhrases({ instance }: BlockRenderProps) {
   const config = useMemo(() => parseConfig(instance.config), [instance.config]);
-  const [period, setPeriod] = useState<PeriodValue>({
-    preset: config.periodPreset as PeriodPreset,
-    customFrom: config.customFrom,
-    customTo: config.customTo,
+  const { value: period, setValue: setPeriod } = usePersistedPeriodValue({
+    instanceId: instance.id,
+    initial: {
+      preset: config.periodPreset,
+      customFrom: config.customFrom,
+      customTo: config.customTo,
+    },
   });
   const [data, setData] = useState<OzonSearchPhrasesResponse | null>(null);
   const [loading, setLoading] = useState(false);

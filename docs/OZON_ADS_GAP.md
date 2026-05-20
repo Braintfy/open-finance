@@ -72,8 +72,60 @@ pnpm tsx scripts/debug-ozon-perf-csv.ts <accountId>
 
 **Критерии успеха (v0.18.23):** KPI = Chart = Analytics footer `adsRub` (±0.1%); `adsSource=expense`; live expense ≈ Ozon LK (±2% с учётом lag −1 day).
 
+## Сверка с конкурентами (Yoolip Analytics, май 2026)
+
+Yoolip Analytics (`yoolip.ai/app/analytics`) — внешний сервис, который
+работает с тем же Performance API и Ozon Seller API. На периоде
+**20 апр 2026 — 19 мая 2026 (30 дней)** при сравнении одного и того же
+магазина мы видим:
+
+| Метрика       | Yoolip       | Open Finance (v0.18.25) | Ozon LK кабинет |
+|---------------|--------------|-------------------------|-----------------|
+| Выручка       | X ₽  | X ₽             | —               |
+| Заказы (orders) | 3.5K       | 3.5K                    | —               |
+| Расход на рекламу | **A ₽** | **B ₽**       | ~410 000 ₽      |
+| ДРР            | 6.6%         | 6.0%                    | —               |
+
+**Разрыв A−B ₽ (~9.4%) с Yoolip.** Гипотезы:
+
+1. **Yoolip берёт период YYYY-MM-DD inclusive по локалу пользователя**,
+   а Open Finance — MSC `[fromDate, toDateExclusive)`. На 30-дневном
+   окне это даёт ±1 день в начале или конце. Если у Yoolip окно
+   `20-04..19-05` интерпретируется как `[20-04, 20-05)` (31 день), а у
+   нас как `[20-04, 19-05)` (29 дней) — это объясняет ~3% разницы.
+2. **Yoolip может включать «сегодня»**, тогда как у нас sync —1 day лаг.
+   В нашем случае «сегодня» обычно даёт +1–3% к total.
+3. **Per-SKU CPO у Yoolip** — у них есть колонка «Расход» per-product
+   (footer total A' ₽), что близко к общему A ₽. Это означает
+   что они **распределяют CPO и SEARCH_PROMO** на SKU (мы тоже это
+   делаем для CPO в `adsCpoAllocRub`, но SEARCH_PROMO остаётся в
+   expense_daily total без per-SKU breakdown).
+4. **Бонусы / абонентский счёт** — Open Finance включает их в
+   expense parser (с v0.18.23, `prepaidMoneySpent`), но возможны
+   корнер-кейсы JSON-формата, когда `prepaidMoneySpent` приходит
+   отдельной payload-секцией.
+
+### Где правда
+
+**Эталон — Ozon LK (рекламный кабинет → Аналитика → Расход)**. На
+текущий период LK показывает ~410K ₽. Yoolip ближе к LK, у нас
+~9% недосчёт. Это не критично (отображается верно для трендов и
+сортировки), но даёт повод к улучшению.
+
+### План закрытия gap (v0.18.26+)
+
+- [ ] Расширить sync до **+1 day overshoot** — забирать «сегодня»
+      с пометкой `is_partial=true` (текущий день, может быть дозаписан).
+- [ ] Проверить парсинг `prepaidMoneySpent` для всех типов JSON-ответа
+      (single-store vs multi-store payload).
+- [ ] Поверить интерпретацию `dateFrom..dateTo` Yoolip vs нашей MSC-логики
+      на API уровне (Performance API endpoint signature).
+
 ## История
 
+- **v0.18.25** — единая логика `resolveEffectiveDays` для «Остаток» и
+  «Дней» (cycle bug). Yoolip-сверка зафиксирована (см. выше). Полный
+  audit ad-spend в pipeline без изменений.
 - **v0.18.20** — добавлен `perfExpenseDaily` sync, теперь эталон store-total.
   Routing для `perf-sku-stats`: только `advObjectType=SKU` (убрали
   `SEARCH_PROMO` — он шёл в неподходящий pipeline).

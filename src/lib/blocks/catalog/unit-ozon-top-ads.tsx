@@ -11,13 +11,14 @@ import { Card } from '@/components/ui/card';
 import { useLastFetched } from '@/lib/blocks/use-last-fetched';
 import {
   PeriodPicker,
-  resolvePeriod,
+  resolveOzonPeriod,
   type PeriodPreset,
   type PeriodValue,
 } from '@/components/blocks/period-picker';
 import { OzonAccountSelector } from '@/components/marketplaces/ozon-account-selector';
 import { useMarketplaceAccounts } from '@/lib/marketplaces/use-accounts';
 import { useBlockValuePublisher } from '@/lib/blocks/values';
+import { usePersistedPeriodValue } from '@/lib/blocks/use-persisted-period';
 import { autoColumnWidth } from '@/lib/blocks/auto-column-width';
 import type {
   BlockDef,
@@ -64,10 +65,13 @@ function drrBadgeColor(drr: number | null): string {
 
 function RenderOzonTopAds({ instance }: BlockRenderProps) {
   const config = useMemo(() => parseConfig(instance.config), [instance.config]);
-  const [period, setPeriod] = useState<PeriodValue>({
-    preset: config.periodPreset as PeriodPreset,
-    customFrom: config.customFrom,
-    customTo: config.customTo,
+  const { value: period, setValue: setPeriod } = usePersistedPeriodValue({
+    instanceId: instance.id,
+    initial: {
+      preset: config.periodPreset,
+      customFrom: config.customFrom,
+      customTo: config.customTo,
+    },
   });
   const [data, setData] = useState<OzonTopAdsResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -100,11 +104,11 @@ function RenderOzonTopAds({ instance }: BlockRenderProps) {
     setLoading(true);
     setError(null);
     try {
-      const range = resolvePeriod(period.preset, period.customFrom, period.customTo);
+      const range = resolveOzonPeriod(period.preset, period.customFrom, period.customTo);
       const params = new URLSearchParams({
         accountId: config.accountId,
-        from: range.from.toISOString(),
-        to: range.to.toISOString(),
+        fromDate: range.fromDate,
+        toDateExclusive: range.toDateExclusive,
         limit: String(config.limit),
       });
       const res = await fetch(`/api/marketplaces/ozon/top-ads?${params}`);

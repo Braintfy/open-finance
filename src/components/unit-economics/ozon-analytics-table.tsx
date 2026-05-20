@@ -52,6 +52,8 @@ export type TableColumnKey =
   | 'adsRub'
   | 'drrPct'
   | 'stock'
+  | 'stockFbo'
+  | 'stockFbs'
   | 'daysOfStock'
   | 'buyoutPct'
   | 'views'
@@ -89,17 +91,19 @@ export const COLUMN_DEFS: ColumnDef[] = [
   { key: 'priceRub', label: 'Цена', align: 'right', minPx: 70, defaultPx: 90, sortable: true },
   { key: 'costRub', label: 'Себест.', align: 'right', minPx: 70, defaultPx: 90, sortable: true },
   { key: 'marginRub', label: 'Маржа', hint: 'price − cost', align: 'right', minPx: 70, defaultPx: 90, sortable: true },
-  { key: 'delivered', label: 'Заказы', align: 'right', minPx: 56, defaultPx: 72, sortable: true },
-  { key: 'deliveredFbo', label: 'FBO', hint: 'FBO — со склада Ozon', align: 'right', minPx: 50, defaultPx: 64, sortable: true },
-  { key: 'deliveredFbs', label: 'FBS', hint: 'FBS — со склада продавца', align: 'right', minPx: 50, defaultPx: 64, sortable: true },
-  { key: 'qtyDelivered', label: 'Штук', align: 'right', minPx: 50, defaultPx: 64, sortable: true },
+  { key: 'delivered', label: 'Заказы', hint: 'количество заказов (= FBO + FBS)', align: 'right', minPx: 56, defaultPx: 72, sortable: true },
+  { key: 'deliveredFbo', label: 'FBO', hint: 'FBO — заказов со склада Ozon', align: 'right', minPx: 50, defaultPx: 64, sortable: true },
+  { key: 'deliveredFbs', label: 'FBS', hint: 'FBS — заказов со склада продавца', align: 'right', minPx: 50, defaultPx: 64, sortable: true },
+  { key: 'qtyDelivered', label: 'Товаров шт.', hint: 'сумма штук во всех заказах (в одном заказе может быть несколько штук)', align: 'right', minPx: 70, defaultPx: 90, sortable: true },
   { key: 'cancelled', label: 'Отмены', align: 'right', minPx: 56, defaultPx: 72, sortable: true },
   { key: 'returned', label: 'Возвраты', align: 'right', minPx: 56, defaultPx: 72, sortable: true },
   { key: 'returnPct', label: '% возвр.', hint: 'returned / (del+ret)', align: 'right', minPx: 56, defaultPx: 72, sortable: true },
   { key: 'revenueRub', label: 'Выручка', align: 'right', minPx: 80, defaultPx: 110, sortable: true },
-  { key: 'adsRub', label: 'Расход', hint: 'рекламный бюджет (CPC + CPO ≅)', align: 'right', minPx: 70, defaultPx: 110, sortable: true },
+  { key: 'adsRub', label: 'Расход', hint: 'Per-SKU расход: CPC + распределённый CPO (≅). Магазинный total (включая SEARCH_PROMO/BANNER) виден в шапке Реклама и обычно > Σ строк.', align: 'right', minPx: 70, defaultPx: 110, sortable: true },
   { key: 'drrPct', label: 'ДРР', hint: '%', align: 'right', minPx: 56, defaultPx: 72, sortable: true },
-  { key: 'stock', label: 'Остаток', align: 'right', minPx: 60, defaultPx: 80, sortable: true },
+  { key: 'stock', label: 'Остаток', hint: 'сумма FBO + FBS', align: 'right', minPx: 60, defaultPx: 80, sortable: true },
+  { key: 'stockFbo', label: 'Ост. FBO', hint: 'на складе Ozon', align: 'right', minPx: 60, defaultPx: 80, sortable: true },
+  { key: 'stockFbs', label: 'Ост. FBS', hint: 'на складе продавца', align: 'right', minPx: 60, defaultPx: 80, sortable: true },
   { key: 'daysOfStock', label: 'Дней', hint: 'хватит остатка', align: 'right', minPx: 50, defaultPx: 64, sortable: true },
   { key: 'buyoutPct', label: 'Выкуп', hint: '%', align: 'right', minPx: 56, defaultPx: 72, sortable: true },
   { key: 'views', label: 'Показы', hint: 'рекламные', align: 'right', minPx: 60, defaultPx: 80, sortable: true },
@@ -154,6 +158,10 @@ function getCellValue(
       return row.drrPct;
     case 'stock':
       return row.stockMarketplace + row.stockOwn;
+    case 'stockFbo':
+      return row.stockMarketplace;
+    case 'stockFbs':
+      return row.stockOwn;
     case 'daysOfStock':
       return row.daysOfStock;
     case 'buyoutPct':
@@ -241,16 +249,43 @@ function stockTone(daysOfStock: number | null, stock: number): DrrTone {
   return 'good';
 }
 
+/**
+ * Единая логика выбора «эффективных» дней остатка для row.
+ * Приоритет источников:
+ *   1. Ozon Turnover (Seller API) — если `useOzonTurnover=true` и значение есть
+ *   2. Расчёт `stock / salesPerDay` за текущий период (`row.daysOfStock`)
+ *   3. Fallback на 30-дневное окно velocity (`row.daysOfStockFallback30d`)
+ *   4. null → данных нет
+ *
+ * Должна использоваться И для колонки «Дней», И для подсветки колонки
+ * «Остаток» — иначе цвета расходятся (был баг до v0.18.25).
+ */
+export function resolveEffectiveDays(
+  row: OzonAnalyticsRow,
+  useOzonTurnover: boolean,
+): { days: number | null; source: string } {
+  if (useOzonTurnover && row.daysOfStockOzon !== null && row.daysOfStockOzon !== undefined) {
+    return { days: row.daysOfStockOzon, source: 'Ozon Turnover (Seller API)' };
+  }
+  if (row.daysOfStock !== null) {
+    return { days: row.daysOfStock, source: 'расчёт stock / salesPerDay (тек. период)' };
+  }
+  if (row.daysOfStockFallback30d !== null && row.daysOfStockFallback30d !== undefined) {
+    return { days: row.daysOfStockFallback30d, source: 'fallback: velocity за 30 дн.' };
+  }
+  return { days: null, source: '' };
+}
+
 const TONE_CLASSES: Record<DrrTone, string> = {
   good: 'text-emerald-700 dark:text-emerald-300',
-  ok: 'text-foreground',
+  ok: 'text-emerald-700 dark:text-emerald-300',
   warning: 'text-amber-700 dark:text-amber-300',
   danger: 'text-red-700 dark:text-red-300',
 };
 
 const TONE_BG: Record<DrrTone, string> = {
   good: 'bg-emerald-100 dark:bg-emerald-950/40',
-  ok: 'bg-muted/30',
+  ok: 'bg-emerald-50 dark:bg-emerald-950/25',
   warning: 'bg-amber-100 dark:bg-amber-950/40',
   danger: 'bg-red-100 dark:bg-red-950/40',
 };
@@ -532,7 +567,8 @@ export function OzonAnalyticsTable({
               const margin = row.priceRub - row.costRub;
               const stock = row.stockMarketplace + row.stockOwn;
               const dt = drrTone(row.drrPct);
-              const st = stockTone(row.daysOfStock, stock);
+              const effective = resolveEffectiveDays(row, useOzonTurnover);
+              const st = stockTone(effective.days, stock);
               const ctrVal = row.views > 0 ? (row.clicks / row.views) * 100 : null;
               const cpcVal = row.clicks > 0 ? row.adsRub / row.clicks : null;
               const cpmVal = row.views > 0 ? (row.adsRub / row.views) * 1000 : null;
@@ -671,38 +707,33 @@ export function OzonAnalyticsTable({
                               TONE_BG[st],
                               TONE_CLASSES[st],
                             )}
+                            title={`FBO ${formatInt(row.stockMarketplace)} + FBS ${formatInt(row.stockOwn)} = ${formatInt(stock)} шт.`}
                           >
                             {formatInt(stock)}
                           </span>
                         ) : (
-                          formatInt(stock)
+                          <span title={`FBO ${formatInt(row.stockMarketplace)} + FBS ${formatInt(row.stockOwn)}`}>
+                            {formatInt(stock)}
+                          </span>
+                        );
+                        break;
+                      case 'stockFbo':
+                        body = (
+                          <span className="tabular-nums" title="Остаток на складе Ozon (FBO)">
+                            {formatInt(row.stockMarketplace)}
+                          </span>
+                        );
+                        break;
+                      case 'stockFbs':
+                        body = (
+                          <span className="tabular-nums" title="Остаток на складе продавца (FBS)">
+                            {formatInt(row.stockOwn)}
+                          </span>
                         );
                         break;
                       case 'daysOfStock': {
-                        // Приоритет источников (default useOzonTurnover=true с v0.18.21):
-                        //   1. Ozon Turnover (если есть и флаг включён)
-                        //   2. Расчёт за текущий период (если qty_delivered > 0)
-                        //   3. 30-дневный fallback (velocity за последние 30 дн)
-                        //   4. null → «—»
-                        let effectiveDays: number | null = null;
-                        let sourceLabel = '';
-                        if (
-                          useOzonTurnover &&
-                          row.daysOfStockOzon !== null &&
-                          row.daysOfStockOzon !== undefined
-                        ) {
-                          effectiveDays = row.daysOfStockOzon;
-                          sourceLabel = 'Ozon Turnover (Seller API)';
-                        } else if (row.daysOfStock !== null) {
-                          effectiveDays = row.daysOfStock;
-                          sourceLabel = 'расчёт stock / salesPerDay (тек. период)';
-                        } else if (
-                          row.daysOfStockFallback30d !== null &&
-                          row.daysOfStockFallback30d !== undefined
-                        ) {
-                          effectiveDays = row.daysOfStockFallback30d;
-                          sourceLabel = 'fallback: velocity за 30 дн.';
-                        }
+                        const effectiveDays = effective.days;
+                        const sourceLabel = effective.source;
                         if (effectiveDays === null) {
                           body = (
                             <span

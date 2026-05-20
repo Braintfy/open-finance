@@ -14,6 +14,7 @@ import {
 } from '@/components/blocks/period-picker';
 import { OzonAccountSelector } from '@/components/marketplaces/ozon-account-selector';
 import { useBlockValuePublisher } from '@/lib/blocks/values';
+import { usePersistedPeriodValue } from '@/lib/blocks/use-persisted-period';
 import type {
   BlockDef,
   BlockRenderProps,
@@ -42,10 +43,13 @@ const GROUP_COLORS = {
 
 function RenderOzonAbc({ instance }: BlockRenderProps) {
   const config = useMemo(() => parseConfig(instance.config), [instance.config]);
-  const [period, setPeriod] = useState<PeriodValue>({
-    preset: config.periodPreset as PeriodPreset,
-    customFrom: config.customFrom,
-    customTo: config.customTo,
+  const { value: period, setValue: setPeriod } = usePersistedPeriodValue({
+    instanceId: instance.id,
+    initial: {
+      preset: config.periodPreset,
+      customFrom: config.customFrom,
+      customTo: config.customTo,
+    },
   });
   const [data, setData] = useState<OzonAbcResponse | null>(null);
   const [loading, setLoading] = useState(false);

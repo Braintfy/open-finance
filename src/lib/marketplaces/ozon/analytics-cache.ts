@@ -3,8 +3,11 @@
 
 import { getRedis } from '@/lib/redis';
 
-/** Bump при изменении формы response analytics API. */
-export const OZON_ANALYTICS_CACHE_VERSION = 'v4';
+/** Bump при изменении формы response analytics API.
+ * v5 (0.18.24) — изменена семантика `delivered` (теперь = FBO+FBS) и
+ * `qty_delivered` (теперь = SUM units из ozon_orders).
+ */
+export const OZON_ANALYTICS_CACHE_VERSION = 'v5';
 
 export function ozonAnalyticsCacheKey(
   tenantId: string,

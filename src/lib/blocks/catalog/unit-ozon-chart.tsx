@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { z } from 'zod';
 import { AlertTriangle, Info, LineChart as LineIcon, SlidersHorizontal } from 'lucide-react';
 import { useBlockValuePublisher } from '@/lib/blocks/values';
+import { usePersistedPeriodValue } from '@/lib/blocks/use-persisted-period';
 import { Card } from '@/components/ui/card';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
@@ -107,10 +108,13 @@ function todayLocalISO(): string {
 function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
   const config = useMemo(() => parseConfig(instance.config), [instance.config]);
   const [metricsOpen, setMetricsOpen] = useState(false);
-  const [period, setPeriod] = useState<PeriodValue>({
-    preset: config.periodPreset as PeriodPreset,
-    customFrom: config.customFrom,
-    customTo: config.customTo,
+  const { value: period, setValue: setPeriod } = usePersistedPeriodValue({
+    instanceId: instance.id,
+    initial: {
+      preset: config.periodPreset,
+      customFrom: config.customFrom,
+      customTo: config.customTo,
+    },
   });
   // Локальное (session-only) переключение granularity без записи в config.
   // Перенастроить дефолт можно в Settings блока → таб «Параметры».
@@ -245,26 +249,29 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
   const yAxes: ChartYAxis[] = useMemo(() => {
     const used = new Set(series.map((s) => s.yAxisId));
     const axes: ChartYAxis[] = [];
+    // v0.18.25: цветные оси — каждая ось окрашена в цвет своей основной
+    // серии, что позволяет визуально связать линию с её шкалой без
+    // дополнительных подписей. Подход аналогичен Yoolip Analytics.
     if (used.has('rubLeft')) {
       axes.push({
         id: 'rubLeft',
-        color: 'hsl(var(--muted-foreground))',
+        color: SERIES_DEFS.revenueRub.color,
         orientation: 'left',
-        colored: false,
+        colored: true,
         domain: ['auto', 'dataMax'],
         formatter: (v) => formatRubShort(v),
-        width: 48,
+        width: 52,
       });
     }
     if (used.has('rubRight')) {
       axes.push({
         id: 'rubRight',
-        color: 'hsl(var(--muted-foreground))',
+        color: SERIES_DEFS.adsRub.color,
         orientation: 'right',
-        colored: false,
+        colored: true,
         domain: ['auto', 'dataMax'],
         formatter: (v) => formatRubShort(v),
-        width: 48,
+        width: 52,
       });
     }
     if (used.has('orders')) {
@@ -274,7 +281,7 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
       // поэтому считаем число явно ниже (см. ordersMax).
       axes.push({
         id: 'orders',
-        color: 'hsl(var(--muted-foreground))',
+        color: SERIES_DEFS.orders.color,
         orientation: 'right',
         hide: true,
         domain: [0, ordersMax > 0 ? ordersMax * 4 : 1],
@@ -284,12 +291,12 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
     if (used.has('pct')) {
       axes.push({
         id: 'pct',
-        color: 'hsl(var(--muted-foreground))',
+        color: SERIES_DEFS.drrPct.color,
         orientation: 'right',
-        colored: false,
+        colored: true,
         domain: [0, 'dataMax'],
         formatter: (v) => `${v.toFixed(0)}%`,
-        width: 36,
+        width: 40,
       });
     }
     return axes;
@@ -474,7 +481,7 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
             data={visiblePoints}
             series={series}
             xKey="date"
-            height={260}
+            height={300}
             variant="rich"
             yAxes={yAxes}
             formatTooltipLabel={(label) => {
