@@ -76,6 +76,12 @@ export const inboxMessages = pgTable(
     body: text('body'),
     receivedAt: timestamp('received_at').notNull(),
     metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
+    /** AI vision результат — извлечённые данные о vendor/amount/items. */
+    aiExtracted: jsonb('ai_extracted').$type<Record<string, unknown> | null>(),
+    /** Провайдер AI vision (claude/openai/yandex/tesseract/mock). */
+    aiProvider: varchar('ai_provider', { length: 20 }),
+    /** Когда был выполнен recognize. */
+    aiExtractedAt: timestamp('ai_extracted_at'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
   },
   (t) => [
