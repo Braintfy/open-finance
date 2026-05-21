@@ -1,5 +1,52 @@
 # Changelog
 
+## [0.18.26] - 2026-05-21
+
+Адаптивный график «Ozon · Динамика» (fluid height, density-aware header) + глубокий редизайн блока «Данные»: формулы в ячейках (A1 + именованная нотация + cross-block @), Notion-style popover-редактор, DnD-реордер колонок/строк, виртуализация, фикс ресайза последней колонки.
+
+### Added
+
+- **Formula engine для `custom.data`** (`src/lib/blocks/custom-data-formulas.ts`): портативный evaluator с поддержкой:
+  - A1-нотации (`=A1+B2`, `=SUM(A1:A10)`),
+  - именованной (`=[Метиленовый синий].qty * 0.5`, case-insensitive по `row.label` + `column.id|label`),
+  - cross-block (`=@blockId.field + 100`),
+  - circular-protection через `visiting: Set<addr>`,
+  - money-detection (по rubles-колонкам и `__money` флагу live-values).
+
+  Работает и на клиенте, и на сервере (`/api/blocks/sources`). 36 тестов в `scripts/test-custom-data-formulas.ts`.
+- **CellPopoverEditor** (`src/lib/blocks/catalog/custom-data.tsx`): Notion-style popover c табами **Значение / Формула / Связь**. Автоматический выбор активного таба по содержимому ячейки (`ref` → Связь, `=...` → Формула, иначе Значение). Inline error-badge `#ERR / #CYCLE` для невалидных формул.
+- **Formula bar** — sticky thin row под header блока «Данные» при активной ячейке: показывает A1-адрес (`B3`), сырое содержимое (`=A2+B1`) и ошибку. Read-only превью; редактирование через popover.
+- **DnD-реордер колонок и строк** в блоке «Данные» через `@dnd-kit/sortable`: drag-handle `GripVertical` появляется на hover (слева для строк, рядом с label для колонок). Сохраняется через `patch({ columns/rows })`.
+- **Виртуализация строк** через `@tanstack/react-virtual` при `rows.length > 50` (`VIRTUAL_THRESHOLD`). Estimate 32px/row, overscan 8. Для меньших таблиц — обычный grid (быстрее, проще).
+- **`ChartShell.height='fill'`** (`src/components/blocks/chart-shell.tsx`): новый вариант высоты — обёртка получает `h-full w-full` без inline-height. Позволяет чарту занять всю доступную высоту flex-родителя.
+- **shadcn-обёртки Popover и Tabs** (`src/components/ui/popover.tsx`, `tabs.tsx`) — поверх `@radix-ui/react-popover` и `react-tabs`. Стандартный new-york стиль с animate-in/out.
+
+### Changed
+
+- **«Ozon · Динамика» теперь fluid + density-aware** (`src/lib/blocks/catalog/unit-ozon-chart.tsx`): высота 300px → `height='fill'` (убирает пустое пространство снизу при больших блоках). Header адаптируется по ширине/высоте блока:
+  - `width < 240px` — без granularity selector, кнопка «Метрики (4/5)» → «4/5».
+  - `width < 320px` — badges без подписей («Выручка», «Расход», «ДРР»), только цвет-фон + значение.
+  - `width < 380px` — Y-оси ужимаются (rub 52→40px, pct 40→32px), chart margins right 12→4.
+  - `height < 180px` — info-badges («Эталон Ads», «Postings legacy», «Сегодня скрыт») скрываются.
+
+  `minSize`: `{w: 6, h: 4}` → `{w: 4, h: 3}` — чарт стал ужимаемым до compact-режима без потери читаемости.
+- **Server-side `custom.data` evaluator** (`src/app/api/blocks/sources/route.ts`): legacy логика `rows[].value` (которая никогда не работала, т.к. ячейки хранятся в `row.cells[colId]`) заменена на полный evaluator через portable `evaluateAllCells`. Возвращает агрегаты по `publishMode` для каждой publish-колонки + `value` (primary) + `count`. `@blockId.field` refs не резолвятся server-side (нет live-context), подставляются 0 — этого достаточно для модалки связей.
+- **Cell schema контракт** в `custom.data`: если `cell.v` — строка, начинающаяся с `=`, то это формула (как в `excel.cell` / `sheet`). Иначе — литерал. Обратная совместимость с существующими `{v: 1000}`.
+
+### Fixed
+
+- **Ресайз последней колонки в блоке «Данные»** (`src/lib/blocks/catalog/custom-data.tsx`): убрана обёртка `!isLast && (...)` — drag-handle теперь рендерится для всех колонок. Для последней колонки handle смещён внутрь (`right-0` вместо `-right-1.5`), чтобы не пропадать за границей Card.
+- **Aggregates в блоке «Данные» по computed value, а не по raw `v`** — раньше ячейки с формулами игнорировались при подсчёте Σ / avg / count / last; теперь формулы считаются и попадают в `useBlockValuePublisher` под `value` / `<colId>`.
+
+### Removed
+
+- **Legacy `CellEditor` в `custom.data`** заменён на `CellPopoverEditor`. Always-open inputs → click-to-open popover. `@`-кнопка-оверлей убрана: связи теперь редактируются через таб «Связь» в popover'е.
+
+### Migration
+
+- **`pnpm install`** — добавлена зависимость `@tanstack/react-virtual@^3.13`.
+- Существующие конфиги блоков `custom.data` обратно-совместимы. Чтобы добавить формулу в существующую ячейку — кликните по ней → таб «Формула» → введите `=A1+B1` или `=[Название строки].id_колонки * 0.5`.
+
 ## [0.18.25] - 2026-05-20
 
 Polish v2 для Ozon-блоков: единая логика подсветки склад/дни, новые колонки FBO/FBS, persistence периода между сессиями, цветные оси на чарте Динамика.

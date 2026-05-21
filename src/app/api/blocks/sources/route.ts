@@ -19,6 +19,12 @@ import {
 } from '@/lib/blocks/catalog/unit-ozon-cluster-queries';
 import { OzonAnalyticsBlockConfigSchema } from '@/lib/blocks/catalog/unit-ozon-analytics-types';
 import FormulaParser, { MAX_COLUMN, MAX_ROW } from 'fast-formula-parser';
+import {
+  evaluateAllCells as evaluateCustomDataCells,
+  resultAsNumber as customDataResultAsNumber,
+  cellAddress as customDataCellAddress,
+  type FormulaEvalContext as CustomDataEvalContext,
+} from '@/lib/blocks/custom-data-formulas';
 
 type SourceField = {
   name: string;
@@ -510,6 +516,114 @@ function evaluateSheetCells(block: BlockInstance): { values: Map<string, number 
   return { values, moneyCells };
 }
 
+/**
+ * v0.18.26: server-side evaluator для блока `custom.data` — использует
+ * портативный formula engine из `src/lib/blocks/custom-data-formulas`.
+ * Возвращает source fields для cross-block picker:
+ *   - { name: 'value', value: aggregate(primaryColumn) }
+ *   - { name: '<colId>', value: aggregate(col) } для каждой publish-колонки
+ *   - { name: 'count', value: rows.length }
+ * @blockId.field refs не резолвятся (нет live-context); они подставляются 0
+ * через evaluator-fallback. Этого хватает для модалки связей — она показывает
+ * фиксированные литералы. На клиенте те же поля досчитываются с live-values.
+ */
+function computeCustomDataFields(block: BlockInstance): SourceField[] {
+  const cfg = (block.config ?? {}) as Record<string, unknown>;
+  const rawColumns = Array.isArray(cfg.columns) ? cfg.columns : [];
+  const rawRows = Array.isArray(cfg.rows) ? cfg.rows : [];
+  const publishMode = (typeof cfg.publishMode === 'string'
+    ? cfg.publishMode
+    : 'sum') as 'sum' | 'avg' | 'count' | 'last';
+
+  type Col = { id: string; label: string; format: 'rubles' | 'number' | 'percent' | 'text'; publish?: boolean };
+  const columns: Col[] = rawColumns
+    .filter((c): c is Record<string, unknown> => typeof c === 'object' && c !== null)
+    .map((c) => ({
+      id: String(c.id ?? ''),
+      label: typeof c.label === 'string' ? c.label : '',
+      format: (c.format === 'number' || c.format === 'percent' || c.format === 'text'
+        ? c.format
+        : 'rubles') as Col['format'],
+      publish: c.publish !== false,
+    }))
+    .filter((c) => c.id);
+
+  type Row = { id: string; label: string; cells: Record<string, { v: number | string | null; ref?: string; isMoney?: boolean } | undefined> };
+  const rows: Row[] = rawRows
+    .filter((r): r is Record<string, unknown> => typeof r === 'object' && r !== null)
+    .map((r) => {
+      const cells: Row['cells'] = {};
+      const rawCells = (r.cells ?? {}) as Record<string, unknown>;
+      for (const [k, v] of Object.entries(rawCells)) {
+        if (typeof v !== 'object' || v === null) continue;
+        const cv = v as Record<string, unknown>;
+        cells[k] = {
+          v: (typeof cv.v === 'number' || typeof cv.v === 'string' ? cv.v : null) as number | string | null,
+          ref: typeof cv.ref === 'string' ? cv.ref : undefined,
+          isMoney: typeof cv.isMoney === 'boolean' ? cv.isMoney : undefined,
+        };
+      }
+      return {
+        id: String(r.id ?? ''),
+        label: typeof r.label === 'string' ? r.label : '',
+        cells,
+      };
+    })
+    .filter((r) => r.id);
+
+  const ctx: CustomDataEvalContext = {
+    rows: rows.map((r) => ({ id: r.id, label: r.label, cells: r.cells })),
+    columns: columns.map((c) => ({ id: c.id, label: c.label, format: c.format })),
+    liveValues: {},
+    moneyRefs: {},
+  };
+  const cache = evaluateCustomDataCells(ctx);
+
+  function aggregate(colIdx: number, mode: typeof publishMode): number {
+    const nums: number[] = [];
+    for (let r = 0; r < rows.length; r++) {
+      const res = cache.get(customDataCellAddress(r, colIdx));
+      if (!res) continue;
+      const n = customDataResultAsNumber(res);
+      if (n !== null) nums.push(n);
+    }
+    if (nums.length === 0) return 0;
+    if (mode === 'sum') return nums.reduce((a, b) => a + b, 0);
+    if (mode === 'avg') return nums.reduce((a, b) => a + b, 0) / nums.length;
+    if (mode === 'count') return nums.length;
+    if (mode === 'last') return nums[nums.length - 1];
+    return 0;
+  }
+
+  const publishColIdx = columns.findIndex((c) => c.id === cfg.publishColumnId);
+  const primaryIdx = publishColIdx >= 0 ? publishColIdx : columns.findIndex((c) => c.publish);
+  const primaryColumn = primaryIdx >= 0 ? columns[primaryIdx] : columns[0];
+  const primaryValue = primaryColumn ? aggregate(primaryIdx >= 0 ? primaryIdx : 0, publishMode) : 0;
+  const primaryIsMoney = primaryColumn?.format === 'rubles';
+
+  const fields: SourceField[] = [
+    {
+      name: 'value',
+      label: primaryColumn?.label ? `Итог: ${primaryColumn.label}` : 'Значение',
+      value: primaryValue,
+      format: primaryIsMoney ? 'money' : primaryColumn?.format === 'percent' ? 'number' : 'number',
+    },
+    { name: 'count', label: 'Количество строк', value: rows.length, format: 'number' },
+  ];
+  for (let cIdx = 0; cIdx < columns.length; cIdx++) {
+    const col = columns[cIdx];
+    if (!col.publish) continue;
+    const v = aggregate(cIdx, publishMode);
+    fields.push({
+      name: col.id,
+      label: col.label || col.id,
+      value: v,
+      format: col.format === 'rubles' ? 'money' : col.format === 'text' ? 'text' : 'number',
+    });
+  }
+  return fields;
+}
+
 async function fieldsForBlock(
   block: BlockInstance,
   tenantId: string,
@@ -552,14 +666,10 @@ async function fieldsForBlock(
     ];
   }
   if (block.type === 'custom.data') {
-    const rows = Array.isArray(block.config?.rows) ? block.config.rows : [];
-    const values = rows.map((row) => typeof row === 'object' && row !== null && 'value' in row ? Number((row as { value?: unknown }).value) : 0);
-    const sum = values.filter(Number.isFinite).reduce((acc, v) => acc + v, 0);
-    return [
-      { name: 'value', label: 'Значение', value: sum, format: 'money' },
-      { name: 'sum', label: 'Сумма', value: sum, format: 'money' },
-      { name: 'count', label: 'Количество строк', value: rows.length },
-    ];
+    // v0.18.26: server-side evaluator с поддержкой формул (A1 / [row].col).
+    // @blockId.field refs резолвить здесь нельзя (нет live-context), но
+    // литералы / cross-cell формулы / диапазоны / агрегаты считаются полно.
+    return computeCustomDataFields(block);
   }
   if (block.type === 'sheet') {
     const evaluated = evaluateSheetCells(block);

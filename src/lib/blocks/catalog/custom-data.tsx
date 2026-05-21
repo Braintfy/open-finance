@@ -5,10 +5,10 @@
 'use client';
 
 import {
-  Fragment,
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import {
@@ -25,14 +25,37 @@ import {
   Type,
   Check,
   Maximize2,
+  GripVertical,
+  FunctionSquare,
+  AlertTriangle,
 } from 'lucide-react';
 import { z } from 'zod';
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  arrayMove,
+  horizontalListSortingStrategy,
+  verticalListSortingStrategy,
+  useSortable,
+  sortableKeyboardCoordinates,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import type { BlockDef, BlockRenderProps, BlockSettingsFormProps } from '../types';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
+import { Textarea } from '@/components/ui/textarea';
 import {
   Dialog,
   DialogContent,
@@ -40,6 +63,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { CurrencyInput } from '@/components/ui/currency-input';
 import { useBlockDensity } from '@/components/blocks/block-size';
 import { useFormatSettings, formatRublesWithSettings } from '@/lib/format-settings';
@@ -48,6 +77,14 @@ import {
   useAvailableBlockSources,
   useBlockValuePublisher,
 } from '../values';
+import {
+  evaluateAllCells,
+  resultAsNumber,
+  cellAddress,
+  type FormulaCell,
+  type FormulaResult,
+  type FormulaEvalContext,
+} from '../custom-data-formulas';
 import { cn } from '@/lib/utils';
 
 // ============================================================================
@@ -307,6 +344,71 @@ function formatColumnValue(
   return numeric.toLocaleString('ru-RU', {
     maximumFractionDigits: Number.isInteger(numeric) ? 0 : 2,
   });
+}
+
+/**
+ * Преобразует config колонок и строк в FormulaEvalContext, который понимает
+ * evaluator. `liveValues`/`moneyRefs` собираются на стороне рендера.
+ */
+function buildEvalContext(
+  columns: Column[],
+  rows: Row[],
+  liveValues: LiveValues,
+): FormulaEvalContext {
+  // moneyRefs собираем из `__money`-флагов всех блоков, а также из cell.isMoney
+  // (последнее уже учитывается в evaluator при kind='binding', но для @-ссылок
+  // в формулах нужно знать денежность ref'а в момент подстановки).
+  const moneyRefs: Record<string, boolean> = {};
+  for (const [key, _value] of Object.entries(liveValues)) {
+    void _value;
+    // ключи вида "<blockId>.__money" содержат CSV список денежных полей
+    if (key.endsWith('.__money')) {
+      const blockId = key.slice(0, -'.__money'.length);
+      const raw = String(liveValues[key] ?? '');
+      for (const field of raw.split(',').map((s) => s.trim()).filter(Boolean)) {
+        const refKey = field === 'value' ? blockId : `${blockId}.${field}`;
+        moneyRefs[refKey] = true;
+      }
+    }
+  }
+  return {
+    rows: rows as unknown as FormulaEvalContext['rows'],
+    columns: columns.map((c) => ({ id: c.id, label: c.label, format: c.format })),
+    liveValues,
+    moneyRefs,
+  };
+}
+
+/**
+ * Возвращает Map { "A1" → FormulaResult } со всеми посчитанными ячейками
+ * и считает агрегаты per-column.
+ */
+function computeAll(
+  columns: Column[],
+  rows: Row[],
+  liveValues: LiveValues,
+  mode: Config['publishMode'],
+): { cache: Map<string, FormulaResult>; aggregates: Record<string, number> } {
+  const ctx = buildEvalContext(columns, rows, liveValues);
+  const cache = evaluateAllCells(ctx);
+
+  const aggregates: Record<string, number> = {};
+  for (let cIdx = 0; cIdx < columns.length; cIdx++) {
+    const col = columns[cIdx];
+    if (col.format === 'text') {
+      aggregates[col.id] = 0;
+      continue;
+    }
+    const numeric: number[] = [];
+    for (let rIdx = 0; rIdx < rows.length; rIdx++) {
+      const result = cache.get(cellAddress(rIdx, cIdx));
+      if (!result) continue;
+      const n = resultAsNumber(result);
+      if (n !== null) numeric.push(n);
+    }
+    aggregates[col.id] = aggregateByMode(numeric, mode);
+  }
+  return { cache, aggregates };
 }
 
 function formatIcon(format: ColumnFormat) {
@@ -693,101 +795,360 @@ function CellRefPickerDialog({
 }
 
 // ============================================================================
-// Cell editor (manual or linked)
+// Cell popover editor (Notion-style: click → popover с табами)
 // ============================================================================
 
-function CellEditor({
+type CellEditorMode = 'value' | 'formula' | 'binding';
+
+function detectMode(cell: Cell | undefined): CellEditorMode {
+  if (cell?.ref) return 'binding';
+  if (typeof cell?.v === 'string' && cell.v.startsWith('=')) return 'formula';
+  return 'value';
+}
+
+function CellPopoverEditor({
   cell,
   column,
   showKopecks,
-  liveValues,
+  result,
+  isActive,
+  onActivate,
+  onClose,
   onChange,
+  onRequestPicker,
 }: {
   cell: Cell | undefined;
   column: Column;
   showKopecks: boolean;
-  liveValues: LiveValues;
+  result: FormulaResult | undefined;
+  isActive: boolean;
+  onActivate: () => void;
+  onClose: () => void;
   onChange: (next: Cell) => void;
+  onRequestPicker: () => void;
 }) {
-  const isLinked = Boolean(cell?.ref);
-  const resolved = resolveCellValue(cell, liveValues);
-  const display = formatColumnValue(resolved, column.format, showKopecks);
+  const initialMode = detectMode(cell);
+  const [mode, setMode] = useState<CellEditorMode>(initialMode);
+  // Draft значений per-tab — позволяют переключаться между табами без
+  // потери ввода. На «Сохранить» применяется тот таб, который сейчас активен.
+  const [valueDraft, setValueDraft] = useState<string>(() => {
+    if (cell?.ref) return '';
+    if (typeof cell?.v === 'number') return String(cell.v);
+    if (typeof cell?.v === 'string' && !cell.v.startsWith('=')) return cell.v;
+    return '';
+  });
+  const [formulaDraft, setFormulaDraft] = useState<string>(() => {
+    if (typeof cell?.v === 'string' && cell.v.startsWith('=')) return cell.v;
+    return '=';
+  });
 
-  if (isLinked) {
-    return (
-      <div className="group/cell flex items-center gap-1">
+  // При повторном открытии popover'а — пересчитать драфты из текущего cell.
+  useEffect(() => {
+    if (!isActive) return;
+    setMode(detectMode(cell));
+    setValueDraft(() => {
+      if (cell?.ref) return '';
+      if (typeof cell?.v === 'number') return String(cell.v);
+      if (typeof cell?.v === 'string' && !cell.v.startsWith('=')) return cell.v;
+      return '';
+    });
+    setFormulaDraft(() => {
+      if (typeof cell?.v === 'string' && cell.v.startsWith('=')) return cell.v;
+      return '=';
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isActive]);
+
+  const display = result
+    ? formatColumnValue(result.value, column.format, showKopecks)
+    : '—';
+  const hasError = Boolean(result?.error);
+  const isLinked = Boolean(cell?.ref);
+  const isFormula = typeof cell?.v === 'string' && cell.v.startsWith('=');
+
+  function commitValue() {
+    const trimmed = valueDraft.trim();
+    if (!trimmed) {
+      onChange({ v: null, ref: undefined, isMoney: undefined });
+    } else if (column.format === 'rubles' || column.format === 'number' || column.format === 'percent') {
+      const parsed = toNumeric(trimmed);
+      onChange({ v: parsed ?? trimmed, ref: undefined, isMoney: undefined });
+    } else {
+      onChange({ v: trimmed, ref: undefined, isMoney: undefined });
+    }
+    onClose();
+  }
+
+  function commitFormula() {
+    let v = formulaDraft.trim();
+    if (!v.startsWith('=')) v = '=' + v;
+    if (v === '=') {
+      onChange({ v: null, ref: undefined, isMoney: undefined });
+    } else {
+      onChange({ v, ref: undefined, isMoney: undefined });
+    }
+    onClose();
+  }
+
+  function commit() {
+    if (mode === 'value') commitValue();
+    else if (mode === 'formula') commitFormula();
+    // binding-tab commits через onRequestPicker → CellRefPickerDialog
+    onClose();
+  }
+
+  function clearCell() {
+    onChange({ v: null, ref: undefined, isMoney: undefined });
+    onClose();
+  }
+
+  function unlink() {
+    onChange({ v: cell?.v ?? null, ref: undefined, isMoney: undefined });
+    setMode('value');
+  }
+
+  return (
+    <Popover
+      open={isActive}
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+    >
+      <PopoverTrigger asChild>
         <button
           type="button"
-          onClick={() => onChange({ v: cell?.v ?? null, ref: undefined, isMoney: undefined })}
-          className="opacity-0 transition group-hover/cell:opacity-100"
-          title="Отвязать"
+          onClick={() => onActivate()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ' || e.key === 'F2') {
+              e.preventDefault();
+              onActivate();
+            }
+          }}
+          className={cn(
+            'flex h-7 w-full min-w-0 items-center gap-1 rounded px-1.5 text-xs tabular-nums transition',
+            column.format === 'text' ? 'justify-start' : 'justify-end',
+            hasError
+              ? 'border border-red-300 bg-red-50/60 text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300'
+              : isLinked
+                ? 'border border-amber-200 bg-amber-50/50 text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200'
+                : isFormula
+                  ? 'border border-sky-200 bg-sky-50/40 text-sky-900 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-200'
+                  : 'hover:bg-accent/40 focus-visible:bg-background focus-visible:ring-1 focus-visible:ring-primary',
+          )}
+          title={
+            hasError
+              ? `Ошибка: ${result?.error ?? '#ERR'}`
+              : isLinked
+                ? `Связь: @${cell?.ref}`
+                : isFormula
+                  ? `Формула: ${cell?.v}`
+                  : 'Кликните чтобы редактировать'
+          }
         >
-          <Unlink className="h-3 w-3 text-amber-600" />
-        </button>
-        <div
-          className="flex h-7 w-full min-w-0 items-center justify-end gap-1 rounded-md border border-amber-200 bg-amber-50/50 px-1.5 text-right text-xs tabular-nums text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200"
-          title={`@${cell?.ref}`}
-        >
-          <Link2 className="h-2.5 w-2.5 shrink-0 text-amber-600" />
+          {isLinked && <Link2 className="h-2.5 w-2.5 shrink-0 text-amber-600" />}
+          {isFormula && !isLinked && (
+            <FunctionSquare className="h-2.5 w-2.5 shrink-0 text-sky-600" />
+          )}
+          {hasError && (
+            <AlertTriangle className="h-2.5 w-2.5 shrink-0 text-red-500" />
+          )}
           <span className="truncate">{display}</span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        className="w-80 p-3"
+        onOpenAutoFocus={(e) => e.preventDefault()}
+        align="start"
+      >
+        <Tabs value={mode} onValueChange={(v) => setMode(v as CellEditorMode)}>
+          <TabsList className="grid w-full grid-cols-3">
+            <TabsTrigger value="value">Значение</TabsTrigger>
+            <TabsTrigger value="formula">
+              <FunctionSquare className="h-3 w-3" />
+              Формула
+            </TabsTrigger>
+            <TabsTrigger value="binding">
+              <Link2 className="h-3 w-3" />
+              Связь
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="value" className="space-y-2">
+            {column.format === 'rubles' ? (
+              <CurrencyInput
+                value={toNumeric(valueDraft) ?? 0}
+                showKopecks={showKopecks}
+                onChange={(v) => setValueDraft(String(v))}
+                className="h-9 text-right text-sm tabular-nums"
+              />
+            ) : column.format === 'percent' || column.format === 'number' ? (
+              <Input
+                type="text"
+                inputMode="decimal"
+                value={valueDraft}
+                onChange={(e) => setValueDraft(e.target.value)}
+                placeholder={column.format === 'percent' ? '0%' : '0'}
+                className="h-9 text-right text-sm tabular-nums"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') commitValue();
+                  if (e.key === 'Escape') onClose();
+                }}
+              />
+            ) : (
+              <Input
+                type="text"
+                value={valueDraft}
+                onChange={(e) => setValueDraft(e.target.value)}
+                placeholder="—"
+                className="h-9 text-sm"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') commitValue();
+                  if (e.key === 'Escape') onClose();
+                }}
+              />
+            )}
+            <p className="text-[10px] text-muted-foreground">
+              Введите число/текст. Для формулы переключитесь на вкладку «Формула».
+            </p>
+          </TabsContent>
+
+          <TabsContent value="formula" className="space-y-2">
+            <Textarea
+              value={formulaDraft}
+              onChange={(e) => setFormulaDraft(e.target.value)}
+              rows={3}
+              placeholder="=A1+B1  или  =[Метиленовый синий].qty*0.5"
+              className="font-mono text-[12px] leading-5"
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault();
+                  commitFormula();
+                }
+                if (e.key === 'Escape') onClose();
+              }}
+            />
+            <div className="flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => onRequestPicker()}
+                className="inline-flex h-6 items-center gap-1 rounded bg-amber-50 px-2 text-[11px] font-semibold text-amber-700 transition hover:bg-amber-100 dark:bg-amber-950 dark:text-amber-300"
+                title="Вставить ссылку @блок.поле"
+              >
+                <Link2 className="h-3 w-3" /> @связать
+              </button>
+              {result && result.error && (
+                <span className="inline-flex items-center gap-1 rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-700 dark:bg-red-950 dark:text-red-300">
+                  <AlertTriangle className="h-2.5 w-2.5" />
+                  {result.error}
+                </span>
+              )}
+            </div>
+            <div className="rounded-md bg-muted/30 p-2 text-[10px] leading-relaxed text-muted-foreground">
+              <p>
+                <span className="font-semibold">A1-нотация:</span> <code>=A1+B2</code>,{' '}
+                <code>=SUM(A1:A10)</code>
+              </p>
+              <p>
+                <span className="font-semibold">Именованная:</span>{' '}
+                <code>=[Название строки].id_колонки * 0.5</code>
+              </p>
+              <p>
+                <span className="font-semibold">Cross-block:</span>{' '}
+                <code>=@блок.field + 100</code>
+              </p>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="binding" className="space-y-2">
+            {isLinked ? (
+              <div className="space-y-2">
+                <div className="rounded-md border border-amber-200 bg-amber-50/40 p-2 text-[11px] dark:border-amber-900 dark:bg-amber-950/40">
+                  <div className="font-mono text-amber-700 dark:text-amber-300">
+                    @{cell?.ref}
+                  </div>
+                  <div className="mt-1 text-muted-foreground">
+                    Текущее значение: <span className="font-semibold">{display}</span>
+                  </div>
+                </div>
+                <div className="flex gap-1.5">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 flex-1 text-xs"
+                    onClick={onRequestPicker}
+                  >
+                    Выбрать другой
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={unlink}
+                  >
+                    <Unlink className="h-3 w-3" /> Отвязать
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <p className="text-[11px] text-muted-foreground">
+                  Связать ячейку со значением другого блока. Изменения подтягиваются
+                  автоматически.
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 w-full text-xs"
+                  onClick={onRequestPicker}
+                >
+                  <Link2 className="h-3 w-3" /> Выбрать блок и поле
+                </Button>
+              </div>
+            )}
+          </TabsContent>
+        </Tabs>
+
+        <div className="mt-3 flex items-center justify-between gap-2 border-t border-border/40 pt-2">
+          <button
+            type="button"
+            onClick={clearCell}
+            className="text-[10px] text-muted-foreground hover:text-red-500"
+          >
+            Очистить ячейку
+          </button>
+          <div className="flex gap-1.5">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={onClose}
+            >
+              Отмена
+            </Button>
+            {mode !== 'binding' && (
+              <Button size="sm" className="h-7 text-xs" onClick={commit}>
+                Сохранить
+              </Button>
+            )}
+          </div>
         </div>
-      </div>
-    );
-  }
-
-  if (column.format === 'rubles') {
-    const numericValue =
-      typeof cell?.v === 'number' ? cell.v : toNumeric(cell?.v ?? null) ?? 0;
-    return (
-      <CurrencyInput
-        value={numericValue}
-        showKopecks={showKopecks}
-        onChange={(v) => onChange({ v, ref: undefined, isMoney: undefined })}
-        className="h-7 w-full border-none bg-transparent px-1 text-right text-xs tabular-nums shadow-none focus-visible:bg-background"
-      />
-    );
-  }
-
-  if (column.format === 'number' || column.format === 'percent') {
-    const numericValue =
-      typeof cell?.v === 'number'
-        ? String(cell.v)
-        : typeof cell?.v === 'string'
-          ? cell.v
-          : '';
-    return (
-      <Input
-        type="text"
-        inputMode="decimal"
-        value={numericValue}
-        onChange={(e) => {
-          const raw = e.target.value;
-          const parsed = toNumeric(raw);
-          onChange({ v: parsed ?? raw, ref: undefined, isMoney: undefined });
-        }}
-        placeholder={column.format === 'percent' ? '0%' : '0'}
-        className="h-7 w-full border-none bg-transparent px-1 text-right text-xs tabular-nums shadow-none focus-visible:bg-background"
-      />
-    );
-  }
-
-  // text
-  return (
-    <Input
-      type="text"
-      value={typeof cell?.v === 'string' ? cell.v : cell?.v != null ? String(cell.v) : ''}
-      onChange={(e) =>
-        onChange({ v: e.target.value, ref: undefined, isMoney: undefined })
-      }
-      placeholder="—"
-      className="h-7 w-full border-none bg-transparent px-1 text-xs shadow-none focus-visible:bg-background"
-    />
+      </PopoverContent>
+    </Popover>
   );
 }
 
 // ============================================================================
 // Render
 // ============================================================================
+
+/** Порог виртуализации: при rows.length > VIRTUAL_THRESHOLD используется
+ * @tanstack/react-virtual для рендера только видимых строк. Ниже порога —
+ * обычный grid (быстрее и проще для типичных таблиц 5-50 строк). */
+const VIRTUAL_THRESHOLD = 50;
+const VIRTUAL_ROW_HEIGHT = 32;
 
 function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
   const config = parseConfig(instance.config);
@@ -798,7 +1159,13 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
   const title = instance.appearance?.title ?? 'Данные';
   const liveValues = useAllBlockValues();
 
+  // pickerCell = ячейка, для которой открывается CellRefPickerDialog
+  // (вызывается из popover'а активной ячейки или из FormulaBar @связать).
   const [pickerCell, setPickerCell] = useState<{ rowId: string; columnId: string } | null>(null);
+
+  // activeCell = ячейка с открытым popover-редактором. Используется также
+  // formula bar'ом сверху.
+  const [activeCell, setActiveCell] = useState<{ rowId: string; columnId: string } | null>(null);
 
   /**
    * Drag-state для resize колонок. Локальный — обновляется на каждое движение
@@ -815,26 +1182,14 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
     currentWidth: number;
   } | null>(null);
 
-  // ── Aggregate per column ──
-  const aggregates = useMemo(() => {
-    const result: Record<string, number> = {};
-    for (const col of config.columns) {
-      if (col.format === 'text') {
-        result[col.id] = 0;
-        continue;
-      }
-      const numeric: number[] = [];
-      for (const row of config.rows) {
-        const cell = row.cells[col.id];
-        const value = resolveCellValue(cell, liveValues);
-        const n = toNumeric(value);
-        if (n !== null) numeric.push(n);
-      }
-      result[col.id] = aggregateByMode(numeric, config.publishMode);
-    }
-    return result;
+  // ── Compute all cells + aggregates через единый evaluator ──
+  // computeAll рассчитывает FormulaResult per cell с поддержкой A1, [row].col
+  // и @blockId.field. Кэш переиспользуется через cellCache между ячейками.
+  const { cache: cellCache, aggregates } = useMemo(
+    () => computeAll(config.columns, config.rows, liveValues, config.publishMode),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config.columns, config.rows, config.publishMode, liveValues]);
+    [config.columns, config.rows, config.publishMode, liveValues],
+  );
 
   const primaryColumn =
     config.columns.find((c) => c.id === config.publishColumnId) ??
@@ -929,6 +1284,31 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
     };
     updateCell(pickerCell.rowId, pickerCell.columnId, next);
     setPickerCell(null);
+    setActiveCell(null);
+  }
+
+  // ── DnD reorder: колонки + строки через @dnd-kit/sortable ──
+  // Использует общие sensors для обоих контекстов (pointer + keyboard).
+  // activationConstraint: distance 4px — чтобы случайные клики не запускали drag.
+  const dndSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+  function onColumnsDragEnd(e: DragEndEvent) {
+    if (!e.over || e.over.id === e.active.id) return;
+    const oldIdx = config.columns.findIndex((c) => c.id === e.active.id);
+    const newIdx = config.columns.findIndex((c) => c.id === e.over!.id);
+    if (oldIdx < 0 || newIdx < 0) return;
+    patch({ columns: arrayMove(config.columns, oldIdx, newIdx) });
+  }
+
+  function onRowsDragEnd(e: DragEndEvent) {
+    if (!e.over || e.over.id === e.active.id) return;
+    const oldIdx = config.rows.findIndex((r) => r.id === e.active.id);
+    const newIdx = config.rows.findIndex((r) => r.id === e.over!.id);
+    if (oldIdx < 0 || newIdx < 0) return;
+    patch({ rows: arrayMove(config.rows, oldIdx, newIdx) });
   }
 
   // Aggregate display in header — use primary column
@@ -952,6 +1332,19 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
     return map;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config.columns, config.rows, liveValues, showKopecks]);
+
+  // ── Virtualization (для больших таблиц > VIRTUAL_THRESHOLD строк) ──
+  // useVirtualizer всегда вызывается (rules-of-hooks), но enabled=false
+  // делает его no-op для маленьких таблиц.
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const enableVirtual = config.rows.length > VIRTUAL_THRESHOLD;
+  const virtualizer = useVirtualizer({
+    count: config.rows.length,
+    getScrollElement: () => scrollContainerRef.current,
+    estimateSize: () => VIRTUAL_ROW_HEIGHT,
+    overscan: 8,
+    enabled: enableVirtual,
+  });
 
   // ── XS — только итог ──
   if (density === 'xs') {
@@ -1005,7 +1398,9 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
   const valueColTemplate = config.columns
     .map((c) => `${effectiveValueWidth(c)}px`)
     .join(' ');
-  const gridTemplateColumns = `${effectiveLabelWidth()}px ${valueColTemplate} 16px`;
+  // v0.18.26: добавлен 20px slot слева под drag-handle строки (показывается
+  // на hover'е), 16px справа — кнопка удаления.
+  const gridTemplateColumns = `20px ${effectiveLabelWidth()}px ${valueColTemplate} 16px`;
 
   // ── Drag handlers (column resize) ──
   function startLabelResize(e: React.PointerEvent) {
@@ -1066,6 +1461,53 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
     });
   }
 
+  // ── Formula bar context: текущая активная ячейка ──
+  const activeColIdx = activeCell
+    ? config.columns.findIndex((c) => c.id === activeCell.columnId)
+    : -1;
+  const activeRowIdx = activeCell
+    ? config.rows.findIndex((r) => r.id === activeCell.rowId)
+    : -1;
+  const activeAddr =
+    activeRowIdx >= 0 && activeColIdx >= 0 ? cellAddress(activeRowIdx, activeColIdx) : '';
+  const activeCellData =
+    activeCell && activeRowIdx >= 0
+      ? config.rows[activeRowIdx].cells[activeCell.columnId]
+      : undefined;
+  const activeResult = activeAddr ? cellCache.get(activeAddr) : undefined;
+  const activeColumn = activeCell
+    ? config.columns.find((c) => c.id === activeCell.columnId)
+    : undefined;
+  const activeRaw = (() => {
+    if (!activeCell || !activeCellData) return '';
+    if (activeCellData.ref) return `@${activeCellData.ref}`;
+    if (typeof activeCellData.v === 'string') return activeCellData.v;
+    if (typeof activeCellData.v === 'number') return String(activeCellData.v);
+    return '';
+  })();
+
+  // ── Render row helper (общий для virtual/non-virtual путей) ──
+  function renderRow(row: Row, rIdx: number) {
+    return (
+      <SortableRowGroup
+        key={row.id}
+        row={row}
+        rIdx={rIdx}
+        columns={config.columns}
+        cellCache={cellCache}
+        showKopecks={showKopecks}
+        activeCell={activeCell}
+        onActivate={(col) => setActiveCell({ rowId: row.id, columnId: col.id })}
+        onCloseActive={() => setActiveCell(null)}
+        onLabelChange={(label) => updateRow(row.id, { label })}
+        onCellChange={(col, next) => updateCell(row.id, col.id, next)}
+        onRequestPicker={(col) => setPickerCell({ rowId: row.id, columnId: col.id })}
+        onRemove={() => removeRow(row.id)}
+        gridTemplateColumns={gridTemplateColumns}
+      />
+    );
+  }
+
   return (
     <Card
       className="flex h-full min-h-0 flex-col"
@@ -1104,7 +1546,45 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
         </div>
       </header>
 
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-auto px-3 pb-3">
+      {/* Formula bar — sticky thin row под header'ом, видна когда есть activeCell.
+          Показывает A1-адрес, сырое содержимое (формулу/литерал/binding) и
+          ошибки. Edit идёт в popover'е, formula bar только read-only превью. */}
+      {activeCell && activeColumn && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-border/40 bg-muted/20 px-3 py-1.5">
+          <span className="inline-flex h-5 items-center rounded bg-background px-1.5 font-mono text-[10px] font-semibold text-muted-foreground ring-1 ring-border/60">
+            {activeAddr}
+          </span>
+          <FunctionSquare className="h-3 w-3 shrink-0 text-muted-foreground" />
+          <code
+            className={cn(
+              'min-w-0 flex-1 truncate font-mono text-[11px]',
+              activeResult?.error ? 'text-red-600' : 'text-foreground',
+            )}
+            title={activeRaw || 'пусто'}
+          >
+            {activeRaw || <span className="text-muted-foreground/60">пусто</span>}
+          </code>
+          {activeResult?.error && (
+            <span className="inline-flex items-center gap-1 rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-700 dark:bg-red-950 dark:text-red-300">
+              <AlertTriangle className="h-2.5 w-2.5" />
+              {activeResult.error}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => setActiveCell(null)}
+            className="text-[10px] text-muted-foreground hover:text-foreground"
+            aria-label="Закрыть редактор"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+      )}
+
+      <div
+        ref={scrollContainerRef}
+        className="flex min-h-0 min-w-0 flex-1 flex-col overflow-auto px-3 pb-3"
+      >
         {config.rows.length === 0 ? (
           <div className="flex flex-1 items-center justify-center rounded-md border border-dashed border-border/60 bg-muted/30 p-3 text-center text-xs text-muted-foreground">
             <div>
@@ -1113,99 +1593,95 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
             </div>
           </div>
         ) : (
-          <div
-            className="grid items-stretch gap-x-1.5 gap-y-1"
-            style={{ gridTemplateColumns }}
-          >
-            {/* Header row — label column (с правым drag-handle для resize) */}
-            <div className="relative flex items-center text-[10px] uppercase tracking-wide text-muted-foreground">
-              <span className="select-none">&nbsp;</span>
-              <span
-                onPointerDown={startLabelResize}
-                title="Перетащить — изменить ширину колонки названий"
-                className={cn(
-                  'absolute -right-1.5 top-0 h-full w-2 cursor-col-resize select-none touch-none',
-                  'after:pointer-events-none after:absolute after:right-1.5 after:top-1 after:h-[calc(100%-4px)] after:w-px after:bg-transparent',
-                  'hover:after:bg-primary/40',
-                  dragState?.kind === 'label' && 'after:bg-primary/60',
-                )}
-              />
-            </div>
-            {config.columns.map((col, colIdx) => {
-              const Icon = formatIcon(col.format);
-              const isLast = colIdx === config.columns.length - 1;
-              return (
+          <>
+            {/* Header row (sortable columns) */}
+            <DndContext
+              sensors={dndSensors}
+              collisionDetection={closestCenter}
+              onDragEnd={onColumnsDragEnd}
+            >
+              <SortableContext
+                items={config.columns.map((c) => c.id)}
+                strategy={horizontalListSortingStrategy}
+              >
                 <div
-                  key={`h-${col.id}`}
-                  className="relative flex items-center justify-end gap-1 text-[10px] uppercase tracking-wide text-muted-foreground"
+                  className="grid items-stretch gap-x-1.5"
+                  style={{ gridTemplateColumns }}
                 >
-                  <Icon className="h-2.5 w-2.5" />
-                  <span className="truncate">{col.label}</span>
-                  {!isLast && (
+                  {/* пустой 20px-slot над drag-handle строк */}
+                  <div />
+                  {/* label-колонка header — с правым drag-handle для resize */}
+                  <div className="relative flex items-center text-[10px] uppercase tracking-wide text-muted-foreground/60">
+                    <span className="select-none">Строка</span>
                     <span
-                      onPointerDown={(e) => startValueResize(e, col)}
-                      title="Перетащить — изменить ширину колонки"
+                      onPointerDown={startLabelResize}
+                      title="Перетащить — изменить ширину колонки названий"
                       className={cn(
-                        'absolute -right-1.5 top-0 h-full w-2 cursor-col-resize select-none touch-none',
+                        'absolute -right-1.5 top-0 z-10 h-full w-2 cursor-col-resize select-none touch-none',
                         'after:pointer-events-none after:absolute after:right-1.5 after:top-1 after:h-[calc(100%-4px)] after:w-px after:bg-transparent',
                         'hover:after:bg-primary/40',
-                        dragState?.kind === 'value' &&
-                          dragState.columnId === col.id &&
-                          'after:bg-primary/60',
+                        dragState?.kind === 'label' && 'after:bg-primary/60',
                       )}
                     />
-                  )}
-                </div>
-              );
-            })}
-            <div />
-
-            {/* Rows */}
-            {config.rows.map((row) => (
-              <Fragment key={row.id}>
-                <div className="flex min-w-0 items-center rounded-md border border-border/40 bg-muted/20 px-2 py-1">
-                  <Input
-                    value={row.label}
-                    onChange={(e) => updateRow(row.id, { label: e.target.value })}
-                    className="h-6 w-full min-w-0 truncate border-none bg-transparent px-0 text-xs shadow-none focus-visible:bg-background"
-                    placeholder="Название"
-                  />
-                </div>
-                {config.columns.map((col) => (
-                  <div
-                    key={`${row.id}-${col.id}`}
-                    className="group/cell-wrap relative flex items-center rounded-md border border-border/40 bg-muted/20 px-1"
-                  >
-                    <CellEditor
-                      cell={row.cells[col.id]}
-                      column={col}
-                      showKopecks={showKopecks}
-                      liveValues={liveValues}
-                      onChange={(next) => updateCell(row.id, col.id, next)}
-                    />
-                    {!row.cells[col.id]?.ref && col.format !== 'text' && (
-                      <button
-                        type="button"
-                        onClick={() => setPickerCell({ rowId: row.id, columnId: col.id })}
-                        className="absolute -left-1 -top-1 z-10 hidden rounded bg-amber-100 px-1 text-[9px] font-semibold text-amber-700 ring-1 ring-amber-200 hover:bg-amber-200 group-hover/cell-wrap:inline-flex dark:bg-amber-950 dark:text-amber-300 dark:ring-amber-800"
-                        title="Связать ячейку с другим блоком"
-                      >
-                        @
-                      </button>
-                    )}
                   </div>
-                ))}
-                <button
-                  type="button"
-                  onClick={() => removeRow(row.id)}
-                  className="flex items-center justify-center rounded text-muted-foreground/40 transition hover:text-red-500"
-                  aria-label="Удалить строку"
-                >
-                  <Trash2 className="h-3 w-3" />
-                </button>
-              </Fragment>
-            ))}
-          </div>
+                  {config.columns.map((col, colIdx) => {
+                    const isLast = colIdx === config.columns.length - 1;
+                    return (
+                      <SortableColumnHeader
+                        key={`h-${col.id}`}
+                        column={col}
+                        isLast={isLast}
+                        startResize={startValueResize}
+                        dragState={dragState}
+                      />
+                    );
+                  })}
+                  <div />
+                </div>
+              </SortableContext>
+            </DndContext>
+
+            {/* Body — sortable rows; виртуализация при rows > VIRTUAL_THRESHOLD */}
+            <DndContext
+              sensors={dndSensors}
+              collisionDetection={closestCenter}
+              onDragEnd={onRowsDragEnd}
+            >
+              <SortableContext
+                items={config.rows.map((r) => r.id)}
+                strategy={verticalListSortingStrategy}
+              >
+                {enableVirtual ? (
+                  <div
+                    className="relative pt-1"
+                    style={{ height: virtualizer.getTotalSize() }}
+                  >
+                    {virtualizer.getVirtualItems().map((vi) => {
+                      const row = config.rows[vi.index];
+                      return (
+                        <div
+                          key={row.id}
+                          style={{
+                            position: 'absolute',
+                            top: 0,
+                            left: 0,
+                            right: 0,
+                            transform: `translateY(${vi.start}px)`,
+                          }}
+                        >
+                          {renderRow(row, vi.index)}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="space-y-1 pt-1">
+                    {config.rows.map((row, rIdx) => renderRow(row, rIdx))}
+                  </div>
+                )}
+              </SortableContext>
+            </DndContext>
+          </>
         )}
 
         <div className="mt-auto flex items-center gap-1 pt-2">
@@ -1247,6 +1723,169 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
         onPick={pickRefForCell}
       />
     </Card>
+  );
+}
+
+// ============================================================================
+// Sortable column header (DnD + resize handle + type icon)
+// ============================================================================
+
+function SortableColumnHeader({
+  column,
+  isLast,
+  startResize,
+  dragState,
+}: {
+  column: Column;
+  isLast: boolean;
+  startResize: (e: React.PointerEvent, col: Column) => void;
+  dragState: { kind: 'label' | 'value'; columnId?: string } | null;
+}) {
+  const sortable = useSortable({ id: column.id });
+  const Icon = formatIcon(column.format);
+  // v0.18.26: last column resize fixed — handle теперь рендерится для всех
+  // колонок, включая последнюю. Для last handle смещён внутрь (right-0),
+  // чтобы не вылезать за пределы Card и не пропадать под скроллом.
+  return (
+    <div
+      ref={sortable.setNodeRef}
+      style={{
+        transform: CSS.Transform.toString(sortable.transform),
+        transition: sortable.transition,
+      }}
+      className={cn(
+        'group/colh relative flex items-center justify-end gap-1 text-[10px] uppercase tracking-wide text-muted-foreground',
+        sortable.isDragging && 'opacity-50',
+      )}
+    >
+      <button
+        type="button"
+        {...sortable.attributes}
+        {...sortable.listeners}
+        className="hidden cursor-grab opacity-0 transition group-hover/colh:flex group-hover/colh:opacity-60 hover:opacity-100"
+        title="Перетащить колонку"
+        aria-label="Перетащить колонку"
+      >
+        <GripVertical className="h-3 w-3" />
+      </button>
+      <Icon className="h-2.5 w-2.5" />
+      <span className="truncate">{column.label}</span>
+      <span
+        onPointerDown={(e) => startResize(e, column)}
+        title="Перетащить — изменить ширину колонки"
+        className={cn(
+          'absolute top-0 z-10 h-full w-2 cursor-col-resize select-none touch-none',
+          isLast ? 'right-0' : '-right-1.5',
+          'after:pointer-events-none after:absolute after:top-1 after:h-[calc(100%-4px)] after:w-px after:bg-transparent',
+          isLast ? 'after:right-0' : 'after:right-1.5',
+          'hover:after:bg-primary/40',
+          dragState?.kind === 'value' &&
+            dragState.columnId === column.id &&
+            'after:bg-primary/60',
+        )}
+      />
+    </div>
+  );
+}
+
+// ============================================================================
+// Sortable row group — drag-handle + label + cells + delete
+// ============================================================================
+
+function SortableRowGroup({
+  row,
+  rIdx,
+  columns,
+  cellCache,
+  showKopecks,
+  activeCell,
+  onActivate,
+  onCloseActive,
+  onLabelChange,
+  onCellChange,
+  onRequestPicker,
+  onRemove,
+  gridTemplateColumns,
+}: {
+  row: Row;
+  rIdx: number;
+  columns: Column[];
+  cellCache: Map<string, FormulaResult>;
+  showKopecks: boolean;
+  activeCell: { rowId: string; columnId: string } | null;
+  onActivate: (col: Column) => void;
+  onCloseActive: () => void;
+  onLabelChange: (label: string) => void;
+  onCellChange: (col: Column, next: Cell) => void;
+  onRequestPicker: (col: Column) => void;
+  onRemove: () => void;
+  gridTemplateColumns: string;
+}) {
+  const sortable = useSortable({ id: row.id });
+  return (
+    <div
+      ref={sortable.setNodeRef}
+      style={{
+        transform: CSS.Transform.toString(sortable.transform),
+        transition: sortable.transition,
+        gridTemplateColumns,
+      }}
+      className={cn(
+        'group/row grid items-stretch gap-x-1.5 gap-y-1 py-0.5',
+        sortable.isDragging && 'z-10 opacity-50',
+      )}
+    >
+      <button
+        type="button"
+        {...sortable.attributes}
+        {...sortable.listeners}
+        className="flex items-center justify-center text-muted-foreground/40 opacity-0 transition group-hover/row:opacity-100 hover:text-foreground"
+        title="Перетащить строку"
+        aria-label="Перетащить строку"
+      >
+        <GripVertical className="h-3 w-3" />
+      </button>
+      <div className="flex min-w-0 items-center rounded-md border border-border/40 bg-muted/20 px-2 py-1">
+        <Input
+          value={row.label}
+          onChange={(e) => onLabelChange(e.target.value)}
+          className="h-6 w-full min-w-0 truncate border-none bg-transparent px-0 text-xs shadow-none focus-visible:bg-background"
+          placeholder="Название"
+        />
+      </div>
+      {columns.map((col, cIdx) => {
+        const addr = cellAddress(rIdx, cIdx);
+        const result = cellCache.get(addr);
+        const isActive =
+          activeCell?.rowId === row.id && activeCell?.columnId === col.id;
+        return (
+          <div
+            key={`${row.id}-${col.id}`}
+            className="relative flex items-center rounded-md border border-border/40 bg-muted/20 px-1"
+          >
+            <CellPopoverEditor
+              cell={row.cells[col.id]}
+              column={col}
+              showKopecks={showKopecks}
+              result={result}
+              isActive={isActive}
+              onActivate={() => onActivate(col)}
+              onClose={onCloseActive}
+              onChange={(next) => onCellChange(col, next)}
+              onRequestPicker={() => onRequestPicker(col)}
+            />
+          </div>
+        );
+      })}
+      <button
+        type="button"
+        onClick={onRemove}
+        className="flex items-center justify-center rounded text-muted-foreground/40 opacity-0 transition group-hover/row:opacity-100 hover:text-red-500"
+        aria-label="Удалить строку"
+      >
+        <Trash2 className="h-3 w-3" />
+      </button>
+    </div>
   );
 }
 

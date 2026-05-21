@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { AlertTriangle, Info, LineChart as LineIcon, SlidersHorizontal } from 'lucide-react';
 import { useBlockValuePublisher } from '@/lib/blocks/values';
 import { usePersistedPeriodValue } from '@/lib/blocks/use-persisted-period';
+import { useBlockSize } from '@/components/blocks/block-size';
 import { Card } from '@/components/ui/card';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
@@ -107,6 +108,16 @@ function todayLocalISO(): string {
 
 function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
   const config = useMemo(() => parseConfig(instance.config), [instance.config]);
+  const { width: blockWidth, height: blockHeight } = useBlockSize();
+  // Адаптивные пороги по ширине/высоте блока:
+  // - narrow  (<320px)  — скрываем подписи в badges, оставляем только цифры.
+  // - micro   (<240px)  — header в одну строку, без granularity selector.
+  // - shortH  (<180px)  — сильно укорачиваем верхнюю панель, скрываем info-badges (sync-status).
+  // Эти пороги выбраны эмпирически из реальных размеров блока 4×3 → 12×8.
+  const narrow = blockWidth > 0 && blockWidth < 320;
+  const micro = blockWidth > 0 && blockWidth < 240;
+  const shortH = blockHeight > 0 && blockHeight < 180;
+  const tinyAxis = blockWidth > 0 && blockWidth < 380;
   const [metricsOpen, setMetricsOpen] = useState(false);
   const { value: period, setValue: setPeriod } = usePersistedPeriodValue({
     instanceId: instance.id,
@@ -249,6 +260,10 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
   const yAxes: ChartYAxis[] = useMemo(() => {
     const used = new Set(series.map((s) => s.yAxisId));
     const axes: ChartYAxis[] = [];
+    // Адаптивно ужимаем оси на узких блоках:
+    // 52 → 40 (rub) и 40 → 32 (pct), чтобы не съедать пространство чарта.
+    const rubW = tinyAxis ? 40 : 52;
+    const pctW = tinyAxis ? 32 : 40;
     // v0.18.25: цветные оси — каждая ось окрашена в цвет своей основной
     // серии, что позволяет визуально связать линию с её шкалой без
     // дополнительных подписей. Подход аналогичен Yoolip Analytics.
@@ -260,7 +275,7 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
         colored: true,
         domain: ['auto', 'dataMax'],
         formatter: (v) => formatRubShort(v),
-        width: 52,
+        width: rubW,
       });
     }
     if (used.has('rubRight')) {
@@ -271,7 +286,7 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
         colored: true,
         domain: ['auto', 'dataMax'],
         formatter: (v) => formatRubShort(v),
-        width: 52,
+        width: rubW,
       });
     }
     if (used.has('orders')) {
@@ -296,11 +311,11 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
         colored: true,
         domain: [0, 'dataMax'],
         formatter: (v) => `${v.toFixed(0)}%`,
-        width: 40,
+        width: pctW,
       });
     }
     return axes;
-  }, [series, ordersMax]);
+  }, [series, ordersMax, tinyAxis]);
 
   const totals = useMemo(() => {
     let revenue = 0;
@@ -339,29 +354,51 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
     } as unknown as Record<string, unknown>);
   }
 
+  // На очень узких блоках Period+Granularity+Metrics не помещаются в одну
+  // строку — оставляем только PeriodPicker и кнопку метрик (granularity
+  // переезжает в Settings блока, где она и так управляется).
+  const showGranularitySelect = !micro;
+  // Badges с подписями «Выручка / Расход / ДРР» съедают много места —
+  // на узких блоках оставляем только цвет-фон и значение.
+  const showBadgeLabels = !narrow;
+  // Info-badges (Эталон Ads, Postings legacy, Реклама ≈, Сегодня скрыт) —
+  // полезны на больших блоках, на маленьких высоту чарта режут.
+  const showInfoBadges = !shortH && !micro;
+
   return (
-    <Card className="flex h-full flex-col overflow-hidden p-3">
-      <div className="mb-2 flex flex-wrap items-center gap-2">
+    <Card className="flex h-full min-h-0 flex-col overflow-hidden p-3">
+      <div className="mb-2 flex shrink-0 flex-wrap items-center gap-1.5">
         <PeriodPicker value={period} onChange={setPeriod} compact />
-        <select
-          value={granularity}
-          onChange={(e) =>
-            setGranularity(e.target.value as OzonChartBlockConfig['granularity'])
-          }
-          className="h-7 rounded-md border border-input bg-background px-2 text-[11px] text-foreground hover:border-primary/40 focus:border-primary focus:outline-none"
-        >
-          <option value="day">по дням</option>
-          <option value="week">по неделям</option>
-          <option value="month">по месяцам</option>
-        </select>
+        {showGranularitySelect && (
+          <select
+            value={granularity}
+            onChange={(e) =>
+              setGranularity(e.target.value as OzonChartBlockConfig['granularity'])
+            }
+            className="h-7 rounded-md border border-input bg-background px-2 text-[11px] text-foreground hover:border-primary/40 focus:border-primary focus:outline-none"
+          >
+            <option value="day">по дням</option>
+            <option value="week">по неделям</option>
+            <option value="month">по месяцам</option>
+          </select>
+        )}
         <div className="relative">
           <button
             type="button"
             onClick={() => setMetricsOpen((v) => !v)}
             className="inline-flex h-7 items-center gap-1.5 rounded-md border border-input bg-background px-2 text-[11px] text-foreground hover:border-primary/40"
+            title={micro ? `Метрики (${enabledCount}/${totalCount})` : undefined}
           >
             <SlidersHorizontal className="h-3 w-3" />
-            Метрики ({enabledCount}/{totalCount})
+            {micro ? (
+              <span className="tabular-nums">
+                {enabledCount}/{totalCount}
+              </span>
+            ) : (
+              <>
+                Метрики ({enabledCount}/{totalCount})
+              </>
+            )}
           </button>
           {metricsOpen && (
             <>
@@ -403,7 +440,7 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
             </>
           )}
         </div>
-        {hiddenTodayPoint && (
+        {showInfoBadges && hiddenTodayPoint && (
           <span
             className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground"
             title="Текущий день скрыт — данные не полные. Точка «сегодня» дозревает в течение суток, поэтому исключена из графика и тоталов."
@@ -412,7 +449,7 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
             Сегодня скрыт
           </span>
         )}
-        {data?.adsSource === 'expense' && (
+        {showInfoBadges && data?.adsSource === 'expense' && (
           <span
             className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
             title="Расход — эталон Performance API /statistics/expense (все типы кампаний + бонусы)."
@@ -420,7 +457,7 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
             Эталон Ads
           </span>
         )}
-        {data?.ordersSource === 'orders-fallback' && (
+        {showInfoBadges && data?.ordersSource === 'orders-fallback' && (
           <span
             className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950 dark:text-amber-300"
             title="Цифры считаются по postings (legacy). Запустите sync «Аналитика продаж (Seller API)» — без него возможно расхождение с кабинетом Ozon на 20-60%."
@@ -429,7 +466,7 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
             Postings (legacy)
           </span>
         )}
-        {data?.adsSource === 'transactions-heuristic' && (
+        {showInfoBadges && data?.adsSource === 'transactions-heuristic' && (
           <span
             className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950 dark:text-amber-300"
             title="Расход на рекламу взят из транзакций (эвристика). Подключите Performance API для точных цифр."
@@ -438,28 +475,38 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
             Реклама ≈
           </span>
         )}
-        {/* KPI-badges по сводным метрикам периода. ДРР вынесен из чарта
-            (был «третьей осью %», не помещался без шума). */}
-        <div className="ml-auto flex items-center gap-2 text-[11px]">
+        {/* KPI-badges по сводным метрикам периода. На узких блоках лейблы
+            («Выручка», «Расход», «ДРР») скрываются — остаётся только
+            цветной фон и значение. */}
+        <div className="ml-auto flex items-center gap-1.5 text-[11px]">
           {totals.revenue > 0 && (
-            <span className="rounded-md bg-emerald-50 px-2 py-1 dark:bg-emerald-950/40">
-              <span className="text-muted-foreground">Выручка </span>
+            <span
+              className="rounded-md bg-emerald-50 px-2 py-1 dark:bg-emerald-950/40"
+              title={!showBadgeLabels ? 'Выручка / период' : undefined}
+            >
+              {showBadgeLabels && <span className="text-muted-foreground">Выручка </span>}
               <span className="font-semibold text-emerald-700 tabular-nums dark:text-emerald-300">
                 {formatRubShort(totals.revenue)} ₽
               </span>
             </span>
           )}
           {totals.ads > 0 && (
-            <span className="rounded-md bg-rose-50 px-2 py-1 dark:bg-rose-950/40">
-              <span className="text-muted-foreground">Расход </span>
+            <span
+              className="rounded-md bg-rose-50 px-2 py-1 dark:bg-rose-950/40"
+              title={!showBadgeLabels ? 'Расход / период' : undefined}
+            >
+              {showBadgeLabels && <span className="text-muted-foreground">Расход </span>}
               <span className="font-semibold text-rose-700 tabular-nums dark:text-rose-300">
                 {formatRubShort(totals.ads)} ₽
               </span>
             </span>
           )}
           {totals.revenue > 0 && totals.ads > 0 && (
-            <span className="rounded-md bg-amber-50 px-2 py-1 dark:bg-amber-950/40">
-              <span className="text-muted-foreground">ДРР </span>
+            <span
+              className="rounded-md bg-amber-50 px-2 py-1 dark:bg-amber-950/40"
+              title={!showBadgeLabels ? 'ДРР %' : undefined}
+            >
+              {showBadgeLabels && <span className="text-muted-foreground">ДРР </span>}
               <span className="font-semibold text-amber-700 tabular-nums dark:text-amber-300">
                 {((totals.ads / totals.revenue) * 100).toFixed(1)}%
               </span>
@@ -481,7 +528,11 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
             data={visiblePoints}
             series={series}
             xKey="date"
-            height={300}
+            // height='fill' — чарт занимает всю доступную высоту родителя
+            // (min-h-0 flex-1), без хардкода в 300px. Убирает пустое
+            // пространство снизу при больших блоках.
+            height="fill"
+            margin={tinyAxis ? { right: 4, top: 4 } : undefined}
             variant="rich"
             yAxes={yAxes}
             formatTooltipLabel={(label) => {
@@ -616,7 +667,10 @@ export const UnitOzonChartBlock: BlockDef = {
   category: 'charts',
   icon: LineIcon,
   defaultSize: { w: 12, h: 6 },
-  minSize: { w: 6, h: 4 },
+  // v0.18.26: чарт стал fluid (height='fill') + density-aware header,
+  // поэтому может ужиматься до 4×3 без потери читаемости (badges
+  // схлопываются в цифры без подписей).
+  minSize: { w: 4, h: 3 },
   pages: ['marketplaces-ozon-dashboard', '*'],
   configSchema: OzonChartBlockConfigSchema,
   defaultConfig: () => OzonChartBlockConfigSchema.parse({}),

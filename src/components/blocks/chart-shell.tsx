@@ -11,6 +11,7 @@
 
 'use client';
 
+import type { CSSProperties } from 'react';
 import {
   ResponsiveContainer,
   LineChart,
@@ -67,8 +68,19 @@ export type ChartShellProps = {
   series: ChartSeries[];
   /** Имя поля X — обычно 'date'. */
   xKey?: string;
-  /** Высота в px (default 280). */
-  height?: number;
+  /**
+   * Высота в px ИЛИ строка `'fill'` — занять всю высоту родителя.
+   * При `'fill'` обёртка получает `h-full w-full`, а `<ResponsiveContainer>`
+   * берёт реальную высоту через ResizeObserver. Требует, чтобы у родителя
+   * была явная высота (`min-h-0 flex-1` внутри `flex flex-col` блока).
+   * Default 280.
+   */
+  height?: number | 'fill';
+  /**
+   * Margin для chart canvas. По умолчанию `{ top: 6, right: 12, left: 0, bottom: 0 }`.
+   * Для компактных блоков можно передать меньший right/top.
+   */
+  margin?: { top?: number; right?: number; left?: number; bottom?: number };
   /** Compare series — overlay прошлого периода с тем же набором ключей. */
   compare?: { data: Array<Record<string, unknown>>; suffix?: string };
   /** Y-axis правый — для серий с yAxisId='right' (другой масштаб, обычно %). */
@@ -95,6 +107,7 @@ export function ChartShell({
   series,
   xKey = 'date',
   height = 280,
+  margin,
   compare,
   showRightAxis = false,
   variant = 'compact',
@@ -132,11 +145,21 @@ export function ChartShell({
   }
 
   const isRich = variant === 'rich';
+  const fillParent = height === 'fill';
+  const wrapperStyle: CSSProperties = fillParent
+    ? { width: '100%', height: '100%' }
+    : { width: '100%', height: height as number };
+  const chartMargin = {
+    top: margin?.top ?? 6,
+    right: margin?.right ?? 12,
+    left: margin?.left ?? 0,
+    bottom: margin?.bottom ?? 0,
+  };
 
   return (
-    <div style={{ width: '100%', height }}>
+    <div style={wrapperStyle}>
       <ResponsiveContainer width="100%" height="100%">
-        <ChartCmp data={merged} margin={{ top: 6, right: 12, left: 0, bottom: 0 }}>
+        <ChartCmp data={merged} margin={chartMargin}>
           {isRich && (
             <defs>
               {series
