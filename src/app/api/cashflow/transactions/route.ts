@@ -5,7 +5,10 @@ import { eq } from 'drizzle-orm';
 import { auth } from '@/lib/auth';
 import { db } from '@/lib/db/client';
 import { transactions } from '@/lib/db/schema/transactions';
-import { listTransactions, ensureDefaultCategories } from '@/lib/cashflow/queries';
+import {
+  listTransactionsWithCategory,
+  ensureDefaultCategories,
+} from '@/lib/cashflow/queries';
 
 const CreateBody = z.object({
   amount: z.number().int().positive('Сумма должна быть положительной (в копейках)'),
@@ -25,21 +28,38 @@ export async function GET(req: Request) {
 
   const url = new URL(req.url);
   const type = url.searchParams.get('type') as 'income' | 'expense' | null;
-  const limit = Number(url.searchParams.get('limit') ?? '100');
+  const counterparty = url.searchParams.get('counterparty') ?? undefined;
+  const categoryName = url.searchParams.get('categoryName') ?? undefined;
+  const source = url.searchParams.get('source') ?? undefined;
+  const limit = Math.min(Number(url.searchParams.get('limit') ?? '100'), 500);
   const offset = Number(url.searchParams.get('offset') ?? '0');
   const fromStr = url.searchParams.get('from');
   const toStr = url.searchParams.get('to');
+  const cursorAt = url.searchParams.get('cursorAt');
+  const cursorId = url.searchParams.get('cursorId') ?? undefined;
 
-  const items = await listTransactions({
+  const items = await listTransactionsWithCategory({
     tenantId: session.tenantId,
     type: type ?? undefined,
+    counterparty,
+    categoryName,
+    source,
     limit,
     offset,
     from: fromStr ? new Date(fromStr) : undefined,
     to: toStr ? new Date(toStr) : undefined,
+    cursorOccurredAt: cursorAt ? new Date(cursorAt) : undefined,
+    cursorId,
   });
 
-  return NextResponse.json({ ok: true, items });
+  // next cursor = last item's (occurredAt, id) if we hit the limit
+  const last = items[items.length - 1];
+  const nextCursor =
+    items.length >= limit && last
+      ? { occurredAt: last.occurredAt.toISOString(), id: last.id }
+      : null;
+
+  return NextResponse.json({ ok: true, items, nextCursor });
 }
 
 export async function POST(req: Request) {

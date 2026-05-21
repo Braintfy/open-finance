@@ -1,15 +1,34 @@
-// PURPOSE: Каталог блоков для страницы Cashflow (income/expense/balance/top-cats/list)
+// PURPOSE: Каталог блоков для страницы Cashflow (income/expense/balance/top-cats/list).
+// Полностью переработан в v0.19.0: StatCard + sparkline + trend + drill-down,
+// per-block period override (lock-иконка), интеграция с PagePeriodContext,
+// virtualized transactions list с cursor pagination + CSV export.
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowDown, ArrowUp, Wallet, ListOrdered, BarChart3, Pencil, Trash2 } from 'lucide-react';
+import {
+  ArrowDown,
+  ArrowUp,
+  Wallet,
+  ListOrdered,
+  BarChart3,
+  Pencil,
+  Trash2,
+  Lock,
+  Globe,
+  ChevronRight,
+  Download,
+  Filter,
+  X,
+  Info,
+} from 'lucide-react';
 import { z } from 'zod';
 import type { BlockDef, BlockRenderProps, BlockSettingsFormProps } from '../types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
+import { Input } from '@/components/ui/input';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -27,18 +46,396 @@ import { TransactionDialog } from './transaction-dialog';
 import { resolveIconWithAnimation } from '../icon-resolver';
 import { useBlockDensity } from '@/components/blocks/block-size';
 import { useBlockValuePublisher } from '../values';
+import { useEffectivePeriod } from '../page-period-context';
+import { useEffectiveSource } from '../page-source-context';
+import { usePersistedPeriodWithGlobal } from '../use-persisted-period';
+import { usePersistedSourceWithGlobal } from '../use-persisted-source';
+import { useDrillDown, type DrillDownFilter } from '../drill-down';
+import { SOURCE_LABELS } from '@/components/blocks/source-filter-chips';
+import {
+  PeriodPicker,
+  resolvePeriod,
+  type PeriodPreset,
+} from '@/components/blocks/period-picker';
+import { StatCard, type StatCardDelta } from '@/components/blocks/stat-card';
+import { useVirtualizer } from '@tanstack/react-virtual';
 
 // ============================================================================
-// Shared KPI config
+// Period helpers (per-block override + page-level)
+// ============================================================================
+
+const PRESET_LABELS: Record<PeriodPreset, string> = {
+  today: 'Сегодня',
+  yesterday: 'Вчера',
+  '7d': '7 дней',
+  '14d': '14 дней',
+  '30d': '30 дней',
+  mtd: 'Этот месяц',
+  custom: 'Произвольный',
+};
+
+function describePeriodShort(preset: PeriodPreset, from: string | null, to: string | null): string {
+  if (preset === 'custom' && from && to) return `${from} → ${to}`;
+  return PRESET_LABELS[preset] ?? preset;
+}
+
+// ============================================================================
+// Shared KPI config schema
 // ============================================================================
 
 const KpiConfig = z.object({
   showKopecks: z.boolean().nullable().default(null),
+  /** Заголовок (override appearance.title). */
+  title: z.string().optional(),
+  /** Per-block override периода. null = listen page-level. */
+  periodOverride: z
+    .object({
+      preset: z.enum(['today', 'yesterday', '7d', '14d', '30d', 'mtd', 'custom']),
+      customFrom: z.string().nullable().optional(),
+      customTo: z.string().nullable().optional(),
+    })
+    .nullable()
+    .default(null),
+  /**
+   * Per-block source override.
+   *   - `undefined` (omitted) → блок слушает page-level source.
+   *   - `null` → блок явно «все источники» (override).
+   *   - `string` → конкретный source ('bank' / 'manual' / ...).
+   */
+  sourceOverride: z.string().nullable().optional(),
 });
 
+function useKpiKopecks(showKopecksFromCfg: boolean | null): boolean {
+  const { settings } = useFormatSettings();
+  return showKopecksFromCfg ?? settings.showKopecks;
+}
+
 // ============================================================================
-// stat.income / stat.expense / stat.balance — KPI карточки
+// useCashflowKpi — fetch KPI с current/previous/byDay
 // ============================================================================
+
+type KpiFetchResult = {
+  current: number;
+  previous: number;
+  count: number;
+  prevCount: number;
+  deltaPct: number | null;
+  byDay: Array<{ date: string; value: number }>;
+};
+
+type KpiWithHint = KpiFetchResult & {
+  /** Если current+previous=0 за период, но за всё время есть данные — здесь allTimeTotal в копейках. */
+  hintAllTime: number | null;
+  /** Кол-во операций за всё время (если current=0). */
+  hintAllTimeCount: number | null;
+};
+
+function useCashflowKpi(
+  metric: 'income' | 'expense' | 'balance',
+  period: { preset: PeriodPreset; customFrom: string | null; customTo: string | null },
+  filters: { counterparty?: string; categoryName?: string; source?: string | null } = {},
+): { data: KpiWithHint | null; loading: boolean; error: string | null } {
+  const [data, setData] = useState<KpiWithHint | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const sourceKey = filters.source ?? '';
+  const cacheKey = `${metric}|${period.preset}|${period.customFrom}|${period.customTo}|${filters.counterparty ?? ''}|${filters.categoryName ?? ''}|${sourceKey}`;
+
+  useEffect(() => {
+    let cancelled = false;
+    const controller = new AbortController();
+    setLoading(true);
+    setError(null);
+
+    function buildParams(presetVal: PeriodPreset, customFrom?: string | null, customTo?: string | null) {
+      const params = new URLSearchParams({ metric, preset: presetVal });
+      if (customFrom) params.set('customFrom', customFrom);
+      if (customTo) params.set('customTo', customTo);
+      if (filters.counterparty) params.set('counterparty', filters.counterparty);
+      if (filters.categoryName) params.set('categoryName', filters.categoryName);
+      if (filters.source) params.set('source', filters.source);
+      return params;
+    }
+
+    async function go() {
+      try {
+        const params = buildParams(period.preset, period.customFrom, period.customTo);
+        const res = await fetch(`/api/cashflow/kpi?${params.toString()}`, { signal: controller.signal });
+        const json = await res.json();
+        if (cancelled) return;
+        if (!json.ok) {
+          setError(json.error ?? 'Ошибка загрузки');
+          setLoading(false);
+          return;
+        }
+        const base: KpiFetchResult = {
+          current: json.current,
+          previous: json.previous,
+          count: json.count,
+          prevCount: json.prevCount,
+          deltaPct: json.deltaPct,
+          byDay: json.byDay ?? [],
+        };
+
+        // Smart hint: если текущий и предыдущий = 0 для income/expense
+        // (для balance = 0 не значит «нет данных»),
+        // делаем фоновый fetch за «всё время» (1y), чтобы предложить пользователю.
+        const needsHint =
+          metric !== 'balance' &&
+          base.current === 0 &&
+          base.previous === 0 &&
+          period.preset !== 'custom';
+
+        if (!needsHint) {
+          setData({ ...base, hintAllTime: null, hintAllTimeCount: null });
+          setLoading(false);
+          return;
+        }
+
+        // Получаем agg за «всё время» через большой custom-период (последние 5 лет).
+        const now = new Date();
+        const fiveYearsAgo = new Date(now.getTime());
+        fiveYearsAgo.setFullYear(now.getFullYear() - 5);
+        const longParams = buildParams(
+          'custom',
+          fiveYearsAgo.toISOString().slice(0, 10),
+          now.toISOString().slice(0, 10),
+        );
+        const longRes = await fetch(`/api/cashflow/kpi?${longParams.toString()}`, {
+          signal: controller.signal,
+        });
+        const longJson = await longRes.json();
+        if (cancelled) return;
+        if (longJson.ok && longJson.current > 0) {
+          setData({
+            ...base,
+            hintAllTime: longJson.current,
+            hintAllTimeCount: longJson.count,
+          });
+        } else {
+          setData({ ...base, hintAllTime: null, hintAllTimeCount: null });
+        }
+        setLoading(false);
+      } catch (err) {
+        if (cancelled) return;
+        const e = err as Error;
+        if (e.name === 'AbortError') return;
+        setError(String(err));
+        setLoading(false);
+      }
+    }
+
+    void go();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cacheKey]);
+
+  return { data, loading, error };
+}
+
+// ============================================================================
+// KPI Blocks: stat.income / stat.expense / stat.balance
+// ============================================================================
+
+function StatKpiBlock(props: {
+  instance: BlockRenderProps['instance'];
+  metric: 'income' | 'expense' | 'balance';
+  defaultTitle: string;
+  defaultIcon: import('lucide-react').LucideIcon;
+  defaultAccent: string;
+  drillType?: 'income' | 'expense';
+  goodDirection?: 'up' | 'down';
+}) {
+  const { instance, metric, defaultTitle, defaultIcon, defaultAccent, drillType, goodDirection } = props;
+  const cfg = KpiConfig.parse(instance.config ?? {});
+  const { Icon, animClass } = resolveIconWithAnimation(instance.appearance?.icon, defaultIcon);
+  void animClass; // icon size слишком мал для анимации, оставляем без animClass
+  const accent = instance.appearance?.accentColor ?? defaultAccent;
+  const showKopecks = useKpiKopecks(cfg.showKopecks);
+  const density = useBlockDensity();
+  const drill = useDrillDown();
+
+  const { override, setOverride } = usePersistedPeriodWithGlobal({
+    instanceId: instance.id,
+    initial:
+      cfg.periodOverride === null
+        ? { mode: 'global' }
+        : {
+            mode: 'override',
+            preset: cfg.periodOverride.preset,
+            customFrom: cfg.periodOverride.customFrom ?? null,
+            customTo: cfg.periodOverride.customTo ?? null,
+          },
+  });
+  const { value: period, source: periodSource } = useEffectivePeriod(instance.id, override);
+
+  const { override: sourceOverride, setOverride: setSourceOverride } = usePersistedSourceWithGlobal({
+    instanceId: instance.id,
+    initial:
+      cfg.sourceOverride !== undefined
+        ? { mode: 'override', value: cfg.sourceOverride }
+        : { mode: 'global' },
+  });
+  const { value: effectiveSource, source: sourceSource } = useEffectiveSource(
+    instance.id,
+    sourceOverride,
+  );
+
+  const { data, loading } = useCashflowKpi(metric, period, {
+    source: effectiveSource ?? undefined,
+  });
+  const valueKop = data?.current ?? 0;
+  const valueRub = valueKop / 100;
+  const title = instance.appearance?.title ?? cfg.title ?? defaultTitle;
+
+  useBlockValuePublisher(instance.id, {
+    value: valueKop,
+    valuePrev: data?.previous ?? 0,
+    deltaPct: data?.deltaPct ?? 0,
+    count: data?.count ?? 0,
+    label: title,
+    __money: 'value,valuePrev',
+    __labels: `value=Сумма за период,valuePrev=Прошлый период,deltaPct=Изменение %,count=Кол-во операций`,
+  });
+
+  const delta: StatCardDelta | null =
+    data && data.deltaPct !== null && data.previous !== 0
+      ? {
+          value: data.deltaPct,
+          label: 'vs прошлый период',
+          tooltip: `${formatRublesWithSettings(data.previous, showKopecks)} → ${formatRublesWithSettings(data.current, showKopecks)}`,
+          goodDirection,
+        }
+      : null;
+
+  const sparkline =
+    data?.byDay && data.byDay.length > 1
+      ? data.byDay.map((d) => d.value / 100)
+      : null;
+
+  const sourceMeta = effectiveSource ? SOURCE_LABELS[effectiveSource] : null;
+  const sourceLabel = sourceMeta?.label ?? effectiveSource ?? null;
+
+  function handleDrill(e?: React.MouseEvent) {
+    if (!drillType) return;
+    e?.stopPropagation();
+    drill.setFocus({
+      blockType: 'cashflow.transactions',
+      filter: {
+        type: drillType,
+        source: effectiveSource ?? undefined,
+      },
+    });
+  }
+
+  // === XS density: только иконка + число ===
+  if (density === 'xs') {
+    return (
+      <Card
+        className={
+          'flex h-full flex-col items-center justify-center gap-0.5 p-2 transition ' +
+          (drillType ? 'cursor-pointer hover:ring-1 hover:ring-primary/30' : '')
+        }
+        onClick={handleDrill}
+      >
+        <div className="flex items-center gap-1">
+          <Icon className="h-3 w-3 shrink-0" style={{ color: accent }} />
+          <span
+            className="truncate text-[15px] font-semibold tabular-nums leading-none tracking-tight"
+            style={{ color: accent }}
+            title={`${title}: ${formatRublesWithSettings(Math.abs(valueKop), showKopecks)}`}
+          >
+            {loading ? '—' : formatCompactRubles(valueKop)}
+          </span>
+        </div>
+      </Card>
+    );
+  }
+
+  // === SM/MD/LG: single Card → StatCard inner ===
+  const showSparkline = density === 'lg' && sparkline;
+  const showHint = data && density !== 'sm';
+  const noDataInPeriod = !loading && data && data.current === 0 && data.previous === 0;
+
+  return (
+    <Card
+      className={
+        'group/kpi relative flex h-full min-h-0 flex-col p-3 transition ' +
+        (drillType ? 'cursor-pointer hover:ring-1 hover:ring-primary/30' : '')
+      }
+      onClick={handleDrill}
+    >
+      {/* badges row: lock period + source override */}
+      {(periodSource === 'override' || sourceSource === 'override') && (
+        <div className="absolute right-2 top-2 z-10 flex items-center gap-1">
+          {periodSource === 'override' && (
+            <button
+              type="button"
+              className="inline-flex h-4 items-center gap-0.5 rounded bg-amber-50 px-1 text-[9px] font-medium text-amber-700 ring-1 ring-amber-200 transition hover:bg-amber-100 dark:bg-amber-950 dark:text-amber-400 dark:ring-amber-900"
+              title={`Период: ${describePeriodShort(period.preset as PeriodPreset, period.customFrom, period.customTo)}. Клик — вернуть глобальный.`}
+              onClick={(e) => {
+                e.stopPropagation();
+                setOverride(null);
+              }}
+            >
+              <Lock className="h-2.5 w-2.5" />
+              {PRESET_LABELS[period.preset as PeriodPreset]}
+            </button>
+          )}
+          {sourceSource === 'override' && (
+            <button
+              type="button"
+              className="inline-flex h-4 items-center gap-0.5 rounded bg-sky-50 px-1 text-[9px] font-medium text-sky-700 ring-1 ring-sky-200 transition hover:bg-sky-100 dark:bg-sky-950 dark:text-sky-300 dark:ring-sky-900"
+              title={`Источник: ${sourceLabel ?? 'Все'}. Клик — вернуть глобальный.`}
+              onClick={(e) => {
+                e.stopPropagation();
+                setSourceOverride(undefined);
+              }}
+            >
+              <Lock className="h-2.5 w-2.5" />
+              {sourceLabel ?? 'Все'}
+            </button>
+          )}
+        </div>
+      )}
+
+      <StatCard
+        variant="inner"
+        icon={Icon}
+        iconColor={accent}
+        label={title}
+        value={valueRub}
+        format="rub"
+        delta={delta}
+        sparkline={showSparkline ? sparkline : null}
+        loading={loading}
+        accent={accent === '#16a34a' ? 'emerald' : accent === '#dc2626' ? 'rose' : 'sky'}
+        tone={metric === 'balance' ? (valueRub >= 0 ? 'positive' : 'negative') : 'default'}
+        hint={
+          showHint && data && !noDataInPeriod
+            ? `${data.count} опер.${sourceMeta ? ' · ' + sourceMeta.label : ''}`
+            : undefined
+        }
+      />
+
+      {/* smart-hint: «нет за период, но есть за всё время» */}
+      {noDataInPeriod && data?.hintAllTime != null && data.hintAllTime > 0 && (
+        <div className="mt-1 flex shrink-0 items-center gap-1 rounded-md bg-amber-50/60 px-1.5 py-1 text-[10px] text-amber-800 ring-1 ring-amber-100 dark:bg-amber-950/30 dark:text-amber-300 dark:ring-amber-900">
+          <Info className="h-2.5 w-2.5 shrink-0" />
+          <span className="truncate">
+            За «{PRESET_LABELS[period.preset as PeriodPreset]}» — пусто. Всего:{' '}
+            <strong>{formatRublesWithSettings(data.hintAllTime, false)}</strong>
+            {data.hintAllTimeCount ? ` · ${data.hintAllTimeCount} опер.` : ''}
+          </span>
+        </div>
+      )}
+    </Card>
+  );
+}
 
 function formatCompactRubles(v: number): string {
   const abs = Math.abs(v);
@@ -48,166 +445,115 @@ function formatCompactRubles(v: number): string {
   return `${new Intl.NumberFormat('ru-RU').format(rubles)} ₽`;
 }
 
-function StatCard({
-  label,
-  value,
-  icon,
-  big,
-  accent,
-  showKopecks,
-}: {
-  label: string;
-  value: number;
-  icon?: React.ReactNode;
-  big?: boolean;
-  accent?: string;
-  showKopecks: boolean;
-}) {
-  const density = useBlockDensity();
-  const fmt = (v: number) => formatRublesWithSettings(v, showKopecks);
-  const sign = value < 0 ? '−' : '';
-
-  // XS — только значение крупно, без header
-  if (density === 'xs') {
-    return (
-      <Card className="flex h-full flex-col justify-center p-0">
-        <div className="flex items-center justify-center gap-1 px-1">
-          {icon}
-          <span
-            className="truncate text-sm font-semibold tabular-nums tracking-tight"
-            style={accent ? { color: accent } : undefined}
-            title={`${sign}${fmt(Math.abs(value))}`}
-          >
-            {sign}
-            {formatCompactRubles(value)}
-          </span>
-        </div>
-      </Card>
-    );
-  }
-
-  // SM — иконка + число, полный формат с truncate при переполнении
-  if (density === 'sm') {
-    return (
-      <Card className="flex h-full flex-col justify-center p-2.5">
-        <div className="flex items-center gap-1">
-          {icon}
-          <span className="truncate text-[11px] font-medium text-muted-foreground">{label}</span>
-        </div>
-        <div
-          className="mt-0.5 truncate text-base font-semibold tabular-nums tracking-tight"
-          style={accent ? { color: accent } : undefined}
-          title={`${sign}${fmt(Math.abs(value))}`}
-        >
-          {sign}
-          {fmt(Math.abs(value))}
-        </div>
-      </Card>
-    );
-  }
-
-  // MD/LG — полный вариант
-  return (
-    <Card className="flex h-full flex-col">
-      <CardHeader className="pb-1.5">
-        <CardTitle className="flex items-center gap-1.5 text-[13px] font-medium text-muted-foreground">
-          {icon}
-          <span className="line-clamp-1">{label}</span>
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="flex flex-1 items-center">
-        <div
-          className={`${density === 'lg' ? 'text-2xl' : 'text-xl'} truncate font-semibold tabular-nums tracking-tight`}
-          style={accent ? { color: accent } : undefined}
-        >
-          {sign}
-          {fmt(Math.abs(value))}
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function useKpiKopecks(config: unknown): boolean {
-  const cfg = KpiConfig.safeParse(config ?? {});
-  const { settings } = useFormatSettings();
-  return (cfg.success ? cfg.data.showKopecks : null) ?? settings.showKopecks;
-}
-
 function RenderIncome({ instance }: BlockRenderProps) {
-  const { summary, loading } = useCashflowData();
-  const { Icon, animClass } = resolveIconWithAnimation(instance.appearance?.icon, ArrowDown);
-  const accent = instance.appearance?.accentColor;
-  const value = loading ? 0 : summary.incomeTotal;
-  const showKopecks = useKpiKopecks(instance.config);
-  useBlockValuePublisher(instance.id, {
-    value,
-    count: loading ? 0 : summary.incomeCount,
-    label: instance.appearance?.title ?? 'Доходы за месяц',
-    __money: 'value',
-  });
   return (
-    <StatCard
-      label={instance.appearance?.title ?? 'Доходы за месяц'}
-      value={value}
-      icon={<Icon className={`h-4 w-4 ${animClass}`} style={{ color: accent ?? '#16a34a' }} />}
-      accent={accent}
-      showKopecks={showKopecks}
+    <StatKpiBlock
+      instance={instance}
+      metric="income"
+      defaultTitle="Доходы"
+      defaultIcon={ArrowDown}
+      defaultAccent="#16a34a"
+      drillType="income"
+      goodDirection="up"
     />
   );
 }
 
 function RenderExpense({ instance }: BlockRenderProps) {
-  const { summary, loading } = useCashflowData();
-  const { Icon, animClass } = resolveIconWithAnimation(instance.appearance?.icon, ArrowUp);
-  const accent = instance.appearance?.accentColor;
-  const value = loading ? 0 : summary.expenseTotal;
-  const showKopecks = useKpiKopecks(instance.config);
-  useBlockValuePublisher(instance.id, {
-    value,
-    count: loading ? 0 : summary.expenseCount,
-    label: instance.appearance?.title ?? 'Расходы за месяц',
-    __money: 'value',
-  });
   return (
-    <StatCard
-      label={instance.appearance?.title ?? 'Расходы за месяц'}
-      value={value}
-      icon={<Icon className={`h-4 w-4 ${animClass}`} style={{ color: accent ?? '#dc2626' }} />}
-      accent={accent}
-      showKopecks={showKopecks}
+    <StatKpiBlock
+      instance={instance}
+      metric="expense"
+      defaultTitle="Расходы"
+      defaultIcon={ArrowUp}
+      defaultAccent="#dc2626"
+      drillType="expense"
+      goodDirection="down"
     />
   );
 }
 
 function RenderBalance({ instance }: BlockRenderProps) {
-  const { summary, loading } = useCashflowData();
-  const { Icon, animClass } = resolveIconWithAnimation(instance.appearance?.icon, Wallet);
-  const accent = instance.appearance?.accentColor;
-  const value = loading ? 0 : summary.balance;
-  const showKopecks = useKpiKopecks(instance.config);
-  useBlockValuePublisher(instance.id, {
-    value,
-    count: loading ? 0 : summary.incomeCount + summary.expenseCount,
-    label: instance.appearance?.title ?? 'Баланс',
-    __money: 'value',
-  });
   return (
-    <StatCard
-      label={instance.appearance?.title ?? 'Баланс'}
-      value={value}
-      icon={<Icon className={`h-4 w-4 ${animClass}`} style={accent ? { color: accent } : undefined} />}
-      accent={accent}
-      showKopecks={showKopecks}
-      big
+    <StatKpiBlock
+      instance={instance}
+      metric="balance"
+      defaultTitle="Баланс"
+      defaultIcon={Wallet}
+      defaultAccent="#3b82f6"
+      goodDirection="up"
     />
   );
 }
 
+// ============================================================================
+// Shared SettingsForm для stat.income/stat.expense/stat.balance
+// ============================================================================
+
 function KpiSettingsForm({ config, onChange }: BlockSettingsFormProps) {
   const cfg = KpiConfig.parse(config ?? {});
+
+  function setOverride(next: typeof cfg.periodOverride) {
+    onChange({ ...cfg, periodOverride: next });
+  }
+
   return (
     <div className="space-y-4">
+      <div className="space-y-1.5">
+        <Label>Заголовок</Label>
+        <Input
+          placeholder="Например: Доходы за месяц"
+          value={cfg.title ?? ''}
+          onChange={(e) => onChange({ ...cfg, title: e.target.value || undefined })}
+        />
+      </div>
+
+      <div className="space-y-1.5">
+        <Label>Период</Label>
+        <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
+          <div className="min-w-0">
+            <div className="text-xs font-medium">Использовать период страницы</div>
+            <div className="text-[11px] text-muted-foreground">
+              {cfg.periodOverride === null
+                ? 'Период наследуется от страницы (Globe)'
+                : `Свой: ${PRESET_LABELS[cfg.periodOverride.preset]}`}
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <Globe className="h-3 w-3 text-muted-foreground" />
+            <Switch
+              checked={cfg.periodOverride === null}
+              onCheckedChange={(v) =>
+                setOverride(v ? null : { preset: 'mtd', customFrom: null, customTo: null })
+              }
+            />
+          </div>
+        </div>
+        {cfg.periodOverride !== null && (
+          <div className="rounded-md border border-border/60 p-2">
+            <PeriodPicker
+              value={{
+                preset: cfg.periodOverride.preset,
+                customFrom: cfg.periodOverride.customFrom ?? null,
+                customTo: cfg.periodOverride.customTo ?? null,
+              }}
+              onChange={(v) =>
+                setOverride({
+                  preset: v.preset,
+                  customFrom: v.customFrom ?? null,
+                  customTo: v.customTo ?? null,
+                })
+              }
+            />
+          </div>
+        )}
+      </div>
+
+      <SourceOverrideSection
+        value={cfg.sourceOverride}
+        onChange={(next) => onChange({ ...cfg, sourceOverride: next })}
+      />
+
       <div className="space-y-1.5">
         <Label>Копейки</Label>
         <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
@@ -245,7 +591,7 @@ function KpiSettingsForm({ config, onChange }: BlockSettingsFormProps) {
 export const StatIncomeBlock: BlockDef = {
   type: 'stat.income',
   displayName: 'Доходы (KPI)',
-  description: 'Сумма поступлений за текущий месяц',
+  description: 'Сумма поступлений с trend и sparkline',
   category: 'stats',
   icon: ArrowDown,
   defaultSize: { w: 4, h: 2 },
@@ -253,7 +599,7 @@ export const StatIncomeBlock: BlockDef = {
   minContentSize: { w: 80, h: 40 },
   pages: ['cashflow', 'dashboard'],
   configSchema: KpiConfig,
-  defaultConfig: () => ({ showKopecks: null }),
+  defaultConfig: () => ({ showKopecks: null, periodOverride: null }),
   SettingsForm: KpiSettingsForm,
   Render: RenderIncome,
 };
@@ -261,7 +607,7 @@ export const StatIncomeBlock: BlockDef = {
 export const StatExpenseBlock: BlockDef = {
   type: 'stat.expense',
   displayName: 'Расходы (KPI)',
-  description: 'Сумма расходов за текущий месяц',
+  description: 'Сумма расходов с trend и sparkline',
   category: 'stats',
   icon: ArrowUp,
   defaultSize: { w: 4, h: 2 },
@@ -269,7 +615,7 @@ export const StatExpenseBlock: BlockDef = {
   minContentSize: { w: 80, h: 40 },
   pages: ['cashflow', 'dashboard'],
   configSchema: KpiConfig,
-  defaultConfig: () => ({ showKopecks: null }),
+  defaultConfig: () => ({ showKopecks: null, periodOverride: null }),
   SettingsForm: KpiSettingsForm,
   Render: RenderExpense,
 };
@@ -277,7 +623,7 @@ export const StatExpenseBlock: BlockDef = {
 export const StatBalanceBlock: BlockDef = {
   type: 'stat.balance',
   displayName: 'Баланс (KPI)',
-  description: 'Доходы минус расходы за месяц',
+  description: 'Доходы − расходы с trend и sparkline',
   category: 'stats',
   icon: Wallet,
   defaultSize: { w: 4, h: 2 },
@@ -285,13 +631,13 @@ export const StatBalanceBlock: BlockDef = {
   minContentSize: { w: 80, h: 40 },
   pages: ['cashflow', 'dashboard'],
   configSchema: KpiConfig,
-  defaultConfig: () => ({ showKopecks: null }),
+  defaultConfig: () => ({ showKopecks: null, periodOverride: null }),
   SettingsForm: KpiSettingsForm,
   Render: RenderBalance,
 };
 
 // ============================================================================
-// cashflow.top-categories
+// cashflow.top-categories — категории за период с drill-down
 // ============================================================================
 
 const TopCatsConfig = z.object({
@@ -299,71 +645,226 @@ const TopCatsConfig = z.object({
   title: z.string().optional(),
   limit: z.number().int().min(1).max(20).default(5),
   showKopecks: z.boolean().nullable().default(null),
+  periodOverride: KpiConfig.shape.periodOverride,
+  sourceOverride: z.string().nullable().optional(),
 });
+
+type TopCatsCfg = z.infer<typeof TopCatsConfig>;
+
+function useTopCategoriesPeriod(
+  type: 'income' | 'expense',
+  period: { preset: PeriodPreset; customFrom: string | null; customTo: string | null },
+  limit: number,
+  source: string | null = null,
+): {
+  rows: Array<{ categoryName: string; total: number; count: number }>;
+  totalSum: number;
+  loading: boolean;
+} {
+  const [rows, setRows] = useState<Array<{ categoryName: string; total: number; count: number }>>([]);
+  const [totalSum, setTotalSum] = useState(0);
+  const [loading, setLoading] = useState(true);
+
+  const cacheKey = `${type}|${limit}|${period.preset}|${period.customFrom}|${period.customTo}|${source ?? ''}`;
+
+  useEffect(() => {
+    let cancelled = false;
+    const controller = new AbortController();
+    setLoading(true);
+    const resolved = resolvePeriod(
+      period.preset,
+      period.customFrom ?? undefined,
+      period.customTo ?? undefined,
+    );
+    const params = new URLSearchParams({
+      type,
+      limit: String(limit),
+      from: resolved.from.toISOString(),
+      to: resolved.to.toISOString(),
+    });
+    if (source) params.set('source', source);
+    fetch(`/api/cashflow/top-categories?${params.toString()}`, { signal: controller.signal })
+      .then((r) => r.json())
+      .then((json) => {
+        if (cancelled) return;
+        if (json.ok) {
+          setRows(json.rows ?? []);
+          setTotalSum(json.totalSum ?? 0);
+        } else {
+          setRows([]);
+          setTotalSum(0);
+        }
+        setLoading(false);
+      })
+      .catch((err) => {
+        if (cancelled || err.name === 'AbortError') return;
+        setRows([]);
+        setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cacheKey]);
+
+  return { rows, totalSum, loading };
+}
 
 function RenderTopCategories({ instance }: BlockRenderProps) {
   const cfg = TopCatsConfig.parse(instance.config ?? {});
-  const { topIncome, topExpense, loading } = useCashflowData();
   const density = useBlockDensity();
   const { settings } = useFormatSettings();
   const showKopecks = cfg.showKopecks ?? settings.showKopecks;
   const fmt = (v: number) => formatRublesWithSettings(v, showKopecks);
-  const rows = cfg.type === 'income' ? topIncome : topExpense;
+  const drill = useDrillDown();
 
-  // Ограничение по плотности: чем меньше места — тем меньше строк
+  const { override, setOverride } = usePersistedPeriodWithGlobal({
+    instanceId: instance.id,
+    initial:
+      cfg.periodOverride === null
+        ? { mode: 'global' }
+        : {
+            mode: 'override',
+            preset: cfg.periodOverride.preset,
+            customFrom: cfg.periodOverride.customFrom ?? null,
+            customTo: cfg.periodOverride.customTo ?? null,
+          },
+  });
+  const { value: period, source: periodSource } = useEffectivePeriod(instance.id, override);
+
+  const { override: srcOverride, setOverride: setSrcOverride } = usePersistedSourceWithGlobal({
+    instanceId: instance.id,
+    initial:
+      cfg.sourceOverride !== undefined
+        ? { mode: 'override', value: cfg.sourceOverride }
+        : { mode: 'global' },
+  });
+  const { value: effectiveSource, source: sourceSource } = useEffectiveSource(
+    instance.id,
+    srcOverride,
+  );
+
+  const { rows, totalSum, loading } = useTopCategoriesPeriod(
+    cfg.type,
+    period,
+    cfg.limit,
+    effectiveSource ?? null,
+  );
+
   const densityLimit =
     density === 'xs' ? 1 : density === 'sm' ? 3 : density === 'md' ? cfg.limit : cfg.limit;
   const sliced = rows.slice(0, Math.min(cfg.limit, densityLimit));
-  const max = sliced.length > 0 ? Math.max(...sliced.map((r: { total: number }) => r.total)) : 1;
+  const max = sliced.length > 0 ? Math.max(...sliced.map((r) => r.total)) : 1;
+  const sum = totalSum > 0 ? totalSum : sliced.reduce((s, r) => s + r.total, 0);
 
   const accent =
-    instance.appearance?.accentColor ??
-    (cfg.type === 'income' ? '#10b981' : '#ef4444');
+    instance.appearance?.accentColor ?? (cfg.type === 'income' ? '#10b981' : '#ef4444');
   const title =
     instance.appearance?.title ??
     cfg.title ??
     (cfg.type === 'income' ? 'Топ доходов' : 'Топ расходов');
 
+  useBlockValuePublisher(instance.id, {
+    value: sum,
+    count: sliced.length,
+    categories: sliced.map((r) => r.categoryName).join(','),
+    label: title,
+    __money: 'value',
+    __labels: 'value=Сумма топ-категорий,count=Количество категорий,categories=Имена категорий',
+  });
+
+  function handleCategoryClick(categoryName: string) {
+    drill.setFocus({
+      blockType: 'cashflow.transactions',
+      filter: { type: cfg.type, categoryName, source: effectiveSource ?? undefined },
+    });
+  }
+
   const isCompact = density === 'xs' || density === 'sm';
 
   return (
-    <Card className="flex h-full flex-col overflow-hidden">
-      <CardHeader className={isCompact ? 'p-2 pb-1' : 'pb-2'}>
-        <CardTitle className={isCompact ? 'truncate text-xs' : 'text-base font-semibold'}>{title}</CardTitle>
-      </CardHeader>
-      <CardContent
-        className={
-          isCompact
-            ? 'flex-1 space-y-1 overflow-y-auto p-2 pt-0'
-            : 'flex-1 space-y-3 overflow-y-auto'
-        }
-      >
+    <Card className="flex h-full flex-col overflow-hidden p-3">
+      <div className={'mb-2 flex shrink-0 items-center justify-between gap-2'}>
+        <h3 className={isCompact ? 'truncate text-xs font-semibold' : 'truncate text-sm font-medium text-muted-foreground'}>
+          {title}
+        </h3>
+        <div className="flex shrink-0 items-center gap-1">
+          {periodSource === 'override' && !isCompact && (
+            <button
+              type="button"
+              onClick={() => setOverride(null)}
+              className="inline-flex h-4 items-center gap-0.5 rounded bg-amber-50 px-1 text-[9px] font-medium text-amber-700 ring-1 ring-amber-200 transition hover:bg-amber-100 dark:bg-amber-950 dark:text-amber-400 dark:ring-amber-900"
+              title="Клик — вернуть глобальный период"
+            >
+              <Lock className="h-2.5 w-2.5" />
+              {PRESET_LABELS[period.preset as PeriodPreset]}
+            </button>
+          )}
+          {sourceSource === 'override' && !isCompact && (
+            <button
+              type="button"
+              onClick={() => setSrcOverride(undefined)}
+              className="inline-flex h-4 items-center gap-0.5 rounded bg-sky-50 px-1 text-[9px] font-medium text-sky-700 ring-1 ring-sky-200 transition hover:bg-sky-100 dark:bg-sky-950 dark:text-sky-300 dark:ring-sky-900"
+              title="Клик — вернуть глобальный источник"
+            >
+              <Lock className="h-2.5 w-2.5" />
+              {effectiveSource ? SOURCE_LABELS[effectiveSource]?.label ?? effectiveSource : 'Все'}
+            </button>
+          )}
+        </div>
+      </div>
+      <div className={'flex-1 min-h-0 space-y-2 overflow-y-auto ' + (isCompact ? 'space-y-1' : '')}>
         {loading ? (
-          <p className="text-sm text-muted-foreground">Загрузка…</p>
+          <p className="text-xs text-muted-foreground">Загрузка…</p>
         ) : sliced.length === 0 ? (
-          <p className="text-sm text-muted-foreground">Нет данных</p>
+          <div className="flex h-full flex-col items-center justify-center gap-2 py-4 text-center">
+            <p className="text-xs text-muted-foreground">
+              Нет данных за «{PRESET_LABELS[period.preset as PeriodPreset]}»
+            </p>
+            <p className="text-[10px] text-muted-foreground/70">
+              {cfg.type === 'income'
+                ? 'Поступлений за этот период не было'
+                : 'Расходов за этот период не было'}
+            </p>
+          </div>
         ) : (
-          sliced.map((r: { categoryName: string; total: number }) => (
-            <div key={r.categoryName} className="space-y-1">
-              <div className={`flex items-center justify-between gap-2 ${isCompact ? 'text-[11px]' : 'text-sm'}`}>
-                <span className="truncate font-medium">{r.categoryName}</span>
-                <span className="shrink-0 tabular-nums text-muted-foreground">
-                  {isCompact ? formatCompactRubles(r.total) : fmt(r.total)}
-                </span>
-              </div>
-              <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+          sliced.map((r) => {
+            const pctOfTotal = sum > 0 ? Math.round((r.total / sum) * 100) : 0;
+            return (
+              <button
+                key={r.categoryName}
+                type="button"
+                className="block w-full space-y-1 rounded-md p-1 text-left transition-colors hover:bg-accent/30"
+                onClick={() => handleCategoryClick(r.categoryName)}
+                title={`Клик: показать операции категории ${r.categoryName}`}
+              >
                 <div
-                  className="h-full rounded-full transition-all"
-                  style={{
-                    width: `${Math.round((r.total / max) * 100)}%`,
-                    backgroundColor: accent,
-                  }}
-                />
-              </div>
-            </div>
-          ))
+                  className={`flex items-center justify-between gap-2 ${isCompact ? 'text-[11px]' : 'text-sm'}`}
+                >
+                  <span className="truncate font-medium">{r.categoryName}</span>
+                  <span className="flex shrink-0 items-center gap-1 tabular-nums text-muted-foreground">
+                    {isCompact ? formatCompactRubles(r.total) : fmt(r.total)}
+                    {!isCompact && (
+                      <span className="text-[10px] text-muted-foreground/60">({pctOfTotal}%)</span>
+                    )}
+                    <ChevronRight className="h-3 w-3 text-muted-foreground/40" />
+                  </span>
+                </div>
+                <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full rounded-full transition-all"
+                    style={{
+                      width: `${Math.round((r.total / max) * 100)}%`,
+                      backgroundColor: accent,
+                    }}
+                  />
+                </div>
+              </button>
+            );
+          })
         )}
-      </CardContent>
+      </div>
     </Card>
   );
 }
@@ -376,10 +877,13 @@ function TopCategoriesSettings({
   onChange: (c: Record<string, unknown>) => void;
 }) {
   const cfg = TopCatsConfig.parse(config ?? {});
+  function setOverride(next: TopCatsCfg['periodOverride']) {
+    onChange({ ...cfg, periodOverride: next });
+  }
   return (
     <div className="space-y-4">
       <div className="space-y-2">
-        <label className="text-sm font-medium">Что показывать</label>
+        <Label>Что показывать</Label>
         <div className="flex gap-2">
           <Button
             type="button"
@@ -402,9 +906,9 @@ function TopCategoriesSettings({
         </div>
       </div>
       <div className="space-y-2">
-        <label className="text-sm font-medium">
+        <Label>
           Количество строк: <span className="tabular-nums">{cfg.limit}</span>
-        </label>
+        </Label>
         <input
           type="range"
           min={1}
@@ -414,6 +918,49 @@ function TopCategoriesSettings({
           className="w-full accent-primary"
         />
       </div>
+
+      <div className="space-y-1.5">
+        <Label>Период</Label>
+        <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
+          <div className="min-w-0">
+            <div className="text-xs font-medium">Использовать период страницы</div>
+            <div className="text-[11px] text-muted-foreground">
+              {cfg.periodOverride === null
+                ? 'Период наследуется от страницы'
+                : `Свой: ${PRESET_LABELS[cfg.periodOverride.preset]}`}
+            </div>
+          </div>
+          <Switch
+            checked={cfg.periodOverride === null}
+            onCheckedChange={(v) =>
+              setOverride(v ? null : { preset: 'mtd', customFrom: null, customTo: null })
+            }
+          />
+        </div>
+        {cfg.periodOverride !== null && (
+          <div className="rounded-md border border-border/60 p-2">
+            <PeriodPicker
+              value={{
+                preset: cfg.periodOverride.preset,
+                customFrom: cfg.periodOverride.customFrom ?? null,
+                customTo: cfg.periodOverride.customTo ?? null,
+              }}
+              onChange={(v) =>
+                setOverride({
+                  preset: v.preset,
+                  customFrom: v.customFrom ?? null,
+                  customTo: v.customTo ?? null,
+                })
+              }
+            />
+          </div>
+        )}
+      </div>
+
+      <SourceOverrideSection
+        value={cfg.sourceOverride}
+        onChange={(next) => onChange({ ...cfg, sourceOverride: next })}
+      />
 
       <div className="space-y-1.5">
         <Label>Копейки</Label>
@@ -449,10 +996,132 @@ function TopCategoriesSettings({
   );
 }
 
+// ============================================================================
+// Shared SourceOverrideSection — UI для override source в Settings блоков
+// ============================================================================
+
+function SourceOverrideSection({
+  value,
+  onChange,
+}: {
+  /** `undefined` = global (по умолчанию), `null` = override "Все", string = конкретный. */
+  value: string | null | undefined;
+  onChange: (next: string | null | undefined) => void;
+}) {
+  const isOverride = value !== undefined;
+  return (
+    <div className="space-y-1.5">
+      <Label>Источник</Label>
+      <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
+        <div className="min-w-0">
+          <div className="text-xs font-medium">Использовать источник страницы</div>
+          <div className="text-[11px] text-muted-foreground">
+            {!isOverride
+              ? 'Источник наследуется от страницы (Globe)'
+              : value === null
+                ? 'Свой: все источники'
+                : `Свой: ${SOURCE_LABELS[value]?.label ?? value}`}
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <Globe className="h-3 w-3 text-muted-foreground" />
+          <Switch
+            checked={!isOverride}
+            onCheckedChange={(v) => onChange(v ? undefined : null)}
+          />
+        </div>
+      </div>
+      {isOverride && (
+        <div className="rounded-md border border-border/60 p-2">
+          <SourceFilterChipsSettings value={value ?? null} onChange={onChange} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Re-export wrapper: SourceFilterChips ожидает (null | string) → (null | string),
+// здесь добавляем обёртку для override === null|string (но не undefined).
+function SourceFilterChipsSettings({
+  value,
+  onChange,
+}: {
+  value: string | null;
+  onChange: (next: string | null) => void;
+}) {
+  // Динамический импорт компонента (через прямой require, чтобы избежать циклов)
+  return <InlineSourceChips value={value} onChange={onChange} />;
+}
+
+function InlineSourceChips({
+  value,
+  onChange,
+}: {
+  value: string | null;
+  onChange: (next: string | null) => void;
+}) {
+  const [sources, setSources] = useState<Array<{ source: string; count: number }>>([]);
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/cashflow/meta')
+      .then((r) => r.json())
+      .then((d) => {
+        if (cancelled) return;
+        if (d.ok && Array.isArray(d.sourcesWithCount)) setSources(d.sourcesWithCount);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (sources.length === 0) {
+    return <p className="text-[11px] text-muted-foreground">Источники появятся после импорта операций</p>;
+  }
+
+  return (
+    <div className="flex flex-wrap gap-1">
+      <button
+        type="button"
+        onClick={() => onChange(null)}
+        className={
+          'inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] tabular-nums transition ' +
+          (value === null
+            ? 'border-primary/40 bg-primary/10 text-primary'
+            : 'border-border/60 bg-background text-muted-foreground hover:bg-accent/40')
+        }
+      >
+        Все
+      </button>
+      {sources.map((s) => {
+        const meta = SOURCE_LABELS[s.source];
+        const Icon = meta?.icon;
+        return (
+          <button
+            key={s.source}
+            type="button"
+            onClick={() => onChange(s.source)}
+            className={
+              'inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] tabular-nums transition ' +
+              (value === s.source
+                ? 'border-primary/40 bg-primary/10 text-primary'
+                : 'border-border/60 bg-background text-muted-foreground hover:bg-accent/40')
+            }
+          >
+            {Icon ? <Icon className="h-3 w-3" /> : null}
+            {meta?.label ?? s.source}
+            <span className="opacity-50">{s.count}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export const TopCategoriesBlock: BlockDef = {
   type: 'cashflow.top-categories',
   displayName: 'Топ категорий',
-  description: 'Топ категорий по доходам или расходам',
+  description: 'Топ категорий с долей от общего, drill-down кликом',
   category: 'charts',
   icon: BarChart3,
   defaultSize: { w: 6, h: 4 },
@@ -460,34 +1129,160 @@ export const TopCategoriesBlock: BlockDef = {
   minContentSize: { w: 180, h: 120 },
   pages: ['cashflow', 'dashboard'],
   configSchema: TopCatsConfig,
-  defaultConfig: () => ({ type: 'expense', limit: 5, showKopecks: null }),
+  defaultConfig: () => ({ type: 'expense', limit: 5, showKopecks: null, periodOverride: null }),
   SettingsForm: TopCategoriesSettings,
   Render: RenderTopCategories,
 };
 
 // ============================================================================
-// cashflow.transactions — список последних операций
+// cashflow.transactions — список с filters / virtualization / cursor pagination / CSV export
 // ============================================================================
 
 const TxListConfig = z.object({
-  limit: z.number().int().min(5).max(200).default(50),
+  pageSize: z.number().int().min(20).max(500).default(100),
   title: z.string().optional(),
   showKopecks: z.boolean().nullable().default(null),
+  /** Default filter: applied on mount; UI может менять. */
+  defaultType: z.enum(['all', 'income', 'expense']).default('all'),
 });
+
+type TxRow = CashflowTx & { categoryName?: string | null };
+
+function exportToCsv(rows: TxRow[], showKopecks: boolean): void {
+  const header = ['Дата', 'Тип', 'Сумма (руб)', 'Контрагент', 'Категория', 'Описание', 'Источник'];
+  const lines = [header.join(',')];
+  rows.forEach((r) => {
+    const amountRub = (r.amount / 100).toFixed(showKopecks ? 2 : 0);
+    const fields = [
+      formatDate(r.occurredAt),
+      r.type === 'income' ? 'Доход' : 'Расход',
+      amountRub,
+      r.counterparty ?? '',
+      r.categoryName ?? '',
+      r.description ?? '',
+      r.source ?? '',
+    ].map((v) => `"${String(v).replace(/"/g, '""')}"`);
+    lines.push(fields.join(','));
+  });
+  const blob = new Blob(['\ufeff' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `transactions-${Date.now()}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+const VIRTUAL_THRESHOLD = 100;
+const VIRTUAL_ROW_HEIGHT = 44;
 
 function RenderTransactionsList({ instance }: BlockRenderProps) {
   const cfg = TxListConfig.parse(instance.config ?? {});
-  const { transactions, loading } = useCashflowData();
   const router = useRouter();
   const { settings } = useFormatSettings();
   const showKopecks = cfg.showKopecks ?? settings.showKopecks;
   const fmt = (v: number) => formatRublesWithSettings(v, showKopecks);
+  const ctx = useCashflowData();
+  const drill = useDrillDown();
+
+  // Page-level source (transactions block наследует и принимает override из drill).
+  const { value: pageSource } = useEffectiveSource(instance.id, undefined);
+
+  // Filters (UI controlled)
+  const [filterType, setFilterType] = useState<'all' | 'income' | 'expense'>(cfg.defaultType);
+  const [filterCounterparty, setFilterCounterparty] = useState('');
+  const [filterCategoryName, setFilterCategoryName] = useState('');
+  const [filterSource, setFilterSource] = useState<string | null>(null);
+
+  // React-receive: drill-down focus from другого блока
+  useEffect(() => {
+    const focus = drill.focus;
+    if (focus && focus.blockType === 'cashflow.transactions') {
+      if (focus.filter.type) setFilterType(focus.filter.type);
+      if (focus.filter.categoryName !== undefined)
+        setFilterCategoryName(focus.filter.categoryName ?? '');
+      if (focus.filter.counterparty !== undefined)
+        setFilterCounterparty(focus.filter.counterparty ?? '');
+      if (focus.filter.source !== undefined) setFilterSource(focus.filter.source ?? null);
+    }
+  }, [drill.focus]);
+
+  // Effective source = block filter > page source.
+  const effectiveSource = filterSource ?? pageSource;
+
+  // Data: fetch с filters + cursor pagination
+  const [rows, setRows] = useState<TxRow[]>([]);
+  const [nextCursor, setNextCursor] = useState<{ occurredAt: string; id: string } | null>(null);
+  const [loading, setLoading] = useState(false);
   const [editing, setEditing] = useState<CashflowTx | null>(null);
   const [editingNew, setEditingNew] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [clearAll, setClearAll] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
 
-  const rows = transactions.slice(0, cfg.limit);
+  const filterKey = `${filterType}|${filterCounterparty}|${filterCategoryName}|${effectiveSource ?? ''}`;
+
+  async function fetchPage(cursor: { occurredAt: string; id: string } | null) {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({ limit: String(cfg.pageSize) });
+      if (filterType !== 'all') params.set('type', filterType);
+      if (filterCounterparty) params.set('counterparty', filterCounterparty);
+      if (filterCategoryName) params.set('categoryName', filterCategoryName);
+      if (effectiveSource) params.set('source', effectiveSource);
+      if (cursor) {
+        params.set('cursorAt', cursor.occurredAt);
+        params.set('cursorId', cursor.id);
+      }
+      const res = await fetch(`/api/cashflow/transactions?${params.toString()}`);
+      const data = await res.json();
+      if (data.ok) {
+        const items: TxRow[] = (data.items ?? []).map((t: TxRow & { occurredAt: string }) => ({
+          ...t,
+          occurredAt: typeof t.occurredAt === 'string' ? t.occurredAt : new Date(t.occurredAt).toISOString(),
+        }));
+        setRows((prev) => (cursor ? [...prev, ...items] : items));
+        setNextCursor(data.nextCursor ?? null);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // (Re)load on filter change
+  useEffect(() => {
+    setRows([]);
+    setNextCursor(null);
+    fetchPage(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterKey]);
+
+  // Initial fallback из context
+  useEffect(() => {
+    if (rows.length === 0 && !loading && ctx.transactions.length > 0) {
+      setRows(ctx.transactions.map((t) => ({ ...t, categoryName: null })));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctx.transactions]);
+
+  // Publish stats
+  const totalIncome = useMemo(
+    () => rows.filter((r) => r.type === 'income').reduce((s, r) => s + r.amount, 0),
+    [rows],
+  );
+  const totalExpense = useMemo(
+    () => rows.filter((r) => r.type === 'expense').reduce((s, r) => s + r.amount, 0),
+    [rows],
+  );
+  useBlockValuePublisher(instance.id, {
+    count: rows.length,
+    totalIncome,
+    totalExpense,
+    label: instance.appearance?.title ?? cfg.title ?? 'История операций',
+    __money: 'totalIncome,totalExpense',
+    __labels:
+      'count=Кол-во строк,totalIncome=Доходы (видимые),totalExpense=Расходы (видимые)',
+  });
 
   async function deleteOne(id: string) {
     const res = await fetch(`/api/cashflow/transactions/${id}`, { method: 'DELETE' });
@@ -503,91 +1298,248 @@ function RenderTransactionsList({ instance }: BlockRenderProps) {
     else alert(data.error ?? 'Не удалось очистить');
   }
 
+  // Virtualization (rows > VIRTUAL_THRESHOLD)
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const virtualize = rows.length > VIRTUAL_THRESHOLD;
+  const virtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => VIRTUAL_ROW_HEIGHT,
+    overscan: 8,
+    enabled: virtualize,
+  });
+
+  function clearFilters() {
+    setFilterType('all');
+    setFilterCounterparty('');
+    setFilterCategoryName('');
+    setFilterSource(null);
+  }
+
+  const hasActiveFilters =
+    filterType !== 'all' ||
+    filterCounterparty !== '' ||
+    filterCategoryName !== '' ||
+    filterSource !== null;
+
   return (
     <Card className="flex h-full flex-col overflow-hidden">
-      <CardHeader className="flex flex-row items-center justify-between pb-3">
-        <CardTitle className="text-base">
+      <CardHeader className="flex shrink-0 flex-row items-center justify-between gap-2 pb-2">
+        <CardTitle className="truncate text-base">
           {instance.appearance?.title ?? cfg.title ?? 'История операций'}
         </CardTitle>
-        {transactions.length > 0 && (
+        <div className="flex shrink-0 gap-1">
+          <Button
+            variant={filtersOpen || hasActiveFilters ? 'default' : 'outline'}
+            size="sm"
+            className="h-7 px-2 text-[11px]"
+            onClick={() => setFiltersOpen((v) => !v)}
+          >
+            <Filter className="h-3 w-3" />
+            Фильтры
+            {hasActiveFilters && (
+              <span className="ml-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary/20 px-1 text-[10px]">
+                {[filterType !== 'all', filterCounterparty, filterCategoryName, filterSource].filter(Boolean).length}
+              </span>
+            )}
+          </Button>
           <Button
             variant="ghost"
             size="sm"
-            className="text-red-600 hover:bg-red-50 hover:text-red-700"
-            onClick={() => setClearAll(true)}
+            className="h-7 px-2 text-[11px]"
+            onClick={() => exportToCsv(rows, showKopecks)}
+            disabled={rows.length === 0}
           >
-            Очистить всё
+            <Download className="h-3 w-3" />
+            CSV
           </Button>
-        )}
+          {rows.length > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-[11px] text-red-600 hover:bg-red-50 hover:text-red-700"
+              onClick={() => setClearAll(true)}
+            >
+              Очистить
+            </Button>
+          )}
+        </div>
       </CardHeader>
-      <CardContent className="flex-1 overflow-y-auto p-0">
-        {loading ? (
-          <p className="p-4 text-sm text-muted-foreground">Загрузка…</p>
-        ) : rows.length === 0 ? (
-          <p className="p-12 text-center text-sm text-muted-foreground">Нет операций</p>
-        ) : (
-          <table className="w-full text-sm">
-            <thead className="sticky top-0 bg-background">
-              <tr className="border-b">
-                <th className="px-3 py-2 text-left font-medium text-muted-foreground">Дата</th>
-                <th className="px-3 py-2 text-left font-medium text-muted-foreground">
-                  Контрагент
-                </th>
-                <th className="px-3 py-2 text-right font-medium text-muted-foreground">
-                  Сумма
-                </th>
-                <th className="w-16"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((t) => (
-                <tr key={t.id} className="group border-b last:border-0">
-                  <td className="whitespace-nowrap px-3 py-2 text-muted-foreground">
-                    {formatDate(t.occurredAt)}
-                  </td>
-                  <td className="px-3 py-2">
-                    <div className="line-clamp-1">{t.counterparty ?? '—'}</div>
-                    {t.description && (
-                      <div className="line-clamp-1 text-xs text-muted-foreground">
-                        {t.description}
-                      </div>
-                    )}
-                  </td>
-                  <td
-                    className={`whitespace-nowrap px-3 py-2 text-right font-medium tabular-nums ${
-                      t.type === 'income' ? 'text-green-600' : 'text-red-600'
-                    }`}
+
+      {filtersOpen && (
+        <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-border/40 bg-muted/20 px-3 py-2">
+          <div className="flex gap-0.5 rounded-md border border-border/60 p-0.5">
+            {(['all', 'income', 'expense'] as const).map((t) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() => setFilterType(t)}
+                className={
+                  'h-6 rounded px-2 text-[11px] font-medium transition ' +
+                  (filterType === t
+                    ? 'bg-primary text-primary-foreground'
+                    : 'text-muted-foreground hover:bg-accent')
+                }
+              >
+                {t === 'all' ? 'Все' : t === 'income' ? 'Доходы' : 'Расходы'}
+              </button>
+            ))}
+          </div>
+          <Input
+            placeholder="Контрагент…"
+            value={filterCounterparty}
+            onChange={(e) => setFilterCounterparty(e.target.value)}
+            className="h-7 w-[160px] text-[11px]"
+          />
+          <Input
+            placeholder="Категория (точно)…"
+            value={filterCategoryName}
+            onChange={(e) => setFilterCategoryName(e.target.value)}
+            className="h-7 w-[160px] text-[11px]"
+          />
+          {hasActiveFilters && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-[11px]"
+              onClick={clearFilters}
+            >
+              <X className="h-3 w-3" />
+              Сбросить
+            </Button>
+          )}
+          <span className="ml-auto text-[11px] text-muted-foreground tabular-nums">
+            {rows.length} {rows.length === 1 ? 'строка' : 'строк'}
+          </span>
+        </div>
+      )}
+
+      <CardContent className="flex-1 overflow-hidden p-0">
+        <div ref={scrollRef} className="h-full overflow-y-auto">
+          {loading && rows.length === 0 ? (
+            <p className="p-4 text-sm text-muted-foreground">Загрузка…</p>
+          ) : rows.length === 0 ? (
+            <div className="flex h-full flex-col items-center justify-center gap-2 p-12 text-center">
+              <p className="text-sm text-muted-foreground">Нет операций</p>
+              {hasActiveFilters && (
+                <Button variant="outline" size="sm" onClick={clearFilters}>
+                  Сбросить фильтры
+                </Button>
+              )}
+            </div>
+          ) : virtualize ? (
+            <div
+              style={{
+                height: virtualizer.getTotalSize(),
+                width: '100%',
+                position: 'relative',
+              }}
+            >
+              {virtualizer.getVirtualItems().map((vi) => {
+                const t = rows[vi.index];
+                return (
+                  <div
+                    key={t.id}
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      width: '100%',
+                      transform: `translateY(${vi.start}px)`,
+                      height: vi.size,
+                    }}
                   >
-                    {t.type === 'income' ? '+' : '−'}
-                    {fmt(t.amount)}
-                  </td>
-                  <td className="px-2">
-                    <div className="flex justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7"
-                        onClick={() => setEditing(t)}
-                        aria-label="Редактировать"
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 text-red-600 hover:bg-red-50 hover:text-red-700"
-                        onClick={() => setDeleteId(t.id)}
-                        aria-label="Удалить"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
-                  </td>
+                    <VirtualRow
+                      tx={t}
+                      fmt={fmt}
+                      onEdit={() => setEditing(t)}
+                      onDelete={() => setDeleteId(t.id)}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-background">
+                <tr className="border-b">
+                  <th className="px-3 py-2 text-left font-medium text-muted-foreground">Дата</th>
+                  <th className="px-3 py-2 text-left font-medium text-muted-foreground">
+                    Контрагент
+                  </th>
+                  <th className="px-3 py-2 text-left font-medium text-muted-foreground">
+                    Категория
+                  </th>
+                  <th className="px-3 py-2 text-right font-medium text-muted-foreground">Сумма</th>
+                  <th className="w-16"></th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+              </thead>
+              <tbody>
+                {rows.map((t) => (
+                  <tr key={t.id} className="group border-b last:border-0">
+                    <td className="whitespace-nowrap px-3 py-2 text-muted-foreground">
+                      {formatDate(t.occurredAt)}
+                    </td>
+                    <td className="px-3 py-2">
+                      <div className="line-clamp-1">{t.counterparty ?? '—'}</div>
+                      {t.description && (
+                        <div className="line-clamp-1 text-xs text-muted-foreground">
+                          {t.description}
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-3 py-2">
+                      {t.categoryName ? (
+                        <span className="inline-flex rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground ring-1 ring-border/40">
+                          {t.categoryName}
+                        </span>
+                      ) : (
+                        <span className="text-[11px] text-muted-foreground/50">—</span>
+                      )}
+                    </td>
+                    <td
+                      className={`whitespace-nowrap px-3 py-2 text-right font-medium tabular-nums ${
+                        t.type === 'income' ? 'text-green-600' : 'text-red-600'
+                      }`}
+                    >
+                      {t.type === 'income' ? '+' : '−'}
+                      {fmt(t.amount)}
+                    </td>
+                    <td className="px-2">
+                      <div className="flex justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7"
+                          onClick={() => setEditing(t)}
+                          aria-label="Редактировать"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-red-600 hover:bg-red-50 hover:text-red-700"
+                          onClick={() => setDeleteId(t.id)}
+                          aria-label="Удалить"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {nextCursor && !loading && (
+            <div className="flex justify-center p-3">
+              <Button variant="outline" size="sm" onClick={() => fetchPage(nextCursor)}>
+                Загрузить ещё
+              </Button>
+            </div>
+          )}
+        </div>
       </CardContent>
 
       <TransactionDialog
@@ -601,6 +1553,7 @@ function RenderTransactionsList({ instance }: BlockRenderProps) {
           setEditing(null);
           setEditingNew(false);
           router.refresh();
+          fetchPage(null);
         }}
       />
 
@@ -608,9 +1561,7 @@ function RenderTransactionsList({ instance }: BlockRenderProps) {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Удалить операцию?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Запись будет удалена безвозвратно.
-            </AlertDialogDescription>
+            <AlertDialogDescription>Запись будет удалена безвозвратно.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Отмена</AlertDialogCancel>
@@ -632,8 +1583,8 @@ function RenderTransactionsList({ instance }: BlockRenderProps) {
           <AlertDialogHeader>
             <AlertDialogTitle>Очистить всю историю?</AlertDialogTitle>
             <AlertDialogDescription>
-              Будут удалены <strong>все {transactions.length}</strong> транзакций. Категории и
-              настройки сохранятся.
+              Будут удалены <strong>все {rows.length}</strong> транзакций. Категории и настройки
+              сохранятся.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -654,6 +1605,58 @@ function RenderTransactionsList({ instance }: BlockRenderProps) {
   );
 }
 
+function VirtualRow({
+  tx,
+  fmt,
+  onEdit,
+  onDelete,
+}: {
+  tx: TxRow;
+  fmt: (v: number) => string;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div className="group flex items-center gap-2 border-b border-border/40 px-3 py-2 text-sm hover:bg-muted/30">
+      <span className="w-20 shrink-0 whitespace-nowrap text-xs text-muted-foreground">
+        {formatDate(tx.occurredAt)}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="line-clamp-1">{tx.counterparty ?? '—'}</div>
+        {tx.description && (
+          <div className="line-clamp-1 text-xs text-muted-foreground">{tx.description}</div>
+        )}
+      </div>
+      {tx.categoryName && (
+        <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground ring-1 ring-border/40">
+          {tx.categoryName}
+        </span>
+      )}
+      <span
+        className={`shrink-0 whitespace-nowrap text-right font-medium tabular-nums ${
+          tx.type === 'income' ? 'text-green-600' : 'text-red-600'
+        }`}
+      >
+        {tx.type === 'income' ? '+' : '−'}
+        {fmt(tx.amount)}
+      </span>
+      <div className="flex shrink-0 gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onEdit}>
+          <Pencil className="h-3.5 w-3.5" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7 text-red-600 hover:bg-red-50 hover:text-red-700"
+          onClick={onDelete}
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function TransactionsSettings({
   config,
   onChange,
@@ -664,25 +1667,56 @@ function TransactionsSettings({
   const cfg = TxListConfig.parse(config ?? {});
   return (
     <div className="space-y-4">
+      <div className="space-y-1.5">
+        <Label>Заголовок</Label>
+        <Input
+          value={cfg.title ?? ''}
+          onChange={(e) => onChange({ ...cfg, title: e.target.value || undefined })}
+          placeholder="История операций"
+        />
+      </div>
       <div className="space-y-2">
-        <label className="text-sm font-medium">
-          Сколько строк показывать: <span className="tabular-nums">{cfg.limit}</span>
-        </label>
+        <Label>
+          Размер страницы (cursor pagination):{' '}
+          <span className="tabular-nums">{cfg.pageSize}</span>
+        </Label>
         <input
           type="range"
-          min={5}
-          max={200}
-          step={5}
-          value={cfg.limit}
-          onChange={(e) => onChange({ ...cfg, limit: Number(e.target.value) })}
+          min={20}
+          max={500}
+          step={20}
+          value={cfg.pageSize}
+          onChange={(e) => onChange({ ...cfg, pageSize: Number(e.target.value) })}
           className="w-full accent-primary"
         />
         <div className="flex justify-between text-xs text-muted-foreground">
-          <span>5</span>
-          <span>200</span>
+          <span>20</span>
+          <span>500</span>
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          При &gt; 100 строк включается виртуализация — список плавно скроллится без лагов.
+        </p>
+      </div>
+      <div className="space-y-1.5">
+        <Label>Дефолтный фильтр типа</Label>
+        <div className="flex gap-1">
+          {(['all', 'income', 'expense'] as const).map((t) => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => onChange({ ...cfg, defaultType: t })}
+              className={
+                'inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium transition-colors ' +
+                (cfg.defaultType === t
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-muted text-muted-foreground hover:bg-accent')
+              }
+            >
+              {t === 'all' ? 'Все' : t === 'income' ? 'Доходы' : 'Расходы'}
+            </button>
+          ))}
         </div>
       </div>
-
       <div className="space-y-1.5">
         <Label>Копейки</Label>
         <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
@@ -720,7 +1754,8 @@ function TransactionsSettings({
 export const TransactionsListBlock: BlockDef = {
   type: 'cashflow.transactions',
   displayName: 'Список операций',
-  description: 'Список последних транзакций с edit/delete и Очистить всё',
+  description:
+    'Фильтры, cursor-пагинация, виртуализация при >100 строк, экспорт в CSV, прием drill-down фокуса',
   category: 'tables',
   icon: ListOrdered,
   defaultSize: { w: 12, h: 6 },
@@ -728,7 +1763,7 @@ export const TransactionsListBlock: BlockDef = {
   minContentSize: { w: 280, h: 180 },
   pages: ['cashflow'],
   configSchema: TxListConfig,
-  defaultConfig: () => ({ limit: 50 }),
+  defaultConfig: () => ({ pageSize: 100, defaultType: 'all', showKopecks: null }),
   SettingsForm: TransactionsSettings,
   Render: RenderTransactionsList,
 };

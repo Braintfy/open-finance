@@ -206,7 +206,7 @@ export function preprocessBlockRefs(
 // Simple math eval (fast path for =1+2, =A1*B1 after substitution)
 // ============================================================================
 
-function simpleMathEval(expr: string): number | null {
+export function simpleMathEval(expr: string): number | null {
   if (!/^[\d\s+\-*/().,%-]+$/.test(expr)) return null;
   try {
     const fn = new Function('return (' + expr + ')');
@@ -215,6 +215,30 @@ function simpleMathEval(expr: string): number | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Evaluate простое выражение с подстановкой переменных a, b, c, ... → значения.
+ * Используется в computed.sum aggregation='formula' для выражений типа `(a + b) * 0.13`.
+ *
+ * Безопасность: только латинские буквы как переменные, операторы + - * / ( ) % и числа.
+ * Возвращает `null` если выражение невалидно, переменная не определена или результат не finite.
+ */
+export function evalFormulaVars(
+  expression: string,
+  vars: Record<string, number>,
+): number | null {
+  if (!expression || typeof expression !== 'string') return null;
+  if (!/^[a-zA-Z\d\s+\-*/().,%-]+$/.test(expression)) return null;
+  let substituted = expression;
+  const varNames = Object.keys(vars).sort((a, b) => b.length - a.length);
+  for (const name of varNames) {
+    if (!/^[a-zA-Z]+$/.test(name)) return null;
+    const re = new RegExp(`\\b${name}\\b`, 'g');
+    substituted = substituted.replace(re, `(${vars[name]})`);
+  }
+  if (/[a-zA-Z]/.test(substituted)) return null;
+  return simpleMathEval(substituted);
 }
 
 // ============================================================================

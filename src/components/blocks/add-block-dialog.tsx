@@ -3,7 +3,7 @@
 
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
-import { ChevronLeft, Sparkles, Store, ArrowUpRight } from 'lucide-react';
+import { ChevronLeft, Sparkles, Store, ArrowUpRight, Zap } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -14,10 +14,18 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { listAllBlocks, listRecommendedForPage } from '@/lib/blocks/registry';
+import {
+  listAllBlocks,
+  listRecommendedForPage,
+  listPresetsForPage,
+  getBlockDef,
+  type BlockPreset,
+} from '@/lib/blocks/registry';
 import type { BlockAppearance, BlockCategory, BlockDef } from '@/lib/blocks/types';
 import { AppearanceForm, SizeForm } from './block-settings-dialog';
 import { cn } from '@/lib/utils';
+import { resolveIconWithAnimation } from '@/lib/blocks/icon-resolver';
+import { Square } from 'lucide-react';
 
 const CATEGORY_LABELS: Record<BlockCategory, string> = {
   stats: 'KPI / Статистика',
@@ -55,6 +63,7 @@ export function AddBlockDialog({
 
   const recommended = listRecommendedForPage(pageKey);
   const all = listAllBlocks();
+  const presets = listPresetsForPage(pageKey);
 
   function reset() {
     setStep('pick');
@@ -70,6 +79,20 @@ export function AddBlockDialog({
     setConfig(def.defaultConfig?.() ?? {});
     setAppearance({});
     setSize({ w: def.defaultSize.w, h: def.defaultSize.h });
+    setTab(def.SettingsForm ? 'params' : 'appearance');
+    setStep('configure');
+  }
+
+  function pickPreset(preset: BlockPreset) {
+    const def = getBlockDef(preset.baseType);
+    if (!def) return;
+    // Подмешиваем defaultConfig блока + override из пресета.
+    const baseCfg = def.defaultConfig?.() ?? {};
+    setPicked(def);
+    setConfig({ ...baseCfg, ...preset.defaultConfig });
+    setAppearance((preset.defaultAppearance ?? {}) as BlockAppearance);
+    const presetSize = preset.defaultSize ?? def.defaultSize;
+    setSize({ w: presetSize.w, h: presetSize.h });
     setTab(def.SettingsForm ? 'params' : 'appearance');
     setStep('configure');
   }
@@ -99,8 +122,10 @@ export function AddBlockDialog({
         {step === 'pick' ? (
           <PickStep
             onPick={pickBlock}
+            onPickPreset={pickPreset}
             recommended={recommended}
             all={all}
+            presets={presets}
             existingTypes={existingTypes}
           />
         ) : (
@@ -134,13 +159,17 @@ function hasAppearance(a: BlockAppearance): boolean {
 function PickStep({
   recommended,
   all,
+  presets,
   existingTypes,
   onPick,
+  onPickPreset,
 }: {
   recommended: BlockDef[];
   all: BlockDef[];
+  presets: BlockPreset[];
   existingTypes: string[];
   onPick: (def: BlockDef) => void;
+  onPickPreset: (preset: BlockPreset) => void;
 }) {
   const [query, setQuery] = useState('');
   const [showAll, setShowAll] = useState(recommended.length === 0);
@@ -152,14 +181,31 @@ function PickStep({
     b.type.toLowerCase().includes(q) ||
     (b.tags ?? []).some((t) => t.toLowerCase().includes(q));
 
+  const matchesPreset = (p: BlockPreset, q: string) =>
+    !q ||
+    p.label.toLowerCase().includes(q) ||
+    p.description.toLowerCase().includes(q);
+
   const q = query.trim().toLowerCase();
 
+  // Сортировка: «legacy»-блоки уходят в самый низ списка.
+  const sortByLegacy = (a: BlockDef, b: BlockDef) => {
+    const aLegacy = (a.tags ?? []).includes('legacy') ? 1 : 0;
+    const bLegacy = (b.tags ?? []).includes('legacy') ? 1 : 0;
+    return aLegacy - bLegacy;
+  };
+
+  const filteredPresets = useMemo(
+    () => presets.filter((p) => matchesPreset(p, q)),
+    [presets, q],
+  );
+
   const filteredRecommended = useMemo(
-    () => recommended.filter((b) => matches(b, q)),
+    () => recommended.filter((b) => matches(b, q)).sort(sortByLegacy),
     [recommended, q],
   );
   const filteredAll = useMemo(
-    () => all.filter((b) => matches(b, q)),
+    () => all.filter((b) => matches(b, q)).sort(sortByLegacy),
     [all, q],
   );
 
@@ -200,6 +246,21 @@ function PickStep({
       />
 
       <div className="max-h-[60vh] overflow-y-auto pr-1">
+        {filteredPresets.length > 0 && (
+          <section className="mb-5">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <Zap className="h-3 w-3" />
+                Cashflow быстро
+              </h3>
+              <span className="text-[10px] text-muted-foreground/70">
+                один клик — готовая KPI-ячейка
+              </span>
+            </div>
+            <PresetGrid presets={filteredPresets} onPickPreset={onPickPreset} />
+          </section>
+        )}
+
         {recommended.length > 0 && (
           <section className="mb-5">
             <div className="mb-2 flex items-center justify-between gap-2">
@@ -258,6 +319,40 @@ function PickStep({
         </Link>
       </DialogFooter>
     </>
+  );
+}
+
+function PresetGrid({
+  presets,
+  onPickPreset,
+}: {
+  presets: BlockPreset[];
+  onPickPreset: (preset: BlockPreset) => void;
+}) {
+  return (
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+      {presets.map((preset) => {
+        const { Icon } = resolveIconWithAnimation(preset.iconName, Square);
+        return (
+          <button
+            key={preset.id}
+            type="button"
+            onClick={() => onPickPreset(preset)}
+            className="flex items-start gap-3 rounded-md border border-primary/30 bg-primary/5 p-3 text-left transition hover:border-primary/60 hover:bg-primary/10"
+          >
+            <div className="rounded-md bg-primary/15 p-2 text-primary">
+              <Icon className="h-4 w-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm font-medium">{preset.label}</div>
+              <div className="line-clamp-2 text-xs text-muted-foreground">
+                {preset.description}
+              </div>
+            </div>
+          </button>
+        );
+      })}
+    </div>
   );
 }
 

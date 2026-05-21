@@ -37,6 +37,17 @@ export type StatCardProps = {
   /** Цвет линии спарклайна / акцент. */
   accent?: 'emerald' | 'rose' | 'amber' | 'sky' | 'violet';
   loading?: boolean;
+  /**
+   * Variant:
+   *   - `standalone` (default) — внешняя обёртка `rounded-lg border bg-card p-2.5/3`.
+   *   - `inner` — без border / bg / padding, чтобы класть внутрь родительского Card
+   *     (например, в `StatKpiBlock` или `kpi.grid`). Заполняет высоту контейнера.
+   */
+  variant?: 'standalone' | 'inner';
+  /** Override иконка слева от label (только для `inner` варианта). */
+  icon?: import('lucide-react').LucideIcon;
+  /** Цвет иконки (HEX) — accentColor. */
+  iconColor?: string;
 };
 
 function formatValue(value: number | string, format: StatCardFormat | undefined): string {
@@ -83,6 +94,9 @@ export function StatCard({
   tone = 'default',
   accent = 'emerald',
   loading = false,
+  variant = 'standalone',
+  icon: Icon,
+  iconColor,
 }: StatCardProps) {
   const density = useBlockDensity();
   const gradientId = useId();
@@ -100,21 +114,27 @@ export function StatCard({
   const stroke = ACCENT_STROKE[accent];
 
   const isCompact = density === 'xs' || density === 'sm';
+  const containerClass =
+    variant === 'inner'
+      ? 'flex h-full min-h-0 flex-col justify-between'
+      : 'flex flex-col justify-between rounded-lg border border-border/60 bg-card ' +
+        (isCompact ? 'p-2.5' : 'p-3');
+
   return (
-    <div
-      className={
-        'flex flex-col justify-between rounded-lg border border-border/60 bg-card ' +
-        (isCompact ? 'p-2.5' : 'p-3')
-      }
-    >
+    <div className={containerClass}>
       <div className="flex items-start justify-between gap-2">
-        <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-          {label}
+        <div className="flex min-w-0 items-center gap-1.5">
+          {Icon ? (
+            <Icon className="h-3.5 w-3.5 shrink-0" style={iconColor ? { color: iconColor } : undefined} />
+          ) : null}
+          <div className="truncate text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            {label}
+          </div>
         </div>
         {delta && (
           <div
             className={
-              'flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-medium ' +
+              'flex shrink-0 items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-medium ' +
               deltaTone
             }
             title={delta.tooltip ?? delta.label}
@@ -125,7 +145,7 @@ export function StatCard({
           </div>
         )}
       </div>
-      <div className="mt-1">
+      <div className="mt-1 min-w-0">
         <div
           className={
             'tabular-nums font-semibold ' +
@@ -137,7 +157,7 @@ export function StatCard({
           {loading ? '—' : formatValue(value, format)}
         </div>
         {hint && (
-          <div className="mt-0.5 text-[10px] text-muted-foreground">{hint}</div>
+          <div className="mt-0.5 truncate text-[10px] text-muted-foreground">{hint}</div>
         )}
       </div>
       {sparkline && sparkline.length > 1 && (

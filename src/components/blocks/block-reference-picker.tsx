@@ -30,7 +30,11 @@ const AGGREGATIONS: Array<{ value: BlockDependencies['aggregation']; label: stri
   { value: 'min', label: 'Минимум', hint: 'Наименьшее из значений' },
   { value: 'max', label: 'Максимум', hint: 'Наибольшее из значений' },
   { value: 'count', label: 'Количество', hint: 'Сколько источников имеют значение' },
-  { value: 'formula', label: 'Формула', hint: 'Произвольная формула (планируется)' },
+  { value: 'median', label: 'Медиана', hint: 'Центральное значение в отсортированном массиве' },
+  { value: 'variance', label: 'Дисперсия', hint: 'Меру разброса значений вокруг среднего' },
+  { value: 'first', label: 'Первое', hint: 'Первый не-null источник по порядку' },
+  { value: 'last', label: 'Последнее', hint: 'Последний не-null источник по порядку' },
+  { value: 'formula', label: 'Формула', hint: 'Произвольная формула (a, b, c, ... = источники)' },
   { value: 'ai', label: 'AI-агент', hint: 'AI-микроагент собирает данные (планируется)' },
 ];
 

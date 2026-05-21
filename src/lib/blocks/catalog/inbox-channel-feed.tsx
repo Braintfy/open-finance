@@ -3,7 +3,22 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ComponentType, ReactNode } from 'react';
-import { Inbox, Mail, Send, RefreshCcw, PlugZap, Save, Trash2, BookOpen } from 'lucide-react';
+import {
+  Inbox,
+  Mail,
+  Send,
+  RefreshCcw,
+  PlugZap,
+  Save,
+  Trash2,
+  BookOpen,
+  Sparkles,
+  FileText,
+  Receipt,
+  CheckCircle,
+  XCircle,
+  Upload as UploadIcon,
+} from 'lucide-react';
 import { z } from 'zod';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -199,12 +214,253 @@ function RenderInboxChannelFeed({ instance }: BlockRenderProps) {
                 <div className="whitespace-pre-wrap break-words rounded-md bg-muted/35 p-3 text-sm leading-6 text-foreground/85">
                   {selected.body || selected.preview || 'Тело сообщения пустое.'}
                 </div>
+                <AiRecognizePanel messageId={selected.id} />
               </div>
             )}
           </div>
         </div>
       )}
     </Card>
+  );
+}
+
+// ============================================================================
+// AI Vision recognize panel — кнопка «Распознать с AI» + ExtractedData panel
+// ============================================================================
+
+type ExtractedSnap = {
+  vendor?: string;
+  vendorInn?: string;
+  date?: string;
+  amount?: number;
+  currency?: string;
+  type?: string;
+  items?: Array<{ name: string; qty?: number; price?: number; total?: number }>;
+  rawText?: string;
+  provider?: string;
+  durationMs?: number;
+};
+
+function AiRecognizePanel({ messageId }: { messageId: string }) {
+  const [hint, setHint] = useState<'auto' | 'receipt' | 'invoice' | 'contract'>('auto');
+  const [provider, setProvider] = useState<string>('');
+  const [loading, setLoading] = useState(false);
+  const [extracted, setExtracted] = useState<ExtractedSnap | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [created, setCreated] = useState<string | null>(null);
+
+  async function recognize(file?: File) {
+    setLoading(true);
+    setError(null);
+    setExtracted(null);
+    try {
+      const params = new URLSearchParams({ hint });
+      if (provider) params.set('provider', provider);
+      let resp: Response;
+      if (file) {
+        const fd = new FormData();
+        fd.append('file', file);
+        resp = await fetch(`/api/inbox/messages/${messageId}/recognize?${params.toString()}`, {
+          method: 'POST',
+          body: fd,
+        });
+      } else {
+        resp = await fetch(`/api/inbox/messages/${messageId}/recognize?${params.toString()}`, {
+          method: 'POST',
+        });
+      }
+      const json = await resp.json();
+      if (!json.ok) {
+        setError(json.error || 'Не удалось распознать');
+      } else {
+        setExtracted(json.extracted as ExtractedSnap);
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function createTransaction() {
+    if (!extracted) return;
+    setCreating(true);
+    setCreated(null);
+    try {
+      const resp = await fetch('/api/cashflow/transactions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          occurredAt: extracted.date
+            ? new Date(extracted.date).toISOString()
+            : new Date().toISOString(),
+          amount: extracted.amount ? -Math.abs(extracted.amount) : 0,
+          counterparty: extracted.vendor ?? null,
+          description: `Из AI-распознавания (${extracted.provider})`,
+          currency: extracted.currency ?? 'RUB',
+          source: 'ai_vision',
+        }),
+      });
+      const json = await resp.json();
+      if (json.ok) {
+        setCreated(json.id ?? 'created');
+      } else {
+        setError(`Не удалось создать транзакцию: ${json.error}`);
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  return (
+    <div className="rounded-md border border-border/60 bg-muted/15 p-3">
+      <div className="mb-2 flex items-center gap-1.5">
+        <Sparkles className="h-3.5 w-3.5 text-amber-500" />
+        <span className="text-xs font-medium">Распознать с AI</span>
+      </div>
+
+      <div className="mb-2 flex flex-wrap items-center gap-1.5">
+        <span className="text-[10px] text-muted-foreground">Тип:</span>
+        {(['auto', 'receipt', 'invoice', 'contract'] as const).map((h) => (
+          <button
+            key={h}
+            type="button"
+            onClick={() => setHint(h)}
+            className={
+              'inline-flex h-5 items-center gap-1 rounded px-1.5 text-[10px] ' +
+              (hint === h
+                ? 'bg-primary text-primary-foreground'
+                : 'bg-muted text-muted-foreground hover:bg-muted/70')
+            }
+          >
+            {h === 'receipt' ? <Receipt className="h-2.5 w-2.5" /> : h === 'invoice' ? <FileText className="h-2.5 w-2.5" /> : null}
+            {h === 'auto' ? 'Авто' : h === 'receipt' ? 'Чек' : h === 'invoice' ? 'Счёт' : 'Договор'}
+          </button>
+        ))}
+        <select
+          value={provider}
+          onChange={(e) => setProvider(e.target.value)}
+          className="ml-auto h-5 rounded border border-border/60 bg-background px-1 text-[10px]"
+        >
+          <option value="">Провайдер по умолчанию</option>
+          <option value="claude">Claude</option>
+          <option value="openai">OpenAI</option>
+          <option value="yandex">Yandex Vision</option>
+          <option value="tesseract">Tesseract</option>
+          <option value="mock">Mock</option>
+        </select>
+      </div>
+
+      <div className="flex gap-1.5">
+        <Button size="sm" variant="default" className="h-7 text-xs" onClick={() => recognize()} disabled={loading}>
+          <Sparkles className="mr-1 h-3 w-3" />
+          {loading ? 'Распознаю…' : 'Распознать из письма'}
+        </Button>
+        <label className="inline-flex h-7 cursor-pointer items-center gap-1 rounded border border-border/60 bg-background px-2 text-xs hover:bg-accent">
+          <UploadIcon className="h-3 w-3" />
+          Из файла
+          <input
+            type="file"
+            accept="image/jpeg,image/png,image/webp,application/pdf"
+            className="hidden"
+            disabled={loading}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void recognize(f);
+              e.currentTarget.value = '';
+            }}
+          />
+        </label>
+      </div>
+
+      {error && (
+        <div className="mt-2 flex items-start gap-1.5 rounded bg-red-50 p-2 text-xs text-red-700 dark:bg-red-950 dark:text-red-400">
+          <XCircle className="h-3 w-3 shrink-0 translate-y-0.5" />
+          <span>{error}</span>
+        </div>
+      )}
+
+      {extracted && (
+        <div className="mt-2 space-y-1.5 rounded border border-border/60 bg-background p-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-medium text-muted-foreground">
+              Извлечено · {extracted.provider} · {extracted.durationMs}мс
+            </span>
+            <CheckCircle className="h-3 w-3 text-green-500" />
+          </div>
+          <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">
+            {extracted.vendor && (
+              <div>
+                <span className="text-muted-foreground">Поставщик:</span>{' '}
+                <span className="font-medium">{extracted.vendor}</span>
+              </div>
+            )}
+            {extracted.vendorInn && (
+              <div>
+                <span className="text-muted-foreground">ИНН:</span>{' '}
+                <span className="font-mono">{extracted.vendorInn}</span>
+              </div>
+            )}
+            {extracted.date && (
+              <div>
+                <span className="text-muted-foreground">Дата:</span>{' '}
+                <span>{extracted.date}</span>
+              </div>
+            )}
+            {extracted.amount !== undefined && (
+              <div>
+                <span className="text-muted-foreground">Сумма:</span>{' '}
+                <span className="font-semibold tabular-nums">
+                  {(extracted.amount / 100).toLocaleString('ru-RU', {
+                    minimumFractionDigits: 2,
+                  })}{' '}
+                  {extracted.currency}
+                </span>
+              </div>
+            )}
+            {extracted.type && (
+              <div>
+                <span className="text-muted-foreground">Тип:</span>{' '}
+                <span>{extracted.type}</span>
+              </div>
+            )}
+          </div>
+          {extracted.items && extracted.items.length > 0 && (
+            <details className="text-[10px]">
+              <summary className="cursor-pointer text-muted-foreground">
+                Позиций: {extracted.items.length}
+              </summary>
+              <ul className="mt-1 space-y-0.5">
+                {extracted.items.slice(0, 10).map((it, i) => (
+                  <li key={i} className="flex justify-between">
+                    <span className="truncate">{it.name}</span>
+                    {it.total !== undefined && (
+                      <span className="ml-2 shrink-0 tabular-nums">
+                        {(it.total / 100).toLocaleString('ru-RU')}
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+          <div className="flex gap-1.5 pt-1">
+            <Button
+              size="sm"
+              variant="default"
+              className="h-6 text-[11px]"
+              onClick={createTransaction}
+              disabled={creating || !!created || !extracted.amount}
+            >
+              {created ? '✓ Создана' : creating ? 'Создаю…' : 'Создать транзакцию'}
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

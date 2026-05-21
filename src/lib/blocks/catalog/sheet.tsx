@@ -1,9 +1,10 @@
 // PURPOSE: Sheet block — полноценная Excel-like таблица с формулами, настройкой размеров ячеек,
 // header-строкой с названием/итогами и связями с другими блоками.
+// v0.19.0: + виртуализация при rows>50, DnD reorder, CSV/XLSX import/export.
 'use client';
 
 import { useState, useEffect, useCallback, useRef, useMemo, useContext, type CSSProperties } from 'react';
-import { Table2, FunctionSquare, Check, X as XIcon } from 'lucide-react';
+import { Table2, FunctionSquare, Check, X as XIcon, Download, Upload, GripVertical, MoreHorizontal } from 'lucide-react';
 import { z } from 'zod';
 import type { BlockDef, BlockRenderProps, BlockSettingsFormProps } from '../types';
 import { Card, CardContent } from '@/components/ui/card';
@@ -17,10 +18,42 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
 import { useBlockValuePublisher, BlockValuesContext, useAvailableBlockSources } from '../values';
 import { useBlockDensity } from '@/components/blocks/block-size';
 import { useFormatSettings, formatRublesWithSettings } from '@/lib/format-settings';
 import FormulaParser, { MAX_ROW, MAX_COLUMN } from 'fast-formula-parser';
+import { useVirtualizer } from '@tanstack/react-virtual';
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+  horizontalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
+import {
+  parseCsv,
+  parseXlsx,
+  exportCsv,
+  exportXlsx,
+  downloadBlob,
+  SHEET_IMPORT_CELL_LIMIT,
+} from './sheet-import';
 
 // ============================================================================
 // Reactive Block Values Hook (reads live values from BlockValues store)
@@ -477,9 +510,16 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
   );
   const editInputRef = useRef<HTMLInputElement>(null);
   const sheetRef = useRef<HTMLDivElement>(null);
+  const tableScrollRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const openingBlockPickerRef = useRef(false);
   const resizingCol = useRef<{ col: number; startX: number; startW: number } | null>(null);
   const resizingRow = useRef<{ row: number; startY: number; startH: number } | null>(null);
+  const [importNotice, setImportNotice] = useState<string | null>(null);
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
 
   const title = instance.appearance?.title ?? cfg.title;
   const accent = instance.appearance?.accentColor;
@@ -929,6 +969,130 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
     saveConfig({ headerCells: next });
   }
 
+  // ============================================================================
+  // Import / Export
+  // ============================================================================
+
+  function applyImport(parsed: { rows: number; cols: number; cells: string[][] }) {
+    const newRows = Math.min(parsed.rows, 200);
+    const newCols = Math.min(parsed.cols, 26);
+    const nextCells = ensureShape(parsed.cells, newRows, newCols);
+    setCells(nextCells);
+    setColWidths(Array(newCols).fill(DEFAULT_COL_WIDTH));
+    setRowHeights(Array(newRows).fill(DEFAULT_ROW_HEIGHT));
+    saveConfig({
+      cells: nextCells,
+      rows: newRows,
+      cols: newCols,
+      colWidths: Array(newCols).fill(DEFAULT_COL_WIDTH),
+      rowHeights: Array(newRows).fill(DEFAULT_ROW_HEIGHT),
+    });
+    setImportNotice(`Импортировано ${newRows}×${newCols} ячеек`);
+    setTimeout(() => setImportNotice(null), 2500);
+  }
+
+  async function handleImportFile(file: File) {
+    const ext = file.name.toLowerCase().split('.').pop() ?? '';
+    if (ext === 'csv') {
+      const text = await file.text();
+      const r = parseCsv(text);
+      if (!r.ok) {
+        setImportNotice(`Ошибка CSV: ${r.error}`);
+        setTimeout(() => setImportNotice(null), 4000);
+        return;
+      }
+      applyImport(r);
+    } else if (ext === 'xlsx' || ext === 'xls') {
+      const buf = await file.arrayBuffer();
+      const r = parseXlsx(buf);
+      if (!r.ok) {
+        setImportNotice(`Ошибка XLSX: ${r.error}`);
+        setTimeout(() => setImportNotice(null), 4000);
+        return;
+      }
+      applyImport(r);
+    } else {
+      setImportNotice('Поддерживаются только .csv и .xlsx');
+      setTimeout(() => setImportNotice(null), 3000);
+    }
+  }
+
+  function handleExport(format: 'csv' | 'xlsx') {
+    const safeTitle = title.replace(/[^a-zA-Z0-9\u0400-\u04FFа-яА-Я_-]+/g, '_') || 'sheet';
+    if (format === 'csv') {
+      const csv = exportCsv(cells);
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+      downloadBlob(`${safeTitle}.csv`, blob);
+    } else {
+      const bytes = exportXlsx(cells, safeTitle.slice(0, 31));
+      const arrCopy = bytes.slice().buffer;
+      const blob = new Blob([arrCopy], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      downloadBlob(`${safeTitle}.xlsx`, blob);
+    }
+  }
+
+  // ============================================================================
+  // DnD reorder rows/cols
+  // ============================================================================
+
+  const colIds = useMemo(
+    () => Array.from({ length: cfg.cols }, (_, i) => `col-${i}`),
+    [cfg.cols],
+  );
+  const rowIds = useMemo(
+    () => Array.from({ length: cfg.rows }, (_, i) => `row-${i}`),
+    [cfg.rows],
+  );
+
+  function reorderCols(fromIdx: number, toIdx: number) {
+    if (fromIdx === toIdx) return;
+    const newCells = cells.map((row) => arrayMove(row, fromIdx, toIdx));
+    const newColWidths = arrayMove(colWidths, fromIdx, toIdx);
+    setCells(newCells);
+    setColWidths(newColWidths);
+    saveConfig({ cells: newCells, colWidths: newColWidths });
+  }
+
+  function reorderRows(fromIdx: number, toIdx: number) {
+    if (fromIdx === toIdx) return;
+    const newCells = arrayMove(cells, fromIdx, toIdx);
+    const newRowHeights = arrayMove(rowHeights, fromIdx, toIdx);
+    setCells(newCells);
+    setRowHeights(newRowHeights);
+    saveConfig({ cells: newCells, rowHeights: newRowHeights });
+  }
+
+  function handleColDragEnd(e: DragEndEvent) {
+    const { active, over } = e;
+    if (!over || active.id === over.id) return;
+    const fromIdx = colIds.indexOf(String(active.id));
+    const toIdx = colIds.indexOf(String(over.id));
+    if (fromIdx >= 0 && toIdx >= 0) reorderCols(fromIdx, toIdx);
+  }
+
+  function handleRowDragEnd(e: DragEndEvent) {
+    const { active, over } = e;
+    if (!over || active.id === over.id) return;
+    const fromIdx = rowIds.indexOf(String(active.id));
+    const toIdx = rowIds.indexOf(String(over.id));
+    if (fromIdx >= 0 && toIdx >= 0) reorderRows(fromIdx, toIdx);
+  }
+
+  // ============================================================================
+  // Virtualization (when rows > 50)
+  // ============================================================================
+
+  const enableVirtualization = cfg.rows > 50;
+  const rowVirtualizer = useVirtualizer({
+    count: cfg.rows,
+    getScrollElement: () => tableScrollRef.current,
+    estimateSize: (idx) => rowHeights[idx] ?? DEFAULT_ROW_HEIGHT,
+    overscan: 10,
+    enabled: enableVirtualization,
+  });
+
   const thStyle: CSSProperties = {
     background: 'var(--muted, #f4f4f5)',
     fontWeight: 500,
@@ -1018,6 +1182,67 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
           >
             <span className="text-lg leading-none">+</span>
           </button>
+          <div className="ml-auto flex shrink-0 items-center gap-1 pr-1">
+            <Popover>
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  className="flex h-6 items-center gap-1 rounded px-1.5 text-[10px] text-muted-foreground hover:bg-muted"
+                  title="Импорт / экспорт"
+                >
+                  <MoreHorizontal className="h-3 w-3" />
+                </button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-56 p-1">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".csv,.xlsx,.xls"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) void handleImportFile(f);
+                    e.currentTarget.value = '';
+                  }}
+                />
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-muted"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <Upload className="h-3.5 w-3.5" />
+                  Импорт CSV / XLSX
+                </button>
+                <div className="my-1 h-px bg-border/40" />
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-muted"
+                  onClick={() => handleExport('csv')}
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  Экспорт CSV
+                </button>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-muted"
+                  onClick={() => handleExport('xlsx')}
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  Экспорт XLSX
+                </button>
+                <div className="my-1 h-px bg-border/40" />
+                <p className="px-2 py-1 text-[10px] text-muted-foreground">
+                  Лимит: {SHEET_IMPORT_CELL_LIMIT.toLocaleString('ru-RU')} ячеек
+                </p>
+              </PopoverContent>
+            </Popover>
+          </div>
+        </div>
+      )}
+
+      {importNotice && (
+        <div className="shrink-0 border-b border-border/40 bg-blue-50 px-2 py-1 text-[10px] text-blue-700 dark:bg-blue-950 dark:text-blue-400">
+          {importNotice}
         </div>
       )}
 
@@ -1271,103 +1496,113 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
       )}
 
       {/* Spreadsheet grid */}
-      <CardContent className="min-h-0 min-w-0 flex-1 overflow-auto p-0">
-        <table className="border-collapse text-xs" style={{ tableLayout: 'fixed' }}>
-          <colgroup>
-            <col style={{ width: 32 }} />
-            {colWidths.slice(0, cfg.cols).map((w, i) => (
-              <col key={i} style={{ width: w }} />
-            ))}
-          </colgroup>
-          <thead>
-            <tr>
-              <th className="sticky left-0 top-0 z-20 border border-border/40" style={thStyle}></th>
-              {Array.from({ length: cfg.cols }, (_, c) => (
-                <th
-                  key={c}
-                  className="sticky top-0 z-10 border border-border/40 px-1 py-0.5 text-left"
-                  style={{ ...thStyle, position: 'relative' }}
-                >
-                  {colLabel(c)}
-                  {/* Resize handle */}
-                  <div
-                    className="absolute right-0 top-0 h-full w-1 cursor-col-resize hover:bg-primary/30"
-                    onMouseDown={(e) => startColResize(c, e)}
-                  />
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {evaluatedCells.result.map((row, r) => (
-              <tr key={r} style={{ height: rowHeights[r] ?? DEFAULT_ROW_HEIGHT }}>
-                <td
-                  className="sticky left-0 z-10 border border-border/40 text-center"
-                  style={{ ...thStyle, position: 'relative' }}
-                >
-                  {r + 1}
-                  {/* Row resize handle */}
-                  <div
-                    className="absolute bottom-0 left-0 h-1 w-full cursor-row-resize hover:bg-primary/30"
-                    onMouseDown={(e) => startRowResize(r, e)}
-                  />
-                </td>
-                {row.map((displayValue, c) => {
-                  const isActive = activeCell?.r === r && activeCell?.c === c;
-                  const rawValue = cells[r]?.[c] ?? '';
-                  const isFormula = rawValue.startsWith('=');
-                  return (
-                    <td
+      <CardContent ref={tableScrollRef} className="min-h-0 min-w-0 flex-1 overflow-auto p-0">
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleColDragEnd}>
+          <SortableContext items={colIds} strategy={horizontalListSortingStrategy}>
+            <table className="border-collapse text-xs" style={{ tableLayout: 'fixed' }}>
+              <colgroup>
+                <col style={{ width: 32 }} />
+                {colWidths.slice(0, cfg.cols).map((w, i) => (
+                  <col key={i} style={{ width: w }} />
+                ))}
+              </colgroup>
+              <thead>
+                <tr>
+                  <th className="sticky left-0 top-0 z-20 border border-border/40" style={thStyle}></th>
+                  {Array.from({ length: cfg.cols }, (_, c) => (
+                    <SortableColHeader
                       key={c}
-                      className={
-                        'border border-border/40 p-0 ' +
-                        (isActive
-                          ? 'ring-2 ring-inset ring-primary/60'
-                          : 'hover:bg-accent/30')
-                      }
-                      tabIndex={-1}
-                      onClick={() => handleCellClick(r, c)}
-                      style={{ height: rowHeights[r] ?? DEFAULT_ROW_HEIGHT }}
-                    >
-                      {isActive && editing ? (
-                        <input
-                          ref={editInputRef}
-                          className="h-full w-full border-0 bg-background px-1.5 text-xs outline-none"
-                          value={editValue}
-                          onChange={handleEditChange}
-                          onSelect={handleEditSelect}
-                          onBlur={(e) => {
-                            const related = e.relatedTarget as HTMLElement | null;
-                            if (openingBlockPickerRef.current || blockPickerOpen) return;
-                            if ((formulaMode || editingHeaderId) && related && sheetRef.current?.contains(related)) return;
-                            commitEdit();
-                          }}
-                          onKeyDown={handleKeyDown}
-                          autoFocus
+                      colId={`col-${c}`}
+                      label={colLabel(c)}
+                      thStyle={thStyle}
+                      onResizeStart={(e) => startColResize(c, e)}
+                    />
+                  ))}
+                </tr>
+              </thead>
+              <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleRowDragEnd}>
+                <SortableContext items={rowIds} strategy={verticalListSortingStrategy}>
+                  {enableVirtualization ? (
+                    <tbody style={{ position: 'relative', height: rowVirtualizer.getTotalSize() }}>
+                      {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                        const r = virtualRow.index;
+                        const row = evaluatedCells.result[r] ?? [];
+                        return (
+                          <SheetRow
+                            key={r}
+                            rowId={`row-${r}`}
+                            rowIndex={r}
+                            row={row}
+                            cells={cells}
+                            colsCount={cfg.cols}
+                            rowHeight={rowHeights[r] ?? DEFAULT_ROW_HEIGHT}
+                            activeCell={activeCell}
+                            editing={editing}
+                            editValue={editValue}
+                            editInputRef={editInputRef}
+                            sheetRef={sheetRef}
+                            formulaMode={formulaMode}
+                            touchPickMode={touchPickMode}
+                            blockPickerOpen={blockPickerOpen}
+                            openingBlockPickerRef={openingBlockPickerRef}
+                            editingHeaderId={editingHeaderId}
+                            thStyle={thStyle}
+                            commitEdit={commitEdit}
+                            handleCellClick={handleCellClick}
+                            handleEditChange={handleEditChange}
+                            handleEditSelect={handleEditSelect}
+                            handleKeyDown={handleKeyDown}
+                            startRowResize={startRowResize}
+                            virtualizedStyle={{
+                              position: 'absolute',
+                              top: 0,
+                              left: 0,
+                              width: '100%',
+                              transform: `translateY(${virtualRow.start}px)`,
+                              display: 'table-row',
+                              height: virtualRow.size,
+                            }}
+                          />
+                        );
+                      })}
+                    </tbody>
+                  ) : (
+                    <tbody>
+                      {evaluatedCells.result.map((row, r) => (
+                        <SheetRow
+                          key={r}
+                          rowId={`row-${r}`}
+                          rowIndex={r}
+                          row={row}
+                          cells={cells}
+                          colsCount={cfg.cols}
+                          rowHeight={rowHeights[r] ?? DEFAULT_ROW_HEIGHT}
+                          activeCell={activeCell}
+                          editing={editing}
+                          editValue={editValue}
+                          editInputRef={editInputRef}
+                          sheetRef={sheetRef}
+                          formulaMode={formulaMode}
+                          touchPickMode={touchPickMode}
+                          blockPickerOpen={blockPickerOpen}
+                          openingBlockPickerRef={openingBlockPickerRef}
+                          editingHeaderId={editingHeaderId}
+                          thStyle={thStyle}
+                          commitEdit={commitEdit}
+                          handleCellClick={handleCellClick}
+                          handleEditChange={handleEditChange}
+                          handleEditSelect={handleEditSelect}
+                          handleKeyDown={handleKeyDown}
+                          startRowResize={startRowResize}
                         />
-                      ) : (
-                        <div
-                          className={
-                            'flex h-full items-center truncate px-1.5 tabular-nums ' +
-                            (isFormula ? 'text-blue-700 dark:text-blue-400' : '') +
-                            ((formulaMode || touchPickMode) && !isActive ? ' cursor-cell' : '')
-                          }
-                          title={
-                            (formulaMode || touchPickMode) && !isActive
-                              ? `Кликните чтобы вставить ${cellAddress(r, c)}`
-                              : isFormula ? `Формула: ${rawValue}` : undefined
-                          }
-                        >
-                          {displayValue}
-                        </div>
-                      )}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                      ))}
+                    </tbody>
+                  )}
+                </SortableContext>
+              </DndContext>
+            </table>
+          </SortableContext>
+        </DndContext>
       </CardContent>
 
       {/* Accept / Cancel floating buttons (BlockChrome style) */}
@@ -1403,6 +1638,200 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
         </div>
       )}
     </Card>
+  );
+}
+
+// ============================================================================
+// Sortable Column Header
+// ============================================================================
+
+function SortableColHeader({
+  colId,
+  label,
+  thStyle,
+  onResizeStart,
+}: {
+  colId: string;
+  label: string;
+  thStyle: CSSProperties;
+  onResizeStart: (e: React.MouseEvent) => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: colId });
+  return (
+    <th
+      ref={setNodeRef}
+      className="sticky top-0 z-10 border border-border/40 px-1 py-0.5 text-left"
+      style={{
+        ...thStyle,
+        position: 'relative',
+        transform: CSS.Transform.toString(transform),
+        transition,
+        opacity: isDragging ? 0.5 : 1,
+      }}
+    >
+      <div className="flex items-center justify-between gap-1">
+        <button
+          type="button"
+          className="cursor-grab p-0 opacity-0 transition hover:opacity-100"
+          {...attributes}
+          {...listeners}
+          title="Перетащить колонку"
+        >
+          <GripVertical className="h-2.5 w-2.5 text-muted-foreground/40" />
+        </button>
+        <span className="truncate text-[10px]">{label}</span>
+        <span />
+      </div>
+      <div
+        className="absolute right-0 top-0 h-full w-1 cursor-col-resize hover:bg-primary/30"
+        onMouseDown={onResizeStart}
+      />
+    </th>
+  );
+}
+
+// ============================================================================
+// SheetRow (sortable, supports virtualization)
+// ============================================================================
+
+type SheetRowProps = {
+  rowId: string;
+  rowIndex: number;
+  row: string[];
+  cells: string[][];
+  colsCount: number;
+  rowHeight: number;
+  activeCell: { r: number; c: number } | null;
+  editing: boolean;
+  editValue: string;
+  editInputRef: React.RefObject<HTMLInputElement>;
+  sheetRef: React.RefObject<HTMLDivElement>;
+  formulaMode: boolean;
+  touchPickMode: boolean;
+  blockPickerOpen: boolean;
+  openingBlockPickerRef: React.MutableRefObject<boolean>;
+  editingHeaderId: string | null;
+  thStyle: CSSProperties;
+  commitEdit: () => void;
+  handleCellClick: (r: number, c: number) => void;
+  handleEditChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  handleEditSelect: (e: React.SyntheticEvent<HTMLInputElement>) => void;
+  handleKeyDown: (e: React.KeyboardEvent) => void;
+  startRowResize: (r: number, e: React.MouseEvent) => void;
+  virtualizedStyle?: CSSProperties;
+};
+
+function SheetRow(props: SheetRowProps) {
+  const {
+    rowId,
+    rowIndex: r,
+    row,
+    cells,
+    rowHeight,
+    activeCell,
+    editing,
+    editValue,
+    editInputRef,
+    sheetRef,
+    formulaMode,
+    touchPickMode,
+    blockPickerOpen,
+    openingBlockPickerRef,
+    editingHeaderId,
+    thStyle,
+    commitEdit,
+    handleCellClick,
+    handleEditChange,
+    handleEditSelect,
+    handleKeyDown,
+    startRowResize,
+    virtualizedStyle,
+  } = props;
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: rowId });
+
+  const rowStyle: CSSProperties = virtualizedStyle ?? {
+    height: rowHeight,
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  };
+
+  return (
+    <tr ref={setNodeRef} style={rowStyle}>
+      <td
+        className="sticky left-0 z-10 border border-border/40 text-center"
+        style={{ ...thStyle, position: 'relative' }}
+      >
+        <div className="flex items-center justify-center gap-0.5">
+          <button
+            type="button"
+            className="cursor-grab opacity-0 transition hover:opacity-100"
+            {...attributes}
+            {...listeners}
+            title="Перетащить строку"
+          >
+            <GripVertical className="h-2.5 w-2.5 text-muted-foreground/40" />
+          </button>
+          <span>{r + 1}</span>
+        </div>
+        <div
+          className="absolute bottom-0 left-0 h-1 w-full cursor-row-resize hover:bg-primary/30"
+          onMouseDown={(e) => startRowResize(r, e)}
+        />
+      </td>
+      {row.map((displayValue, c) => {
+        const isActive = activeCell?.r === r && activeCell?.c === c;
+        const rawValue = cells[r]?.[c] ?? '';
+        const isFormula = rawValue.startsWith('=');
+        return (
+          <td
+            key={c}
+            className={
+              'border border-border/40 p-0 ' +
+              (isActive ? 'ring-2 ring-inset ring-primary/60' : 'hover:bg-accent/30')
+            }
+            tabIndex={-1}
+            onClick={() => handleCellClick(r, c)}
+            style={{ height: rowHeight }}
+          >
+            {isActive && editing ? (
+              <input
+                ref={editInputRef}
+                className="h-full w-full border-0 bg-background px-1.5 text-xs outline-none"
+                value={editValue}
+                onChange={handleEditChange}
+                onSelect={handleEditSelect}
+                onBlur={(e) => {
+                  const related = e.relatedTarget as HTMLElement | null;
+                  if (openingBlockPickerRef.current || blockPickerOpen) return;
+                  if ((formulaMode || editingHeaderId) && related && sheetRef.current?.contains(related)) return;
+                  commitEdit();
+                }}
+                onKeyDown={handleKeyDown}
+                autoFocus
+              />
+            ) : (
+              <div
+                className={
+                  'flex h-full items-center truncate px-1.5 tabular-nums ' +
+                  (isFormula ? 'text-blue-700 dark:text-blue-400' : '') +
+                  ((formulaMode || touchPickMode) && !isActive ? ' cursor-cell' : '')
+                }
+                title={
+                  (formulaMode || touchPickMode) && !isActive
+                    ? `Кликните чтобы вставить ${cellAddress(r, c)}`
+                    : isFormula
+                      ? `Формула: ${rawValue}`
+                      : undefined
+                }
+              >
+                {displayValue}
+              </div>
+            )}
+          </td>
+        );
+      })}
+    </tr>
   );
 }
 

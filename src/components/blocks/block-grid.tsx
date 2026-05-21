@@ -741,7 +741,7 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
           if (!def) return null;
           const Render = def.Render;
           return (
-            <div key={b.id} data-block-id={b.id} className={editMode ? 'block-edit-mode' : undefined}>
+            <div key={b.id} data-block-id={b.id} data-block-type={b.type} className={editMode ? 'block-edit-mode' : undefined}>
               <BlockChrome
                 editMode={editMode}
                 appearance={b.appearance}

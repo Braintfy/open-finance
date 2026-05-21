@@ -229,6 +229,121 @@ export function usePersistedPeriodValue(options: {
   };
 }
 
+/**
+ * Расширенный вариант с поддержкой "global" режима (override === null).
+ *
+ * Используется блоками которые могут либо слушать page-level период,
+ * либо иметь свой собственный (per-block override).
+ *
+ * Persistence ключ: `block:${instanceId}:period:v2` (с маркером `override`).
+ *   override = true  → читаем preset/from/to из storage.
+ *   override = false → блок слушает page-level period.
+ *
+ * Возвращает `override`: PagePeriodValue | null — для передачи в
+ * `useEffectivePeriod(instance.id, override)`.
+ */
+export function usePersistedPeriodWithGlobal(options: {
+  instanceId: string;
+  /** Дефолт при первом mount: 'global' = слушать page, иначе — конкретный preset. */
+  initial?: { mode: 'global' } | {
+    mode: 'override';
+    preset: OzonAnalyticsPeriodPreset;
+    customFrom: string | null;
+    customTo: string | null;
+  };
+}): {
+  override: { preset: OzonAnalyticsPeriodPreset; customFrom: string | null; customTo: string | null } | null;
+  setOverride: (next: { preset: OzonAnalyticsPeriodPreset; customFrom?: string | null; customTo?: string | null } | null) => void;
+  isOverride: boolean;
+} {
+  const { instanceId, initial } = options;
+  const storageK = `block:${instanceId}:period:v2`;
+
+  const [state, setState] = useState<
+    | null
+    | { preset: OzonAnalyticsPeriodPreset; customFrom: string | null; customTo: string | null }
+  >(() => {
+    if (initial?.mode === 'override') {
+      return {
+        preset: initial.preset,
+        customFrom: initial.customFrom,
+        customTo: initial.customTo,
+      };
+    }
+    return null;
+  });
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const raw = window.localStorage.getItem(storageK);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as
+        | null
+        | { preset: OzonAnalyticsPeriodPreset; customFrom: string | null; customTo: string | null };
+      if (parsed === null) {
+        setState(null);
+        return;
+      }
+      if (!parsed || typeof parsed !== 'object') return;
+      if (!VALID_PRESETS.includes(parsed.preset as OzonAnalyticsPeriodPreset)) return;
+      if (parsed.preset === 'custom' && (!parsed.customFrom || !parsed.customTo)) return;
+      setState({
+        preset: parsed.preset as OzonAnalyticsPeriodPreset,
+        customFrom: parsed.customFrom ?? null,
+        customTo: parsed.customTo ?? null,
+      });
+    } catch {
+      // ignore
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [instanceId]);
+
+  const setOverride = useCallback(
+    (
+      next:
+        | {
+            preset: OzonAnalyticsPeriodPreset;
+            customFrom?: string | null;
+            customTo?: string | null;
+          }
+        | null,
+    ) => {
+      if (next === null) {
+        setState(null);
+        if (typeof window !== 'undefined') {
+          try {
+            window.localStorage.setItem(storageK, JSON.stringify(null));
+          } catch {
+            // ignore
+          }
+        }
+        return;
+      }
+      const value = {
+        preset: next.preset,
+        customFrom: next.customFrom ?? null,
+        customTo: next.customTo ?? null,
+      };
+      setState(value);
+      if (typeof window !== 'undefined') {
+        try {
+          window.localStorage.setItem(storageK, JSON.stringify(value));
+        } catch {
+          // ignore
+        }
+      }
+    },
+    [storageK],
+  );
+
+  return {
+    override: state,
+    setOverride,
+    isOverride: state !== null,
+  };
+}
+
 // Helper: атомарная запись всех трёх полей сразу. Используется из setValue,
 // чтобы избежать race condition между тремя последовательными writeToStorage.
 function setPresetAndDates(

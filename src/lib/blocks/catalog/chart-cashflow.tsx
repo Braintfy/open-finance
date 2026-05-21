@@ -1,267 +1,319 @@
 // PURPOSE: Chart block для визуализации cashflow — line/bar/area графики
-// доходов, расходов и баланса по дням. Использует Recharts.
+// доходов, расходов и баланса по дням/неделям/месяцам.
+// v0.19.0: использует ChartShell rich + compare overlay + /api/cashflow/chart
+// + density-aware adapt + auto-granularity по периоду.
 'use client';
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { z } from 'zod';
-import { BarChart3 } from 'lucide-react';
-import { useFormatSettings, formatRublesWithSettings } from '@/lib/format-settings';
+import { BarChart3, Lock } from 'lucide-react';
 import {
-  AreaChart,
-  Area,
-  BarChart,
-  Bar,
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  Legend,
-} from 'recharts';
+  useFormatSettings,
+  formatRublesWithSettings,
+} from '@/lib/format-settings';
 import type { BlockDef, BlockRenderProps, BlockSettingsFormProps } from '../types';
-import { useCashflowData, type CashflowTx } from './cashflow-data';
-import { useBlockDensity } from '@/components/blocks/block-size';
+import { useBlockDensity, useBlockSize } from '@/components/blocks/block-size';
 import { useBlockValuePublisher } from '../values';
+import { useEffectivePeriod } from '../page-period-context';
+import { useEffectiveSource } from '../page-source-context';
+import { usePersistedPeriodWithGlobal } from '../use-persisted-period';
+import { usePersistedSourceWithGlobal } from '../use-persisted-source';
+import { Card } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
+import { ChartShell, type ChartSeries } from '@/components/blocks/chart-shell';
+import {
+  PeriodPicker,
+  type PeriodPreset,
+} from '@/components/blocks/period-picker';
+import { SOURCE_LABELS } from '@/components/blocks/source-filter-chips';
 
 const ChartConfig = z.object({
-  chartType: z.enum(['bar', 'line', 'area']).default('bar'),
+  chartType: z.enum(['bar', 'line', 'area']).default('area'),
   showIncome: z.boolean().default(true),
   showExpense: z.boolean().default(true),
   showBalance: z.boolean().default(false),
-  groupBy: z.enum(['day', 'week', 'month']).default('day'),
+  compare: z.enum(['none', 'prev']).default('none'),
+  granularity: z.enum(['auto', 'day', 'week', 'month']).default('auto'),
+  title: z.string().optional(),
+  periodOverride: z
+    .object({
+      preset: z.enum(['today', 'yesterday', '7d', '14d', '30d', 'mtd', 'custom']),
+      customFrom: z.string().nullable().optional(),
+      customTo: z.string().nullable().optional(),
+    })
+    .nullable()
+    .default(null),
+  sourceOverride: z.string().nullable().optional(),
 });
 
 type Cfg = z.infer<typeof ChartConfig>;
-
-type DataPoint = {
-  label: string;
-  income: number;
-  expense: number;
-  balance: number;
-};
-
-function groupTransactions(txs: CashflowTx[], groupBy: Cfg['groupBy']): DataPoint[] {
-  const map = new Map<string, { income: number; expense: number }>();
-
-  for (const tx of txs) {
-    const date = new Date(tx.occurredAt);
-    let key: string;
-    if (groupBy === 'month') {
-      key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-    } else if (groupBy === 'week') {
-      const d = new Date(date);
-      d.setDate(d.getDate() - d.getDay());
-      key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-    } else {
-      key = tx.occurredAt.slice(0, 10);
-    }
-    const prev = map.get(key) ?? { income: 0, expense: 0 };
-    if (tx.type === 'income') {
-      prev.income += tx.amount;
-    } else {
-      prev.expense += tx.amount;
-    }
-    map.set(key, prev);
-  }
-
-  const sorted = Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b));
-  let runningBalance = 0;
-  return sorted.map(([label, { income, expense }]) => {
-    runningBalance += income - expense;
-    const shortLabel = formatLabel(label, groupBy);
-    return {
-      label: shortLabel,
-      income: Math.round(income / 100),
-      expense: Math.round(expense / 100),
-      balance: Math.round(runningBalance / 100),
-    };
-  });
-}
-
-function formatLabel(raw: string, groupBy: Cfg['groupBy']): string {
-  if (groupBy === 'month') {
-    const parts = raw.split('-');
-    const months = ['Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн', 'Июл', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек'];
-    return months[parseInt(parts[1], 10) - 1] ?? raw;
-  }
-  if (groupBy === 'week') {
-    const parts = raw.split('-');
-    return `${parts[2]}.${parts[1]}`;
-  }
-  // day
-  const parts = raw.split('-');
-  return `${parts[2]}.${parts[1]}`;
-}
-
-function formatYAxis(v: number): string {
-  const abs = Math.abs(v);
-  if (abs >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}М`;
-  if (abs >= 1_000) return `${(v / 1_000).toFixed(1)}к`;
-  return String(v);
-}
 
 const INCOME_COLOR = '#10b981';
 const EXPENSE_COLOR = '#ef4444';
 const BALANCE_COLOR = '#3b82f6';
 
+const PRESET_LABELS: Record<PeriodPreset, string> = {
+  today: 'Сегодня',
+  yesterday: 'Вчера',
+  '7d': '7 дней',
+  '14d': '14 дней',
+  '30d': '30 дней',
+  mtd: 'Этот месяц',
+  custom: 'Произвольный',
+};
+
+function formatYAxisRub(v: number): string {
+  const abs = Math.abs(v);
+  if (abs >= 1_000_000_00) return `${(v / 1_000_000_00).toFixed(1)}М`;
+  if (abs >= 1_000_00) return `${Math.round(v / 1_000_00)}к`;
+  return String(Math.round(v / 100));
+}
+
 function ChartRender({ instance }: BlockRenderProps) {
   const density = useBlockDensity();
+  const { width: blockWidth, height: blockHeight } = useBlockSize();
   const { settings: fmtSettings } = useFormatSettings();
-  const { transactions, loading } = useCashflowData();
-  const cfg: Cfg = { ...ChartConfig.parse({}), ...(instance.config as Partial<Cfg>) };
+  const cfg = ChartConfig.parse(instance.config ?? {});
 
-  const data = useMemo(
-    () => groupTransactions(transactions, cfg.groupBy),
-    [transactions, cfg.groupBy]
+  const { override, setOverride } = usePersistedPeriodWithGlobal({
+    instanceId: instance.id,
+    initial:
+      cfg.periodOverride === null
+        ? { mode: 'global' }
+        : {
+            mode: 'override',
+            preset: cfg.periodOverride.preset,
+            customFrom: cfg.periodOverride.customFrom ?? null,
+            customTo: cfg.periodOverride.customTo ?? null,
+          },
+  });
+  const { value: period, source: periodSource } = useEffectivePeriod(instance.id, override);
+
+  const { override: srcOverride, setOverride: setSrcOverride } = usePersistedSourceWithGlobal({
+    instanceId: instance.id,
+    initial:
+      cfg.sourceOverride !== undefined
+        ? { mode: 'override', value: cfg.sourceOverride }
+        : { mode: 'global' },
+  });
+  const { value: effectiveSource, source: sourceSource } = useEffectiveSource(
+    instance.id,
+    srcOverride,
   );
 
+  type ChartPoint = { date: string; income: number; expense: number; balance: number };
+  type Resp = {
+    ok: boolean;
+    granularity: 'day' | 'week' | 'month';
+    points: ChartPoint[];
+    compare?: ChartPoint[];
+  };
+
+  const [resp, setResp] = useState<Resp | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const key = `${period.preset}|${period.customFrom}|${period.customTo}|${cfg.compare}|${cfg.granularity}|${effectiveSource ?? ''}`;
+  useEffect(() => {
+    let cancelled = false;
+    const controller = new AbortController();
+    setLoading(true);
+    const params = new URLSearchParams({
+      preset: period.preset,
+      granularity: cfg.granularity,
+      compare: cfg.compare,
+    });
+    if (period.customFrom) params.set('customFrom', period.customFrom);
+    if (period.customTo) params.set('customTo', period.customTo);
+    if (effectiveSource) params.set('source', effectiveSource);
+    fetch(`/api/cashflow/chart?${params.toString()}`, { signal: controller.signal })
+      .then((r) => r.json())
+      .then((json: Resp) => {
+        if (cancelled) return;
+        if (json.ok) setResp(json);
+        else setResp(null);
+        setLoading(false);
+      })
+      .catch((err) => {
+        if (cancelled || err.name === 'AbortError') return;
+        setResp(null);
+        setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+
+  const data = resp?.points ?? [];
+  const compareData = resp?.compare ?? null;
+
+  // Publish для computed-блоков
+  const totalIncome = useMemo(() => data.reduce((s, p) => s + p.income, 0), [data]);
+  const totalExpense = useMemo(() => data.reduce((s, p) => s + p.expense, 0), [data]);
   useBlockValuePublisher(instance.id, {
-    value: data.length,
-    points: data.length,
+    value: totalIncome - totalExpense,
+    totalIncome,
+    totalExpense,
+    count: data.length,
+    label: instance.appearance?.title ?? cfg.title ?? 'График денежного потока',
+    __money: 'value,totalIncome,totalExpense',
+    __labels:
+      'value=Чистый поток,totalIncome=Доходы,totalExpense=Расходы,count=Кол-во точек',
   });
 
-  if (loading) {
+  const series: ChartSeries[] = [];
+  if (cfg.showIncome) {
+    series.push({
+      key: 'income',
+      label: 'Доход',
+      color: INCOME_COLOR,
+      type: cfg.chartType,
+      yAxisId: 'left',
+    });
+  }
+  if (cfg.showExpense) {
+    series.push({
+      key: 'expense',
+      label: 'Расход',
+      color: EXPENSE_COLOR,
+      type: cfg.chartType,
+      yAxisId: 'left',
+    });
+  }
+  if (cfg.showBalance) {
+    series.push({
+      key: 'balance',
+      label: 'Баланс',
+      color: BALANCE_COLOR,
+      type: 'line',
+      yAxisId: 'left',
+      strokeWidth: 2,
+    });
+  }
+
+  const title = instance.appearance?.title ?? cfg.title ?? 'Денежный поток';
+
+  // Adapt narrow / shortH
+  const narrow = blockWidth > 0 && blockWidth < 360;
+  const shortH = blockHeight > 0 && blockHeight < 200;
+
+  if (density === 'xs') {
     return (
-      <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-        Загрузка…
-      </div>
+      <Card className="flex h-full items-center justify-center p-1">
+        <div className="text-center">
+          <BarChart3 className="mx-auto h-3.5 w-3.5 text-muted-foreground" />
+          <div className="mt-0.5 truncate text-[10px] text-muted-foreground">{title}</div>
+        </div>
+      </Card>
+    );
+  }
+
+  if (loading && data.length === 0) {
+    return (
+      <Card className="flex h-full items-center justify-center p-3">
+        <div className="text-xs text-muted-foreground">Загрузка…</div>
+      </Card>
     );
   }
 
   if (data.length === 0) {
     return (
-      <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-        Нет данных для графика
-      </div>
+      <Card className="flex h-full items-center justify-center p-3">
+        <div className="space-y-2 text-center">
+          <BarChart3 className="mx-auto h-5 w-5 text-muted-foreground" />
+          <div className="text-xs text-muted-foreground">
+            Нет данных за период {PRESET_LABELS[period.preset as PeriodPreset]}
+          </div>
+          {periodSource === 'override' && (
+            <button
+              type="button"
+              onClick={() => setOverride(null)}
+              className="text-[10px] text-primary underline-offset-2 hover:underline"
+            >
+              Вернуть глобальный период
+            </button>
+          )}
+        </div>
+      </Card>
     );
   }
 
-  const showLegend = density !== 'xs' && density !== 'sm';
-  const showYAxis = density !== 'xs';
-  const showGrid = density === 'md' || density === 'lg';
-  const fontSize = density === 'xs' ? 9 : density === 'sm' ? 10 : 11;
-
-  const chartProps = {
-    data,
-    margin: {
-      top: 4,
-      right: 4,
-      left: showYAxis ? 4 : 0,
-      bottom: showLegend ? 0 : 4,
-    },
-  };
-
-  const xAxisProps = {
-    dataKey: 'label' as const,
-    tick: { fontSize },
-    tickLine: false,
-    axisLine: false,
-  };
-
-  const yAxisProps = {
-    tick: { fontSize },
-    tickFormatter: formatYAxis,
-    tickLine: false,
-    axisLine: false,
-    width: 40,
-  };
-
-  const tooltipProps = {
-    contentStyle: {
-      fontSize: 12,
-      borderRadius: 8,
-      border: '1px solid hsl(var(--border))',
-      backgroundColor: 'hsl(var(--background))',
-    },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    formatter: (value: any) => {
-      const num = typeof value === 'number' ? value : Number(value ?? 0);
-      // num уже в рублях; formatRublesWithSettings ожидает копейки → ×100
-      return [formatRublesWithSettings(num * 100, fmtSettings.showKopecks)];
-    },
-  };
-
-  const renderChart = () => {
-    if (cfg.chartType === 'line') {
-      return (
-        <LineChart {...chartProps}>
-          {showGrid && <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.5} />}
-          <XAxis {...xAxisProps} />
-          {showYAxis && <YAxis {...yAxisProps} />}
-          <Tooltip {...tooltipProps} />
-          {showLegend && <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />}
-          {cfg.showIncome && (
-            <Line type="monotone" dataKey="income" name="Доход" stroke={INCOME_COLOR} strokeWidth={2} dot={false} />
-          )}
-          {cfg.showExpense && (
-            <Line type="monotone" dataKey="expense" name="Расход" stroke={EXPENSE_COLOR} strokeWidth={2} dot={false} />
-          )}
-          {cfg.showBalance && (
-            <Line type="monotone" dataKey="balance" name="Баланс" stroke={BALANCE_COLOR} strokeWidth={2} dot={false} />
-          )}
-        </LineChart>
-      );
-    }
-
-    if (cfg.chartType === 'area') {
-      return (
-        <AreaChart {...chartProps}>
-          {showGrid && <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.5} />}
-          <XAxis {...xAxisProps} />
-          {showYAxis && <YAxis {...yAxisProps} />}
-          <Tooltip {...tooltipProps} />
-          {showLegend && <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />}
-          {cfg.showIncome && (
-            <Area type="monotone" dataKey="income" name="Доход" stroke={INCOME_COLOR} fill={INCOME_COLOR} fillOpacity={0.15} strokeWidth={2} />
-          )}
-          {cfg.showExpense && (
-            <Area type="monotone" dataKey="expense" name="Расход" stroke={EXPENSE_COLOR} fill={EXPENSE_COLOR} fillOpacity={0.15} strokeWidth={2} />
-          )}
-          {cfg.showBalance && (
-            <Area type="monotone" dataKey="balance" name="Баланс" stroke={BALANCE_COLOR} fill={BALANCE_COLOR} fillOpacity={0.15} strokeWidth={2} />
-          )}
-        </AreaChart>
-      );
-    }
-
-    // bar (default)
-    return (
-      <BarChart {...chartProps}>
-        {showGrid && <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.5} />}
-        <XAxis {...xAxisProps} />
-        {showYAxis && <YAxis {...yAxisProps} />}
-        <Tooltip {...tooltipProps} />
-        {showLegend && <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />}
-        {cfg.showIncome && (
-          <Bar dataKey="income" name="Доход" fill={INCOME_COLOR} radius={[2, 2, 0, 0]} />
-        )}
-        {cfg.showExpense && (
-          <Bar dataKey="expense" name="Расход" fill={EXPENSE_COLOR} radius={[2, 2, 0, 0]} />
-        )}
-        {cfg.showBalance && (
-          <Bar dataKey="balance" name="Баланс" fill={BALANCE_COLOR} radius={[2, 2, 0, 0]} />
-        )}
-      </BarChart>
-    );
-  };
+  const sourceMeta = effectiveSource ? SOURCE_LABELS[effectiveSource] : null;
 
   return (
-    <div className="h-full w-full p-1">
-      <ResponsiveContainer width="100%" height="100%">
-        {renderChart()}
-      </ResponsiveContainer>
-    </div>
+    <Card className="flex h-full min-h-0 flex-col overflow-hidden p-3">
+      <div className="mb-2 flex shrink-0 items-center justify-between gap-2">
+        <h3 className="truncate text-sm font-medium text-muted-foreground">{title}</h3>
+        <div className="flex shrink-0 items-center gap-1 text-[10px] text-muted-foreground">
+          {!shortH && resp?.granularity && (
+            <span className="rounded bg-muted px-1.5 py-0.5">
+              {resp.granularity === 'day'
+                ? 'дни'
+                : resp.granularity === 'week'
+                  ? 'недели'
+                  : 'месяцы'}
+            </span>
+          )}
+          {!narrow && cfg.compare === 'prev' && compareData && (
+            <span className="rounded bg-muted px-1.5 py-0.5">vs прошлый</span>
+          )}
+          {periodSource === 'override' && (
+            <button
+              type="button"
+              className="inline-flex h-4 items-center gap-0.5 rounded bg-amber-50 px-1 text-[9px] font-medium text-amber-700 ring-1 ring-amber-200 hover:bg-amber-100 dark:bg-amber-950 dark:text-amber-400 dark:ring-amber-900"
+              title="Свой период — клик: вернуть глобальный"
+              onClick={() => setOverride(null)}
+            >
+              <Lock className="h-2.5 w-2.5" />
+              {PRESET_LABELS[period.preset as PeriodPreset]}
+            </button>
+          )}
+          {sourceSource === 'override' && (
+            <button
+              type="button"
+              className="inline-flex h-4 items-center gap-0.5 rounded bg-sky-50 px-1 text-[9px] font-medium text-sky-700 ring-1 ring-sky-200 hover:bg-sky-100 dark:bg-sky-950 dark:text-sky-300 dark:ring-sky-900"
+              title="Клик — вернуть глобальный источник"
+              onClick={() => setSrcOverride(undefined)}
+            >
+              <Lock className="h-2.5 w-2.5" />
+              {sourceMeta?.label ?? effectiveSource ?? 'Все'}
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="min-h-0 flex-1">
+        <ChartShell
+          data={data}
+          series={series}
+          xKey="date"
+          height="fill"
+          variant="rich"
+          margin={{
+            top: 4,
+            right: narrow ? 4 : 8,
+            left: narrow ? 0 : 4,
+            bottom: 0,
+          }}
+          compare={compareData ? { data: compareData, suffix: 'прошлый' } : undefined}
+          formatY={formatYAxisRub}
+          formatTooltipValue={(v) => formatRublesWithSettings(Number(v), fmtSettings.showKopecks)}
+        />
+      </div>
+    </Card>
   );
 }
 
 function ChartSettings({ config, onChange }: BlockSettingsFormProps) {
-  const cfg: Cfg = { ...ChartConfig.parse({}), ...(config as Partial<Cfg>) };
+  const cfg = ChartConfig.parse(config ?? {});
 
   function set<K extends keyof Cfg>(key: K, value: Cfg[K]) {
-    onChange({ ...config, [key]: value });
+    onChange({ ...cfg, [key]: value });
+  }
+
+  function setOverride(next: Cfg['periodOverride']) {
+    onChange({ ...cfg, periodOverride: next });
   }
 
   const chartTypes: Array<{ value: Cfg['chartType']; label: string }> = [
@@ -270,7 +322,8 @@ function ChartSettings({ config, onChange }: BlockSettingsFormProps) {
     { value: 'area', label: 'Область' },
   ];
 
-  const groupOptions: Array<{ value: Cfg['groupBy']; label: string }> = [
+  const granularityOptions: Array<{ value: Cfg['granularity']; label: string }> = [
+    { value: 'auto', label: 'Авто' },
     { value: 'day', label: 'По дням' },
     { value: 'week', label: 'По неделям' },
     { value: 'month', label: 'По месяцам' },
@@ -278,6 +331,17 @@ function ChartSettings({ config, onChange }: BlockSettingsFormProps) {
 
   return (
     <div className="space-y-3">
+      <div className="space-y-1.5">
+        <Label>Заголовок</Label>
+        <input
+          type="text"
+          value={cfg.title ?? ''}
+          onChange={(e) => set('title', e.target.value || undefined)}
+          placeholder="Денежный поток"
+          className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-sm"
+        />
+      </div>
+
       <div className="space-y-1.5">
         <Label>Тип графика</Label>
         <div className="flex gap-1">
@@ -302,14 +366,14 @@ function ChartSettings({ config, onChange }: BlockSettingsFormProps) {
       <div className="space-y-1.5">
         <Label>Группировка</Label>
         <div className="flex gap-1">
-          {groupOptions.map((g) => (
+          {granularityOptions.map((g) => (
             <button
               key={g.value}
               type="button"
-              onClick={() => set('groupBy', g.value)}
+              onClick={() => set('granularity', g.value)}
               className={
                 'inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium transition-colors ' +
-                (cfg.groupBy === g.value
+                (cfg.granularity === g.value
                   ? 'bg-primary text-primary-foreground'
                   : 'bg-muted text-muted-foreground hover:bg-accent')
               }
@@ -318,16 +382,21 @@ function ChartSettings({ config, onChange }: BlockSettingsFormProps) {
             </button>
           ))}
         </div>
+        <p className="text-[11px] text-muted-foreground">
+          Авто: день для ≤31 дн., неделя ≤120 дн., месяц иначе.
+        </p>
       </div>
 
       <div className="space-y-1.5">
         <Label>Серии данных</Label>
         <div className="space-y-1">
-          {([
-            { key: 'showIncome' as const, label: 'Доходы', color: INCOME_COLOR },
-            { key: 'showExpense' as const, label: 'Расходы', color: EXPENSE_COLOR },
-            { key: 'showBalance' as const, label: 'Баланс (накопительный)', color: BALANCE_COLOR },
-          ]).map((s) => (
+          {(
+            [
+              { key: 'showIncome' as const, label: 'Доходы', color: INCOME_COLOR },
+              { key: 'showExpense' as const, label: 'Расходы', color: EXPENSE_COLOR },
+              { key: 'showBalance' as const, label: 'Баланс (накопительный)', color: BALANCE_COLOR },
+            ]
+          ).map((s) => (
             <label key={s.key} className="flex items-center gap-2 text-xs">
               <input
                 type="checkbox"
@@ -344,6 +413,160 @@ function ChartSettings({ config, onChange }: BlockSettingsFormProps) {
           ))}
         </div>
       </div>
+
+      <div className="space-y-1.5">
+        <Label>Сравнение</Label>
+        <div className="flex gap-1">
+          <button
+            type="button"
+            onClick={() => set('compare', 'none')}
+            className={
+              'inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium transition-colors ' +
+              (cfg.compare === 'none'
+                ? 'bg-primary text-primary-foreground'
+                : 'bg-muted text-muted-foreground hover:bg-accent')
+            }
+          >
+            Нет
+          </button>
+          <button
+            type="button"
+            onClick={() => set('compare', 'prev')}
+            className={
+              'inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium transition-colors ' +
+              (cfg.compare === 'prev'
+                ? 'bg-primary text-primary-foreground'
+                : 'bg-muted text-muted-foreground hover:bg-accent')
+            }
+          >
+            vs прошлый период
+          </button>
+        </div>
+      </div>
+
+      <div className="space-y-1.5">
+        <Label>Период</Label>
+        <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
+          <div className="min-w-0">
+            <div className="text-xs font-medium">Использовать период страницы</div>
+            <div className="text-[11px] text-muted-foreground">
+              {cfg.periodOverride === null
+                ? 'Период наследуется от страницы'
+                : `Свой: ${PRESET_LABELS[cfg.periodOverride.preset]}`}
+            </div>
+          </div>
+          <Switch
+            checked={cfg.periodOverride === null}
+            onCheckedChange={(v) =>
+              setOverride(v ? null : { preset: '30d', customFrom: null, customTo: null })
+            }
+          />
+        </div>
+        {cfg.periodOverride !== null && (
+          <div className="rounded-md border border-border/60 p-2">
+            <PeriodPicker
+              value={{
+                preset: cfg.periodOverride.preset,
+                customFrom: cfg.periodOverride.customFrom ?? null,
+                customTo: cfg.periodOverride.customTo ?? null,
+              }}
+              onChange={(v) =>
+                setOverride({
+                  preset: v.preset,
+                  customFrom: v.customFrom ?? null,
+                  customTo: v.customTo ?? null,
+                })
+              }
+            />
+          </div>
+        )}
+      </div>
+
+      <ChartSourceOverrideField
+        value={cfg.sourceOverride}
+        onChange={(next) => set('sourceOverride', next)}
+      />
+    </div>
+  );
+}
+
+function ChartSourceOverrideField({
+  value,
+  onChange,
+}: {
+  value: string | null | undefined;
+  onChange: (next: string | null | undefined) => void;
+}) {
+  const [sources, setSources] = useState<Array<{ source: string; count: number }>>([]);
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/cashflow/meta')
+      .then((r) => r.json())
+      .then((d) => {
+        if (cancelled) return;
+        if (d.ok && Array.isArray(d.sourcesWithCount)) setSources(d.sourcesWithCount);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const isOverride = value !== undefined;
+  return (
+    <div className="space-y-1.5">
+      <Label>Источник</Label>
+      <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
+        <div className="min-w-0">
+          <div className="text-xs font-medium">Использовать источник страницы</div>
+          <div className="text-[11px] text-muted-foreground">
+            {!isOverride
+              ? 'Источник наследуется от страницы'
+              : value === null
+                ? 'Свой: все источники'
+                : `Свой: ${SOURCE_LABELS[value]?.label ?? value}`}
+          </div>
+        </div>
+        <Switch
+          checked={!isOverride}
+          onCheckedChange={(v) => onChange(v ? undefined : null)}
+        />
+      </div>
+      {isOverride && sources.length > 0 && (
+        <div className="flex flex-wrap gap-1 rounded-md border border-border/60 p-2">
+          <button
+            type="button"
+            onClick={() => onChange(null)}
+            className={
+              'inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] tabular-nums transition ' +
+              (value === null
+                ? 'border-primary/40 bg-primary/10 text-primary'
+                : 'border-border/60 bg-background text-muted-foreground hover:bg-accent/40')
+            }
+          >
+            Все
+          </button>
+          {sources.map((s) => {
+            const meta = SOURCE_LABELS[s.source];
+            const Icon = meta?.icon;
+            return (
+              <button
+                key={s.source}
+                type="button"
+                onClick={() => onChange(s.source)}
+                className={
+                  'inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] tabular-nums transition ' +
+                  (value === s.source
+                    ? 'border-primary/40 bg-primary/10 text-primary'
+                    : 'border-border/60 bg-background text-muted-foreground hover:bg-accent/40')
+                }
+              >
+                {Icon ? <Icon className="h-3 w-3" /> : null}
+                {meta?.label ?? s.source}
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -351,20 +574,23 @@ function ChartSettings({ config, onChange }: BlockSettingsFormProps) {
 export const CashflowChartBlock: BlockDef = {
   type: 'chart.cashflow',
   displayName: 'График денежного потока',
-  description: 'Line/Bar/Area график доходов, расходов и баланса',
+  description:
+    'Line/Bar/Area график доходов, расходов и баланса с compare vs прошлый период',
   category: 'charts',
   icon: BarChart3,
-  defaultSize: { w: 6, h: 4 },
+  defaultSize: { w: 8, h: 5 },
   minSize: { w: 3, h: 2 },
   minContentSize: { w: 200, h: 120 },
   pages: ['cashflow', 'dashboard'],
   configSchema: ChartConfig,
   defaultConfig: () => ({
-    chartType: 'bar',
+    chartType: 'area',
     showIncome: true,
     showExpense: true,
     showBalance: false,
-    groupBy: 'day',
+    compare: 'none',
+    granularity: 'auto',
+    periodOverride: null,
   }),
   SettingsForm: ChartSettings,
   Render: ChartRender,

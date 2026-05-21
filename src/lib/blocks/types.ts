@@ -52,10 +52,32 @@ export type BlockDependencies = {
    * - 'avg' — среднее
    * - 'min' / 'max'
    * - 'count' — количество не-null источников
+   * - 'median' — медиана (значение из середины отсортированного массива)
+   * - 'variance' — дисперсия (variance)
+   * - 'first' / 'last' — первый/последний не-null источник в порядке dependencies.sources
+   * - 'formula' — простое арифметическое выражение над `a, b, c, ...` (см. `formulaExpression`)
    * - 'formula' — произвольная формула (см. config.formula, синтаксис @block.field)
    * - 'ai' — AI-агент собирает/вычисляет данные (см. config.aiPrompt)
    */
-  aggregation: 'sum' | 'avg' | 'min' | 'max' | 'count' | 'formula' | 'ai';
+  aggregation:
+    | 'sum'
+    | 'avg'
+    | 'min'
+    | 'max'
+    | 'count'
+    | 'median'
+    | 'variance'
+    | 'first'
+    | 'last'
+    | 'formula'
+    | 'ai';
+  /**
+   * Выражение для `aggregation: 'formula'`. Переменные — латинские буквы (a, b, c, …)
+   * соответствуют `sources[0]`, `sources[1]` и т.д. Поддерживает `+ - * / ( ) %`
+   * через тот же безопасный парсер что и `custom.data` simpleMathEval.
+   * Пример: `(a + b) * 0.13` — НДФЛ от суммы двух источников.
+   */
+  formulaExpression?: string;
 };
 
 /** Один блок на странице — позиция в гриде + произвольный config + appearance + зависимости */

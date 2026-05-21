@@ -2,7 +2,7 @@
 'use client';
 
 import { useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { Calculator, FunctionSquare } from 'lucide-react';
+import { Calculator, FunctionSquare, Wallet } from 'lucide-react';
 import { z } from 'zod';
 import type { BlockDef, BlockRenderProps, BlockSettingsFormProps } from '../types';
 import { Card } from '@/components/ui/card';
@@ -20,6 +20,9 @@ import { BlockValuesContext, useAvailableBlockSources, useBlockValuePublisher } 
 import { useBlockDensity } from '@/components/blocks/block-size';
 import { useFormatSettings, formatRublesWithSettings } from '@/lib/format-settings';
 import FormulaParser from 'fast-formula-parser';
+import { useCashflowKpiLite } from '../virtual-sources';
+import { PeriodPicker, type PeriodPreset } from '@/components/blocks/period-picker';
+import { SourceFilterChips, SOURCE_LABELS } from '@/components/blocks/source-filter-chips';
 
 type SourceField = {
   name: string;
@@ -44,6 +47,16 @@ type SourcePage = {
   blocks: SourceBlock[];
 };
 
+const PeriodPresetSchema = z.enum([
+  'today',
+  'yesterday',
+  '7d',
+  '14d',
+  '30d',
+  'mtd',
+  'custom',
+]);
+
 const ConfigSchema = z.object({
   title: z.string().default('Доходы'),
   value: z.string().default(''),
@@ -51,6 +64,22 @@ const ConfigSchema = z.object({
   showKopecks: z.boolean().nullable().default(null),
   blockRefs: z.record(z.string(), z.union([z.string(), z.number(), z.null()])).optional(),
   moneyRefs: z.record(z.string(), z.boolean()).optional(),
+  // Per-cell cashflow override. Активируется только если value ссылается
+  // на @__virtual:cashflow.kpi.* и пользователь явно включил локальные настройки.
+  cashflowOverride: z
+    .object({
+      enabled: z.boolean().default(false),
+      period: z
+        .object({
+          preset: PeriodPresetSchema.default('mtd'),
+          customFrom: z.string().nullable().default(null),
+          customTo: z.string().nullable().default(null),
+        })
+        .nullable()
+        .optional(),
+      source: z.string().nullable().optional(),
+    })
+    .optional(),
 });
 
 type Config = z.infer<typeof ConfigSchema>;
@@ -59,6 +88,10 @@ function parseConfig(raw: unknown): Config {
   const parsed = ConfigSchema.safeParse(raw ?? {});
   if (parsed.success) return parsed.data;
   return { title: 'Доходы', value: '', showFormulaBar: true, showKopecks: null };
+}
+
+function hasVirtualCashflowRef(value: string): boolean {
+  return /@__virtual:cashflow\.kpi\.(income|expense|balance)/.test(value);
 }
 
 function parseCellNumber(value: string): number | null {
@@ -230,6 +263,58 @@ function evaluateValue(
   };
 }
 
+function CashflowOverrideValues({
+  enabled,
+  period,
+  source,
+  onValues,
+}: {
+  enabled: boolean;
+  period: { preset: PeriodPreset; customFrom: string | null; customTo: string | null };
+  source: string | null;
+  onValues: (values: Record<string, number | string | null>) => void;
+}) {
+  const income = useCashflowKpiLite('income', period, source);
+  const expense = useCashflowKpiLite('expense', period, source);
+  const balance = useCashflowKpiLite('balance', period, source);
+
+  useEffect(() => {
+    if (!enabled) {
+      onValues({});
+      return;
+    }
+    const out: Record<string, number | string | null> = {};
+    if (income) {
+      out['__virtual:cashflow.kpi.income'] = income.current;
+      out['__virtual:cashflow.kpi.income.current'] = income.current;
+      out['__virtual:cashflow.kpi.income.previous'] = income.previous;
+      out['__virtual:cashflow.kpi.income.count'] = income.count;
+      out['__virtual:cashflow.kpi.income.prevCount'] = income.prevCount;
+      out['__virtual:cashflow.kpi.income.deltaPct'] = income.deltaPct;
+    }
+    if (expense) {
+      out['__virtual:cashflow.kpi.expense'] = expense.current;
+      out['__virtual:cashflow.kpi.expense.current'] = expense.current;
+      out['__virtual:cashflow.kpi.expense.previous'] = expense.previous;
+      out['__virtual:cashflow.kpi.expense.count'] = expense.count;
+      out['__virtual:cashflow.kpi.expense.prevCount'] = expense.prevCount;
+      out['__virtual:cashflow.kpi.expense.deltaPct'] = expense.deltaPct;
+    }
+    if (balance) {
+      out['__virtual:cashflow.kpi.balance'] = balance.current;
+      out['__virtual:cashflow.kpi.balance.current'] = balance.current;
+      out['__virtual:cashflow.kpi.balance.previous'] = balance.previous;
+      out['__virtual:cashflow.kpi.balance.count'] = balance.count;
+      out['__virtual:cashflow.kpi.balance.prevCount'] = balance.prevCount;
+      out['__virtual:cashflow.kpi.balance.deltaPct'] = balance.deltaPct;
+    }
+    onValues(out);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, income, expense, balance]);
+
+  return null;
+}
+
 function RenderExcelCell({ instance, onConfigChange }: BlockRenderProps) {
   const config = parseConfig(instance.config);
   const density = useBlockDensity();
@@ -237,6 +322,15 @@ function RenderExcelCell({ instance, onConfigChange }: BlockRenderProps) {
   const showKopecks = config.showKopecks ?? globalSettings.showKopecks;
   const availableBlocks = useAvailableBlockSources();
   const liveValues = useAllBlockValues();
+  const [overrideValues, setOverrideValues] = useState<Record<string, number | string | null>>({});
+  const overrideEnabled =
+    !!config.cashflowOverride?.enabled && hasVirtualCashflowRef(config.value);
+  const overridePeriod = config.cashflowOverride?.period ?? {
+    preset: 'mtd' as PeriodPreset,
+    customFrom: null,
+    customTo: null,
+  };
+  const overrideSource = config.cashflowOverride?.source ?? null;
   const [draft, setDraft] = useState(config.value);
   const [editing, setEditing] = useState(false);
   const [caretPos, setCaretPos] = useState<number | null>(null);
@@ -265,8 +359,13 @@ function RenderExcelCell({ instance, onConfigChange }: BlockRenderProps) {
     Object.entries(config.blockRefs ?? {}).forEach(([name, val]) => {
       result[name] = val ?? liveValues[name] ?? null;
     });
+    if (overrideEnabled) {
+      Object.entries(overrideValues).forEach(([k, v]) => {
+        result[k] = v;
+      });
+    }
     return result;
-  }, [config.blockRefs, liveValues, sourcePages]);
+  }, [config.blockRefs, liveValues, sourcePages, overrideEnabled, overrideValues]);
 
   const moneyRefs = useMemo(() => {
     const result: Record<string, boolean> = { ...(config.moneyRefs ?? {}) };
@@ -420,9 +519,19 @@ function RenderExcelCell({ instance, onConfigChange }: BlockRenderProps) {
     }, 0);
   }
 
+  const overrideExecutor = (
+    <CashflowOverrideValues
+      enabled={overrideEnabled}
+      period={overridePeriod}
+      source={overrideSource}
+      onValues={setOverrideValues}
+    />
+  );
+
   if (density === 'xs') {
     return (
       <Card className="flex h-full items-center justify-center p-1">
+        {overrideExecutor}
         <div className="truncate text-sm font-semibold tabular-nums" style={accent ? { color: accent } : undefined}>
           {computed.display || '—'}
         </div>
@@ -434,6 +543,7 @@ function RenderExcelCell({ instance, onConfigChange }: BlockRenderProps) {
 
   return (
     <Card className={compact ? 'flex h-full flex-col p-2' : 'flex h-full flex-col p-3'}>
+      {overrideExecutor}
       <div className="flex items-center gap-1.5">
         <Calculator className={compact ? 'h-3.5 w-3.5 shrink-0 text-muted-foreground' : 'h-4 w-4 shrink-0 text-muted-foreground'} style={accent ? { color: accent } : undefined} />
         <Input
@@ -828,6 +938,77 @@ function ExcelCellSettings({ config, onChange }: BlockSettingsFormProps) {
           <Switch checked={parsed.showKopecks ?? false} onCheckedChange={(v) => set('showKopecks', v)} />
         </div>
       </div>
+
+      {hasVirtualCashflowRef(parsed.value) && (
+        <CashflowFilterSection parsed={parsed} onChange={onChange} />
+      )}
+    </div>
+  );
+}
+
+function CashflowFilterSection({
+  parsed,
+  onChange,
+}: {
+  parsed: Config;
+  onChange: (next: Record<string, unknown>) => void;
+}) {
+  const override = parsed.cashflowOverride ?? { enabled: false };
+  const enabled = !!override.enabled;
+  const period = override.period ?? { preset: 'mtd' as PeriodPreset, customFrom: null, customTo: null };
+  const source = override.source ?? null;
+
+  function patch(next: Partial<NonNullable<Config['cashflowOverride']>>) {
+    onChange({
+      ...parsed,
+      cashflowOverride: { ...override, ...next },
+    } as unknown as Record<string, unknown>);
+  }
+
+  return (
+    <div className="space-y-2 rounded-md border border-emerald-200/60 bg-emerald-50/50 p-3 dark:border-emerald-900/60 dark:bg-emerald-950/30">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-700 dark:text-emerald-400">
+            <Wallet className="h-3.5 w-3.5" />
+            Cashflow-фильтр
+          </div>
+          <div className="mt-0.5 text-[11px] text-muted-foreground">
+            {enabled
+              ? 'Ячейка использует локальный период / источник (а не общий со страницы)'
+              : 'По умолчанию ячейка наследует период и источник страницы'}
+          </div>
+        </div>
+        <Switch checked={enabled} onCheckedChange={(v) => patch({ enabled: v })} />
+      </div>
+      {enabled && (
+        <div className="space-y-2 pt-1">
+          <div className="space-y-1">
+            <Label className="text-[11px] text-muted-foreground">Период</Label>
+            <PeriodPicker
+              value={period}
+              onChange={(v) =>
+                patch({
+                  period: {
+                    preset: v.preset,
+                    customFrom: v.customFrom ?? null,
+                    customTo: v.customTo ?? null,
+                  },
+                })
+              }
+            />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-[11px] text-muted-foreground">Источник</Label>
+            <SourceFilterChips value={source} onChange={(v) => patch({ source: v })} size="xs" />
+            {source && SOURCE_LABELS[source] && (
+              <div className="text-[10px] text-muted-foreground">
+                Выбрано: {SOURCE_LABELS[source].label}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

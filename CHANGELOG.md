@@ -1,5 +1,177 @@
 # Changelog
 
+## [0.20.0] - 2026-05-21
+
+Cashflow Blocks Rescue: фикс «0 ₽» KPI без объяснения, выровнен единый Card-стиль во всех cashflow-блоках, добавлен page-level source-фильтр аккаунта (Выписки), 5 cashflow-пресетов для `excel.cell`, виртуальные источники `@__virtual:cashflow.kpi.*` для bindings без отдельных stat.* блоков, новый блок `kpi.grid` (1–6 KPI в одном Card).
+
+### Added
+
+#### Page-level source filter
+- **`PageSourceProvider`** (`src/lib/blocks/page-source-context.tsx`) — аналог `PagePeriodProvider`, глобальный source-фильтр (Bank / Manual / Inbox / Все) на уровне страницы. Persistence в `localStorage[page:${pageKey}:source:v1]`. `usePageSource()` / `useEffectiveSource()` / `usePersistedSourceWithGlobal()`.
+- **`SourceFilterChips`** (`src/components/blocks/source-filter-chips.tsx`) — chips-picker с counter операций по каждому источнику, fetch из `/api/cashflow/meta?sourcesWithCount=true`.
+- **`PagePeriodHeader`** теперь принимает `showSourceFilter` и рендерит чипы рядом с PeriodPicker.
+
+#### Virtual cashflow sources
+- **`src/lib/blocks/virtual-sources.tsx`** — виртуальные блоки `__virtual:cashflow.kpi.{income|expense|balance}` публикуются через `VirtualSourcesBridge` под `BlockValuesProvider`. Любой блок может биндиться через стандартный `@__virtual:cashflow.kpi.income.current` без добавления `stat.income` на страницу.
+- **Server-side resolver** в `/api/blocks/sources/route.ts` — отдельная псевдо-страница `__virtual` с pre-resolved cashflow KPI (MTD по умолчанию), чтобы cross-page bindings работали.
+- **`extractVirtualCashflowMetrics(formula)`** + **`parseVirtualCashflowBlockId(id)`** helpers.
+
+#### BLOCK_PRESETS — Cashflow быстро
+- **`BLOCK_PRESETS`** в `src/lib/blocks/registry.ts` — концепция пре-конфигурированных блоков. `listPresetsForPage()` / `getPreset()`.
+- **5 пресетов на base `excel.cell`**: «Доходы за период», «Расходы за период», «Баланс за период», «Количество операций», «Δ Доходы vs прошлый период».
+- **3 пресета на base `kpi.grid`**: «KPI-сетка 3 в строку», «KPI по периодам», «Финансовая панель 2×2».
+- **`AddBlockDialog`** теперь имеет отдельную секцию «Cashflow быстро» сверху с подсветкой бейджем emerald + один клик → готовая ячейка.
+
+#### kpi.grid — новый блок
+- **`src/lib/blocks/catalog/kpi-grid.tsx`** + **`src/lib/blocks/catalog/kpi-grid-settings.tsx`** — контейнер с 1–6 KPI-ячейками (income / expense / balance / count) в одном Card. Каждая ячейка независима: свой `periodOverride` / `sourceOverride` / `format` / `accentColor`.
+- **Layout**: row / column / grid-2col / grid-3col (с SVG-превью в Settings).
+- **Settings form**: DnD-reorder через `@dnd-kit/sortable`, inline-редактор каждой ячейки (метрика, формат, период, источник, акцент-цвет, категория, контрагент), быстрые кнопки `+ Доходы / + Расходы / + Баланс / + Кол-во`.
+- **Publish для bindings**: `cells.{id}.value`, `cells.{id}.label`, `__money` помечает money-ячейки. Другие блоки могут биндиться на конкретную ячейку.
+- Density-aware: на `sm` — компактные значения без бейджа delta, на `md+` — с дельтой и фуллным форматом.
+
+#### excel.cell — inline cashflow filter
+- **Cashflow-фильтр section** в `ExcelCellSettings` — появляется автоматически, если значение ячейки содержит `@__virtual:cashflow.kpi.*`. Toggle «Локальные настройки» → PeriodPicker + SourceFilterChips для override (по умолчанию ячейка наследует period и source со страницы).
+- **`CashflowOverrideValues`** child-компонент в renderer — выполняет override-fetch через `useCashflowKpiLite` и overlay'ит значения в `blockValues` map.
+
+### Changed
+
+#### Smart hint в cashflow KPI
+- **`useCashflowKpi`** (`src/lib/blocks/catalog/cashflow.tsx`) — если current=0 && previous=0 для income/expense, делает фоновый fetch за «всё время» (5 лет) и подставляет в `hintAllTime` / `hintAllTimeCount`. UI показывает «Нет данных за май, всего 1.2M ₽ (12 операций)» + кнопки «30 дней / Всё время».
+
+#### Single Card pattern
+- **`StatCard`** получил `variant: 'standalone' | 'inner'` (`src/components/blocks/stat-card.tsx`). `inner` — без border / bg / padding, используется внутри родительского Card в `StatKpiBlock` / `StatCustomBlock` / `kpi.grid` — фикс «двойные rounded-lg» и сдвинутый белый фон.
+- **`StatKpiBlock` / `StatCustomBlock` / `RenderTopCategories` / `ChartRender`** переписаны под single Card + единые `p-2/3` / `text-sm font-medium muted` / `text-2xl tabular-nums` (паттерн `excel.cell`).
+
+#### Period boundaries unified
+- **`src/lib/cashflow/queries.ts`** — `getCashflowSummary`, `getTopCategories`, `getCashflowChart`, `listTransactions`, `listTransactionsWithCategory` приведены к exclusive `lt(occurredAt, to)` везде (раньше был mix `lte` / `lt`). Теперь `Топ доходов = Σ Доходы KPI` сходится копейка в копейку.
+
+#### Source filter везде
+- **API**: `/api/cashflow/kpi`, `/api/cashflow/chart`, `/api/cashflow/top-categories`, `/api/cashflow/transactions` все принимают `?source=...`.
+- **Settings**: `stat.income / stat.expense / stat.balance / stat.custom / cashflow.top-categories / chart.cashflow / cashflow.transactions` все получили секцию «Источник» (toggle global + chips override) через общий компонент `SourceOverrideSection`.
+
+#### Legacy tags
+- **`stat.income / stat.expense / stat.balance`** помечены `tags: ['legacy']` в `BLOCK_META`. В `AddBlockDialog` отсортированы вниз. Существующие блоки работают (обратная совместимость).
+
+### Tests
+- **`scripts/test-source-context.ts`** — useEffectiveSource resolver + persistence (8 tests).
+- **`scripts/test-kpi-grid-config.ts`** — schema validation, layout helper, override semantics (15 tests).
+- **`scripts/test-virtual-sources.ts`** — virtual block ID parser + metric extractor (16 tests).
+- **`scripts/test-cashflow-kpi.ts`** — без изменений (17 tests passing).
+
+### Docs
+- **`docs/KPI_GRID.md`** (новый) — гайд по новому блоку: дизайн, schema, presets, layout patterns.
+- **`docs/CASHFLOW_BLOCKS.md`** — обновлён: source filter, virtual sources, kpi.grid, presets.
+- **`MEMORY.md`** — обновлён со списком новых файлов и инвариантов.
+
+## [0.19.0] - 2026-05-21
+
+Глубокий апгрейд стартовых блоков `cashflow` + sheet до уровня `custom.data` + новый Inbox dashboard + multi-provider AI vision для распознавания чеков/счетов/договоров. Объединяющий слой — page-level PeriodContext с per-block override и универсальная DrillDown utility.
+
+### Added
+
+#### Foundation
+- **`PagePeriodContext`** (`src/lib/blocks/page-period-context.tsx`) — единый источник «текущего периода» для всех блоков страницы. `PagePeriodProvider` оборачивает страницу, `usePagePeriod()` для page-level UI, `useEffectivePeriod(instanceId, override)` для слива global + per-block. Persistence через `localStorage[page:${pageKey}:period:v1]`.
+- **`usePersistedPeriodWithGlobal`** (`src/lib/blocks/use-persisted-period.ts`) — расширение существующего хука: блок может либо слушать global (`mode: 'global'`), либо использовать свой override. UI-индикатор lock-иконки.
+- **`PagePeriodHeader`** (`src/components/blocks/page-period-header.tsx`) — sticky-header сверху страницы с PeriodPicker, прокидывает period во все блоки страницы.
+- **`DrillDown` utility** (`src/lib/blocks/drill-down.tsx`) — `DrillDownProvider`, `useDrillDown()`, `drillDownUrl()`, `parseDrillDownFromSearchParams()`. Клик по KPI/категории/баре → focus filter на transactions-блок (scroll + 2-second pulse через `data-drill-active` CSS).
+- **`data-block-type` атрибут** на каждом блоке в `BlockGrid` — для drill-down автотаргетинга.
+
+#### Cashflow API
+- **`/api/cashflow/kpi`** (`src/app/api/cashflow/kpi/route.ts`) — единый KPI endpoint с `{current, previous, count, prevCount, deltaPct, byDay}`. Поддерживает фильтры по counterparty/source/categoryName.
+- **`/api/cashflow/chart`** (`src/app/api/cashflow/chart/route.ts`) — chart data с auto-granularity (`day ≤31d, week ≤120d, month иначе`) + опц. compare с прошлым периодом.
+- **`/api/cashflow/top-categories`** (`src/app/api/cashflow/top-categories/route.ts`) — топ категорий за период + `totalSum` для расчёта `% от общего`.
+- **`getCashflowKpi` / `getCashflowChart`** в `src/lib/cashflow/queries.ts` — серверные функции с раздельными запросами для current/previous + GROUP BY date_trunc для sparkline.
+- **Cursor-based pagination** в `/api/cashflow/transactions` (`cursorAt` + `cursorId`) — стабильнее offset для длинных лент.
+- **`listTransactionsWithCategory`** + расширенные фильтры (`counterparty`, `source`, `categoryName`).
+
+#### KPI blocks (stat.income / stat.expense / stat.balance / stat.custom)
+- **`StatCard`-based рендер** (`src/components/blocks/stat-card.tsx`): density-aware sparkline + delta-badge с goodDirection (для expense ↓ = хорошо), tone (positive/negative для balance).
+- **Drill-down на клик** — фокусирует `cashflow.transactions` с pre-filled type filter.
+- **Lock-icon на override** — клик возвращает page-level period.
+- **`stat.custom`**: переписан под новый `/api/cashflow/kpi` endpoint, category filter через `transactions.category`, sparkline в `lg` density.
+
+#### cashflow.top-categories
+- **`useEffectivePeriod`** + drill-down (filter `categoryName` или `counterparty`).
+- **% от total** — рассчитывается из `totalSum` endpoint'а.
+- **Empty state** — CTA «Импортировать выписку → /cashflow/import».
+
+#### chart.cashflow (новый full rewrite)
+- **`ChartShell` rich variant** + `height='fill'` (как Ozon · Динамика).
+- **Compare overlay** с прошлым периодом (пунктир).
+- **Auto-granularity** (day/week/month).
+- **Bar/Line/Area** + опционально накопительный баланс.
+- **Density-aware header** (хайдит granularity-badge при `shortH`, скрывает compare-badge при `narrow`).
+- Добавлен в `DEFAULT_LAYOUTS.cashflow` (область 12×5 сразу после KPI).
+
+#### cashflow.transactions
+- **Filters в header** (type, counterparty, category) + DrillDown receiver (получает focus от других блоков, подсвечивается).
+- **Virtualization** через `@tanstack/react-virtual` при >100 строк.
+- **CSV export** через `papaparse`.
+- **Колонка «Категория»** (badge).
+
+#### Phase 2: computed.sum upgrade
+- **Новые aggregations** в `useBlockDependencyResult`: `median`, `variance`, `first`, `last`, `formula`. `formula` использует `evalFormulaVars(expression, vars)` где `a → sources[0]`, `b → sources[1]`, … Безопасный парсер (только `[a-z]`, числа, `+ - * / ( ) %`).
+- **`BlockDependencies.formulaExpression`** в схеме — выражение для `aggregation: 'formula'`.
+- **SettingsForm** для `computed.sum`: title, subtitle, format (auto/rub/int/percent), expression input с подсказкой по переменным.
+- **Inline `MiniSpark`** (без recharts) — собирает sparkline из `byDay` полей sources (если все публикуют CSV-строку).
+- **`BreakdownPopover`** (Notion-style) — список источников с контрибуцией (progress-bar + % от total).
+- **`BlockReferencePicker`** обновлён — показывает новые aggregations.
+
+#### Phase 3: sheet full parity с custom.data
+- **Виртуализация строк** через `@tanstack/react-virtual` при `cfg.rows > 50`. Estimate из `rowHeights[idx]`, overscan 10.
+- **DnD reorder колонок и строк** через `@dnd-kit/sortable` — `SortableColHeader` и `SheetRow`. Drag-handle `GripVertical` появляется на hover.
+- **CSV/XLSX import/export** (`src/lib/blocks/catalog/sheet-import.ts`):
+  - `papaparse` для CSV, `xlsx` (sheetjs) для XLSX.
+  - Формулы сохраняются roundtrip (`{t:'n', f:'B2*2'}`).
+  - Лимит 10 000 ячеек.
+  - UI: Popover в header с кнопками `Импорт CSV/XLSX`, `Экспорт CSV`, `Экспорт XLSX`.
+  - Тесты в `scripts/test-sheet-import-export.ts` (16 проверок: CSV parse, XLSX roundtrip, cell limit).
+
+#### Phase 4: Inbox dashboard + AI vision
+- **`inbox.dashboard` блок** (`src/lib/blocks/catalog/inbox-dashboard.tsx`) — компактный обзор последних писем:
+  - `xs`: бейдж с числом.
+  - `sm`: бейдж + 1 latest message subject.
+  - `md`: список 3 писем.
+  - `lg`: список 5 + кнопка «Открыть».
+  - Publish: `count, latestSubject, latestSender`. Drill-down → `/inbox?channel=X`.
+  - Добавлен в `DEFAULT_LAYOUTS.dashboard`.
+- **AI Vision multi-provider** (`src/lib/ai/vision/`):
+  - `types.ts` — `VisionProvider`, `ExtractedData`, `buildExtractionPrompt`, `parseExtractedJson` (терпим к markdown-обёрткам и messy LLM output).
+  - `providers/claude.ts` — Anthropic Messages API с image content blocks. `ANTHROPIC_API_KEY` + опц. `ANTHROPIC_VISION_MODEL`.
+  - `providers/openai.ts` — GPT-4o Chat Completions с `response_format: json_object`. `OPENAI_API_KEY` + опц. `OPENAI_VISION_MODEL`.
+  - `providers/yandex.ts` — Yandex Vision API (OCR) + эвристический парсер для vendor/inn/date/amount. `YANDEX_FOLDER_ID` + `YANDEX_IAM_TOKEN` или `YANDEX_API_KEY`.
+  - `providers/tesseract.ts` — локальный OCR через tesseract.js (dynamic import, peerDep). Та же эвристика.
+  - `providers/mock.ts` — для тестов и dev fallback. Deterministic ответы по filename.
+  - `router.ts` — `getVisionProvider({override, tenantPreference})` с auto-fallback по env-ключам. `listVisionProviders()` для UI выбора в админке.
+- **`POST /api/inbox/messages/[id]/recognize`** — multipart upload или attachment URL из metadata → vision provider → сохранение в `inbox_messages.aiExtracted` + `aiProvider` + `aiExtractedAt`.
+- **`AiRecognizePanel`** в `inbox-channel-feed.tsx` — кнопка «Распознать с AI» с выбором hint (auto/чек/счёт/договор) и провайдера, panel с extracted данными, кнопка «Создать транзакцию».
+- **Drizzle миграция** `drizzle/0003_inbox_ai_extracted.sql` — `ai_extracted jsonb`, `ai_provider varchar(20)`, `ai_extracted_at timestamp`.
+
+#### Tests
+- `scripts/test-page-period-context.ts` — storage parsing, useEffectivePeriod resolution, drillDownUrl (13 проверок).
+- `scripts/test-cashflow-kpi.ts` — resolvePeriod presets, custom dates, granularity logic, deltaPct (17 проверок).
+- `scripts/test-vision-router.ts` — getVisionProvider env/override/fallback, listVisionProviders, parseExtractedJson, mock provider (20 проверок).
+- `scripts/test-sheet-import-export.ts` — CSV parse, XLSX roundtrip с формулами, cell limit (16 проверок).
+
+### Changed
+- **`DEFAULT_LAYOUTS.cashflow`** — добавлен `chart.cashflow` (12×5) после KPI-строки + сдвинуты top-categories и transactions вниз.
+- **`DEFAULT_LAYOUTS.dashboard`** — `navigate.card` для Inbox заменён на `inbox.dashboard` (4×4).
+- **`BlockGrid`** — каждый блок получил `data-block-type={b.type}` для drill-down таргетинга. Pulse animation для `data-drill-active`.
+- **`CashflowClient`** — обёрнут в `PagePeriodProvider` + `DrillDownProvider` + `PagePeriodHeader`.
+
+### Migration
+- Запустить: `pnpm db:push` или `pnpm db:migrate` чтобы применить `drizzle/0003_inbox_ai_extracted.sql` (3 новые колонки в `inbox_messages`).
+
+### Setup для AI Vision
+- **Claude**: `ANTHROPIC_API_KEY=sk-ant-...` (опц. `ANTHROPIC_VISION_MODEL=claude-3-5-sonnet-20241022`).
+- **OpenAI**: `OPENAI_API_KEY=sk-...` (опц. `OPENAI_VISION_MODEL=gpt-4o-mini`).
+- **Yandex**: `YANDEX_FOLDER_ID=...` + `YANDEX_IAM_TOKEN=...` (или `YANDEX_API_KEY`).
+- **Tesseract**: `pnpm add tesseract.js` (опционально, для оффлайн OCR).
+- **Override per request**: `?provider=claude|openai|yandex|tesseract|mock`.
+- **Env default**: `VISION_PROVIDER=claude` (если есть key) или `mock` (для dev).
+
+---
+
 ## [0.18.26] - 2026-05-21
 
 Адаптивный график «Ozon · Динамика» (fluid height, density-aware header) + глубокий редизайн блока «Данные»: формулы в ячейках (A1 + именованная нотация + cross-block @), Notion-style popover-редактор, DnD-реордер колонок/строк, виртуализация, фикс ресайза последней колонки.

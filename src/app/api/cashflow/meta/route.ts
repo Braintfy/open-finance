@@ -11,11 +11,16 @@ export async function GET() {
     return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
   }
 
-  const [sources, counterparties] = await Promise.all([
+  const [sourcesWithCount, counterparties] = await Promise.all([
     db
-      .selectDistinct({ source: transactions.source })
+      .select({
+        source: transactions.source,
+        count: sql<number>`count(*)::int`,
+      })
       .from(transactions)
-      .where(and(eq(transactions.tenantId, session.tenantId), isNotNull(transactions.source))),
+      .where(and(eq(transactions.tenantId, session.tenantId), isNotNull(transactions.source)))
+      .groupBy(transactions.source)
+      .orderBy(sql`count(*) desc`),
     db
       .select({
         counterparty: transactions.counterparty,
@@ -32,7 +37,12 @@ export async function GET() {
 
   return NextResponse.json({
     ok: true,
-    sources: sources.map((s) => s.source).filter(Boolean) as string[],
+    // Backward-compat: массив string[]
+    sources: sourcesWithCount.map((s) => s.source).filter(Boolean) as string[],
+    // Новый формат с count'ами для UI chips
+    sourcesWithCount: sourcesWithCount
+      .filter((s) => s.source)
+      .map((s) => ({ source: s.source as string, count: s.count })),
     counterparties: counterparties.map((c) => ({
       name: c.counterparty,
       count: c.count,

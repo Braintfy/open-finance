@@ -104,7 +104,7 @@ Open Finance = настраиваемый Lego-конструктор интер
 - **`BlockInstance.aiPrompt`** (master-промпт блока) обязан пробрасываться в `MicroAgentDialog.blockContext.aiPrompt` через `block-grid.tsx`. В `/api/ai/chat` приоритет: `aiPrompt > legacy config.blockPrompt > inline инструкция в диалоге`. Persistence: добавлено в `BlockInstanceSchema` API роута `/api/blocks/layout/[pageKey]`.
 
 ### Текущий каталог блоков
-`stat.income`, `stat.expense`, `stat.balance`, `stat.custom`, `cashflow.top-categories`, `cashflow.transactions`, `sheet`, `excel.cell`, `navigate.card`, `computed.sum`, `custom.data`, `chart.cashflow`, `ai.micro-agent`, `inbox.channel-feed`, `unit.ozon-calculator`, `unit.ozon-multi-table`, **`unit.ozon-analytics`**, **`unit.ozon-kpi`**, **`unit.ozon-chart`**, **`unit.ozon-top-ads`**, **`unit.ozon-stock-clusters`**, **`unit.ozon-search-phrases`**, **`unit.ozon-campaigns`**, **`unit.ozon-data-health`**, **`unit.ozon-abc`**, **`unit.ozon-ai-insights`**, `unit.yandex-calculator`, `unit.my-store-table`, `currency.rates`. Каждый `BlockDef` помечен `tags: string[]`, `recommendedFor?: string[]`, `source: 'builtin'|'user'|'paid'` и **`iconName: string`** через карту `BLOCK_META` в `registry.ts` (источник правды для маркетплейса, `AddBlockDialog` и серверного рендера в RSC).
+**`stat.income`, `stat.expense`, `stat.balance` помечены `tags: ['legacy']`** (v0.20.0) — работают, но новые пользователи добавляют через `BLOCK_PRESETS` (cashflow быстро на base `excel.cell`) или **`kpi.grid`** (новый блок v0.20.0). Все блоки: `stat.income`, `stat.expense`, `stat.balance`, `stat.custom`, `cashflow.top-categories`, `cashflow.transactions`, `sheet`, `excel.cell`, **`kpi.grid`** (v0.20.0), `navigate.card`, `computed.sum`, `custom.data`, `chart.cashflow`, `ai.micro-agent`, `inbox.channel-feed`, **`inbox.dashboard`** (v0.19.0), `unit.ozon-calculator`, `unit.ozon-multi-table`, **`unit.ozon-analytics`**, **`unit.ozon-kpi`**, **`unit.ozon-chart`**, **`unit.ozon-top-ads`**, **`unit.ozon-stock-clusters`**, **`unit.ozon-search-phrases`**, **`unit.ozon-campaigns`**, **`unit.ozon-data-health`**, **`unit.ozon-abc`**, **`unit.ozon-ai-insights`**, `unit.yandex-calculator`, `unit.my-store-table`, `currency.rates`. Каждый `BlockDef` помечен `tags: string[]`, `recommendedFor?: string[]`, `source: 'builtin'|'user'|'paid'` и **`iconName: string`** через карту `BLOCK_META` в `registry.ts` (источник правды для маркетплейса, `AddBlockDialog` и серверного рендера в RSC). Plus **`BLOCK_PRESETS` массив (v0.20.0)** — 5 cashflow presets для excel.cell + 3 для kpi.grid, отдельная секция «Cashflow быстро» в `AddBlockDialog`.
 
 ## Реализованные страницы и модули
 - **Dashboard `/dashboard`** — BlockGrid с KPI и navigation cards.
@@ -125,6 +125,57 @@ Open Finance = настраиваемый Lego-конструктор интер
 - `src/app/(app)/boards/*` — pages/client UI.
 - `drizzle/init/03-boards.sql` — manual SQL.
 - Запиненные доски отображаются в sidebar; доски видны в `@связать` через `/api/blocks/sources`.
+
+## Cashflow ecosystem (v0.20.0)
+> **v0.20.0 update**: добавлен **page-level source-filter** (`PageSourceProvider`), **virtual cashflow sources** (`@__virtual:cashflow.kpi.*` для bindings без stat.* блоков), **smart hint** в `useCashflowKpi` (если 0 за период — фоновый fetch all-time и UI подсказка), новый блок **`kpi.grid`** (1–6 KPI в одном Card), **`BLOCK_PRESETS`** (cashflow быстро в AddBlockDialog). Подробности: `docs/KPI_GRID.md`, `docs/CASHFLOW_BLOCKS.md`.
+
+- **`PagePeriodContext`** (`src/lib/blocks/page-period-context.tsx`) — единый источник «текущего периода». `PagePeriodProvider({pageKey, defaultPreset, children})` хранит `{preset, customFrom, customTo}`, `usePagePeriod()` для page-level UI, `useEffectivePeriod(instanceId, blockOverride)` мерджит global + per-block (lock-source флаг). Persistence: `localStorage[page:${pageKey}:period:v1]`.
+- **`PageSourceContext`** (`src/lib/blocks/page-source-context.tsx`, **v0.20.0**) — аналог для source-фильтра (Bank / Manual / Inbox / Все). `usePageSource()`, `useEffectiveSource(instanceId, blockOverride)`. Persistence: `localStorage[page:${pageKey}:source:v1]`.
+- **`usePersistedSourceWithGlobal`** (`src/lib/blocks/use-persisted-source.ts`, **v0.20.0**) — per-block override.
+- **`SourceFilterChips`** (`src/components/blocks/source-filter-chips.tsx`, **v0.20.0**) — chips picker с counter операций.
+- **`VirtualSourcesBridge`** + **`useCashflowKpiLite`** (`src/lib/blocks/virtual-sources.tsx`, **v0.20.0**) — публикует `__virtual:cashflow.kpi.{income|expense|balance}` под `BlockValuesProvider` чтобы любой блок мог биндиться через `@__virtual:cashflow.kpi.income.current` без добавления `stat.income`. Server-side resolver в `/api/blocks/sources` для cross-page bindings.
+- **`kpi.grid`** (`src/lib/blocks/catalog/kpi-grid.tsx` + `kpi-grid-settings.tsx`, **v0.20.0**) — контейнер на 1–6 KPI cells (income/expense/balance/count). Layout row/column/grid-2col/grid-3col. DnD-reorder, inline override period/source/category per-cell. Publishing `cells.{id}.value` для bindings.
+- **`BLOCK_PRESETS`** (`src/lib/blocks/registry.ts`, **v0.20.0**) — 5 пресетов на `excel.cell` (income/expense/balance/count/delta-prev) + 3 на `kpi.grid` (3-cells row / months / 2x2 panel). `listPresetsForPage(pageKey)` / `getPreset(id)`. `AddBlockDialog` показывает отдельную секцию «Cashflow быстро».
+- **`usePersistedPeriodWithGlobal`** (`src/lib/blocks/use-persisted-period.ts`) — расширение хука: `mode: 'global'` (слушает page-level) или `mode: 'override'` (per-block). UI показывает lock-icon если override.
+- **`PagePeriodHeader`** (`src/components/blocks/page-period-header.tsx`) — sticky `PeriodPicker` сверху страницы. Использован в `/cashflow`.
+- **`DrillDown` utility** (`src/lib/blocks/drill-down.tsx`) — `DrillDownProvider`, `useDrillDown()`. KPI/категории/чарт → `setFocus({blockType: 'cashflow.transactions', filter: {type:'income', categoryName?, counterparty?}})` → таргетируется через `[data-block-type]`, скроллится + `data-drill-active="1"` (2s pulse через CSS). Cross-page: `drillDownUrl(href, blockType, filter)` собирает query-params `drill_*`, на receiver-странице `parseDrillDownFromSearchParams(sp)` хайдратит focus.
+- **API**:
+  - `/api/cashflow/kpi` (GET) — `{current, previous, count, prevCount, deltaPct, byDay}`. Поддерживает `?metric=income|expense|balance&preset=...&counterparty=...&source=...&categoryName=...`.
+  - `/api/cashflow/chart` (GET) — `{points: [{date, income, expense, balance}], granularity, compare?}`. Auto-granularity: day ≤31d / week ≤120d / month иначе. `?compare=prev` добавляет overlay.
+  - `/api/cashflow/top-categories` (GET) — топ-N + `totalSum` для `%`.
+  - `/api/cashflow/transactions` — cursor-based pagination (`?cursorAt&cursorId`), filters `counterparty/source/categoryName`.
+- **KPI blocks** (`src/lib/blocks/catalog/cashflow.tsx`) — `StatCard` component. Density variants: xs (число) → sm (+ label) → md (+ trend badge) → lg (+ sparkline). Клик → drill-down к transactions с pre-filled type. Lock-icon ↻ возвращает global период.
+- **`stat.custom`** (`src/lib/blocks/catalog/stat-custom.tsx`) — KPI с гибкими фильтрами (metric / counterparty / categoryName / source) + sparkline + trend через тот же `/api/cashflow/kpi`. Метрика `count` через `prevCount` поле.
+- **`chart.cashflow`** (`src/lib/blocks/catalog/chart-cashflow.tsx`) — `ChartShell` rich + `height='fill'` + compare overlay + bar/line/area + опц. накопительный баланс. Добавлен в `DEFAULT_LAYOUTS.cashflow`.
+- **`cashflow.top-categories`** — % от общего, drill-down по клику на категорию.
+- **`cashflow.transactions`** — header filters (type / counterparty / category), cursor pagination «Загрузить ещё», виртуализация при >100 строк, CSV export через papaparse, drill-receive фокусирует и подсвечивает.
+
+## Computed.sum (v0.19.0)
+- **Новые aggregations** в `useBlockDependencyResult`: `median`, `variance`, `first`, `last`, `formula`. Тип `BlockDependencies.aggregation` расширен в `types.ts`.
+- **`evalFormulaVars(expression, vars)`** (в `custom-data-formulas.ts`, экспортируется) — безопасный eval с подстановкой `a → sources[0]`, `b → sources[1]`, `c → sources[2]` и т.д. Допустимые символы: латиница, цифры, `+ - * / ( ) % .,`. Пример: `(a + b) * 0.13` — НДФЛ.
+- **SettingsForm**: title, subtitle, format (auto/rub/int/percent), expression input.
+- **Inline sparkline** через MiniSpark (svg polyline) если все sources публикуют `byDay` строку.
+- **BreakdownPopover** — список источников с контрибуцией (progress-bar % от total). Открывается в lg density.
+
+## AI Vision providers (v0.19.0)
+- **`src/lib/ai/vision/`** — multi-provider абстракция для распознавания чеков/счетов/договоров.
+- **`types.ts`** — `VisionProvider {id, label, supports(mt), recognize(input, hint, ctx)}`, `ExtractedData {vendor, vendorInn, date, amount (в копейках!), currency, type, items[], rawText, provider, durationMs}`, `VisionHint = 'receipt'|'invoice'|'contract'|'auto'`.
+- **`buildExtractionPrompt(hint)`** — строгий JSON prompt с примерами. **`parseExtractedJson(raw)`** — терпим к markdown code-fence и messy LLM output.
+- **Providers** (`providers/`):
+  - `claude.ts` — Anthropic Messages API + image content blocks. Env: `ANTHROPIC_API_KEY`, опц. `ANTHROPIC_VISION_MODEL` (default `claude-3-5-sonnet-20241022`).
+  - `openai.ts` — GPT-4o Chat Completions + `response_format: json_object`. Env: `OPENAI_API_KEY`, опц. `OPENAI_VISION_MODEL` (default `gpt-4o-mini`).
+  - `yandex.ts` — Yandex Vision OCR + эвристический парсер. Env: `YANDEX_FOLDER_ID` + (`YANDEX_IAM_TOKEN` или `YANDEX_API_KEY`).
+  - `tesseract.ts` — локальный OCR через `tesseract.js` (peer dependency, dynamic import). Та же эвристика.
+  - `mock.ts` — для тестов и dev fallback. Возвращает deterministic ответы по filename.
+- **`router.ts`** — `getVisionProvider({override, tenantPreference})` приоритет: override → tenant → `VISION_PROVIDER` env → auto (по доступным ключам) → mock. `listVisionProviders()` для UI выбора (available + reason).
+- **`POST /api/inbox/messages/[id]/recognize`** — multipart upload (image/jpeg/png/webp/pdf) или attachment URL из `metadata.attachments`. Результат пишется в `inbox_messages.aiExtracted` + `aiProvider` + `aiExtractedAt` (миграция `drizzle/0003_inbox_ai_extracted.sql`).
+- **`AiRecognizePanel`** в `inbox-channel-feed.tsx` — кнопка с выбором hint (Авто/Чек/Счёт/Договор) и провайдера, panel с extracted полями, кнопка «Создать транзакцию» (POST /api/cashflow/transactions с pre-filled данными).
+
+## Sheet — full parity с custom.data (v0.19.0)
+- **Virtualization** при `cfg.rows > 50` (`@tanstack/react-virtual`). Estimate из `rowHeights[idx]`, overscan 10. `tableScrollRef` на `CardContent`.
+- **DnD reorder** колонок и строк через `@dnd-kit/sortable`: `SortableColHeader` и `SheetRow` (sortable wrapper). Drag-handle `GripVertical` появляется на hover.
+- **CSV/XLSX import/export** (`src/lib/blocks/catalog/sheet-import.ts`): `papaparse` + `xlsx`. Формулы roundtrip через `{t:'n', f:'B2*2', v:0}` ws-объект. Лимит **10 000 ячеек**. UI: Popover в header с пунктами Import/Export.
+- Тесты в `scripts/test-sheet-import-export.ts` (16 проверок).
 
 ## Sheet / Excel Cell / Custom Data / связи
 - `sheet` — мини-таблица с формулами, `@связать`, computed cells в sources API, `__money` metadata для денежных ячеек. Без `minContentSize` — таблица скроллится внутри блока любого размера (`minSize: 1×1`).
@@ -172,10 +223,12 @@ Open Finance = настраиваемый Lego-конструктор интер
 - `src/lib/inbox/crypto.ts` — AES-256-GCM secret encryption using `INBOX_SECRET_KEY`, dev-only fallback.
 - `src/lib/inbox/imap.ts` — IMAP connect/test/sync, STARTTLS, Beget fallback.
 - `src/lib/inbox/mime.ts` — MIME headers/body decode, Cyrillic fallback.
-- `src/lib/blocks/catalog/inbox-channel-feed.tsx` — `inbox.channel-feed` block settings and feed UI.
+- `src/lib/blocks/catalog/inbox-channel-feed.tsx` — `inbox.channel-feed` block settings and feed UI. **v0.19.0**: `AiRecognizePanel` для распознавания вложений.
+- `src/lib/blocks/catalog/inbox-dashboard.tsx` — **v0.19.0** компактный `inbox.dashboard` блок для дашборда (density-aware: бейдж → список 3-5). Drill-down → `/inbox`.
 - `src/app/api/inbox/channels/route.ts`, `src/app/api/inbox/messages/route.ts` — API.
+- `src/app/api/inbox/messages/[id]/recognize/route.ts` — **v0.19.0** AI vision endpoint.
 - `src/lib/ai/tools/query-inbox-messages.ts` — read-only AI tool.
-- `drizzle/init/04-inbox.sql` — manual SQL.
+- `drizzle/init/04-inbox.sql`, `drizzle/0003_inbox_ai_extracted.sql` — manual SQL + AI vision миграция.
 
 ### Состояние
 - Email IMAP MVP готов: test connection, sync recent messages, per-message FETCH для кириллицы/literal-length reliability.

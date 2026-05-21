@@ -6,7 +6,7 @@ import { db } from '@/lib/db/client';
 import { blockLayouts } from '@/lib/db/schema/block-layouts';
 import { transactions } from '@/lib/db/schema/transactions';
 import { loadLayout } from '@/lib/blocks/queries';
-import { getCashflowSummary } from '@/lib/cashflow/queries';
+import { getCashflowSummary, getCashflowKpi } from '@/lib/cashflow/queries';
 import { listInboxChannels, listInboxMessages } from '@/lib/inbox/queries';
 import { getCurrencyRates } from '@/lib/currency/queries';
 import type { CurrencyRate } from '@/lib/currency/types';
@@ -1122,6 +1122,11 @@ export async function GET() {
   ]);
   const currencyRatesByCode = new Map(currencyRatesList.map((r) => [r.code, r]));
 
+  // Виртуальная страница `__virtual` — содержит cashflow KPI как «псевдо-блоки»
+  // (income/expense/balance). Любой блок на любой странице может биндиться
+  // на них по refs `@__virtual:cashflow.kpi.{metric}.{field}`.
+  const virtualPage = await buildVirtualCashflowPage(tenantId);
+
   const pages = await Promise.all(pageKeys.map(async (pageKey) => {
     const layout = await loadLayout({ tenantId, userId, pageKey });
     const blocks = await Promise.all(layout.blocks.map(async (block) => {
@@ -1166,5 +1171,74 @@ export async function GET() {
     return { pageKey, pageLabel: pageLabel(pageKey), blocks };
   }));
 
-  return NextResponse.json({ ok: true, pages });
+  return NextResponse.json({ ok: true, pages: [virtualPage, ...pages] });
+}
+
+// ============================================================================
+// Виртуальные источники cashflow.kpi.* для bindings (@__virtual:cashflow.kpi.income.current)
+// ============================================================================
+
+async function buildVirtualCashflowPage(tenantId: string): Promise<{
+  pageKey: string;
+  pageLabel: string;
+  blocks: SourceBlock[];
+}> {
+  // Период по умолчанию для виртуальных значений — MTD. Для cross-page
+  // bindings без явного period параметра используем MTD как baseline.
+  // (Когда блок-потребитель на cashflow-странице — он на клиенте получит
+  // актуальные значения через VirtualSourcesBridge, который слушает
+  // page-level period+source.)
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+
+  const metrics: Array<{ metric: 'income' | 'expense' | 'balance'; label: string }> = [
+    { metric: 'income', label: 'Доходы (Cashflow KPI)' },
+    { metric: 'expense', label: 'Расходы (Cashflow KPI)' },
+    { metric: 'balance', label: 'Баланс (Cashflow KPI)' },
+  ];
+
+  const blocks: SourceBlock[] = await Promise.all(
+    metrics.map(async ({ metric, label }) => {
+      let kpi: Awaited<ReturnType<typeof getCashflowKpi>>;
+      try {
+        kpi = await getCashflowKpi({
+          tenantId,
+          metric,
+          from: monthStart,
+          to: monthEnd,
+        });
+      } catch (e) {
+        console.error(`[blocks/sources] virtual cashflow.kpi.${metric} failed:`, e);
+        kpi = { current: 0, previous: 0, count: 0, prevCount: 0, deltaPct: null, byDay: [] };
+      }
+      const blockId = `__virtual:cashflow.kpi.${metric}`;
+      const fields: SourceField[] = [
+        { name: 'value', label: 'Сумма', value: kpi.current, format: 'money' },
+        { name: 'current', label: 'Сумма за период', value: kpi.current, format: 'money' },
+        { name: 'previous', label: 'Прошлый период', value: kpi.previous, format: 'money' },
+        { name: 'count', label: 'Кол-во операций', value: kpi.count, format: 'number' },
+        { name: 'prevCount', label: 'Кол-во операций (прошл.)', value: kpi.prevCount, format: 'number' },
+        { name: 'deltaPct', label: 'Изменение %', value: kpi.deltaPct, format: 'number' },
+        { name: 'label', label: 'Название', value: label },
+      ];
+      return {
+        blockId,
+        pageKey: '__virtual',
+        pageLabel: 'Cashflow (виртуальные)',
+        type: 'cashflow.virtual-kpi',
+        typeLabel: 'Cashflow KPI',
+        category: 'Кэшфлоу',
+        label,
+        fields,
+        instanceLabel: `${label} (виртуальный)`,
+      } satisfies SourceBlock;
+    }),
+  );
+
+  return {
+    pageKey: '__virtual',
+    pageLabel: 'Cashflow (виртуальные источники)',
+    blocks,
+  };
 }

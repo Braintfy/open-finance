@@ -20,6 +20,7 @@ import {
   type ReactNode,
 } from 'react';
 import type { BlockDependencies, BlockRef } from './types';
+import { evalFormulaVars } from './custom-data-formulas';
 
 /** Опубликованные значения одного блока. Ключ — field name, значение — number/string/null */
 export type BlockOutput = Record<string, number | string | null>;
@@ -185,9 +186,57 @@ export function useBlockDependencyResult(
       case 'count':
         value = numeric.length;
         break;
-      case 'formula':
+      case 'median': {
+        if (numeric.length === 0) {
+          value = null;
+        } else {
+          const sorted = [...numeric].sort((a, b) => a - b);
+          const mid = Math.floor(sorted.length / 2);
+          value = sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+        }
+        break;
+      }
+      case 'variance': {
+        if (numeric.length === 0) {
+          value = null;
+        } else {
+          const mean = numeric.reduce((s, n) => s + n, 0) / numeric.length;
+          value = numeric.reduce((s, n) => s + (n - mean) ** 2, 0) / numeric.length;
+        }
+        break;
+      }
+      case 'first': {
+        const first = sourceValues.find((v): v is number => v !== null);
+        value = first ?? null;
+        break;
+      }
+      case 'last': {
+        for (let i = sourceValues.length - 1; i >= 0; i -= 1) {
+          const v = sourceValues[i];
+          if (v !== null) {
+            value = v;
+            break;
+          }
+        }
+        break;
+      }
+      case 'formula': {
+        // a → sources[0], b → sources[1], c → sources[2], ...
+        const vars: Record<string, number> = {};
+        sourceValues.forEach((v, i) => {
+          const name = String.fromCharCode('a'.charCodeAt(0) + i);
+          if (v !== null) vars[name] = v;
+        });
+        const expr = deps.formulaExpression?.trim();
+        if (!expr) {
+          value = numeric.reduce((s, n) => s + n, 0);
+        } else {
+          value = evalFormulaVars(expr, vars);
+        }
+        break;
+      }
       case 'ai':
-        // Заглушка — реальная реализация в следующем этапе (Этап 9 PLAN)
+        // TODO: AI-aggregation — будет реализован в фазе AI Orchestrator
         value = numeric.reduce((s, n) => s + n, 0);
         break;
     }
