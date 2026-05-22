@@ -21,6 +21,16 @@ const MetricSchema = z.enum(['income', 'expense', 'balance', 'count']);
 const FormatSchema = z.enum(['rub', 'number', 'percent', 'compact']);
 const LayoutSchema = z.enum(['row', 'column', 'grid-2col', 'grid-3col']);
 
+const SourceBindingSchema = z.union([
+  z.object({ mode: z.literal('empty') }),
+  z.object({ mode: z.literal('global') }),
+  z.object({
+    mode: z.literal('block'),
+    blockId: z.string(),
+    pageKey: z.string().optional(),
+  }),
+]);
+
 const CellSchema = z.object({
   id: z.string(),
   metric: MetricSchema.default('income'),
@@ -34,6 +44,7 @@ const CellSchema = z.object({
     .nullable()
     .optional(),
   sourceOverride: z.string().nullable().optional(),
+  sourceBindingOverride: SourceBindingSchema.optional(),
   format: FormatSchema.default('rub'),
 });
 
@@ -41,6 +52,15 @@ const ConfigSchema = z.object({
   title: z.string().default('KPI'),
   layout: LayoutSchema.default('row'),
   cells: z.array(CellSchema).min(0).max(6).default([]),
+  defaultPeriodOverride: z
+    .object({
+      preset: z.string(),
+      customFrom: z.string().nullable().default(null),
+      customTo: z.string().nullable().default(null),
+    })
+    .nullable()
+    .optional(),
+  defaultSourceBinding: SourceBindingSchema.optional(),
 });
 
 console.log('\n=== schema defaults ===');
@@ -121,6 +141,191 @@ console.log('\n=== override semantics ===');
     sourceOverride: null,
   });
   ok('explicit sourceOverride=null preserved', cell2.sourceOverride === null);
+}
+
+console.log('\n=== kopecks → rubles formatting ===');
+{
+  // Эмулируем поведение formatValue из kpi-grid.tsx после фикса:
+  // money-метрики (income/expense/balance) приходят в kopeck'ах,
+  // делим на 100 только для display.
+  function formatValue(
+    value: number | null,
+    format: 'rub' | 'number' | 'percent' | 'compact',
+    isMoney: boolean,
+  ): string {
+    if (value === null || !Number.isFinite(value)) return '—';
+    if (format === 'rub') {
+      const rubles = isMoney ? value / 100 : value;
+      return new Intl.NumberFormat('ru-RU', {
+        style: 'currency',
+        currency: 'RUB',
+        maximumFractionDigits: 0,
+      }).format(rubles);
+    }
+    if (format === 'percent') {
+      return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 1 }).format(value) + '%';
+    }
+    if (format === 'compact') {
+      const display = isMoney ? value / 100 : value;
+      return new Intl.NumberFormat('ru-RU', {
+        notation: 'compact',
+        maximumFractionDigits: 1,
+      }).format(display);
+    }
+    const display = isMoney ? value / 100 : value;
+    return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(display);
+  }
+
+  // 64_344_198 kopecks = 643_441.98 rubles → должен показать 643 442 ₽.
+  // До фикса показывал "64 344 198 ₽" (баг скриншот пользователя).
+  const big = 64_344_198;
+  const result = formatValue(big, 'rub', true);
+  ok(
+    `64_344_198 копеек (money) → отформатировано как ~643 442 ₽ (НЕ ${big} ₽)`,
+    !result.includes('64 344 198') && /643\s?44/.test(result),
+  );
+
+  // count метрика (не money) — не делится.
+  const count = 1234;
+  ok(
+    'count=1234 (non-money), format=number → 1 234',
+    formatValue(count, 'number', false).replace(/\s/g, ' ') === '1 234',
+  );
+
+  // null → '—' независимо от формата.
+  ok('null → "—"', formatValue(null, 'rub', true) === '—');
+}
+
+console.log('\n=== defaultPeriodOverride (block-level fallback) ===');
+{
+  const noOverride = ConfigSchema.parse({});
+  ok('default config: defaultPeriodOverride === undefined', noOverride.defaultPeriodOverride === undefined);
+
+  const withDefault = ConfigSchema.parse({
+    defaultPeriodOverride: { preset: '7d', customFrom: null, customTo: null },
+  });
+  ok(
+    'with defaultPeriodOverride preserved',
+    withDefault.defaultPeriodOverride?.preset === '7d',
+  );
+
+  const nullExplicit = ConfigSchema.parse({ defaultPeriodOverride: null });
+  ok('explicit null preserved', nullExplicit.defaultPeriodOverride === null);
+}
+
+console.log('\n=== defaultSourceBinding (block-level binding) ===');
+{
+  const noBinding = ConfigSchema.parse({});
+  ok(
+    'default config: defaultSourceBinding === undefined (миграция назначит при загрузке)',
+    noBinding.defaultSourceBinding === undefined,
+  );
+
+  const emptyBinding = ConfigSchema.parse({
+    defaultSourceBinding: { mode: 'empty' },
+  });
+  ok(
+    'defaultSourceBinding=empty preserved',
+    emptyBinding.defaultSourceBinding?.mode === 'empty',
+  );
+
+  const globalBinding = ConfigSchema.parse({
+    defaultSourceBinding: { mode: 'global' },
+  });
+  ok(
+    'defaultSourceBinding=global preserved',
+    globalBinding.defaultSourceBinding?.mode === 'global',
+  );
+
+  const blockBinding = ConfigSchema.parse({
+    defaultSourceBinding: { mode: 'block', blockId: 'tx-1' },
+  });
+  ok(
+    'defaultSourceBinding={mode:block, blockId} preserved',
+    blockBinding.defaultSourceBinding?.mode === 'block' &&
+      blockBinding.defaultSourceBinding.blockId === 'tx-1',
+  );
+
+  const crossPageBinding = ConfigSchema.parse({
+    defaultSourceBinding: { mode: 'block', blockId: 'tx-2', pageKey: 'cashflow' },
+  });
+  ok(
+    'defaultSourceBinding cross-page preserved',
+    crossPageBinding.defaultSourceBinding?.mode === 'block' &&
+      'pageKey' in crossPageBinding.defaultSourceBinding &&
+      crossPageBinding.defaultSourceBinding.pageKey === 'cashflow',
+  );
+
+  const invalidBinding = ConfigSchema.safeParse({
+    defaultSourceBinding: { mode: 'invalid' },
+  });
+  ok('invalid binding mode rejected', !invalidBinding.success);
+
+  const blockWithoutId = ConfigSchema.safeParse({
+    defaultSourceBinding: { mode: 'block' },
+  });
+  ok('binding mode=block без blockId rejected', !blockWithoutId.success);
+}
+
+console.log('\n=== per-cell sourceBindingOverride ===');
+{
+  const inheriting = CellSchema.parse({ id: 'c1', metric: 'income', format: 'rub' });
+  ok(
+    'no override: sourceBindingOverride === undefined → ячейка наследует block default',
+    inheriting.sourceBindingOverride === undefined,
+  );
+
+  const overridden = CellSchema.parse({
+    id: 'c2',
+    metric: 'expense',
+    format: 'rub',
+    sourceBindingOverride: { mode: 'block', blockId: 'tx-other' },
+  });
+  ok(
+    'per-cell override → mode=block',
+    overridden.sourceBindingOverride?.mode === 'block' &&
+      overridden.sourceBindingOverride.blockId === 'tx-other',
+  );
+
+  const overrideEmpty = CellSchema.parse({
+    id: 'c3',
+    metric: 'income',
+    format: 'rub',
+    sourceBindingOverride: { mode: 'empty' },
+  });
+  ok(
+    'per-cell override empty → ячейка показывает placeholder, даже если block-level задан block',
+    overrideEmpty.sourceBindingOverride?.mode === 'empty',
+  );
+}
+
+console.log('\n=== binding resolution (cell override > block default) ===');
+{
+  type SourceBinding = z.infer<typeof SourceBindingSchema>;
+  function resolveEffective(
+    cellOverride: SourceBinding | undefined,
+    blockDefault: SourceBinding,
+  ): SourceBinding {
+    return cellOverride !== undefined ? cellOverride : blockDefault;
+  }
+  ok(
+    'cellOverride=undefined → возвращает blockDefault',
+    resolveEffective(undefined, { mode: 'global' }).mode === 'global',
+  );
+  ok(
+    'cellOverride=empty → возвращает empty (даже если block=block)',
+    resolveEffective({ mode: 'empty' }, { mode: 'block', blockId: 't' }).mode === 'empty',
+  );
+  ok(
+    'cellOverride=block(tx-A) → возвращает block(tx-A) (даже если block=block(tx-B))',
+    (() => {
+      const r = resolveEffective(
+        { mode: 'block', blockId: 'tx-A' },
+        { mode: 'block', blockId: 'tx-B' },
+      );
+      return r.mode === 'block' && r.blockId === 'tx-A';
+    })(),
+  );
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

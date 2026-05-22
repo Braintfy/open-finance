@@ -1077,6 +1077,38 @@ async function fieldsForBlock(
     }
     return fields;
   }
+  if (block.type === 'cashflow.transactions') {
+    // Источник для cashflow-консьюмеров (KPI/chart/top-categories/kpi.grid).
+    // Возвращаем (а) сериализованный txFilters — это «view» блока: period +
+    // type + source + counterparty + categoryName. Используется cross-page
+    // bindings: консьюмер на другой странице, привязанный к этому tx-блоку,
+    // читает эти фильтры и применяет к своему запросу.
+    const cfg = (block.config ?? {}) as Record<string, unknown>;
+    const txFilters = JSON.stringify({
+      period: cfg.defaultPeriodOverride ?? null,
+      type:
+        cfg.defaultType === 'income' ||
+        cfg.defaultType === 'expense'
+          ? cfg.defaultType
+          : null,
+      source:
+        cfg.defaultSourceOverride === undefined
+          ? null
+          : (cfg.defaultSourceOverride ?? null),
+      counterparty:
+        typeof cfg.defaultCounterparty === 'string' && cfg.defaultCounterparty
+          ? cfg.defaultCounterparty
+          : null,
+      categoryName:
+        typeof cfg.defaultCategoryName === 'string' && cfg.defaultCategoryName
+          ? cfg.defaultCategoryName
+          : null,
+    });
+    return [
+      { name: 'value', label: 'txFilters (JSON)', value: txFilters, format: 'text' },
+      { name: '__txFilters', label: 'txFilters (для cross-page binding)', value: txFilters, format: 'text' },
+    ];
+  }
   if (block.type === 'inbox.channel-feed') {
     const [channels, latest] = await Promise.all([
       listInboxChannels(tenantId, block.id),

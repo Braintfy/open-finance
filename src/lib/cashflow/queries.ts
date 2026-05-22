@@ -339,8 +339,16 @@ export async function getCashflowChart(opts: {
   to: Date;
   granularity: 'day' | 'week' | 'month';
   source?: string;
+  /**
+   * Source binding: фильтр по контрагенту (substring match, как в KPI).
+   */
+  counterparty?: string;
+  /**
+   * Source binding: фильтр по названию категории (substring match).
+   */
+  categoryName?: string;
 }): Promise<CashflowChartPoint[]> {
-  const { tenantId, from, to, granularity, source } = opts;
+  const { tenantId, from, to, granularity, source, counterparty, categoryName } = opts;
   const truncFn =
     granularity === 'month'
       ? sql`to_char(date_trunc('month', ${transactions.occurredAt} at time zone 'Europe/Moscow'), 'YYYY-MM')`
@@ -354,17 +362,33 @@ export async function getCashflowChart(opts: {
     lt(transactions.occurredAt, to),
   ];
   if (source) conds.push(eq(transactions.source, source));
+  if (counterparty) conds.push(ilike(transactions.counterparty, `%${counterparty}%`));
 
-  const rows = await db
-    .select({
-      bucket: sql<string>`${truncFn}`,
-      type: transactions.type,
-      total: sql<number>`coalesce(sum(${transactions.amount}), 0)::bigint`,
-    })
-    .from(transactions)
-    .where(and(...conds))
-    .groupBy(sql`${truncFn}`, transactions.type)
-    .orderBy(sql`${truncFn}`);
+  let rows: Array<{ bucket: string; type: string; total: number }>;
+  if (categoryName) {
+    rows = await db
+      .select({
+        bucket: sql<string>`${truncFn}`,
+        type: transactions.type,
+        total: sql<number>`coalesce(sum(${transactions.amount}), 0)::bigint`,
+      })
+      .from(transactions)
+      .leftJoin(categories, eq(transactions.categoryId, categories.id))
+      .where(and(...conds, eq(categories.name, categoryName)))
+      .groupBy(sql`${truncFn}`, transactions.type)
+      .orderBy(sql`${truncFn}`);
+  } else {
+    rows = await db
+      .select({
+        bucket: sql<string>`${truncFn}`,
+        type: transactions.type,
+        total: sql<number>`coalesce(sum(${transactions.amount}), 0)::bigint`,
+      })
+      .from(transactions)
+      .where(and(...conds))
+      .groupBy(sql`${truncFn}`, transactions.type)
+      .orderBy(sql`${truncFn}`);
+  }
 
   const map = new Map<string, { income: number; expense: number }>();
   rows.forEach((r) => {

@@ -14,11 +14,19 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Check, Square, Grid3X3, Sparkles, RotateCcw } from 'lucide-react';
-import type { BlockAppearance, BlockDef, BlockDependencies, BlockInstance } from '@/lib/blocks/types';
+import type {
+  BlockAppearance,
+  BlockDef,
+  BlockDependencies,
+  BlockInstance,
+  SourceBinding,
+} from '@/lib/blocks/types';
 import { ACCENT_COLORS, ICON_NAMES } from '@/lib/blocks/types';
 import { resolveIcon } from '@/lib/blocks/icon-resolver';
 import { cn } from '@/lib/utils';
 import { BlockReferencePicker } from './block-reference-picker';
+import { SourceBindingPicker } from './source-binding-picker';
+import { isBoundBlockType, readSourceBindingField } from '@/lib/blocks/source-binding';
 
 const IconPickerModal = lazy(() =>
   import('./icon-picker-modal').then((m) => ({ default: m.IconPickerModal }))
@@ -39,6 +47,7 @@ export function BlockSettingsDialog({
   instance,
   blockLabels,
   allBlocks,
+  pageKey,
   onChange,
 }: {
   open: boolean;
@@ -49,6 +58,8 @@ export function BlockSettingsDialog({
   blockLabels?: Record<string, string>;
   /** Все блоки на странице — для cycle detection в BlockReferencePicker */
   allBlocks?: BlockInstance[];
+  /** Текущая страница — для аннотации pageKey в SourceBinding (cross-page). */
+  pageKey?: string;
   onChange: (next: Partial<BlockInstance>) => void;
 }) {
   const initialTab: TabKey = def.SettingsForm
@@ -102,11 +113,29 @@ export function BlockSettingsDialog({
         {/* Body */}
         <div className="max-h-[68vh] overflow-y-auto px-5 py-4">
           {tab === 'params' && def.SettingsForm && (
-            <def.SettingsForm
-              config={instance.config ?? {}}
-              instance={instance}
-              onChange={(config) => onChange({ config })}
-            />
+            <div className="space-y-4">
+              {isBoundBlockType(def.type) && (
+                <SourceBindingSection
+                  blockType={def.type}
+                  config={(instance.config ?? {}) as Record<string, unknown>}
+                  instanceId={instance.id}
+                  allBlocks={allBlocks}
+                  blockLabels={blockLabels}
+                  pageKey={pageKey}
+                  onConfigChange={(nextConfig) =>
+                    onChange({ config: nextConfig })
+                  }
+                />
+              )}
+              <def.SettingsForm
+                config={instance.config ?? {}}
+                instance={instance}
+                pageKey={pageKey}
+                allBlocks={allBlocks}
+                blockLabels={blockLabels}
+                onChange={(config) => onChange({ config })}
+              />
+            </div>
           )}
 
           {tab === 'links' && def.supportsDependencies && (
@@ -151,6 +180,58 @@ export function BlockSettingsDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+// ============================================================================
+// Source binding section (общая для BOUND_BLOCK_TYPES)
+// ============================================================================
+
+/**
+ * Универсальная секция «Источник данных» для всех cashflow-консьюмеров.
+ *
+ * Особенность: для `kpi.grid` сохраняем в config `defaultSourceBinding`
+ * (по аналогии с `defaultPeriodOverride`), для остальных блоков —
+ * в config `sourceBinding`.
+ *
+ * Это позволяет избежать дублирования UI секции в каждой `SettingsForm`,
+ * сохраняя кастомизацию per-cell (kpi.grid делает свой кастомный per-cell
+ * UI в `kpi-grid-settings.tsx`).
+ */
+function SourceBindingSection({
+  blockType,
+  config,
+  instanceId,
+  allBlocks,
+  blockLabels,
+  pageKey,
+  onConfigChange,
+}: {
+  blockType: string;
+  config: Record<string, unknown>;
+  instanceId: string;
+  allBlocks?: BlockInstance[];
+  blockLabels?: Record<string, string>;
+  pageKey?: string;
+  onConfigChange: (nextConfig: Record<string, unknown>) => void;
+}) {
+  const fieldName = blockType === 'kpi.grid' ? 'defaultSourceBinding' : 'sourceBinding';
+  const current: SourceBinding =
+    readSourceBindingField(config, fieldName) ?? { mode: 'empty' };
+  return (
+    <SourceBindingPicker
+      value={current}
+      onChange={(next) =>
+        onConfigChange({
+          ...config,
+          [fieldName]: next,
+        })
+      }
+      selfBlockId={instanceId}
+      allBlocks={allBlocks}
+      pageKey={pageKey}
+      blockLabels={blockLabels}
+    />
   );
 }
 

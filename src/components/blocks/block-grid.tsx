@@ -342,6 +342,21 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [settingsId, setSettingsId] = useState<string | null>(null);
   const [aiBlockId, setAiBlockId] = useState<string | null>(null);
+
+  // Глобальный mount-time листенер: блоки внутри (через EmptySourcePlaceholder
+  // или иные UI-элементы) могут кинуть `block-open-settings` событие — это
+  // открывает Settings dialog для указанного blockId. Дёшево + не требует
+  // прокидывать prop в каждый Render.
+  useEffect(() => {
+    function onOpenSettings(e: Event) {
+      const detail = (e as CustomEvent<{ blockId?: string }>).detail;
+      if (detail?.blockId) setSettingsId(detail.blockId);
+    }
+    window.addEventListener('block-open-settings', onOpenSettings as EventListener);
+    return () => {
+      window.removeEventListener('block-open-settings', onOpenSettings as EventListener);
+    };
+  }, []);
   const [saving, setSaving] = useState(false);
   /** Mindmap-overlay: связи между блоками. Выкл/Вкл через кнопку. */
   const [showRelations, setShowRelations] = useState(false);
@@ -391,6 +406,15 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
   }, [blocks]);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingBlocks = useRef<BlockInstance[] | null>(null);
+  /**
+   * Текущий breakpoint react-grid-layout. Нужен чтобы НЕ перезаписывать «канонический»
+   * lg-layout позициями, авто-сгенерированными для узких экранов. Иначе после
+   * sm→lg блоки оставались бы в одну колонку. Sync'ится из двух мест:
+   *   1) RGL.onBreakpointChange (при ресайзе окна)
+   *   2) recompute() в ResizeObserver-effect — для начальной инициализации.
+   * Стартовое значение 'lg' безопасно для SSR (server не знает ширину).
+   */
+  const currentBreakpointRef = useRef<string>('lg');
 
   const doSave = useCallback(
     async (data: BlockInstance[]) => {
@@ -512,10 +536,26 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
       const width = el.clientWidth;
       if (width <= 0) return;
       let cols = COLS.lg;
-      if (width < BREAKPOINTS.xs) cols = COLS.xxs;
-      else if (width < BREAKPOINTS.sm) cols = COLS.xs;
-      else if (width < BREAKPOINTS.md) cols = COLS.sm;
-      else cols = COLS.lg; // md и lg оба = 12
+      let bp = 'lg';
+      if (width < BREAKPOINTS.xs) {
+        cols = COLS.xxs;
+        bp = 'xxs';
+      } else if (width < BREAKPOINTS.sm) {
+        cols = COLS.xs;
+        bp = 'xs';
+      } else if (width < BREAKPOINTS.md) {
+        cols = COLS.sm;
+        bp = 'sm';
+      } else if (width < BREAKPOINTS.lg) {
+        cols = COLS.md;
+        bp = 'md';
+      } else {
+        cols = COLS.lg;
+        bp = 'lg';
+      }
+      // Синхронизируем breakpoint ref — onLayoutChange использует его, чтобы
+      // решить, можно ли перезаписывать blocks (см. комментарий у ref'а).
+      currentBreakpointRef.current = bp;
       const colW = (width - MARGIN_X * (cols - 1)) / cols;
       const sizeX = colW + MARGIN_X;
       const sizeY = ROW_H + MARGIN_Y;
@@ -549,6 +589,17 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
   }, [blocks]);
 
   function onLayoutChange(layout: Layout[]) {
+    // CRITICAL: на узких breakpoint'ах (sm/xs/xxs) RGL авто-генерирует layout
+    // из lg (12-col → 6/4/2 cols), и onLayoutChange приходит с этими «сжатыми»
+    // позициями. Если их сохранить в blocks, оригинальный lg-layout будет
+    // потерян: при ресайзе окна обратно в lg блоки останутся в одну колонку
+    // (это был баг, который пользователь увидел на скриншоте). Поэтому
+    // персистим ТОЛЬКО на канонических breakpoint'ах (lg/md — оба 12 cols).
+    // На узких экранах изменения остаются в state RGL и сбросятся при
+    // возврате к широкому экрану — то, что нужно.
+    const bp = currentBreakpointRef.current;
+    if (bp !== 'lg' && bp !== 'md') return;
+
     setBlocks((prev) => {
       // SAFETY: если RGL прислал пустой layout, а блоки есть — игнорируем (баг RGL во время mount)
       if (layout.length === 0 && prev.length > 0) return prev;
@@ -567,6 +618,10 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
       scheduleSave(next);
       return next;
     });
+  }
+
+  function onBreakpointChange(newBreakpoint: string) {
+    currentBreakpointRef.current = newBreakpoint;
   }
 
   function onAddBlock(result: AddBlockResult) {
@@ -728,6 +783,7 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
         isDraggable={true}
         isResizable={true}
         onLayoutChange={onLayoutChange}
+        onBreakpointChange={onBreakpointChange}
         onDragStart={() => setGridActive(true)}
         onDragStop={() => setGridActive(false)}
         onResizeStart={() => setGridActive(true)}
@@ -857,6 +913,7 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
           instance={settingsBlock}
           blockLabels={blockLabels}
           allBlocks={blocks}
+          pageKey={pageKey}
           onChange={(patch) => updateBlock(settingsBlock.id, patch)}
         />
       )}

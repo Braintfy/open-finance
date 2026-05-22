@@ -4,7 +4,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { auth } from '@/lib/auth';
 import { getCashflowChart } from '@/lib/cashflow/queries';
-import { resolvePeriod, type PeriodPreset } from '@/components/blocks/period-picker';
+import { resolvePeriod, type PeriodPreset } from '@/lib/blocks/period-resolver';
 
 const Query = z.object({
   preset: z
@@ -15,6 +15,10 @@ const Query = z.object({
   granularity: z.enum(['auto', 'day', 'week', 'month']).default('auto'),
   compare: z.enum(['none', 'prev']).default('none'),
   source: z.string().max(50).optional(),
+  /** Source binding: substring match по контрагенту. */
+  counterparty: z.string().max(200).optional(),
+  /** Source binding: exact match по имени категории (join с categories). */
+  categoryName: z.string().max(200).optional(),
 });
 
 function pickGranularity(from: Date, to: Date): 'day' | 'week' | 'month' {
@@ -38,6 +42,8 @@ export async function GET(req: Request) {
     granularity: url.searchParams.get('granularity') ?? undefined,
     compare: url.searchParams.get('compare') ?? undefined,
     source: url.searchParams.get('source') ?? undefined,
+    counterparty: url.searchParams.get('counterparty') ?? undefined,
+    categoryName: url.searchParams.get('categoryName') ?? undefined,
   });
   if (!parsed.success) {
     return NextResponse.json(
@@ -60,6 +66,8 @@ export async function GET(req: Request) {
     to: period.to,
     granularity,
     source: q.source,
+    counterparty: q.counterparty,
+    categoryName: q.categoryName,
   });
 
   let comparePoints: Awaited<ReturnType<typeof getCashflowChart>> | undefined;
@@ -73,6 +81,8 @@ export async function GET(req: Request) {
       to: prevTo,
       granularity,
       source: q.source,
+      counterparty: q.counterparty,
+      categoryName: q.categoryName,
     });
   }
 

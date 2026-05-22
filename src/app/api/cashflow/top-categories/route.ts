@@ -4,7 +4,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { auth } from '@/lib/auth';
 import { getTopCategories, getCashflowSummary } from '@/lib/cashflow/queries';
-import { resolvePeriod, type PeriodPreset } from '@/components/blocks/period-picker';
+import { resolvePeriod, type PeriodPreset } from '@/lib/blocks/period-resolver';
 
 const Query = z.object({
   type: z.enum(['income', 'expense']).default('expense'),

@@ -29,12 +29,15 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { z } from 'zod';
-import type { BlockDef, BlockRenderProps } from '../types';
+import type { BlockDef, BlockRenderProps, SourceBinding } from '../types';
 import { useBlockDensity } from '@/components/blocks/block-size';
 import { useEffectivePeriod } from '../page-period-context';
 import { useEffectiveSource } from '../page-source-context';
 import { useBlockValuePublisher } from '../values';
 import { useCashflowKpiLite } from '../virtual-sources';
+import { useBoundTxFilters, type BoundFilters } from '../use-bound-tx-filters';
+import { EmptySourcePlaceholder } from '@/components/blocks/empty-source-placeholder';
+import { DEFAULT_SOURCE_BINDING } from '../source-binding';
 import { KpiGridSettings } from './kpi-grid-settings';
 
 // ===========================================================================
@@ -55,6 +58,16 @@ const MetricSchema = z.enum(['income', 'expense', 'balance', 'count']);
 const FormatSchema = z.enum(['rub', 'number', 'percent', 'compact']);
 const LayoutSchema = z.enum(['row', 'column', 'grid-2col', 'grid-3col']);
 
+const SourceBindingSchema = z.union([
+  z.object({ mode: z.literal('empty') }),
+  z.object({ mode: z.literal('global') }),
+  z.object({
+    mode: z.literal('block'),
+    blockId: z.string(),
+    pageKey: z.string().optional(),
+  }),
+]);
+
 const CellSchema = z.object({
   id: z.string(),
   metric: MetricSchema.default('income'),
@@ -71,6 +84,11 @@ const CellSchema = z.object({
     .optional(),
   /** Если задан — этот source вместо global (null = override на «все»). */
   sourceOverride: z.string().nullable().optional(),
+  /**
+   * Per-cell override binding'а. Если задан — приоритет над `defaultSourceBinding`
+   * блока. Если undefined — ячейка наследует block-level default.
+   */
+  sourceBindingOverride: SourceBindingSchema.optional(),
   categoryName: z.string().optional(),
   counterparty: z.string().optional(),
   format: FormatSchema.default('rub'),
@@ -82,6 +100,25 @@ const ConfigSchema = z.object({
   title: z.string().default('KPI'),
   layout: LayoutSchema.default('row'),
   cells: z.array(CellSchema).min(1).max(6).default([]),
+  /**
+   * Блок-уровневый override периода: используется ячейками, у которых нет
+   * собственного `periodOverride`. Если null — ячейки наследуют period страницы.
+   */
+  defaultPeriodOverride: z
+    .object({
+      preset: PeriodPresetSchema.default('mtd'),
+      customFrom: z.string().nullable().default(null),
+      customTo: z.string().nullable().default(null),
+    })
+    .nullable()
+    .optional(),
+  /**
+   * Блок-уровневый source binding: дефолт для всех ячеек без
+   * `sourceBindingOverride`. Если undefined в конфиге — после миграции
+   * `sanitizeBlocks` будет `{mode:'block', blockId: <первый tx-блок>}` либо
+   * `{mode:'empty'}`. Семантика 3 mode такая же, как у обычных cashflow блоков.
+   */
+  defaultSourceBinding: SourceBindingSchema.optional(),
 });
 
 export type KpiGridConfig = z.infer<typeof ConfigSchema>;
@@ -90,7 +127,13 @@ export type KpiGridCell = z.infer<typeof CellSchema>;
 function parseConfig(raw: unknown): KpiGridConfig {
   const parsed = ConfigSchema.safeParse(raw ?? {});
   if (parsed.success) return parsed.data;
-  return { title: 'KPI', layout: 'row', cells: [] };
+  return {
+    title: 'KPI',
+    layout: 'row',
+    cells: [],
+    defaultPeriodOverride: null,
+    defaultSourceBinding: DEFAULT_SOURCE_BINDING,
+  };
 }
 
 // ===========================================================================
@@ -107,28 +150,41 @@ const METRIC_DEFAULTS: Record<
   count: { label: 'Операций', icon: ListOrdered, accent: '#64748b', goodDirection: 'up' },
 };
 
+/**
+ * Форматирование значения для display.
+ *
+ * @param value      — сырое значение (для money-метрик это КОПЕЙКИ из API).
+ * @param format     — желаемый формат отображения.
+ * @param isMoney    — если true, делим на 100 для всех «денежных» форматов
+ *                     (rub / compact). Для percent/number — выводим как есть.
+ */
 function formatValue(
   value: number | null,
   format: KpiGridCell['format'],
+  isMoney: boolean,
 ): string {
   if (value === null || !Number.isFinite(value)) return '—';
   if (format === 'rub') {
+    const rubles = isMoney ? value / 100 : value;
     return new Intl.NumberFormat('ru-RU', {
       style: 'currency',
       currency: 'RUB',
       maximumFractionDigits: 0,
-    }).format(value);
+    }).format(rubles);
   }
   if (format === 'percent') {
     return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 1 }).format(value) + '%';
   }
   if (format === 'compact') {
+    const display = isMoney ? value / 100 : value;
     return new Intl.NumberFormat('ru-RU', {
       notation: 'compact',
       maximumFractionDigits: 1,
-    }).format(value);
+    }).format(display);
   }
-  return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(value);
+  // 'number'
+  const display = isMoney ? value / 100 : value;
+  return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(display);
 }
 
 function deltaToneClass(value: number | null, good: 'up' | 'down'): string {
@@ -154,33 +210,80 @@ function layoutClassName(layout: KpiGridConfig['layout'], count: number): string
 // Render
 // ===========================================================================
 
+function isMoneyMetric(metric: KpiGridCell['metric']): boolean {
+  return metric === 'income' || metric === 'expense' || metric === 'balance';
+}
+
 function KpiCellRender({
   cell,
   instanceId,
+  defaultPeriodOverride,
+  defaultSourceBinding,
   compact,
   onValue,
+  onOpenSettings,
 }: {
   cell: KpiGridCell;
   instanceId: string;
+  /** Block-level fallback override (используется, если у ячейки нет своего periodOverride). */
+  defaultPeriodOverride: KpiGridCell['periodOverride'] | null;
+  /** Block-level binding (используется, если у ячейки нет sourceBindingOverride). */
+  defaultSourceBinding: SourceBinding;
   compact: boolean;
-  onValue: (cellId: string, value: number | null, label: string) => void;
+  onValue: (
+    cellId: string,
+    valueKop: number | null,
+    isMoney: boolean,
+    label: string,
+  ) => void;
+  onOpenSettings: () => void;
 }) {
-  // Resolve effective period + source: блок-уровень override > page-level.
-  const { value: period } = useEffectivePeriod(
+  // Эффективный binding: cell.sourceBindingOverride > block-level default.
+  const effectiveBinding: SourceBinding =
+    cell.sourceBindingOverride !== undefined ? cell.sourceBindingOverride : defaultSourceBinding;
+  const boundFilters = useBoundTxFilters(effectiveBinding);
+
+  // Resolve effective period + source: cell.periodOverride > block-level default > page-level.
+  const effectiveOverride =
+    cell.periodOverride !== undefined ? cell.periodOverride : (defaultPeriodOverride ?? null);
+  const { value: pagePeriod } = useEffectivePeriod(
     `${instanceId}:${cell.id}`,
-    cell.periodOverride ?? null,
+    effectiveOverride ?? null,
   );
-  const { value: source } = useEffectiveSource(
+  const { value: pageSource } = useEffectiveSource(
     `${instanceId}:${cell.id}`,
     cell.sourceOverride === undefined ? undefined : cell.sourceOverride,
   );
 
+  // Резолвинг binding: 'empty' → skipFetch, 'block' → period+source из источника,
+  // 'global' → page-level. ПРИМЕЧАНИЕ: kpi.grid использует `useCashflowKpiLite`,
+  // который не поддерживает counterparty/categoryName-фильтры — поэтому из
+  // bound фильтров используются только period и source.
+  const isBoundMissing =
+    effectiveBinding.mode === 'block' && boundFilters?.kind === 'missing';
+  const skipFetch = effectiveBinding.mode === 'empty' || isBoundMissing;
+  let period = pagePeriod;
+  let source: string | null = pageSource;
+  if (
+    effectiveBinding.mode === 'block' &&
+    boundFilters &&
+    boundFilters.kind === 'filters'
+  ) {
+    const f: BoundFilters = boundFilters.filters;
+    period = f.period ?? pagePeriod;
+    source = f.source === undefined ? pageSource : f.source;
+  }
+  const liteSource = skipFetch ? null : source;
+
   // Загружаем все 3 lite-KPI без условий (стабильный порядок hooks).
   // По cell.metric — берём нужное значение из них.
-  const incomeKpi = useCashflowKpiLite('income', period, source);
-  const expenseKpi = useCashflowKpiLite('expense', period, source);
-  const balanceKpi = useCashflowKpiLite('balance', period, source);
+  const incomeKpi = useCashflowKpiLite('income', period, liteSource);
+  const expenseKpi = useCashflowKpiLite('expense', period, liteSource);
+  const balanceKpi = useCashflowKpiLite('balance', period, liteSource);
 
+  // ВНИМАНИЕ: API возвращает money-метрики в КОПЕЙКАХ.
+  // Внутри храним «как есть» (для bindings → __money convention),
+  // а делим на 100 только в момент display через formatValue(... isMoney).
   let value: number | null = null;
   let previous: number | null = null;
   if (cell.metric === 'income') {
@@ -201,17 +304,46 @@ function KpiCellRender({
   const label = cell.label ?? defaults.label;
   const Icon = defaults.icon;
   const color = cell.accentColor ?? defaults.accent;
+  const moneyMetric = isMoneyMetric(cell.metric);
 
   // Дельта % vs previous (если применимо и есть данные).
+  // Считается на «сырых» kopecks/count — пропорция не зависит от единицы.
   const deltaPct =
     previous !== null && previous !== 0 && value !== null
       ? ((value - previous) / Math.abs(previous)) * 100
       : null;
 
-  // Публикуем значение наверх для bindings.
+  // Публикуем значение наверх для bindings (kopecks для money — отметим __money сверху).
+  // ВАЖНО: для empty/missing — публикуем null (а не stale value) чтобы консьюмеры
+  // не видели остатков.
+  const publishedValue = skipFetch ? null : value;
   useLayoutEffect(() => {
-    onValue(cell.id, value, label);
-  }, [cell.id, value, label, onValue]);
+    onValue(cell.id, publishedValue, moneyMetric, label);
+  }, [cell.id, publishedValue, moneyMetric, label, onValue]);
+
+  // Empty / missing source → компактный placeholder в стиле ячейки.
+  if (skipFetch) {
+    return (
+      <button
+        type="button"
+        onClick={onOpenSettings}
+        className="flex h-full min-h-0 flex-col items-center justify-center gap-1 rounded-md border border-dashed border-border/60 bg-muted/20 p-2 text-center transition-colors hover:border-border hover:bg-muted/40"
+        title={
+          isBoundMissing
+            ? 'Источник был удалён или недоступен. Нажмите, чтобы выбрать другой.'
+            : 'Источник не привязан. Нажмите, чтобы выбрать.'
+        }
+      >
+        <Icon className="h-3.5 w-3.5 text-muted-foreground/60" />
+        <div className="truncate text-[10px] font-medium text-muted-foreground">
+          {isBoundMissing ? 'Источник удалён' : 'Нет источника'}
+        </div>
+        <div className="text-[10px] text-muted-foreground/70 underline-offset-2 group-hover:underline">
+          {label}
+        </div>
+      </button>
+    );
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col justify-between rounded-md border border-border/50 bg-card/40 p-2">
@@ -228,7 +360,7 @@ function KpiCellRender({
               'flex shrink-0 items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-medium ' +
               deltaToneClass(deltaPct, defaults.goodDirection)
             }
-            title={`vs прошлый период: ${previous !== null ? formatValue(previous, cell.format) : '—'}`}
+            title={`vs прошлый период: ${previous !== null ? formatValue(previous, cell.format, moneyMetric) : '—'}`}
           >
             {deltaPct === 0 ? (
               <Minus className="h-2.5 w-2.5" />
@@ -249,10 +381,17 @@ function KpiCellRender({
           style={{ color }}
           title={value !== null ? String(value) : undefined}
         >
-          {formatValue(value, cell.format)}
+          {formatValue(value, cell.format, moneyMetric)}
         </div>
       </div>
     </div>
+  );
+}
+
+function openBlockSettings(blockId: string): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(
+    new CustomEvent('block-open-settings', { detail: { blockId } }),
   );
 }
 
@@ -260,21 +399,39 @@ function RenderKpiGrid({ instance }: BlockRenderProps) {
   const config = parseConfig(instance.config);
   const density = useBlockDensity();
   const compact = density === 'xs' || density === 'sm';
+  const defaultBinding: SourceBinding = config.defaultSourceBinding ?? DEFAULT_SOURCE_BINDING;
+  const onOpenSettings = useCallback(() => openBlockSettings(instance.id), [instance.id]);
+
+  // Если block-level binding = empty И ни у одной ячейки нет per-cell
+  // override — рисуем единый block-level placeholder.
+  const allCellsInheritEmpty =
+    defaultBinding.mode === 'empty' &&
+    config.cells.every((c) => c.sourceBindingOverride === undefined);
 
   const [cellValues, setCellValues] = useState<
-    Record<string, { value: number | null; label: string }>
+    Record<string, { value: number | null; isMoney: boolean; label: string }>
   >({});
 
-  const setCellValue = useCallback((id: string, value: number | null, label: string) => {
-    setCellValues((prev) => {
-      const current = prev[id];
-      if (current && current.value === value && current.label === label) return prev;
-      return { ...prev, [id]: { value, label } };
-    });
-  }, []);
+  const setCellValue = useCallback(
+    (id: string, value: number | null, isMoney: boolean, label: string) => {
+      setCellValues((prev) => {
+        const current = prev[id];
+        if (
+          current &&
+          current.value === value &&
+          current.isMoney === isMoney &&
+          current.label === label
+        )
+          return prev;
+        return { ...prev, [id]: { value, isMoney, label } };
+      });
+    },
+    [],
+  );
 
   // Publish values: для каждой ячейки — `cells.{id}.value` и `cells.{id}.label`.
-  // Также `__money` помечает money-ячейки.
+  // `__money` помечает money-ячейки (выводимые значения в KOPECKS), чтобы
+  // консьюмеры (excel.cell / formula) знали что делить на 100 при отображении.
   const published = useMemo<Record<string, number | string | null>>(() => {
     const out: Record<string, number | string | null> = {};
     const moneyKeys: string[] = [];
@@ -285,14 +442,18 @@ function RenderKpiGrid({ instance }: BlockRenderProps) {
       const labelKey = `cells.${cell.id}.label`;
       out[key] = v.value;
       out[labelKey] = v.label;
-      if (cell.format === 'rub') moneyKeys.push(key);
+      // Money-метка идёт от METRIC, а не от формата (income/expense/balance —
+      // всегда копейки, независимо от того как пользователь хочет их отобразить).
+      if (v.isMoney) moneyKeys.push(key);
     });
-    out.__money = moneyKeys.join(',');
     out.label = config.title;
     // value по умолчанию — первая ячейка (для удобства бинда).
     if (config.cells[0] && cellValues[config.cells[0].id]) {
       out.value = cellValues[config.cells[0].id].value;
+      // Если первая ячейка — money, добавим алиас `value` в __money.
+      if (cellValues[config.cells[0].id].isMoney) moneyKeys.push('value');
     }
+    out.__money = moneyKeys.join(',');
     return out;
   }, [config.cells, config.title, cellValues]);
 
@@ -311,6 +472,25 @@ function RenderKpiGrid({ instance }: BlockRenderProps) {
     );
   }
 
+  if (allCellsInheritEmpty) {
+    return (
+      <Card className={compact ? 'flex h-full flex-col p-2' : 'flex h-full flex-col p-3'}>
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="truncate text-sm font-medium text-muted-foreground">
+            {config.title}
+          </div>
+        </div>
+        <EmptySourcePlaceholder
+          title="Источник данных не привязан"
+          description="Привяжите блок KPI-сетки к списку операций, чтобы видеть метрики из выбранного среза."
+          onOpenSettings={onOpenSettings}
+          compact={compact}
+          variant="inner"
+        />
+      </Card>
+    );
+  }
+
   return (
     <Card className={compact ? 'flex h-full flex-col p-2' : 'flex h-full flex-col p-3'}>
       <div className="mb-2 flex items-center justify-between gap-2">
@@ -322,8 +502,11 @@ function RenderKpiGrid({ instance }: BlockRenderProps) {
             key={cell.id}
             cell={cell}
             instanceId={instance.id}
+            defaultPeriodOverride={config.defaultPeriodOverride ?? null}
+            defaultSourceBinding={defaultBinding}
             compact={compact}
             onValue={setCellValue}
+            onOpenSettings={onOpenSettings}
           />
         ))}
       </div>

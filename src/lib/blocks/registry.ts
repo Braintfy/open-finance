@@ -1,5 +1,6 @@
 // PURPOSE: Реестр всех типов блоков (мап type → BlockDef)
 import type { BlockDef, BlockInstance, PageLayout } from './types';
+import { applySourceBindingMigration } from './source-binding';
 import {
   StatIncomeBlock,
   StatExpenseBlock,
@@ -475,9 +476,20 @@ export function getDefaultLayout(pageKey: string): PageLayout {
   );
 }
 
-/** Простая валидация — обрезает блоки с неизвестным type */
+/**
+ * Простая валидация — обрезает блоки с неизвестным type и применяет
+ * idempotent source binding migration: для cashflow KPI/chart/top-categories/
+ * kpi.grid блоков без `sourceBinding` авто-привязывает к первому
+ * `cashflow.transactions` блоку на той же странице (или {empty} если такого
+ * блока нет). Это сохраняет старое поведение для existing layout'ов и
+ * одновременно вводит явную привязку для будущих изменений.
+ *
+ * Миграция idempotent: повторный вызов не меняет блоки с уже выставленным
+ * binding'ом. Безопасно для разных страниц — `blocks` всегда одной страницы.
+ */
 export function sanitizeBlocks(blocks: BlockInstance[]): BlockInstance[] {
-  return blocks.filter((b) => REGISTRY.has(b.type));
+  const known = blocks.filter((b) => REGISTRY.has(b.type));
+  return applySourceBindingMigration(known);
 }
 
 // ============================================================================

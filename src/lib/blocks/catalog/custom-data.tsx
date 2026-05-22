@@ -1182,6 +1182,16 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
     currentWidth: number;
   } | null>(null);
 
+  // v0.20.1: SSR-safe mounted-gate. measureText() через canvas доступен
+  // только в браузере; на сервере fallback `text.length * 7` даёт другую
+  // ширину → hydration mismatch на gridTemplateColumns. До первой
+  // hydration мы рендерим с минимальной (детерминированной) шириной,
+  // а после mount пересчитываем по реальным размерам.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
   // ── Compute all cells + aggregates через единый evaluator ──
   // computeAll рассчитывает FormulaResult per cell с поддержкой A1, [row].col
   // и @blockId.field. Кэш переиспользуется через cellCache между ячейками.
@@ -1381,15 +1391,22 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
   }
 
   // ── MD/LG — таблица ──
+  // Стабильные fallback'и для SSR / первой hydration (до useEffect):
+  // используем сохранённую в config ширину или фиксированные дефолты.
+  // После mounted → переключаемся на canvas-measured auto-sizing.
+  const SSR_DEFAULT_LABEL_WIDTH = 120;
+  const SSR_DEFAULT_VALUE_WIDTH = 96;
   function effectiveLabelWidth(): number {
     if (dragState?.kind === 'label') return dragState.currentWidth;
-    return config.labelColumnWidth ?? autoLabelWidth;
+    if (config.labelColumnWidth !== undefined) return config.labelColumnWidth;
+    return mounted ? autoLabelWidth : SSR_DEFAULT_LABEL_WIDTH;
   }
   function effectiveValueWidth(col: Column): number {
     if (dragState?.kind === 'value' && dragState.columnId === col.id) {
       return dragState.currentWidth;
     }
-    return col.width ?? autoValueWidths[col.id] ?? 96;
+    if (col.width !== undefined) return col.width;
+    return mounted ? autoValueWidths[col.id] ?? SSR_DEFAULT_VALUE_WIDTH : SSR_DEFAULT_VALUE_WIDTH;
   }
 
   const isAutoSized =
@@ -1595,7 +1612,15 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
         ) : (
           <>
             {/* Header row (sortable columns) */}
+            {/*
+              v0.20.1: explicit id для DndContext — dnd-kit использует
+              глобальный счётчик `useId()` для генерации `DndDescribedBy-N`.
+              При SSR/client разнице в порядке монтирования получаем
+              разные id → hydration mismatch. Задаём стабильный id по
+              instance.id, чтобы сервер и клиент совпали.
+            */}
             <DndContext
+              id={`custom-data:${instance.id}:cols`}
               sensors={dndSensors}
               collisionDetection={closestCenter}
               onDragEnd={onColumnsDragEnd}
@@ -1643,6 +1668,7 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
 
             {/* Body — sortable rows; виртуализация при rows > VIRTUAL_THRESHOLD */}
             <DndContext
+              id={`custom-data:${instance.id}:rows`}
               sensors={dndSensors}
               collisionDetection={closestCenter}
               onDragEnd={onRowsDragEnd}

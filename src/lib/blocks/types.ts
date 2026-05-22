@@ -101,6 +101,25 @@ export type BlockInstance = {
   aiPrompt?: string;
 };
 
+/**
+ * Привязка cashflow-блока (KPI / chart / top-categories / kpi.grid) к
+ * источнику данных. Три режима:
+ *
+ *   - `empty`  — дефолт для новых блоков. Источник не выбран, блок рендерит
+ *                плейсхолдер с CTA «Привязать источник».
+ *   - `global` — opt-in legacy: блок работает «как раньше» — фильтрует по
+ *                tenant-wide данным с учётом page-level period/source.
+ *   - `block`  — bound к конкретному `cashflow.transactions` блоку, чтобы
+ *                наследовать его «view» (период / source / категорию /
+ *                контрагента / тип). `pageKey` нужен для cross-page bindings.
+ *
+ * См. `docs/CASHFLOW_BLOCKS.md` и тип `BoundBlockType` в `source-binding.ts`.
+ */
+export type SourceBinding =
+  | { mode: 'empty' }
+  | { mode: 'global' }
+  | { mode: 'block'; blockId: string; pageKey?: string };
+
 export type BlockCategory = 'stats' | 'tables' | 'charts' | 'custom';
 
 /** Описание типа блока (статическое) */
@@ -161,6 +180,12 @@ export type BlockSettingsFormProps = {
   config: Record<string, unknown>;
   onChange: (config: Record<string, unknown>) => void;
   instance?: BlockInstance;
+  /** Контекст страницы — нужен для per-cell SourceBindingPicker в kpi.grid. */
+  pageKey?: string;
+  /** Все блоки на странице — для SourceBindingPicker (кандидаты + labels). */
+  allBlocks?: BlockInstance[];
+  /** blockId → display label, для красивого UI в picker'ах. */
+  blockLabels?: Record<string, string>;
 };
 
 export type BlockRenderProps = {

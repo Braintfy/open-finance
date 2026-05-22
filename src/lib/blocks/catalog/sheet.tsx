@@ -1496,32 +1496,55 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
       )}
 
       {/* Spreadsheet grid */}
+      {/*
+        v0.20.1: DndContext / SortableContext оба вынесены ИЗ <table>, чтобы не
+        нарушать вложенность HTML (`<div> cannot be a child of <table>`).
+        dnd-kit при монтировании добавляет скрытый
+        `<div id="DndDescribedBy-N">` рядом с Provider'ом — внутри <table>
+        это приводит к hydration mismatch и ругательству React. Сейчас оба
+        контекста оборачивают всю таблицу.
+
+        id={`sheet:${instance.id}:cols|rows`} — стабильный id, чтобы
+        SSR / client использовали одинаковые aria-describedby (по умолчанию
+        dnd-kit использует глобальный счётчик и они расходятся при разном
+        порядке монтирования).
+      */}
       <CardContent ref={tableScrollRef} className="min-h-0 min-w-0 flex-1 overflow-auto p-0">
-        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleColDragEnd}>
+        <DndContext
+          id={`sheet:${instance.id}:cols`}
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragEnd={handleColDragEnd}
+        >
           <SortableContext items={colIds} strategy={horizontalListSortingStrategy}>
-            <table className="border-collapse text-xs" style={{ tableLayout: 'fixed' }}>
-              <colgroup>
-                <col style={{ width: 32 }} />
-                {colWidths.slice(0, cfg.cols).map((w, i) => (
-                  <col key={i} style={{ width: w }} />
-                ))}
-              </colgroup>
-              <thead>
-                <tr>
-                  <th className="sticky left-0 top-0 z-20 border border-border/40" style={thStyle}></th>
-                  {Array.from({ length: cfg.cols }, (_, c) => (
-                    <SortableColHeader
-                      key={c}
-                      colId={`col-${c}`}
-                      label={colLabel(c)}
-                      thStyle={thStyle}
-                      onResizeStart={(e) => startColResize(c, e)}
-                    />
-                  ))}
-                </tr>
-              </thead>
-              <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleRowDragEnd}>
-                <SortableContext items={rowIds} strategy={verticalListSortingStrategy}>
+            <DndContext
+              id={`sheet:${instance.id}:rows`}
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              onDragEnd={handleRowDragEnd}
+            >
+              <SortableContext items={rowIds} strategy={verticalListSortingStrategy}>
+                <table className="border-collapse text-xs" style={{ tableLayout: 'fixed' }}>
+                  <colgroup>
+                    <col style={{ width: 32 }} />
+                    {colWidths.slice(0, cfg.cols).map((w, i) => (
+                      <col key={i} style={{ width: w }} />
+                    ))}
+                  </colgroup>
+                  <thead>
+                    <tr>
+                      <th className="sticky left-0 top-0 z-20 border border-border/40" style={thStyle}></th>
+                      {Array.from({ length: cfg.cols }, (_, c) => (
+                        <SortableColHeader
+                          key={c}
+                          colId={`col-${c}`}
+                          label={colLabel(c)}
+                          thStyle={thStyle}
+                          onResizeStart={(e) => startColResize(c, e)}
+                        />
+                      ))}
+                    </tr>
+                  </thead>
                   {enableVirtualization ? (
                     <tbody style={{ position: 'relative', height: rowVirtualizer.getTotalSize() }}>
                       {rowVirtualizer.getVirtualItems().map((virtualRow) => {
@@ -1598,9 +1621,9 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
                       ))}
                     </tbody>
                   )}
-                </SortableContext>
-              </DndContext>
-            </table>
+                </table>
+              </SortableContext>
+            </DndContext>
           </SortableContext>
         </DndContext>
       </CardContent>

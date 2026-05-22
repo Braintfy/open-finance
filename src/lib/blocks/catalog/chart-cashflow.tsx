@@ -18,6 +18,10 @@ import { useEffectivePeriod } from '../page-period-context';
 import { useEffectiveSource } from '../page-source-context';
 import { usePersistedPeriodWithGlobal } from '../use-persisted-period';
 import { usePersistedSourceWithGlobal } from '../use-persisted-source';
+import { useBoundTxFilters, type BoundFilters } from '../use-bound-tx-filters';
+import { EmptySourcePlaceholder } from '@/components/blocks/empty-source-placeholder';
+import { DEFAULT_SOURCE_BINDING } from '../source-binding';
+import type { SourceBinding } from '../types';
 import { Card } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
@@ -27,6 +31,16 @@ import {
   type PeriodPreset,
 } from '@/components/blocks/period-picker';
 import { SOURCE_LABELS } from '@/components/blocks/source-filter-chips';
+
+const SourceBindingSchema = z.union([
+  z.object({ mode: z.literal('empty') }),
+  z.object({ mode: z.literal('global') }),
+  z.object({
+    mode: z.literal('block'),
+    blockId: z.string(),
+    pageKey: z.string().optional(),
+  }),
+]);
 
 const ChartConfig = z.object({
   chartType: z.enum(['bar', 'line', 'area']).default('area'),
@@ -45,6 +59,7 @@ const ChartConfig = z.object({
     .nullable()
     .default(null),
   sourceOverride: z.string().nullable().optional(),
+  sourceBinding: SourceBindingSchema.optional(),
 });
 
 type Cfg = z.infer<typeof ChartConfig>;
@@ -70,11 +85,47 @@ function formatYAxisRub(v: number): string {
   return String(Math.round(v / 100));
 }
 
+function resolveBoundChartContext(
+  binding: SourceBinding,
+  boundFilters: ReturnType<typeof useBoundTxFilters>,
+  pagePeriod: { preset: PeriodPreset; customFrom: string | null; customTo: string | null },
+  pageSource: string | null,
+):
+  | null
+  | 'missing'
+  | {
+      period: { preset: PeriodPreset; customFrom: string | null; customTo: string | null };
+      source: string | null;
+      counterparty: string | null;
+      categoryName: string | null;
+    } {
+  if (binding.mode !== 'block') return null;
+  if (!boundFilters || boundFilters.kind === 'missing') return 'missing';
+  const f: BoundFilters = boundFilters.filters;
+  const source = f.source === undefined ? pageSource : f.source;
+  return {
+    period: f.period ?? pagePeriod,
+    source: source ?? null,
+    counterparty: f.counterparty ?? null,
+    categoryName: f.categoryName ?? null,
+  };
+}
+
+function openBlockSettings(blockId: string): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(
+    new CustomEvent('block-open-settings', { detail: { blockId } }),
+  );
+}
+
 function ChartRender({ instance }: BlockRenderProps) {
   const density = useBlockDensity();
   const { width: blockWidth, height: blockHeight } = useBlockSize();
   const { settings: fmtSettings } = useFormatSettings();
   const cfg = ChartConfig.parse(instance.config ?? {});
+
+  const sourceBinding: SourceBinding = cfg.sourceBinding ?? DEFAULT_SOURCE_BINDING;
+  const boundFilters = useBoundTxFilters(sourceBinding);
 
   const { override, setOverride } = usePersistedPeriodWithGlobal({
     instanceId: instance.id,
@@ -88,7 +139,7 @@ function ChartRender({ instance }: BlockRenderProps) {
             customTo: cfg.periodOverride.customTo ?? null,
           },
   });
-  const { value: period, source: periodSource } = useEffectivePeriod(instance.id, override);
+  const { value: pagePeriod, source: periodSource } = useEffectivePeriod(instance.id, override);
 
   const { override: srcOverride, setOverride: setSrcOverride } = usePersistedSourceWithGlobal({
     instanceId: instance.id,
@@ -97,10 +148,19 @@ function ChartRender({ instance }: BlockRenderProps) {
         ? { mode: 'override', value: cfg.sourceOverride }
         : { mode: 'global' },
   });
-  const { value: effectiveSource, source: sourceSource } = useEffectiveSource(
+  const { value: pageSource, source: sourceSource } = useEffectiveSource(
     instance.id,
     srcOverride,
   );
+
+  // Резолвинг по binding mode. `block` — берём фильтры из источника
+  // (counterparty/categoryName тоже — для них API расширен в Phase 6).
+  const bound = resolveBoundChartContext(sourceBinding, boundFilters, pagePeriod, pageSource);
+  const skipFetch = sourceBinding.mode === 'empty' || bound === 'missing';
+  const period = bound && bound !== 'missing' ? bound.period : pagePeriod;
+  const effectiveSource = bound && bound !== 'missing' ? bound.source : pageSource;
+  const boundCounterparty = bound && bound !== 'missing' ? bound.counterparty : null;
+  const boundCategoryName = bound && bound !== 'missing' ? bound.categoryName : null;
 
   type ChartPoint = { date: string; income: number; expense: number; balance: number };
   type Resp = {
@@ -111,10 +171,15 @@ function ChartRender({ instance }: BlockRenderProps) {
   };
 
   const [resp, setResp] = useState<Resp | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(skipFetch ? false : true);
 
-  const key = `${period.preset}|${period.customFrom}|${period.customTo}|${cfg.compare}|${cfg.granularity}|${effectiveSource ?? ''}`;
+  const key = `${skipFetch ? 'skip' : 'go'}|${period.preset}|${period.customFrom}|${period.customTo}|${cfg.compare}|${cfg.granularity}|${effectiveSource ?? ''}|${boundCounterparty ?? ''}|${boundCategoryName ?? ''}`;
   useEffect(() => {
+    if (skipFetch) {
+      setResp(null);
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     const controller = new AbortController();
     setLoading(true);
@@ -126,6 +191,8 @@ function ChartRender({ instance }: BlockRenderProps) {
     if (period.customFrom) params.set('customFrom', period.customFrom);
     if (period.customTo) params.set('customTo', period.customTo);
     if (effectiveSource) params.set('source', effectiveSource);
+    if (boundCounterparty) params.set('counterparty', boundCounterparty);
+    if (boundCategoryName) params.set('categoryName', boundCategoryName);
     fetch(`/api/cashflow/chart?${params.toString()}`, { signal: controller.signal })
       .then((r) => r.json())
       .then((json: Resp) => {
@@ -198,6 +265,26 @@ function ChartRender({ instance }: BlockRenderProps) {
   // Adapt narrow / shortH
   const narrow = blockWidth > 0 && blockWidth < 360;
   const shortH = blockHeight > 0 && blockHeight < 200;
+
+  if (sourceBinding.mode === 'empty') {
+    return (
+      <EmptySourcePlaceholder
+        title={`${title}: источник не привязан`}
+        onOpenSettings={() => openBlockSettings(instance.id)}
+        compact={density === 'xs' || density === 'sm'}
+      />
+    );
+  }
+  if (bound === 'missing') {
+    return (
+      <EmptySourcePlaceholder
+        title={`${title}: источник недоступен`}
+        description="Привязанный блок «Список операций» был удалён или находится на другой странице."
+        onOpenSettings={() => openBlockSettings(instance.id)}
+        compact={density === 'xs' || density === 'sm'}
+      />
+    );
+  }
 
   if (density === 'xs') {
     return (

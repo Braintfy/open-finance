@@ -19,12 +19,26 @@ import { useEffectiveSource } from '../page-source-context';
 import { usePersistedPeriodWithGlobal } from '../use-persisted-period';
 import { usePersistedSourceWithGlobal } from '../use-persisted-source';
 import { useDrillDown } from '../drill-down';
+import { useBoundTxFilters, type BoundFilters } from '../use-bound-tx-filters';
+import { EmptySourcePlaceholder } from '@/components/blocks/empty-source-placeholder';
+import { DEFAULT_SOURCE_BINDING } from '../source-binding';
+import type { SourceBinding } from '../types';
 import {
   PeriodPicker,
   type PeriodPreset,
 } from '@/components/blocks/period-picker';
 import { SOURCE_LABELS } from '@/components/blocks/source-filter-chips';
 import { StatCard, type StatCardDelta } from '@/components/blocks/stat-card';
+
+const SourceBindingSchema = z.union([
+  z.object({ mode: z.literal('empty') }),
+  z.object({ mode: z.literal('global') }),
+  z.object({
+    mode: z.literal('block'),
+    blockId: z.string(),
+    pageKey: z.string().optional(),
+  }),
+]);
 
 const StatCustomConfig = z.object({
   metric: z.enum(['income', 'expense', 'balance', 'count']).default('income'),
@@ -50,6 +64,7 @@ const StatCustomConfig = z.object({
     })
     .nullable()
     .default(null),
+  sourceBinding: SourceBindingSchema.optional(),
 });
 
 type Cfg = z.infer<typeof StatCustomConfig>;
@@ -186,12 +201,48 @@ function useStatCustomKpi(
   return { data, loading };
 }
 
+function resolveBoundStatCustomContext(
+  binding: SourceBinding,
+  boundFilters: ReturnType<typeof useBoundTxFilters>,
+  pagePeriod: { preset: PeriodPreset; customFrom: string | null; customTo: string | null },
+  pageSource: string | null,
+):
+  | null
+  | 'missing'
+  | {
+      period: { preset: PeriodPreset; customFrom: string | null; customTo: string | null };
+      source: string | null;
+      counterparty: string | null;
+      categoryName: string | null;
+    } {
+  if (binding.mode !== 'block') return null;
+  if (!boundFilters || boundFilters.kind === 'missing') return 'missing';
+  const f: BoundFilters = boundFilters.filters;
+  const source = f.source === undefined ? pageSource : f.source;
+  return {
+    period: f.period ?? pagePeriod,
+    source: source ?? null,
+    counterparty: f.counterparty ?? null,
+    categoryName: f.categoryName ?? null,
+  };
+}
+
+function openBlockSettings(blockId: string): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(
+    new CustomEvent('block-open-settings', { detail: { blockId } }),
+  );
+}
+
 function RenderStatCustom({ instance }: BlockRenderProps) {
   const cfg = StatCustomConfig.parse(instance.config ?? {});
   const density = useBlockDensity();
   const drill = useDrillDown();
   const { settings: globalSettings } = useFormatSettings();
   const showKopecks = cfg.showKopecks ?? globalSettings.showKopecks;
+
+  const sourceBinding: SourceBinding = cfg.sourceBinding ?? DEFAULT_SOURCE_BINDING;
+  const boundFilters = useBoundTxFilters(sourceBinding);
 
   const { override, setOverride } = usePersistedPeriodWithGlobal({
     instanceId: instance.id,
@@ -205,7 +256,7 @@ function RenderStatCustom({ instance }: BlockRenderProps) {
             customTo: cfg.periodOverride.customTo ?? null,
           },
   });
-  const { value: period, source: periodSource } = useEffectivePeriod(instance.id, override);
+  const { value: pagePeriod, source: periodSource } = useEffectivePeriod(instance.id, override);
 
   // Source: либо новый sourceOverride, либо deprecated cfg.source (для backward-compat).
   const initialSourceOverride =
@@ -219,20 +270,35 @@ function RenderStatCustom({ instance }: BlockRenderProps) {
     instanceId: instance.id,
     initial: initialSourceOverride,
   });
-  const { value: effectiveSource, source: sourceSource } = useEffectiveSource(
+  const { value: pageSource, source: sourceSource } = useEffectiveSource(
     instance.id,
     srcOverride,
   );
 
-  const { data, loading } = useStatCustomKpi(
+  // Резолвинг binding → эффективные фильтры. В `block` mode заданные на
+  // блоке config-filters (counterparty/categoryName) ВЫИГРЫВАЮТ у фильтров
+  // источника — это дизайн-выбор: KPI с фильтрами хочет уточнить source,
+  // не игнорировать локальные настройки.
+  const bound = resolveBoundStatCustomContext(sourceBinding, boundFilters, pagePeriod, pageSource);
+  const skipFetch = sourceBinding.mode === 'empty' || bound === 'missing';
+  const period = bound && bound !== 'missing' ? bound.period : pagePeriod;
+  const effectiveSource = bound && bound !== 'missing' ? bound.source : pageSource;
+  const effectiveCounterparty =
+    cfg.counterparty ?? (bound && bound !== 'missing' ? bound.counterparty ?? undefined : undefined);
+  const effectiveCategoryName =
+    cfg.categoryName ?? (bound && bound !== 'missing' ? bound.categoryName ?? undefined : undefined);
+
+  const fetched = useStatCustomKpi(
     cfg.metric,
     period,
     {
-      counterparty: cfg.counterparty,
-      source: effectiveSource ?? undefined,
-      categoryName: cfg.categoryName,
+      counterparty: effectiveCounterparty,
+      source: skipFetch ? undefined : effectiveSource ?? undefined,
+      categoryName: effectiveCategoryName,
     },
   );
+  const data = skipFetch ? null : fetched.data;
+  const loading = skipFetch ? false : fetched.loading;
 
   const titleParts: string[] = [METRIC_LABELS[cfg.metric]];
   if (cfg.counterparty) titleParts.push(cfg.counterparty);
@@ -286,6 +352,27 @@ function RenderStatCustom({ instance }: BlockRenderProps) {
         source: effectiveSource ?? undefined,
       },
     });
+  }
+
+  // Early return: empty / missing.
+  if (sourceBinding.mode === 'empty') {
+    return (
+      <EmptySourcePlaceholder
+        title={`${title}: источник не привязан`}
+        onOpenSettings={() => openBlockSettings(instance.id)}
+        compact={density === 'xs' || density === 'sm'}
+      />
+    );
+  }
+  if (bound === 'missing') {
+    return (
+      <EmptySourcePlaceholder
+        title={`${title}: источник недоступен`}
+        description="Привязанный блок «Список операций» был удалён или находится на другой странице."
+        onOpenSettings={() => openBlockSettings(instance.id)}
+        compact={density === 'xs' || density === 'sm'}
+      />
+    );
   }
 
   if (density === 'xs') {

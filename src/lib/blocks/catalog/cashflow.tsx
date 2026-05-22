@@ -51,6 +51,10 @@ import { useEffectiveSource } from '../page-source-context';
 import { usePersistedPeriodWithGlobal } from '../use-persisted-period';
 import { usePersistedSourceWithGlobal } from '../use-persisted-source';
 import { useDrillDown, type DrillDownFilter } from '../drill-down';
+import { useBoundTxFilters, type BoundFilters } from '../use-bound-tx-filters';
+import { EmptySourcePlaceholder } from '@/components/blocks/empty-source-placeholder';
+import { DEFAULT_SOURCE_BINDING } from '../source-binding';
+import type { SourceBinding } from '../types';
 import { SOURCE_LABELS } from '@/components/blocks/source-filter-chips';
 import {
   PeriodPicker,
@@ -83,6 +87,16 @@ function describePeriodShort(preset: PeriodPreset, from: string | null, to: stri
 // Shared KPI config schema
 // ============================================================================
 
+const SourceBindingSchema = z.union([
+  z.object({ mode: z.literal('empty') }),
+  z.object({ mode: z.literal('global') }),
+  z.object({
+    mode: z.literal('block'),
+    blockId: z.string(),
+    pageKey: z.string().optional(),
+  }),
+]);
+
 const KpiConfig = z.object({
   showKopecks: z.boolean().nullable().default(null),
   /** Заголовок (override appearance.title). */
@@ -103,6 +117,14 @@ const KpiConfig = z.object({
    *   - `string` → конкретный source ('bank' / 'manual' / ...).
    */
   sourceOverride: z.string().nullable().optional(),
+  /**
+   * Привязка к блоку-источнику (cashflow.transactions). См. `SourceBinding`
+   * в `src/lib/blocks/types.ts`. Дефолт для НОВЫХ блоков — `{mode:'empty'}`;
+   * `sanitizeBlocks` миграция авто-биндит legacy блоки к первому tx-блоку
+   * на странице. В режиме `block` фильтры наследуются из __txFilters
+   * источника; в `global` — текущая логика; в `empty` — placeholder.
+   */
+  sourceBinding: SourceBindingSchema.optional(),
 });
 
 function useKpiKopecks(showKopecksFromCfg: boolean | null): boolean {
@@ -241,6 +263,54 @@ function useCashflowKpi(
 // KPI Blocks: stat.income / stat.expense / stat.balance
 // ============================================================================
 
+/**
+ * Резолвит binding в эффективный fetch-context (период / источник / прочие фильтры).
+ * Возвращает:
+ *   - `null`        — binding не `block` → consumer использует page-level (global mode).
+ *   - `'missing'`   — binding указывает на удалённый/cross-page блок без локального состояния.
+ *   - { period, source, counterparty, categoryName } — резолвированные фильтры.
+ *
+ * Для `block` mode: period источника применяется в приоритете над page-period;
+ * если источник не задал period — наследуем pagePeriod.
+ */
+function resolveBoundContext(args: {
+  binding: SourceBinding;
+  boundFilters: ReturnType<typeof useBoundTxFilters>;
+  pagePeriod: { preset: PeriodPreset; customFrom: string | null; customTo: string | null };
+  pageSource: string | null;
+}):
+  | null
+  | 'missing'
+  | {
+      period: { preset: PeriodPreset; customFrom: string | null; customTo: string | null };
+      source: string | null;
+      counterparty: string | null;
+      categoryName: string | null;
+    } {
+  if (args.binding.mode !== 'block') return null;
+  if (!args.boundFilters || args.boundFilters.kind === 'missing') return 'missing';
+  const f: BoundFilters = args.boundFilters.filters;
+  const period = f.period ?? args.pagePeriod;
+  // source:
+  //   - undefined  → наследуем page source (тот же эффект, что у global)
+  //   - null       → явно «все источники»
+  //   - string     → конкретный source
+  const source = f.source === undefined ? args.pageSource : f.source;
+  return {
+    period,
+    source: source ?? null,
+    counterparty: f.counterparty ?? null,
+    categoryName: f.categoryName ?? null,
+  };
+}
+
+function openBlockSettings(blockId: string): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(
+    new CustomEvent('block-open-settings', { detail: { blockId } }),
+  );
+}
+
 function StatKpiBlock(props: {
   instance: BlockRenderProps['instance'];
   metric: 'income' | 'expense' | 'balance';
@@ -259,6 +329,11 @@ function StatKpiBlock(props: {
   const density = useBlockDensity();
   const drill = useDrillDown();
 
+  // Source binding (cashflow.transactions → этот KPI). Если undefined в config —
+  // считаем `{empty}` (миграция sanitizeBlocks уже расставила для legacy).
+  const sourceBinding: SourceBinding = cfg.sourceBinding ?? DEFAULT_SOURCE_BINDING;
+  const boundFilters = useBoundTxFilters(sourceBinding);
+
   const { override, setOverride } = usePersistedPeriodWithGlobal({
     instanceId: instance.id,
     initial:
@@ -271,7 +346,7 @@ function StatKpiBlock(props: {
             customTo: cfg.periodOverride.customTo ?? null,
           },
   });
-  const { value: period, source: periodSource } = useEffectivePeriod(instance.id, override);
+  const { value: pagePeriod, source: periodSource } = useEffectivePeriod(instance.id, override);
 
   const { override: sourceOverride, setOverride: setSourceOverride } = usePersistedSourceWithGlobal({
     instanceId: instance.id,
@@ -280,14 +355,42 @@ function StatKpiBlock(props: {
         ? { mode: 'override', value: cfg.sourceOverride }
         : { mode: 'global' },
   });
-  const { value: effectiveSource, source: sourceSource } = useEffectiveSource(
+  const { value: pageSource, source: sourceSource } = useEffectiveSource(
     instance.id,
     sourceOverride,
   );
 
-  const { data, loading } = useCashflowKpi(metric, period, {
-    source: effectiveSource ?? undefined,
+  // Резолвинг эффективного периода/source по mode binding:
+  //   - empty   → не делаем fetch, рендерим placeholder.
+  //   - global  → текущая логика (pagePeriod + pageSource).
+  //   - block   → фильтры из источника + merge с pagePeriod (если bound block
+  //               не задал собственный period — наследуем page-level).
+  const resolved = resolveBoundContext({
+    binding: sourceBinding,
+    boundFilters,
+    pagePeriod,
+    pageSource,
   });
+
+  const skipFetch = sourceBinding.mode === 'empty' || resolved === 'missing';
+  const period = resolved && resolved !== 'missing' ? resolved.period : pagePeriod;
+  const effectiveSource = resolved && resolved !== 'missing' ? resolved.source : pageSource;
+
+  const extraFilters: { counterparty?: string; categoryName?: string } =
+    resolved && resolved !== 'missing'
+      ? {
+          counterparty: resolved.counterparty ?? undefined,
+          categoryName: resolved.categoryName ?? undefined,
+        }
+      : {};
+
+  const fetchedKpi = useCashflowKpi(skipFetch ? 'balance' : metric, period, {
+    source: effectiveSource ?? undefined,
+    counterparty: extraFilters.counterparty,
+    categoryName: extraFilters.categoryName,
+  });
+  const data = skipFetch ? null : fetchedKpi.data;
+  const loading = skipFetch ? false : fetchedKpi.loading;
   const valueKop = data?.current ?? 0;
   const valueRub = valueKop / 100;
   const title = instance.appearance?.title ?? cfg.title ?? defaultTitle;
@@ -330,6 +433,27 @@ function StatKpiBlock(props: {
         source: effectiveSource ?? undefined,
       },
     });
+  }
+
+  // Early return: empty / missing — рендер placeholder вместо данных.
+  if (sourceBinding.mode === 'empty') {
+    return (
+      <EmptySourcePlaceholder
+        title={`${title}: источник не привязан`}
+        onOpenSettings={() => openBlockSettings(instance.id)}
+        compact={density === 'xs' || density === 'sm'}
+      />
+    );
+  }
+  if (resolved === 'missing') {
+    return (
+      <EmptySourcePlaceholder
+        title={`${title}: источник недоступен`}
+        description="Привязанный блок «Список операций» был удалён или находится на другой странице."
+        onOpenSettings={() => openBlockSettings(instance.id)}
+        compact={density === 'xs' || density === 'sm'}
+      />
+    );
   }
 
   // === XS density: только иконка + число ===
@@ -647,6 +771,7 @@ const TopCatsConfig = z.object({
   showKopecks: z.boolean().nullable().default(null),
   periodOverride: KpiConfig.shape.periodOverride,
   sourceOverride: z.string().nullable().optional(),
+  sourceBinding: SourceBindingSchema.optional(),
 });
 
 type TopCatsCfg = z.infer<typeof TopCatsConfig>;
@@ -719,6 +844,9 @@ function RenderTopCategories({ instance }: BlockRenderProps) {
   const fmt = (v: number) => formatRublesWithSettings(v, showKopecks);
   const drill = useDrillDown();
 
+  const sourceBinding: SourceBinding = cfg.sourceBinding ?? DEFAULT_SOURCE_BINDING;
+  const boundFilters = useBoundTxFilters(sourceBinding);
+
   const { override, setOverride } = usePersistedPeriodWithGlobal({
     instanceId: instance.id,
     initial:
@@ -731,7 +859,7 @@ function RenderTopCategories({ instance }: BlockRenderProps) {
             customTo: cfg.periodOverride.customTo ?? null,
           },
   });
-  const { value: period, source: periodSource } = useEffectivePeriod(instance.id, override);
+  const { value: pagePeriod, source: periodSource } = useEffectivePeriod(instance.id, override);
 
   const { override: srcOverride, setOverride: setSrcOverride } = usePersistedSourceWithGlobal({
     instanceId: instance.id,
@@ -740,17 +868,28 @@ function RenderTopCategories({ instance }: BlockRenderProps) {
         ? { mode: 'override', value: cfg.sourceOverride }
         : { mode: 'global' },
   });
-  const { value: effectiveSource, source: sourceSource } = useEffectiveSource(
+  const { value: pageSource, source: sourceSource } = useEffectiveSource(
     instance.id,
     srcOverride,
   );
 
-  const { rows, totalSum, loading } = useTopCategoriesPeriod(
+  const resolved = resolveBoundContext({
+    binding: sourceBinding,
+    boundFilters,
+    pagePeriod,
+    pageSource,
+  });
+  const skipFetch = sourceBinding.mode === 'empty' || resolved === 'missing';
+  const period = resolved && resolved !== 'missing' ? resolved.period : pagePeriod;
+  const effectiveSource = resolved && resolved !== 'missing' ? resolved.source : pageSource;
+
+  const { rows, totalSum, loading: fetchLoading } = useTopCategoriesPeriod(
     cfg.type,
     period,
     cfg.limit,
-    effectiveSource ?? null,
+    skipFetch ? null : effectiveSource ?? null,
   );
+  const loading = skipFetch ? false : fetchLoading;
 
   const densityLimit =
     density === 'xs' ? 1 : density === 'sm' ? 3 : density === 'md' ? cfg.limit : cfg.limit;
@@ -782,6 +921,26 @@ function RenderTopCategories({ instance }: BlockRenderProps) {
   }
 
   const isCompact = density === 'xs' || density === 'sm';
+
+  if (sourceBinding.mode === 'empty') {
+    return (
+      <EmptySourcePlaceholder
+        title={`${title}: источник не привязан`}
+        onOpenSettings={() => openBlockSettings(instance.id)}
+        compact={isCompact}
+      />
+    );
+  }
+  if (resolved === 'missing') {
+    return (
+      <EmptySourcePlaceholder
+        title={`${title}: источник недоступен`}
+        description="Привязанный блок «Список операций» был удалён или находится на другой странице."
+        onOpenSettings={() => openBlockSettings(instance.id)}
+        compact={isCompact}
+      />
+    );
+  }
 
   return (
     <Card className="flex h-full flex-col overflow-hidden p-3">
@@ -1142,8 +1301,31 @@ const TxListConfig = z.object({
   pageSize: z.number().int().min(20).max(500).default(100),
   title: z.string().optional(),
   showKopecks: z.boolean().nullable().default(null),
-  /** Default filter: applied on mount; UI может менять. */
+  /**
+   * Вид-определяющие фильтры (default*). Они одновременно: (а) инициализируют
+   * runtime-фильтры в UI блока на mount; (б) определяют его «view» для
+   * консьюмеров через `__txFilters` publish. Runtime-изменения юзером —
+   * ephemeral и не меняют bindings.
+   */
   defaultType: z.enum(['all', 'income', 'expense']).default('all'),
+  /** Период «view» этого блока. null = page-level. */
+  defaultPeriodOverride: z
+    .object({
+      preset: z.enum(['today', 'yesterday', '7d', '14d', '30d', 'mtd', 'custom']),
+      customFrom: z.string().nullable().optional(),
+      customTo: z.string().nullable().optional(),
+    })
+    .nullable()
+    .optional(),
+  /**
+   * Source «view». `undefined` (omitted) → page-level, `null` → все источники
+   * явно, `string` → конкретный source.
+   */
+  defaultSourceOverride: z.string().nullable().optional(),
+  /** Категория «view» (точное имя). */
+  defaultCategoryName: z.string().optional(),
+  /** Контрагент «view» (подстрока). */
+  defaultCounterparty: z.string().optional(),
 });
 
 type TxRow = CashflowTx & { categoryName?: string | null };
@@ -1185,13 +1367,33 @@ function RenderTransactionsList({ instance }: BlockRenderProps) {
   const ctx = useCashflowData();
   const drill = useDrillDown();
 
-  // Page-level source (transactions block наследует и принимает override из drill).
-  const { value: pageSource } = useEffectiveSource(instance.id, undefined);
+  // Period: cfg.defaultPeriodOverride > page-level.
+  const periodInitial =
+    cfg.defaultPeriodOverride == null
+      ? { mode: 'global' as const }
+      : {
+          mode: 'override' as const,
+          preset: cfg.defaultPeriodOverride.preset,
+          customFrom: cfg.defaultPeriodOverride.customFrom ?? null,
+          customTo: cfg.defaultPeriodOverride.customTo ?? null,
+        };
+  const { override: periodOverride } = usePersistedPeriodWithGlobal({
+    instanceId: instance.id,
+    initial: periodInitial,
+  });
+  const { value: effectivePeriod } = useEffectivePeriod(instance.id, periodOverride);
 
-  // Filters (UI controlled)
+  // Source: cfg.defaultSourceOverride > page-level. Effective source ↘
+  // также может быть переопределён runtime-фильтром ниже.
+  const { value: pageSource } = useEffectiveSource(
+    instance.id,
+    cfg.defaultSourceOverride === undefined ? undefined : cfg.defaultSourceOverride,
+  );
+
+  // Filters (UI controlled — initialized from default* config fields).
   const [filterType, setFilterType] = useState<'all' | 'income' | 'expense'>(cfg.defaultType);
-  const [filterCounterparty, setFilterCounterparty] = useState('');
-  const [filterCategoryName, setFilterCategoryName] = useState('');
+  const [filterCounterparty, setFilterCounterparty] = useState(cfg.defaultCounterparty ?? '');
+  const [filterCategoryName, setFilterCategoryName] = useState(cfg.defaultCategoryName ?? '');
   const [filterSource, setFilterSource] = useState<string | null>(null);
 
   // React-receive: drill-down focus from другого блока
@@ -1274,6 +1476,34 @@ function RenderTransactionsList({ instance }: BlockRenderProps) {
     () => rows.filter((r) => r.type === 'expense').reduce((s, r) => s + r.amount, 0),
     [rows],
   );
+  // Публикуем «view» блока (config-defined фильтры) как источник для
+  // bound консьюмеров. Это намеренно НЕ runtime-фильтры — иначе любая
+  // экспериментальная фильтрация в UI ломала бы dependent KPI.
+  // Runtime-фильтры остаются ephemeral и видны только внутри блока.
+  const txFilters = useMemo(() => {
+    return JSON.stringify({
+      period:
+        cfg.defaultPeriodOverride == null
+          ? null
+          : {
+              preset: cfg.defaultPeriodOverride.preset,
+              customFrom: cfg.defaultPeriodOverride.customFrom ?? null,
+              customTo: cfg.defaultPeriodOverride.customTo ?? null,
+            },
+      type: cfg.defaultType === 'all' ? null : cfg.defaultType,
+      source:
+        cfg.defaultSourceOverride === undefined ? null : cfg.defaultSourceOverride,
+      counterparty: cfg.defaultCounterparty ?? null,
+      categoryName: cfg.defaultCategoryName ?? null,
+    });
+  }, [
+    cfg.defaultPeriodOverride,
+    cfg.defaultType,
+    cfg.defaultSourceOverride,
+    cfg.defaultCounterparty,
+    cfg.defaultCategoryName,
+  ]);
+
   useBlockValuePublisher(instance.id, {
     count: rows.length,
     totalIncome,
@@ -1282,7 +1512,14 @@ function RenderTransactionsList({ instance }: BlockRenderProps) {
     __money: 'totalIncome,totalExpense',
     __labels:
       'count=Кол-во строк,totalIncome=Доходы (видимые),totalExpense=Расходы (видимые)',
+    /**
+     * Сериализованный «view» блока для bound консьюмеров (KPI / chart / etc).
+     * Формат: JSON { period, type, source, counterparty, categoryName }.
+     * Все поля nullable; `null` означает «не фильтровать».
+     */
+    __txFilters: txFilters,
   });
+  void effectivePeriod; // эффективный период вычислен для будущих использований (display и т.д.)
 
   async function deleteOne(id: string) {
     const res = await fetch(`/api/cashflow/transactions/${id}`, { method: 'DELETE' });
@@ -1665,6 +1902,9 @@ function TransactionsSettings({
   onChange: (c: Record<string, unknown>) => void;
 }) {
   const cfg = TxListConfig.parse(config ?? {});
+  function setOverride(next: typeof cfg.defaultPeriodOverride) {
+    onChange({ ...cfg, defaultPeriodOverride: next });
+  }
   return (
     <div className="space-y-4">
       <div className="space-y-1.5">
@@ -1697,6 +1937,15 @@ function TransactionsSettings({
           При &gt; 100 строк включается виртуализация — список плавно скроллится без лагов.
         </p>
       </div>
+
+      <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 p-2.5 text-[11px] text-muted-foreground">
+        <div className="mb-1 text-xs font-semibold text-foreground">
+          Вид этого блока (используется как источник для KPI/графиков)
+        </div>
+        Эти настройки определяют «view» блока — какие операции он показывает по умолчанию и какие
+        фильтры наследуют bound консьюмеры. Runtime-фильтры в самом блоке остаются ephemeral.
+      </div>
+
       <div className="space-y-1.5">
         <Label>Дефолтный фильтр типа</Label>
         <div className="flex gap-1">
@@ -1717,6 +1966,80 @@ function TransactionsSettings({
           ))}
         </div>
       </div>
+
+      <div className="space-y-1.5">
+        <Label>Период (вид)</Label>
+        <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
+          <div className="min-w-0">
+            <div className="text-xs font-medium">Использовать период страницы</div>
+            <div className="text-[11px] text-muted-foreground">
+              {cfg.defaultPeriodOverride == null
+                ? 'Период наследуется от страницы (Globe)'
+                : `Свой: ${PRESET_LABELS[cfg.defaultPeriodOverride.preset]}`}
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <Globe className="h-3 w-3 text-muted-foreground" />
+            <Switch
+              checked={cfg.defaultPeriodOverride == null}
+              onCheckedChange={(v) =>
+                setOverride(v ? null : { preset: 'mtd', customFrom: null, customTo: null })
+              }
+            />
+          </div>
+        </div>
+        {cfg.defaultPeriodOverride != null && (
+          <div className="rounded-md border border-border/60 p-2">
+            <PeriodPicker
+              value={{
+                preset: cfg.defaultPeriodOverride.preset,
+                customFrom: cfg.defaultPeriodOverride.customFrom ?? null,
+                customTo: cfg.defaultPeriodOverride.customTo ?? null,
+              }}
+              onChange={(v) =>
+                setOverride({
+                  preset: v.preset,
+                  customFrom: v.customFrom ?? null,
+                  customTo: v.customTo ?? null,
+                })
+              }
+            />
+          </div>
+        )}
+      </div>
+
+      <SourceOverrideSection
+        value={cfg.defaultSourceOverride}
+        onChange={(next) => onChange({ ...cfg, defaultSourceOverride: next })}
+      />
+
+      <div className="space-y-1.5">
+        <Label htmlFor="tx-default-counterparty">Контрагент (вид)</Label>
+        <Input
+          id="tx-default-counterparty"
+          placeholder="например: ТБанк, Яндекс, ВБ"
+          value={cfg.defaultCounterparty ?? ''}
+          onChange={(e) =>
+            onChange({ ...cfg, defaultCounterparty: e.target.value || undefined })
+          }
+        />
+        <p className="text-[11px] text-muted-foreground">
+          Подстрока — bound KPI применит как ilike-фильтр.
+        </p>
+      </div>
+
+      <div className="space-y-1.5">
+        <Label htmlFor="tx-default-category">Категория (вид, точно)</Label>
+        <Input
+          id="tx-default-category"
+          placeholder="например: Реклама"
+          value={cfg.defaultCategoryName ?? ''}
+          onChange={(e) =>
+            onChange({ ...cfg, defaultCategoryName: e.target.value || undefined })
+          }
+        />
+      </div>
+
       <div className="space-y-1.5">
         <Label>Копейки</Label>
         <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">

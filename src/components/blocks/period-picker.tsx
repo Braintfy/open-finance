@@ -1,7 +1,10 @@
 // PURPOSE: Универсальный селектор периода для Ozon-аналитики и других
 // блоков с временным окном. Пресеты: сегодня / вчера / 7д / 14д / 30д /
-// MTD / custom. Pure-функции resolvePeriod() и getPreviousPeriod()
-// экспортируются для использования в API routes и тестах.
+// MTD / custom.
+//
+// v0.20.1: pure-функции вынесены в `@/lib/blocks/period-resolver` (SSR-safe).
+// Этот файл — `'use client'` UI-пикер; функции переэкспортируются сюда для
+// backward-compat существующих клиентских импортов.
 
 'use client';
 
@@ -9,24 +12,20 @@ import { useState } from 'react';
 import { Calendar } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import {
-  describeOzonQueryPeriod,
-  getPreviousOzonQueryPeriod,
-  ozonQueryPeriodToLegacyDates,
-  resolveOzonQueryPeriod,
-  type OzonPeriodPreset,
-} from '@/lib/marketplaces/ozon/query-period';
 
-export type PeriodPreset = OzonPeriodPreset;
+export {
+  resolvePeriod,
+  resolveOzonPeriod,
+  getPreviousPeriod,
+  describePeriod,
+  ozonPeriodToSearchParams,
+  type PeriodPreset,
+  type Period,
+  type PeriodValue,
+  type ResolvePeriodOptions,
+} from '@/lib/blocks/period-resolver';
 
-export type Period = { from: Date; to: Date };
-
-export type PeriodValue = {
-  preset: PeriodPreset;
-  /** Только при preset='custom' (ISO YYYY-MM-DD). */
-  customFrom?: string | null;
-  customTo?: string | null;
-};
+import type { PeriodPreset, PeriodValue } from '@/lib/blocks/period-resolver';
 
 const PRESET_LABELS: Record<Exclude<PeriodPreset, 'custom'>, string> = {
   today: 'Сегодня',
@@ -36,65 +35,6 @@ const PRESET_LABELS: Record<Exclude<PeriodPreset, 'custom'>, string> = {
   '30d': '30 дней',
   mtd: 'Текущий месяц',
 };
-
-export type ResolvePeriodOptions = {
-  now?: Date;
-  /** Исключить сегодня (MSC) — для chart. */
-  excludeToday?: boolean;
-};
-
-/**
- * Pure-функция: разрешить пресет в диапазон (legacy Date + MSC dates внутри).
- * Границы — календарные дни Europe/Moscow; `to` exclusive для SQL `<`.
- */
-export function resolvePeriod(
-  preset: PeriodPreset,
-  customFrom?: string | null,
-  customTo?: string | null,
-  nowOrOptions: Date | ResolvePeriodOptions = new Date(),
-): Period {
-  const options =
-    nowOrOptions instanceof Date ? { now: nowOrOptions } : nowOrOptions;
-  const msc = resolveOzonQueryPeriod(preset, customFrom, customTo, options);
-  return ozonQueryPeriodToLegacyDates(msc);
-}
-
-/** MSC-период для API query params (`fromDate`, `toDateExclusive`). */
-export function resolveOzonPeriod(
-  preset: PeriodPreset,
-  customFrom?: string | null,
-  customTo?: string | null,
-  options: ResolvePeriodOptions = {},
-) {
-  return resolveOzonQueryPeriod(preset, customFrom, customTo, options);
-}
-
-/**
- * Pure-функция: получить предыдущий период такой же длины (для «vs прошлый»).
- */
-export function getPreviousPeriod(period: Period): Period {
-  const fromDate = period.from.toISOString().slice(0, 10);
-  const toDateExclusive = period.to.toISOString().slice(0, 10);
-  const prev = getPreviousOzonQueryPeriod({
-    fromDate,
-    toDateExclusive,
-    timezone: 'Europe/Moscow',
-  });
-  return ozonQueryPeriodToLegacyDates(prev);
-}
-
-/** Формирует короткое описание периода в MSC. */
-export function describePeriod(period: Period): string {
-  return describeOzonQueryPeriod({
-    fromDate: period.from.toISOString().slice(0, 10),
-    toDateExclusive: period.to.toISOString().slice(0, 10),
-    timezone: 'Europe/Moscow',
-  });
-}
-
-export {
-  ozonPeriodToSearchParams,
-} from '@/lib/marketplaces/ozon/query-period';
 
 export type PeriodPickerProps = {
   value: PeriodValue;

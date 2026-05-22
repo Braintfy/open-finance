@@ -1,6 +1,140 @@
-# Cashflow Blocks Guide (v0.20.0)
+# Cashflow Blocks Guide (v0.21.0)
 
+> **v0.21.0 update — Source Binding**: KPI / chart / top-categories / kpi.grid больше не делают tenant-wide запросы напрямую — они **привязываются** к конкретному блоку `cashflow.transactions` через настройки. Три режима: `empty` (дефолт для новых; placeholder с CTA), `global` (текущее поведение — page period+source), `block` (тянуть фильтры из view конкретного tx-блока). Auto-migration существующих layouts: если на странице есть `cashflow.transactions` — все consumer'ы auto-bind к первому; если нет — `empty`. См. подраздел [«Source Binding»](#source-binding-v0210) ниже.
+>
 > **v0.20.0 update**: добавлен **page-level source filter** (см. `PageSourceProvider` / `useEffectiveSource`), **virtual sources** для bindings без `stat.*` блоков (см. `src/lib/blocks/virtual-sources.tsx`), **kpi.grid** блок (см. `docs/KPI_GRID.md`), **BLOCK_PRESETS** для одного клика (excel.cell + cashflow). Старые `stat.income / stat.expense / stat.balance` помечены `tags: ['legacy']` (работают, но новые пользователи добавляют через пресеты).
+
+## Source Binding (v0.21.0)
+
+### Зачем
+
+До v0.21.0 7 cashflow-блоков (`stat.income/expense/balance/custom`, `cashflow.top-categories`, `chart.cashflow`, `kpi.grid`) независимо ходили в tenant-wide `/api/cashflow/*` query. Никакой связи с блоком `cashflow.transactions` не было — даже в mindmap. Пользователь видел одинаковые 643 442 ₽ на разных страницах и не понимал, откуда они.
+
+Теперь каждый consumer **явно** привязан к источнику.
+
+### Три режима (per block)
+
+```ts
+type SourceBinding =
+  | { mode: 'empty' }                                    // дефолт для новых блоков
+  | { mode: 'global' }                                   // current behavior, opt-in
+  | { mode: 'block'; blockId: string; pageKey?: string } // bound к cashflow.transactions
+```
+
+| Режим | Поведение |
+|-------|-----------|
+| `empty` | Блок показывает `EmptySourcePlaceholder` с CTA «Выбрать источник». Никаких запросов. |
+| `global` | Tenant-wide query как раньше: фильтры берутся из page-level period + source (`useEffectivePeriod` / `useEffectiveSource`). |
+| `block` | Фильтры тянутся из view конкретного `cashflow.transactions` блока (его published `__txFilters`). |
+
+### Data flow для `mode: 'block'`
+
+```mermaid
+flowchart LR
+  A["cashflow.transactions<br/>(блок А)"] -->|"publishes __txFilters<br/>{period, type, source,<br/>counterparty, categoryName}"| BV[BlockValues store]
+  BV -->|useBoundTxFilters| K["stat.income / chart / kpi.grid<br/>(консьюмер)"]
+  K -->|"GET /api/cashflow/kpi с merged filters"| API[(transactions table)]
+```
+
+Для cross-page (dashboard → /cashflow): `/api/blocks/sources` возвращает `txFilters` field для tx-блоков; будущая итерация подключит его к `useBoundTxFilters` через `useAvailableBlockSources()`.
+
+### Auto-migration legacy блоков
+
+При первой загрузке layout'а `sanitizeBlocks` применяет `applySourceBindingMigration`:
+
+- Для каждого блока из `BOUND_BLOCK_TYPES` без `sourceBinding` поля:
+  - Если на странице ЕСТЬ `cashflow.transactions` → `{mode: 'block', blockId: <первый tx>}`.
+  - Иначе → `{mode: 'empty'}`.
+- Idempotent: повторная миграция не меняет уже привязанные блоки.
+
+**Visual regression**: на дашборде, где нет `cashflow.transactions` блока, KPI/chart/top-categories станут пустыми (placeholder). Это **намеренное** поведение — пользователь явно выбирает источник.
+
+### `cashflow.transactions` как источник
+
+Расширенный `TxListConfig`:
+
+```ts
+type TxListConfig = {
+  // view-defining defaults (одновременно UI-init + публикуется в __txFilters):
+  defaultPeriodOverride?: PeriodOverride | null;
+  defaultSourceOverride?: string | null;
+  defaultType?: 'income' | 'expense' | null;
+  defaultCategoryName?: string;
+  defaultCounterparty?: string;
+  // + другие поля (cursor, columns, etc.)
+};
+```
+
+`useBlockValuePublisher` публикует:
+```
+__txFilters: JSON.stringify({
+  period: defaultPeriodOverride,
+  type:   defaultType,
+  source: defaultSourceOverride,
+  counterparty: defaultCounterparty,
+  categoryName: defaultCategoryName,
+});
+```
+
+Runtime-изменения юзером фильтров **не** влияют на bindings — это ephemeral UI state. Только `default*` поля = публичный view.
+
+### Резолвинг для consumer'а
+
+```ts
+const sourceBinding = cfg.sourceBinding ?? DEFAULT_SOURCE_BINDING;
+const boundFilters = useBoundTxFilters(sourceBinding);
+
+if (sourceBinding.mode === 'empty')       return <EmptySourcePlaceholder ... />;
+if (boundFilters?.kind === 'missing')     return <EmptySourcePlaceholder ... />;
+
+const filters = boundFilters?.kind === 'filters'
+  ? boundFilters.filters
+  : null;
+
+const period = filters?.period ?? pagePeriod;       // bound > page > default
+const source = filters?.source === undefined        // undefined = page-source,
+  ? pageSource                                       // null = «все источники» явно
+  : filters.source;
+// ... передаём в /api/cashflow/kpi
+```
+
+### kpi.grid: block-level + per-cell
+
+`kpi.grid` имеет 2 уровня binding'а:
+
+```ts
+type KpiGridConfig = {
+  defaultSourceBinding?: SourceBinding;  // для всех ячеек без override
+  cells: Array<{
+    sourceBindingOverride?: SourceBinding; // приоритет над default
+    // ...
+  }>;
+};
+```
+
+Резолвинг: `cell.sourceBindingOverride ?? config.defaultSourceBinding ?? {mode:'empty'}`. Empty per-cell → компактный placeholder в ячейке. Block-level empty без per-cell override → полноблочный placeholder.
+
+### UI
+
+- **Общая секция «Источник данных»** наверху таба «Параметры» в `BlockSettingsDialog` для всех `BOUND_BLOCK_TYPES`. Avoids дублирование в каждой `SettingsForm`.
+- **`SourceBindingPicker`** (`src/components/blocks/source-binding-picker.tsx`) — tabs «Пусто / Глобально / Из блока» + dropdown tx-блоков на странице.
+- **kpi.grid**: дополнительный per-cell `SourceBindingPicker` в expanded cell row, с кнопкой «Наследовать» для сброса override.
+
+### Mindmap
+
+`BlockRelationsOverlay` рисует edges с `kind='data-source'` изумрудным (`#10b981`), толщиной 2.5px. Cross-page edges — пунктиром (`6 4`).
+
+### Файлы
+
+| Файл | Назначение |
+|------|-----------|
+| `src/lib/blocks/source-binding.ts` | Pure utilities: const, migration, edges (server-safe). |
+| `src/lib/blocks/use-bound-tx-filters.ts` | React hook для consumer'ов. |
+| `src/components/blocks/source-binding-picker.tsx` | UI компонент привязки. |
+| `src/components/blocks/empty-source-placeholder.tsx` | Placeholder для empty/missing. |
+| `scripts/test-source-binding.ts` | 40 unit-тестов. |
+
+---
 
 
 

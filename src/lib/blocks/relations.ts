@@ -1,11 +1,18 @@
 // PURPOSE: Shared relation detection for BlockGrid icons and relation overlay.
 import type { BlockInstance } from './types';
+import { collectSourceBindingEdges } from './source-binding';
 
 export type BlockRelationEdge = {
   fromId: string;
   toId: string;
   label?: string;
-  kind: 'dependency' | 'formula';
+  kind: 'dependency' | 'formula' | 'data-source';
+  /**
+   * Если связь cross-page (источник на другой странице) — здесь pageKey
+   * источника. `undefined` для same-page связей. Используется overlay'ем,
+   * чтобы рендерить пунктирные edges с external-маркером.
+   */
+  pageKey?: string;
 };
 
 const FORMULA_REF_RE = /@([A-Za-z0-9_.:-]+)/g;
@@ -15,12 +22,22 @@ export function collectBlockRelationEdges(blocks: BlockInstance[], currentPageKe
   const edges: BlockRelationEdge[] = [];
   const seen = new Set<string>();
 
-  function addEdge(fromId: string | null, toId: string, label: string | undefined, kind: BlockRelationEdge['kind']) {
-    if (!fromId || !blockIds.has(fromId) || !blockIds.has(toId) || fromId === toId) return;
-    const key = `${kind}:${fromId}:${toId}:${label ?? ''}`;
+  function addEdge(
+    fromId: string | null | undefined,
+    toId: string,
+    label: string | undefined,
+    kind: BlockRelationEdge['kind'],
+    pageKey?: string,
+  ) {
+    if (!fromId || fromId === toId) return;
+    // Для same-page edges обязательна локальная регистрация обоих блоков.
+    // Для cross-page (pageKey !== undefined) — `fromId` может отсутствовать в blockIds.
+    if (!pageKey && (!blockIds.has(fromId) || !blockIds.has(toId))) return;
+    if (pageKey && !blockIds.has(toId)) return;
+    const key = `${kind}:${fromId}:${toId}:${label ?? ''}:${pageKey ?? ''}`;
     if (seen.has(key)) return;
     seen.add(key);
-    edges.push({ fromId, toId, label, kind });
+    edges.push({ fromId, toId, label, kind, pageKey });
   }
 
   for (const block of blocks) {
@@ -33,6 +50,11 @@ export function collectBlockRelationEdges(blocks: BlockInstance[], currentPageKe
     for (const ref of collectConfigRefs(block.config)) {
       addEdge(localBlockIdFromRef(ref, currentPageKey, blockIds), block.id, 'формула', 'formula');
     }
+  }
+
+  // data-source edges (cashflow.transactions → bound block).
+  for (const edge of collectSourceBindingEdges(blocks, currentPageKey)) {
+    addEdge(edge.fromId, edge.toId, 'источник данных', 'data-source', edge.pageKey);
   }
 
   return edges;

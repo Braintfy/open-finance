@@ -1,5 +1,146 @@
 # Changelog
 
+## [0.21.0] - 2026-05-22
+
+**Source Binding для Cashflow блоков**. Большое архитектурное изменение: KPI / chart / top-categories / kpi.grid блоки больше не делают tenant-wide запросы напрямую — они привязываются к конкретному блоку `cashflow.transactions` как явному источнику данных. Это устраняет «магию», когда KPI на дашборде показывают те же 643 442 ₽, что и на странице `/cashflow`, без явной связи в UI или mindmap.
+
+### Архитектура
+
+- **Три режима binding'а** для каждого консьюмер-блока:
+  - `{mode: 'empty'}` — дефолт для **новых** блоков. Показывает `EmptySourcePlaceholder` с CTA «Выбрать источник».
+  - `{mode: 'global'}` — текущее поведение: page-level period + source (opt-in для тех, кому это нужно).
+  - `{mode: 'block', blockId, pageKey?}` — данные тянутся из view-фильтров конкретного `cashflow.transactions` блока (period + type + source + counterparty + categoryName).
+
+- **Idempotent миграция existing блоков** (`applySourceBindingMigration` в `sanitizeBlocks`):
+  - Если на странице есть `cashflow.transactions` блок — все consumer'ы auto-bind к ПЕРВОМУ из них.
+  - Если нет — auto `{mode: 'empty'}`. На дашборде без tx-блока консьюмеры станут пустыми (это **desired**: убирает скрытое поведение).
+
+- **`cashflow.transactions` как источник**: расширили его конфиг view-defining полями (`defaultPeriodOverride`, `defaultSourceOverride`, `defaultType`, `defaultCounterparty`, `defaultCategoryName`). Эти поля одновременно (а) инициализируют runtime-фильтры UI блока; (б) публикуются как `__txFilters` (JSON) для консьюмеров через `BlockValues`.
+
+### Added
+
+- **`src/lib/blocks/types.ts`** — тип `SourceBinding` (union 3-х режимов).
+- **`src/lib/blocks/source-binding.ts`** (NEW) — `BOUND_BLOCK_TYPES`, `DEFAULT_SOURCE_BINDING`, `TX_BLOCK_TYPE`, `readSourceBinding`, `readSourceBindingField`, `applySourceBindingMigration`, `collectSourceBindingEdges`. Не импортирует React — работает на server-side (sanitizeBlocks вызывается в queries.ts) и в unit-тестах.
+- **`src/lib/blocks/use-bound-tx-filters.ts`** (NEW) — `useBoundTxFilters(binding)` хук. Читает `__txFilters` из BlockValues store; возвращает `null` (не block mode), `{kind:'filters', filters}`, или `{kind:'missing', blockId, pageKey?}` (источник удалён или cross-page).
+- **`src/components/blocks/empty-source-placeholder.tsx`** (NEW) — placeholder для пустого/missing binding'а с кнопкой «Выбрать источник» (dispatches `block-open-settings` custom event).
+- **`src/components/blocks/source-binding-picker.tsx`** (NEW) — UI компонент. Tabs «Пусто / Глобально / Из блока» + dropdown `cashflow.transactions`-блоков на странице. Используется и в общей секции BlockSettingsDialog, и в per-cell override kpi.grid.
+- **`scripts/test-source-binding.ts`** (NEW) — 40 unit-тестов: constants, schema, migration (idempotency + tx-detection), `collectSourceBindingEdges` (same-page / cross-page / kpi.grid per-cell), binding resolution merge с page-level fallback.
+- **`docs/CASHFLOW_BLOCKS.md`** (NEW) — диаграмма data flow + примеры binding modes.
+
+### Changed
+
+- **`src/lib/blocks/registry.ts`** — `sanitizeBlocks` теперь применяет `applySourceBindingMigration` после фильтрации известных типов.
+- **`src/lib/blocks/relations.ts`** — `BlockRelationEdge['kind']` расширен значением `'data-source'`; `collectBlockRelationEdges` вызывает `collectSourceBindingEdges` для построения mindmap-edges с label «источник данных» (изумрудный цвет в overlay).
+- **`src/lib/blocks/catalog/cashflow.tsx`**:
+  - `TxListConfig` — добавлены `defaultPeriodOverride`, `defaultSourceOverride`, `defaultCategoryName`, `defaultCounterparty`.
+  - `RenderTransactionsList` инициализирует runtime-фильтры из `cfg.default*` + публикует `__txFilters` через `useBlockValuePublisher`.
+  - `TransactionsSettings` — секции для всех view-defining фильтров.
+  - `StatKpiBlock` (income/expense/balance) и `RenderTopCategories` — добавлен `sourceBinding` field + 3-mode render (`empty` → `EmptySourcePlaceholder`, `block` → bound filters, `global` → current).
+- **`src/lib/blocks/catalog/stat-custom.tsx`** — `sourceBinding` field + 3-mode render с merge per-cell filters (cell-config поверх bound).
+- **`src/lib/blocks/catalog/chart-cashflow.tsx`** — `sourceBinding` field + 3-mode render; передаёт `counterparty` / `categoryName` в `/api/cashflow/chart`.
+- **`src/lib/blocks/catalog/kpi-grid.tsx`**:
+  - `defaultSourceBinding` на уровне блока (по аналогии с `defaultPeriodOverride`).
+  - `sourceBindingOverride` per-cell (приоритет над block default).
+  - В `KpiCellRender`: empty/missing → компактный placeholder в ячейке. Block-level `empty` без cell-override → полноблочный `EmptySourcePlaceholder`. Bound period/source применяются к `useCashflowKpiLite` (counterparty/categoryName не передаём — lite endpoint их не поддерживает; это noted limitation).
+- **`src/lib/blocks/catalog/kpi-grid-settings.tsx`** — `defaultSourceBinding` в schema + per-cell `sourceBindingOverride` UI с reset-to-inherit.
+- **`src/components/blocks/block-settings-dialog.tsx`** — общая секция «Источник данных» наверху таба «Параметры» для всех `BOUND_BLOCK_TYPES`. Avoids дублирование binding UI в каждой `SettingsForm`.
+- **`src/components/blocks/block-grid.tsx`** — глобальный mount-time listener `block-open-settings` (EmptySourcePlaceholder cтригает его), `pageKey` пробрасывается в `BlockSettingsDialog`.
+- **`src/components/blocks/block-relations-overlay.tsx`** — kind-aware рендер edges: `data-source` → изумрудный (`#10b981`) + жирнее (`2.5px`); cross-page → пунктир (`6 4`). Отдельный marker `rel-arrow-data-source`.
+- **`src/app/api/cashflow/chart/route.ts`** + `src/lib/cashflow/queries.ts` — `getCashflowChart` принимает `counterparty` / `categoryName` query params (join с categories для exact-match имени категории).
+- **`src/app/api/blocks/sources/route.ts`** — для блоков типа `cashflow.transactions` возвращаем `txFilters` field (JSON view блока) — нужно для будущей cross-page binding fetch-логики.
+- **`scripts/test-kpi-grid-config.ts`** — добавлены 16 тестов для `defaultSourceBinding`, `sourceBindingOverride`, и binding resolution (cell override > block default).
+
+### Files
+
+- **Added**: 4 файла (3 source + 1 test + 1 doc).
+- **Modified**: 13 файлов.
+- **Tests**: 74 unit-теста (40 source-binding + 34 kpi-grid-config — все passing).
+
+### Backward compatibility
+
+- **Auto-migration**: existing layouts со стариыми блоками без `sourceBinding` поле получают его при первой загрузке (sanitizeBlocks). Никаких миграций БД — schema хранится как JSON в `block_layouts.config`.
+- **Visual regression**: на дашборде, где нет `cashflow.transactions` блока, KPI/chart/top-categories станут пустыми (placeholder с CTA). Это **намеренное** поведение для устранения «магических» tenant-wide запросов. Пользователь явно выбирает источник.
+- **kpi.grid**: legacy блоки без `defaultSourceBinding` тоже auto-bind. Per-cell `sourceBindingOverride` опционален — если не задан, ячейка наследует block default. Результат идентичен старому, если был auto-bind.
+
+### Известные ограничения
+
+- **Cross-page bindings** (consumer на dashboard → source на /cashflow): mindmap edges рисуются корректно (пунктир + emerald), но **runtime resolution** для cross-page пока возвращает `'missing'` (consumer показывает placeholder). Server-side endpoint `/api/blocks/sources` уже отдаёт `txFilters` для tx-блоков — будущая итерация подключит его к `useBoundTxFilters` через `useAvailableBlockSources()`.
+- **kpi.grid + bound counterparty/categoryName**: `useCashflowKpiLite` (используется в kpi.grid) не поддерживает эти фильтры. Bound period/source применяются, остальные фильтры из источника — игнорируются. Полноценный fetch с фильтрами оставлен на будущую итерацию (`useFilteredCashflowKpi`).
+
+## [0.20.2] - 2026-05-22
+
+KPI Grid kopecks bug, block-level period override, responsive layout preservation. Три фикса по фидбеку пользователя — KPI-сетка показывала копейки как рубли («64 344 198 ₽» вместо «643 442 ₽»); BlockGrid не восстанавливал lg-раскладку после ресайза окна в узкий и обратно (все блоки оставались в один столбец w=2).
+
+### Fixed
+
+#### KPI Grid — kopecks → rubles (кр. баг)
+- **Root cause**: `KpiCellRender` брал `useCashflowKpiLite().current` (всегда копейки из API `/api/cashflow/kpi`) и сразу передавал в `formatValue()` с `style: 'currency'`. Получалось «64 344 198 ₽» вместо «643 442 ₽» (×100). Соседние блоки `stat.income/expense/balance` делили на 100 внутри (`valueKop / 100`), kpi.grid — нет.
+- **Fix**: добавлен флаг `isMoneyMetric(metric)` (true для income/expense/balance, false для count). `formatValue(value, format, isMoney)` теперь делит на 100 для money-метрик при форматах `rub` / `number` / `compact`. `percent` остаётся как есть (это уже %).
+- **Также**: published `__money` метка теперь идёт от **метрики**, а не от формата (раньше `cell.format === 'rub'` → money; теперь — корректно: даже cell с format=compact для income попадёт в `__money`, чтобы консьюмеры (excel.cell) делили на 100 при display).
+- **Test**: `scripts/test-kpi-grid-config.ts` — добавлены 3 кейса формирования money / non-money.
+
+#### KPI Grid — block-level period override
+- Раньше период можно было указать только per-cell. Если у вас 3 одинаковые ячейки и нужно сменить период всем — приходилось переключать каждую.
+- **Added**: `defaultPeriodOverride` на уровне блока. Ячейки с `periodOverride === undefined` (т.е. без своего override) теперь наследуют **сначала block-level default**, потом page-level. С `periodOverride === null` остаётся явное «inherit page».
+- UI: новый блок «Период по умолчанию» в `KpiGridSettings` сверху над списком ячеек. Toggle «Локальный / Глобальный» + `PeriodPicker`.
+
+#### BlockGrid responsive — сохранение lg-layout при resize окна
+- **Root cause**: `react-grid-layout`'s `Responsive` auto-генерирует layout для узких breakpoint'ов (`sm`=6 / `xs`=4 / `xxs`=2 cols) из `lg`-layout (12). Этот «сжатый» layout приходил в `onLayoutChange`, и мы его сохраняли в `blocks` — оригинальный lg-layout терялся. После ресайза окна обратно в lg все блоки оставались в один столбец w=2 (этот баг user увидел на скриншоте — все блоки слева одной колонкой, остальная ширина пустая).
+- **Fix**:
+  - Добавлен `currentBreakpointRef` — синхронизируется из двух мест: `onBreakpointChange` (при ресайзе окна) и `recompute()` в ResizeObserver-effect (для начальной инициализации).
+  - `onLayoutChange` теперь **skip-ит запись** в `blocks`, если breakpoint не canonical (lg/md — оба 12 cols). На узких экранах RGL сжимает layout только во внутреннем state, оригинал в нашем `blocks` не трогается → возврат в lg восстанавливает раскладку.
+- **Test**: `scripts/test-blockgrid-responsive.ts` — 18 тестов: breakpoint detection, canonical guard, lg→sm→lg scenario.
+
+### Files
+
+- **Modified**:
+  - `src/lib/blocks/catalog/kpi-grid.tsx` — `isMoneyMetric` + `formatValue(value, format, isMoney)` + `__money` от метрики + `defaultPeriodOverride` в схеме.
+  - `src/lib/blocks/catalog/kpi-grid-settings.tsx` — `defaultPeriodOverride` в схеме + UI секция.
+  - `src/components/blocks/block-grid.tsx` — `currentBreakpointRef` + canonical guard в `onLayoutChange` + `onBreakpointChange` handler.
+- **Added**:
+  - `scripts/test-blockgrid-responsive.ts` — unit-тесты для breakpoint логики.
+
+## [0.20.1] - 2026-05-21
+
+Hotfix Cashflow Blocks: KPI блоки на странице `/cashflow` возвращали 500 (resolvePeriod из 'use client'-модуля), все `stat.*` блоки показывали 0 ₽. Параллельно: hydration mismatch в `custom-data.tsx` (gridTemplateColumns SSR ≠ client) и invalid HTML nesting в `sheet.tsx` (DndContext рендерил `<div>` внутри `<table>`).
+
+### Fixed
+
+#### KPI 500 — resolvePeriod из 'use client'-модуля
+- **Root cause**: `src/components/blocks/period-picker.tsx` помечен `'use client'`, но `resolvePeriod()` / `getPreviousPeriod()` / `describePeriod()` импортировались в API routes (`/api/cashflow/kpi`, `/api/cashflow/top-categories`, `/api/cashflow/chart`). Next.js 15 строго запрещает server-side вызовы экспортов client-модуля → `Error: Attempted to call resolvePeriod() from the server but resolvePeriod is on the client`. Все KPI fetch падали 500 → блоки тихо рендерили 0 ₽.
+- **Fix**: pure-функции вынесены в новый SSR-safe модуль **`src/lib/blocks/period-resolver.ts`** (без `'use client'`). `period-picker.tsx` ре-экспортирует их для backward-compat существующих client-импортов (cashflow/stat-custom/chart-cashflow/excel-cell/kpi-grid/unit-ozon-* — без изменений). API routes импортируют напрямую из `@/lib/blocks/period-resolver`.
+- **Result**: `/api/cashflow/kpi?metric=income&preset=mtd` → 200 OK, `stat.income` показывает 643 442 ₽ за MTD вместо 0 ₽.
+
+#### Invalid HTML nesting — DndContext внутри `<table>`
+- **`src/lib/blocks/catalog/sheet.tsx`**: оба `DndContext` (cols + rows) вынесены **наружу** `<table>`. Раньше row-DndContext рендерился между `<thead>` и `<tbody>` — dnd-kit вставлял туда скрытый `<div id="DndDescribedBy-N">`, что нарушает HTML-вложенность (`<div> cannot be a child of <table>`). Структура: `DndContext(cols) > SortableContext(cols) > DndContext(rows) > SortableContext(rows) > <table>`.
+- **Стабильные id**: `id={`sheet:${instance.id}:cols`}` и `id={`sheet:${instance.id}:rows`}` — раньше dnd-kit использовал глобальный `useId`-счётчик, который давал разные `aria-describedby` на сервере и клиенте → hydration mismatch.
+
+#### Hydration mismatch — gridTemplateColumns
+- **`src/lib/blocks/catalog/custom-data.tsx`**: `measureTextWidth()` через canvas доступен только в браузере; на сервере fallback `text.length * 7` давал другую ширину → SSR-результат `"20px 106px 95px 16px"` ≠ client `"20px 102px 89px 16px"`.
+- **Fix**: mounted-gate. До первой hydration используем стабильные SSR-defaults (`SSR_DEFAULT_LABEL_WIDTH=120`, `SSR_DEFAULT_VALUE_WIDTH=96`), после `useEffect(() => setMounted(true))` — переключаемся на canvas-measured auto-sizing. Manual overrides (`config.labelColumnWidth`, `col.width`) имеют приоритет и работают одинаково на SSR и client.
+- **Стабильные DndContext id**: `id={`custom-data:${instance.id}:cols|rows`}` — фикс aria-describedby SSR mismatch.
+
+#### kpi-grid-settings — стабильный DndContext id
+- **`src/lib/blocks/catalog/kpi-grid-settings.tsx`**: добавлен `id="kpi-grid-settings:cells"`. Для settings-формы (открывается по клику) не критично, но единообразие.
+
+### Changed
+
+- **`src/components/blocks/period-picker.tsx`** теперь — чистый UI-компонент (`'use client'`), pure-логика вынесена в `@/lib/blocks/period-resolver`. Все клиентские импорты `import { resolvePeriod } from '@/components/blocks/period-picker'` продолжают работать через re-export.
+
+### Files
+
+- **Added**: `src/lib/blocks/period-resolver.ts` (~95 строк).
+- **Modified**:
+  - `src/components/blocks/period-picker.tsx` (упрощено: ре-экспорт + UI).
+  - `src/app/api/cashflow/kpi/route.ts`, `/top-categories/route.ts`, `/chart/route.ts` — импорт из `period-resolver`.
+  - `src/lib/blocks/catalog/sheet.tsx` — DndContext наружу таблицы + стабильные id.
+  - `src/lib/blocks/catalog/custom-data.tsx` — mounted-gate + стабильные DndContext id.
+  - `src/lib/blocks/catalog/kpi-grid-settings.tsx` — стабильный DndContext id.
+
+### Diagnostics
+
+Корневой признак: KPI = «0 ₽» и без smart-hint banner'а («Нет данных за период, всего …»). Smart-hint срабатывает на `current=0 && previous=0` от server'а, но не на network error. Поэтому если все KPI = 0 без подсказки — смотреть в DevTools `/api/cashflow/kpi` → 500 + терминал.
+
 ## [0.20.0] - 2026-05-21
 
 Cashflow Blocks Rescue: фикс «0 ₽» KPI без объяснения, выровнен единый Card-стиль во всех cashflow-блоках, добавлен page-level source-фильтр аккаунта (Выписки), 5 cashflow-пресетов для `excel.cell`, виртуальные источники `@__virtual:cashflow.kpi.*` для bindings без отдельных stat.* блоков, новый блок `kpi.grid` (1–6 KPI в одном Card).

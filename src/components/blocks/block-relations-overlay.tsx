@@ -32,7 +32,15 @@ type AnchorSide = 'top' | 'right' | 'bottom' | 'left';
 
 type AnchorPoint = { x: number; y: number; side: AnchorSide };
 
-type Edge = { fromId: string; toId: string; label?: string };
+type Edge = {
+  fromId: string;
+  toId: string;
+  label?: string;
+  /** Тип связи (см. BlockRelationEdge['kind']). data-source — изумруд. */
+  kind?: 'dependency' | 'formula' | 'data-source';
+  /** Если задан и != currentPageKey — cross-page (рисуем пунктиром). */
+  pageKey?: string;
+};
 
 type PositionedEdge = Edge & {
   x1: number; y1: number; x2: number; y2: number;
@@ -121,6 +129,19 @@ function buildPath(e: PositionedEdge): string {
 
 const STROKE = '#6366f1';
 const NODE_FILL = '#4f46e5';
+/** Цвет для kind='data-source' edges (cashflow.transactions → consumer). */
+const DATA_SOURCE_STROKE = '#10b981';
+const DATA_SOURCE_NODE = '#059669';
+
+function edgeStrokeColor(kind?: Edge['kind']): string {
+  return kind === 'data-source' ? DATA_SOURCE_STROKE : STROKE;
+}
+function edgeNodeColor(kind?: Edge['kind']): string {
+  return kind === 'data-source' ? DATA_SOURCE_NODE : NODE_FILL;
+}
+function edgeMarkerId(kind?: Edge['kind']): string {
+  return kind === 'data-source' ? 'rel-arrow-data-source' : 'rel-arrow';
+}
 /** Размер треугольника-маркера cross-page связи (квадратный bbox). */
 const TRI_SIZE = 14;
 /** Радиус edge-anchor circle (см. <circle r={4} /> ниже). Должен быть в синке. */
@@ -137,8 +158,17 @@ export function BlockRelationsOverlay({ blocks, currentPageKey, containerRef, hi
   const [openPopover, setOpenPopover] = useState<string | null>(null);
 
   const rawEdges = useMemo<Edge[]>(
-    () => collectBlockRelationEdges(blocks, currentPageKey).map(({ fromId, toId, label }) => ({ fromId, toId, label })),
-    [blocks, currentPageKey]
+    () =>
+      collectBlockRelationEdges(blocks, currentPageKey).map(
+        ({ fromId, toId, label, kind, pageKey }) => ({
+          fromId,
+          toId,
+          label,
+          kind,
+          pageKey,
+        }),
+      ),
+    [blocks, currentPageKey],
   );
 
   // Cross-page связи блоков на текущей странице (incoming/outgoing).
@@ -255,44 +285,70 @@ export function BlockRelationsOverlay({ blocks, currentPageKey, containerRef, hi
           >
             <path d="M 0 1 L 10 5 L 0 9 z" fill={STROKE} fillOpacity={0.75} />
           </marker>
+          <marker
+            id="rel-arrow-data-source"
+            viewBox="0 0 10 10"
+            refX="9"
+            refY="5"
+            markerWidth="6"
+            markerHeight="6"
+            orient="auto-start-reverse"
+          >
+            <path
+              d="M 0 1 L 10 5 L 0 9 z"
+              fill={DATA_SOURCE_STROKE}
+              fillOpacity={0.75}
+            />
+          </marker>
         </defs>
 
         {edges.map((edge, i) => {
           const path = buildPath(edge);
           const midX = (edge.x1 + edge.x2) / 2;
           const midY = (edge.y1 + edge.y2) / 2;
+          const stroke = edgeStrokeColor(edge.kind);
+          const nodeFill = edgeNodeColor(edge.kind);
+          const markerId = edgeMarkerId(edge.kind);
+          const isCrossPage =
+            !!edge.pageKey && !!currentPageKey && edge.pageKey !== currentPageKey;
+          const isDataSource = edge.kind === 'data-source';
+          // Толще для data-source чтобы прочитывалось как «источник», +
+          // пунктир для cross-page (соответствует логике маркеров cross-page).
+          const strokeWidth = isDataSource ? 2.5 : 2;
+          const dashArray = isCrossPage ? '6 4' : undefined;
           return (
             <g key={`e-${edge.fromId}-${edge.toId}-${i}`}>
               <path
                 d={path}
                 fill="none"
-                stroke={STROKE}
-                strokeWidth={2}
-                strokeOpacity={0.65}
-                markerEnd="url(#rel-arrow)"
+                stroke={stroke}
+                strokeWidth={strokeWidth}
+                strokeOpacity={0.7}
+                strokeDasharray={dashArray}
+                markerEnd={`url(#${markerId})`}
                 className="transition-all duration-300"
               />
               <circle
                 cx={edge.x1} cy={edge.y1} r={4}
-                fill={NODE_FILL} fillOpacity={0.85}
+                fill={nodeFill} fillOpacity={0.85}
                 stroke="white" strokeWidth={1.5}
               />
               <circle
                 cx={edge.x2} cy={edge.y2} r={4}
-                fill={NODE_FILL} fillOpacity={0.85}
+                fill={nodeFill} fillOpacity={0.85}
                 stroke="white" strokeWidth={1.5}
               />
               {edge.label && (
                 <g>
                   <rect
-                    x={midX - 24} y={midY - 9}
-                    width="48" height="18" rx="9"
+                    x={midX - 28} y={midY - 9}
+                    width="56" height="18" rx="9"
                     fill="white"
-                    stroke={STROKE} strokeWidth={1} strokeOpacity={0.45}
+                    stroke={stroke} strokeWidth={1} strokeOpacity={0.5}
                   />
                   <text
                     x={midX} y={midY + 4}
-                    textAnchor="middle" fill={STROKE}
+                    textAnchor="middle" fill={stroke}
                     style={{ fontSize: 10, fontWeight: 600 }}
                   >
                     {edge.label}

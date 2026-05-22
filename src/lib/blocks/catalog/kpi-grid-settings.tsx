@@ -32,11 +32,13 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import type { BlockSettingsFormProps } from '../types';
+import type { BlockSettingsFormProps, BlockInstance, SourceBinding } from '../types';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { PeriodPicker, type PeriodPreset, type PeriodValue } from '@/components/blocks/period-picker';
 import { SourceFilterChips, SOURCE_LABELS } from '@/components/blocks/source-filter-chips';
+import { SourceBindingPicker } from '@/components/blocks/source-binding-picker';
+import { readSourceBindingField } from '../source-binding';
 
 // Локальная копия schema (избегаем циклической зависимости с kpi-grid.tsx).
 const PeriodPresetSchema = z.enum([
@@ -52,6 +54,16 @@ const MetricSchema = z.enum(['income', 'expense', 'balance', 'count']);
 const FormatSchema = z.enum(['rub', 'number', 'percent', 'compact']);
 const LayoutSchema = z.enum(['row', 'column', 'grid-2col', 'grid-3col']);
 
+const SourceBindingSchema = z.union([
+  z.object({ mode: z.literal('empty') }),
+  z.object({ mode: z.literal('global') }),
+  z.object({
+    mode: z.literal('block'),
+    blockId: z.string(),
+    pageKey: z.string().optional(),
+  }),
+]);
+
 const CellSchema = z.object({
   id: z.string(),
   metric: MetricSchema.default('income'),
@@ -65,6 +77,7 @@ const CellSchema = z.object({
     .nullable()
     .optional(),
   sourceOverride: z.string().nullable().optional(),
+  sourceBindingOverride: SourceBindingSchema.optional(),
   categoryName: z.string().optional(),
   counterparty: z.string().optional(),
   format: FormatSchema.default('rub'),
@@ -75,6 +88,15 @@ const ConfigSchema = z.object({
   title: z.string().default('KPI'),
   layout: LayoutSchema.default('row'),
   cells: z.array(CellSchema).min(0).max(6).default([]),
+  defaultPeriodOverride: z
+    .object({
+      preset: PeriodPresetSchema.default('mtd'),
+      customFrom: z.string().nullable().default(null),
+      customTo: z.string().nullable().default(null),
+    })
+    .nullable()
+    .optional(),
+  defaultSourceBinding: SourceBindingSchema.optional(),
 });
 
 type Config = z.infer<typeof ConfigSchema>;
@@ -85,7 +107,7 @@ type Metric = Cell['metric'];
 function parseConfig(raw: unknown): Config {
   const parsed = ConfigSchema.safeParse(raw ?? {});
   if (parsed.success) return parsed.data;
-  return { title: 'KPI', layout: 'row', cells: [] };
+  return { title: 'KPI', layout: 'row', cells: [], defaultPeriodOverride: null };
 }
 
 function makeId(): string {
@@ -113,9 +135,18 @@ const FORMAT_OPTIONS: Array<{ value: Cell['format']; label: string }> = [
   { value: 'percent', label: '%' },
 ];
 
-export function KpiGridSettings({ config, onChange }: BlockSettingsFormProps) {
+export function KpiGridSettings({
+  config,
+  onChange,
+  instance,
+  allBlocks,
+  blockLabels,
+  pageKey,
+}: BlockSettingsFormProps) {
   const parsed = parseConfig(config);
   const [expandedCellId, setExpandedCellId] = useState<string | null>(null);
+  const defaultBinding: SourceBinding =
+    parsed.defaultSourceBinding ?? { mode: 'empty' };
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -194,6 +225,46 @@ export function KpiGridSettings({ config, onChange }: BlockSettingsFormProps) {
         </div>
       </div>
 
+      <div className="space-y-1.5 rounded-md border border-border/60 bg-muted/20 p-2">
+        <div className="flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <Label className="text-xs">Период по умолчанию</Label>
+            <div className="text-[10px] text-muted-foreground">
+              {parsed.defaultPeriodOverride
+                ? 'Используется ячейками без собственного периода'
+                : 'Ячейки наследуют период страницы'}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() =>
+              update({
+                defaultPeriodOverride: parsed.defaultPeriodOverride
+                  ? null
+                  : { preset: 'mtd' as PeriodPreset, customFrom: null, customTo: null },
+              })
+            }
+            className="text-[10px] text-primary hover:underline"
+          >
+            {parsed.defaultPeriodOverride ? 'Использовать глобальный' : 'Задать локальный'}
+          </button>
+        </div>
+        {parsed.defaultPeriodOverride && (
+          <PeriodPicker
+            value={parsed.defaultPeriodOverride as PeriodValue}
+            onChange={(v) =>
+              update({
+                defaultPeriodOverride: {
+                  preset: v.preset,
+                  customFrom: v.customFrom ?? null,
+                  customTo: v.customTo ?? null,
+                },
+              })
+            }
+          />
+        )}
+      </div>
+
       <div className="space-y-1.5">
         <div className="flex items-center justify-between">
           <Label className="text-xs">
@@ -227,7 +298,7 @@ export function KpiGridSettings({ config, onChange }: BlockSettingsFormProps) {
             Добавьте первую ячейку через кнопки выше.
           </div>
         ) : (
-          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+          <DndContext id="kpi-grid-settings:cells" sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
             <SortableContext items={parsed.cells.map((c) => c.id)} strategy={verticalListSortingStrategy}>
               <div className="space-y-1.5">
                 {parsed.cells.map((cell) => (
@@ -240,6 +311,11 @@ export function KpiGridSettings({ config, onChange }: BlockSettingsFormProps) {
                     }
                     onPatch={(p) => updateCell(cell.id, p)}
                     onRemove={() => removeCell(cell.id)}
+                    selfBlockId={instance?.id}
+                    allBlocks={allBlocks}
+                    blockLabels={blockLabels}
+                    pageKey={pageKey}
+                    defaultBinding={defaultBinding}
                   />
                 ))}
               </div>
@@ -299,12 +375,22 @@ function SortableCellRow({
   onToggleExpand,
   onPatch,
   onRemove,
+  selfBlockId,
+  allBlocks,
+  blockLabels,
+  pageKey,
+  defaultBinding,
 }: {
   cell: Cell;
   expanded: boolean;
   onToggleExpand: () => void;
   onPatch: (patch: Partial<Cell>) => void;
   onRemove: () => void;
+  selfBlockId?: string;
+  allBlocks?: BlockInstance[];
+  blockLabels?: Record<string, string>;
+  pageKey?: string;
+  defaultBinding: SourceBinding;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: cell.id,
@@ -320,6 +406,16 @@ function SortableCellRow({
   if (cell.periodOverride) overrideBadge.push('Период');
   if (cell.sourceOverride !== undefined)
     overrideBadge.push(cell.sourceOverride ? (SOURCE_LABELS[cell.sourceOverride]?.label ?? 'Источник') : 'Все источники');
+  if (cell.sourceBindingOverride !== undefined) {
+    const b = cell.sourceBindingOverride;
+    overrideBadge.push(
+      b.mode === 'empty'
+        ? 'Источник: пусто'
+        : b.mode === 'global'
+          ? 'Источник: глобально'
+          : 'Источник: блок',
+    );
+  }
 
   return (
     <div ref={setNodeRef} style={style} className="rounded-md border border-border/60 bg-card">
@@ -457,6 +553,58 @@ function SortableCellRow({
                 value={cell.sourceOverride}
                 onChange={(v) => onPatch({ sourceOverride: v })}
                 size="xs"
+              />
+            )}
+          </div>
+          <div className="space-y-1">
+            <div className="flex items-center justify-between">
+              <Label className="text-[10px] text-muted-foreground">Источник данных (override)</Label>
+              {cell.sourceBindingOverride !== undefined && (
+                <button
+                  type="button"
+                  onClick={() => onPatch({ sourceBindingOverride: undefined })}
+                  className="text-[10px] text-primary hover:underline"
+                >
+                  Наследовать
+                </button>
+              )}
+            </div>
+            {cell.sourceBindingOverride === undefined ? (
+              <div className="rounded-md border border-dashed border-border/60 px-2 py-1.5 text-[10px] text-muted-foreground">
+                Ячейка наследует block-level binding (
+                {defaultBinding.mode === 'empty'
+                  ? 'пусто'
+                  : defaultBinding.mode === 'global'
+                    ? 'глобально'
+                    : `блок ${defaultBinding.blockId.slice(0, 6)}…`}
+                ).{' '}
+                <button
+                  type="button"
+                  onClick={() =>
+                    onPatch({ sourceBindingOverride: { mode: 'global' } })
+                  }
+                  className="text-primary hover:underline"
+                >
+                  Задать свой
+                </button>
+              </div>
+            ) : (
+              <SourceBindingPicker
+                value={cell.sourceBindingOverride}
+                onChange={(next) => onPatch({ sourceBindingOverride: next })}
+                selfBlockId={selfBlockId}
+                allBlocks={allBlocks}
+                blockLabels={blockLabels}
+                pageKey={pageKey}
+                showResetToInherit
+                onResetToInherit={() => onPatch({ sourceBindingOverride: undefined })}
+                inheritedLabel={
+                  defaultBinding.mode === 'empty'
+                    ? 'пусто'
+                    : defaultBinding.mode === 'global'
+                      ? 'глобально'
+                      : 'блок'
+                }
               />
             )}
           </div>
