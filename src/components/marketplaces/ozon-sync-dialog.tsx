@@ -17,6 +17,7 @@ import {
   ChevronRight,
   CloudDownload,
   Loader2,
+  Sparkles,
   Zap,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -32,6 +33,14 @@ import { Switch } from '@/components/ui/switch';
 import { Input } from '@/components/ui/input';
 import { useMarketplaceAccounts } from '@/lib/marketplaces/use-accounts';
 import type { AccountPublic } from '@/lib/marketplaces/types';
+import {
+  describePreset,
+  moscowToday,
+  PRESET_LABELS,
+  resolvePresetRange,
+  shiftIsoDate,
+  type DateRangePreset,
+} from './ozon-sync-presets';
 
 // ---------------------------------------------------------------------------
 // Stages metadata
@@ -183,58 +192,8 @@ const DATE_AWARE_DEFAULT: StageKey[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Date helpers (MSC)
+// Date helpers переехали в `./ozon-sync-presets.ts` (pure-функции, тестируемые).
 // ---------------------------------------------------------------------------
-
-function moscowToday(): string {
-  const now = new Date();
-  const msc = new Date(now.getTime() + 3 * 60 * 60 * 1000);
-  return msc.toISOString().slice(0, 10);
-}
-
-function shiftIsoDate(iso: string, deltaDays: number): string {
-  const d = new Date(iso + 'T00:00:00Z');
-  d.setUTCDate(d.getUTCDate() + deltaDays);
-  return d.toISOString().slice(0, 10);
-}
-
-type DateRangePreset =
-  | 'yesterday'
-  | 'last3'
-  | 'last7'
-  | 'last30'
-  | 'window'
-  | 'custom';
-
-const PRESET_LABELS: Record<DateRangePreset, string> = {
-  yesterday: 'Вчера',
-  last3: 'Последние 3 дня',
-  last7: 'Последние 7 дней',
-  last30: 'Последние 30 дней',
-  window: 'Полное окно (настройки)',
-  custom: 'Произвольный диапазон',
-};
-
-function resolvePresetRange(preset: DateRangePreset): {
-  from: string;
-  to: string;
-} | null {
-  const today = moscowToday();
-  const yesterday = shiftIsoDate(today, -1);
-  switch (preset) {
-    case 'yesterday':
-      return { from: yesterday, to: yesterday };
-    case 'last3':
-      return { from: shiftIsoDate(yesterday, -2), to: yesterday };
-    case 'last7':
-      return { from: shiftIsoDate(yesterday, -6), to: yesterday };
-    case 'last30':
-      return { from: shiftIsoDate(yesterday, -29), to: yesterday };
-    case 'window':
-    case 'custom':
-      return null;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Job polling
@@ -321,7 +280,7 @@ export function OzonSyncDialog({
     };
   }, []);
 
-  const resolvedRange = resolvePresetRange(preset);
+  const resolvedRange = resolvePresetRange(preset, account?.lastSyncAt ?? null);
   const effectiveFrom = preset === 'custom' ? customFrom : (resolvedRange?.from ?? null);
   const effectiveTo = preset === 'custom' ? customTo : (resolvedRange?.to ?? null);
   const sendDateOverride = preset !== 'window';
@@ -468,21 +427,35 @@ export function OzonSyncDialog({
                 </span>
               </div>
               <div className="flex flex-wrap gap-1.5">
-                {(Object.keys(PRESET_LABELS) as DateRangePreset[]).map((p) => (
-                  <button
-                    key={p}
-                    type="button"
-                    onClick={() => setPreset(p)}
-                    className={
-                      'rounded-md border px-2 py-1 text-[11px] transition ' +
-                      (preset === p
-                        ? 'border-primary bg-primary/10 text-primary'
-                        : 'border-border/60 text-muted-foreground hover:border-border hover:text-foreground')
-                    }
-                  >
-                    {PRESET_LABELS[p]}
-                  </button>
-                ))}
+                {(Object.keys(PRESET_LABELS) as DateRangePreset[]).map((p) => {
+                  const tooltipText =
+                    p === 'auto'
+                      ? describePreset('auto', account?.lastSyncAt ?? null)
+                      : PRESET_LABELS[p];
+                  return (
+                    <button
+                      key={p}
+                      type="button"
+                      onClick={() => setPreset(p)}
+                      title={tooltipText}
+                      className={
+                        'rounded-md border px-2 py-1 text-[11px] transition ' +
+                        (preset === p
+                          ? 'border-primary bg-primary/10 text-primary'
+                          : 'border-border/60 text-muted-foreground hover:border-border hover:text-foreground')
+                      }
+                    >
+                      {p === 'auto' ? (
+                        <span className="inline-flex items-center gap-1">
+                          <Sparkles className="h-3 w-3" />
+                          {PRESET_LABELS[p]}
+                        </span>
+                      ) : (
+                        PRESET_LABELS[p]
+                      )}
+                    </button>
+                  );
+                })}
               </div>
               {preset === 'custom' && (
                 <div className="flex items-center gap-2 pt-1">
@@ -506,9 +479,14 @@ export function OzonSyncDialog({
               <div className="text-[10px] text-muted-foreground">
                 {preset === 'window'
                   ? 'Используется sliding-window из настроек аккаунта (90 дней для аналитики, 30 для рекламы).'
-                  : effectiveFrom && effectiveTo
-                    ? `Диапазон: ${effectiveFrom} → ${effectiveTo} (MSC). Date-aware стейджи загрузят только этот окно.`
-                    : 'Выберите даты'}
+                  : preset === 'auto'
+                    ? describePreset('auto', account?.lastSyncAt ?? null) +
+                      (effectiveFrom && effectiveTo
+                        ? '. Date-aware стейджи загрузят только это окно.'
+                        : '')
+                    : effectiveFrom && effectiveTo
+                      ? `Диапазон: ${effectiveFrom} → ${effectiveTo} (MSC). Date-aware стейджи загрузят только это окно.`
+                      : 'Выберите даты'}
               </div>
             </section>
 
@@ -662,7 +640,10 @@ function initialStages(preset: DateRangePreset): Record<StageKey, boolean> {
     // Full sync — все стейджи включены.
     for (const s of ALL_STAGES) out[s.key] = true;
   } else {
-    // Incremental — только date-aware (analyticsData/orders/perf*).
+    // Incremental (auto / yesterday / last3 / last7 / last30 / custom) —
+    // только date-aware (analyticsData/orders/perf*). Каталог-стейджи
+    // (products/prices/stocks) — opt-in, обычно их не нужно перегружать
+    // при «догрузить вчера».
     for (const k of DATE_AWARE_DEFAULT) out[k] = true;
   }
   return out;

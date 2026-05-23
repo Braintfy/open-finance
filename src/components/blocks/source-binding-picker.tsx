@@ -14,8 +14,8 @@
 //   />
 'use client';
 
-import { useMemo } from 'react';
-import { CircleSlash, Globe, Link2, ListTree } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { AlertTriangle, CircleSlash, Globe, Link2, ListTree } from 'lucide-react';
 import { Label } from '@/components/ui/label';
 import type { BlockInstance, SourceBinding } from '@/lib/blocks/types';
 import { TX_BLOCK_TYPE } from '@/lib/blocks/source-binding';
@@ -79,6 +79,21 @@ export function SourceBindingPicker({
     );
   }, [allBlocks, selfBlockId]);
 
+  // UI mode — отдельно от persisted value.mode, чтобы пользователь мог
+  // переключиться на «Из блока» даже когда кандидатов нет (увидит warning),
+  // а не получить тихий fallback на empty. Раньше клик по «Из блока» без
+  // кандидатов незаметно сбрасывал в empty → пользователь думал что кнопка
+  // сломана.
+  const [uiMode, setUiMode] = useState<SourceBinding['mode']>(value.mode);
+  // Syncим uiMode с value.mode когда оно меняется снаружи (load, undo и т.п.),
+  // но не перетираем локальный «block»-выбор пользователя, если он сейчас
+  // ждёт появления кандидата.
+  useEffect(() => {
+    if (value.mode !== 'block' || candidates.length > 0) {
+      setUiMode(value.mode);
+    }
+  }, [value.mode, candidates.length]);
+
   const selectedBlockId =
     value.mode === 'block' ? value.blockId : undefined;
   const selectedExists =
@@ -86,7 +101,8 @@ export function SourceBindingPicker({
     candidates.some((b) => b.id === selectedBlockId);
 
   function setMode(mode: SourceBinding['mode']) {
-    if (mode === value.mode) return;
+    if (mode === uiMode && mode === value.mode) return;
+    setUiMode(mode);
     if (mode === 'empty') {
       onChange({ mode: 'empty' });
     } else if (mode === 'global') {
@@ -96,7 +112,11 @@ export function SourceBindingPicker({
       if (first) {
         onChange({ mode: 'block', blockId: first.id, pageKey });
       } else {
-        onChange({ mode: 'empty' });
+        // Кандидатов нет — НЕ перетираем value (block-binding без blockId
+        // невалиден после round-trip через readSourceBinding). uiMode уже
+        // выставлен в 'block' выше, поэтому ниже отрисуется warning «На этой
+        // странице нет блоков "Список операций"». Когда пользователь добавит
+        // tx-блок, кнопка снова заработает корректно.
       }
     }
   }
@@ -121,7 +141,9 @@ export function SourceBindingPicker({
 
       <div className="flex flex-wrap gap-1">
         {MODES.map((m) => {
-          const active = value.mode === m.id;
+          // active = либо persisted value (для empty/global), либо локальный
+          // uiMode (для block без кандидатов, когда onChange ещё не позвали).
+          const active = uiMode === m.id;
           const Icon = m.icon;
           return (
             <button
@@ -144,18 +166,28 @@ export function SourceBindingPicker({
       </div>
 
       <p className="text-[10px] leading-snug text-muted-foreground">
-        {MODES.find((m) => m.id === value.mode)?.hint}
+        {MODES.find((m) => m.id === uiMode)?.hint}
       </p>
 
-      {value.mode === 'block' && (
+      {uiMode === 'block' && (
         <div className="space-y-1.5 pt-1">
           <Label className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
             Блок-источник
           </Label>
           {candidates.length === 0 ? (
-            <div className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100">
-              На этой странице нет блоков «Список операций». Добавьте такой блок
-              или используйте режим «Глобально».
+            <div className="flex items-start gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100">
+              <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+              <div className="space-y-0.5">
+                <div className="font-medium">
+                  На этой странице нет блоков «Список операций»
+                </div>
+                <div className="text-[10px] text-amber-800/80 dark:text-amber-300/80">
+                  Добавьте блок «Список операций» (cashflow.transactions) на
+                  эту страницу — после этого можно будет выбрать его как
+                  источник. Альтернатива: переключитесь в режим «Глобально»,
+                  чтобы данные брались из глобальных фильтров страницы.
+                </div>
+              </div>
             </div>
           ) : (
             <select

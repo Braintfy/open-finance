@@ -21,12 +21,14 @@ import {
   ChevronDown,
   ChevronRight,
   Save,
+  CloudDownload,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
 import { Switch } from '@/components/ui/switch';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { OzonSyncDialog } from '@/components/marketplaces/ozon-sync-dialog';
 import {
   Dialog,
   DialogContent,
@@ -301,6 +303,9 @@ function AccountCard({
   const [testingPerf, setTestingPerf] = useState(false);
   const [perfTestResult, setPerfTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [syncStartedHint, setSyncStartedHint] = useState(false);
+  // v0.22.2: универсальный sync-диалог с auto-preset (догрузка с
+  // последнего sync).
+  const [syncDialogOpen, setSyncDialogOpen] = useState(false);
 
   // Auto-hide «Sync запущен» баннера через 10с.
   useEffect(() => {
@@ -476,6 +481,24 @@ function AccountCard({
           >
             {testing ? <Loader2 className="animate-spin" /> : <Check />}
             Тест
+          </Button>
+          {/* v0.22.2: «Догрузить» — открывает универсальный sync-диалог с
+              auto-preset (диапазон вычисляется из lastSyncAt). По умолчанию
+              включены только date-aware стейджи (analyticsData/orders/perf*),
+              каталог-стейджи opt-in. Альтернатива «Синхронизировать» (full). */}
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setSyncDialogOpen(true)}
+            disabled={syncing}
+            title={
+              account.lastSyncAt
+                ? `Догрузить данные с ${new Date(account.lastSyncAt).toLocaleDateString('ru-RU')} (дата последнего sync). Откроется диалог с настройками.`
+                : 'Открыть диалог синхронизации с выбором диапазона и стейджей'
+            }
+          >
+            <CloudDownload />
+            Догрузить
           </Button>
           <Button size="sm" onClick={startSync} disabled={syncing}>
             {syncing ? <Loader2 className="animate-spin" /> : <RefreshCcw />}
@@ -874,6 +897,19 @@ function AccountCard({
           }}
         />
       )}
+
+      <OzonSyncDialog
+        open={syncDialogOpen}
+        onOpenChange={setSyncDialogOpen}
+        accountId={account.id}
+        defaultPreset="auto"
+        onCompleted={async ({ status }) => {
+          if (status !== 'error') {
+            onChange();
+            loadHistory();
+          }
+        }}
+      />
     </Card>
   );
 }

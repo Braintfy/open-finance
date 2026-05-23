@@ -616,7 +616,7 @@ CPC/CPO — breakdown per-SKU/CPO (может не суммироваться в
       open={syncDialogOpen}
       onOpenChange={setSyncDialogOpen}
       accountId={config.accountId ?? null}
-      defaultPreset="yesterday"
+      defaultPreset="auto"
       onCompleted={async ({ status }) => {
         if (status !== 'error') {
           // Auto re-fetch таблицы (cache бамп сделан на сервере в стейджах).

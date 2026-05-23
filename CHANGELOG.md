@@ -1,5 +1,71 @@
 # Changelog
 
+## [0.22.2] - 2026-05-23
+
+**Patch v0.22.1**: фикс «сломанной» кнопки `Из блока` в источнике данных + унификация sync-UI вокруг `OzonSyncDialog` (header `/marketplaces/ozon`, Settings → Integrations → AccountCard) + smart auto-preset для диалога (диапазон вычисляется из `lastSyncAt`).
+
+### A. `SourceBindingPicker` — кнопка «Из блока» больше не silent fail
+
+- **Bug**: при клике на «Из блока» когда на странице нет блоков `cashflow.transactions` (типичный кейс для unit-economics страниц с Ozon-блоками) — код silently откатывал mode в `empty`. Пользователь видел: кнопка не активируется, ничего не меняется, никакого фидбэка.
+- **Fix**: добавлен локальный `uiMode` state, который обновляется немедленно при клике (independent от persisted `value.mode`). Кнопка теперь визуально активируется, и под чипами появляется amber-warning с конкретными инструкциями: «Добавьте блок Список операций на эту страницу — после этого можно будет выбрать его как источник. Альтернатива: режим Глобально».
+- **Сохраняет инвариант**: `value` НЕ перетирается невалидным `{ mode: 'block', blockId: '' }` — после round-trip через `readSourceBinding()` оно стало бы `undefined` и сбросилось бы в `empty` на следующем рендере. Локальный UI mode «помнит» намерение пользователя в рамках сессии диалога.
+- **useEffect-sync**: если `value.mode` изменилось снаружи (load, undo) — `uiMode` подтягивается, кроме случая когда юзер сейчас держит `block` без кандидатов (не сбрасываем его выбор).
+
+### B. `SyncAllButton` (header `/marketplaces/ozon`) → `OzonSyncDialog`
+
+- **Удалён собственный popover** с чекбоксами стейджей (95 строк inline-логики) — заменён вызовом универсального `OzonSyncDialog`.
+- **Сохранён**: select для выбора магазина (если их >1), disabled-state без подключённого Ozon-аккаунта, ссылка «Подключить Ozon».
+- **Default preset = `auto`** — открывается с уже рассчитанным «догрузим N дней с YYYY-MM-DD» по `account.lastSyncAt`.
+
+### C. Settings → Integrations → AccountCard — кнопка «Догрузить»
+
+- **Новая кнопка** в toolbar `AccountCard` рядом с «Синхронизировать» (full sync) и «Тест»: `<CloudDownload> Догрузить`. Открывает `OzonSyncDialog` с `defaultPreset='auto'`.
+- **Tooltip**: «Догрузить данные с {lastSyncAt в RU-формате}. Откроется диалог с настройками» — пользователь видит расчёт дат прямо из tooltip'a.
+- **`onCompleted`**: триггерит `onChange()` (refresh accounts) + `loadHistory()` (обновление списка job'ов).
+- **Разделение ответственности**: «Синхронизировать» = full sync (старая логика, kind=full с дефолтными стейджами); «Догрузить» = универсальный диалог с настройками диапазона и стейджей.
+
+### D. `OzonSyncDialog` — smart `auto` preset
+
+- **Новый preset `auto`** в `DateRangePreset` — резолвится в зависимости от `account.lastSyncAt`:
+  - `null` / невалидно / `undefined` → 30-дневное окно (безопасный дефолт)
+  - `lastSync` ≤ 1 день назад → только вчера (1 день догрузки)
+  - `lastSync` 2–90 дней назад → от `lastSyncIso` до вчера (включительно, чтобы пере-захватить день который мог быть не полностью записан)
+  - `lastSync` > 90 дней назад → fallback 30 дней (защита от мега-sync'а через incremental endpoint)
+  - `lastSync` в будущем (кривые часы клиента) → from = yesterday (защита от негативного диапазона)
+- **`describePreset('auto', lastSyncAt)`** — человеческий hint в UI: «Догрузим N дн.: 2026-05-20 → 2026-05-22» или «Без истории sync → загрузим 30 дней (...)». Показывается под чипами + в tooltip'е чипа.
+- **Чип `auto`** имеет иконку `<Sparkles>` для визуального отличия от обычных пресетов.
+- **Date-aware stages auto-включаются** для `auto` (как и для остальных incremental пресетов): analyticsData, orders, perfExpenseDaily, perfSkuStats, perfCpoDaily.
+- **Default preset для всех точек входа** обновлён на `auto`: `SyncAllButton` (header), `AccountCard` (settings), `unit.ozon-analytics` toolbar (раньше было `yesterday`).
+
+### E. Refactor: helpers pure-функциями
+
+- **Извлечены в `src/components/marketplaces/ozon-sync-presets.ts`**: `resolvePresetRange`, `describePreset`, `moscowToday`, `shiftIsoDate`, `diffDaysInclusive`, `PRESET_LABELS`, `DateRangePreset` type. Не зависят от React — можно тестировать unit-тестами.
+- **`scripts/test-ozon-sync-presets.ts`** — 26 тестов:
+  - Date helpers (`moscowToday`, `shiftIsoDate`, `diffDaysInclusive`)
+  - Простые пресеты (`yesterday`, `last3/7/30`, `window`, `custom`)
+  - `auto` preset edge cases (null/today/yesterday/3 дня/30 дней/89 дней/100 дней/future/invalid)
+  - `describePreset` для каждого пресета (включая `auto` с разными `lastSyncAt`)
+
+### Файлы
+
+**Изменены:**
+- `src/components/blocks/source-binding-picker.tsx` — local `uiMode` state, AlertTriangle иконка в warning'е, более понятный текст инструкции
+- `src/components/marketplaces/sync-all-button.tsx` — заменён popover на `OzonSyncDialog`, упрощён до 90 строк (было 211)
+- `src/components/marketplaces/ozon-sync-dialog.tsx` — добавлен `auto` preset, `Sparkles` иконка, использует helpers из `ozon-sync-presets.ts`
+- `src/app/(app)/settings/integrations/integrations-client.tsx` — кнопка `Догрузить` + `OzonSyncDialog` в `AccountCard`
+- `src/lib/blocks/catalog/unit-ozon-analytics.tsx` — `defaultPreset='auto'` (было `'yesterday'`)
+
+**Созданы:**
+- `src/components/marketplaces/ozon-sync-presets.ts` — pure-функции для preset-расчётов
+- `scripts/test-ozon-sync-presets.ts` — 26 тестов (`pnpm tsx scripts/test-ozon-sync-presets.ts`)
+
+### Проверка
+
+- `pnpm typecheck` ✓
+- `pnpm lint` ✓ (только pre-existing warnings, не связанные с правками)
+- `pnpm tsx scripts/test-ozon-sync-presets.ts` → 26/26 PASS
+- `pnpm tsx scripts/test-ozon-sync-incremental.ts` → 22/22 PASS
+
 ## [0.22.1] - 2026-05-23
 
 **Patch v0.22.0**: фиксы UI-мелочей (chevron «Период страницы», empty-source placeholder) + крупное расширение Ozon sync API под incremental backfill (диапазон дат), новая универсальная `OzonSyncDialog` модалка с toolbar-кнопкой в `unit.ozon-analytics`.
