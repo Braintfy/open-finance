@@ -1,9 +1,9 @@
 // PURPOSE: BlockGrid — react-grid-layout обёртка с edit mode, settings dialog, persist API
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Responsive, WidthProvider, type Layout } from 'react-grid-layout';
-import { Plus, Pencil, Check, RotateCcw, Network } from 'lucide-react';
+import { Plus, Pencil, Check, RotateCcw, Network, Eye, EyeOff } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   AlertDialog,
@@ -22,6 +22,17 @@ import { AddBlockDialog, type AddBlockResult } from './add-block-dialog';
 import { BlockSettingsDialog } from './block-settings-dialog';
 import { BlockSizeProvider } from './block-size';
 import { BlockValuesProvider } from '@/lib/blocks/values';
+import {
+  PagePeriodContext,
+  PagePeriodProvider,
+} from '@/lib/blocks/page-period-context';
+import {
+  PageSourceContext,
+  PageSourceProvider,
+} from '@/lib/blocks/page-source-context';
+import { PagePeriodHeader } from './page-period-header';
+import { usePagePeriodHeaderVisibility } from '@/lib/blocks/use-page-period-visibility';
+import { VirtualSourcesBridge } from '@/lib/blocks/virtual-sources';
 import { BlockRelationsOverlay } from './block-relations-overlay';
 import { MicroAgentDialog } from '@/components/micro-agent/micro-agent-dialog';
 import type { BlockContext, SuggestedAction } from '@/lib/ai/micro-agent/types';
@@ -333,9 +344,54 @@ type Props = {
   initialBlocks: BlockInstance[];
   /** Обёртка для контекста данных страницы (например CashflowDataProvider) */
   children?: (rendered: React.ReactNode) => React.ReactNode;
+  /**
+   * v0.22.0: панель «Период и источник». Default `'auto'` — показываем, если
+   * на странице есть bound-блоки (stat/chart/top-categories/kpi.grid c
+   * sourceBinding.mode='global' или cashflow.transactions без period override).
+   * `'never'` — никогда (например для inbox без cashflow-блоков).
+   * `'always'` — всегда (для cashflow).
+   */
+  periodPanel?: 'auto' | 'always' | 'never';
+  /** Показывать чипы выбора источника (transactions.source). */
+  showSourceFilter?: boolean;
+  /** Подпись над панелью периода (default — generic). */
+  periodPanelDescription?: string;
 };
 
-export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props) {
+export function BlockGrid(props: Props) {
+  // Если внешний код уже обернул в PagePeriodProvider/PageSourceProvider
+  // (например cashflow-client передаёт собственный wrap для совместимости) —
+  // не создаём дублирующих провайдеров, иначе inner state перебьёт outer.
+  const hasPagePeriod = useContext(PagePeriodContext) !== null;
+  const hasPageSource = useContext(PageSourceContext) !== null;
+  const inner = <BlockGridInner {...props} />;
+  let wrapped = inner;
+  if (!hasPageSource) {
+    wrapped = (
+      <PageSourceProvider pageKey={props.pageKey} defaultValue={null}>
+        {wrapped}
+      </PageSourceProvider>
+    );
+  }
+  if (!hasPagePeriod) {
+    wrapped = (
+      <PagePeriodProvider pageKey={props.pageKey} defaultPreset="mtd">
+        {wrapped}
+      </PagePeriodProvider>
+    );
+  }
+  return wrapped;
+}
+
+function BlockGridInner({
+  pageKey,
+  tenantId,
+  initialBlocks,
+  children,
+  periodPanel = 'auto',
+  showSourceFilter = false,
+  periodPanelDescription,
+}: Props) {
   const [blocks, setBlocks] = useState<BlockInstance[]>(() => sanitizeBlocks(initialBlocks));
   const [editMode, setEditMode] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
@@ -404,6 +460,34 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
     }
     return m;
   }, [blocks]);
+
+  // v0.22.0: visibility панели «Период и источник».
+  //  - 'never' — никогда не показываем (например пустая страница без cashflow)
+  //  - 'always' — рендерим всегда (cashflow)
+  //  - 'auto' — auto-detect по bound-блокам, collapsed dеfault если нет
+  const periodVis = usePagePeriodHeaderVisibility(pageKey, blocks);
+  const showPanel = periodPanel !== 'never';
+  const panelCollapsed = periodPanel === 'always' ? false : periodVis.collapsed;
+  // Bound-блоки → нужны cashflow virtual sources (income/expense/balance KPI).
+  const needsVirtualSources = useMemo(() => {
+    if (periodPanel === 'never') return false;
+    // pageHasGlobalBoundBlocks был вызван внутри hook'а — reuse через !collapsed default.
+    // Простее: ставим bridge если есть любые bound-блоки на странице.
+    return blocks.some((b) => {
+      const cfg = (b.config ?? {}) as Record<string, unknown>;
+      const isBound =
+        b.type === 'stat.income' ||
+        b.type === 'stat.expense' ||
+        b.type === 'stat.balance' ||
+        b.type === 'stat.custom' ||
+        b.type === 'cashflow.top-categories' ||
+        b.type === 'chart.cashflow' ||
+        b.type === 'kpi.grid' ||
+        b.type === 'cashflow.transactions';
+      void cfg;
+      return isBound;
+    });
+  }, [blocks, periodPanel]);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingBlocks = useRef<BlockInstance[] | null>(null);
   /**
@@ -842,6 +926,18 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
           )}
         </div>
         <div className="flex gap-1.5">
+          {/* v0.22.0: toggle видимости панели «Период и источник». Только в edit. */}
+          {showPanel && editMode && periodPanel !== 'always' && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => periodVis.toggle(!panelCollapsed)}
+              title={panelCollapsed ? 'Показать панель периода' : 'Скрыть панель периода'}
+              aria-label="Переключить видимость панели периода"
+            >
+              {panelCollapsed ? <Eye /> : <EyeOff />}
+            </Button>
+          )}
           {hasRelations && (
             <Button
               variant={showRelations ? 'default' : 'ghost'}
@@ -882,6 +978,21 @@ export function BlockGrid({ pageKey, tenantId, initialBlocks, children }: Props)
           </Button>
         </div>
       </div>
+
+      {showPanel && (
+        <PagePeriodHeader
+          description={periodPanelDescription}
+          showSourceFilter={showSourceFilter}
+          collapsed={panelCollapsed}
+          onToggleCollapsed={
+            periodPanel === 'always' ? undefined : (next) => periodVis.toggle(next)
+          }
+        />
+      )}
+
+      {/* Virtual sources bridge — фетчит cashflow KPI с page-level period/source
+          и публикует как `__virtual:cashflow.kpi.*` для cross-block bindings. */}
+      {needsVirtualSources && <VirtualSourcesBridge />}
 
       {blocks.length === 0 ? (
         <EmptyState

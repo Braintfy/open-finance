@@ -9,5 +9,6 @@ export * from './ai';
 export * from './boards';
 export * from './inbox';
 export * from './unit-economics';
+export * from './unit-economics-tabs';
 export * from './currency';
 export * from './marketplaces';

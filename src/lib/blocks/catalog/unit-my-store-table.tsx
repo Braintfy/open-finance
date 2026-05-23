@@ -4,7 +4,7 @@
 // Базируется на структуре unit.ozon-multi-table (sticky шапка/колонки/итоги).
 'use client';
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Plus,
   Trash2,
@@ -14,6 +14,7 @@ import {
   Settings2,
   Eye,
   EyeOff,
+  Download,
 } from 'lucide-react';
 import { z } from 'zod';
 import type { BlockDef, BlockRenderProps } from '../types';
@@ -28,6 +29,16 @@ import { rublesToKopecks } from '@/lib/unit-economics/types';
 import { useBlockValuePublisher } from '@/lib/blocks/values';
 import { useFormatSettings, formatRublesWithSettings } from '@/lib/format-settings';
 import { evalRowFormulas } from '@/lib/unit-economics/store-formula';
+import {
+  OzonImportFromAnalyticsDialog,
+  type OzonImportSettings,
+} from '@/components/unit-economics/ozon-import-from-analytics-dialog';
+import {
+  OZON_TO_MY_STORE_COLUMN_MAP,
+  extractOzonValue,
+} from '@/lib/unit-economics/ozon-to-my-store';
+import type { OzonAnalyticsRow } from '@/lib/blocks/catalog/unit-ozon-analytics-types';
+import type { TableColumnKey } from '@/components/unit-economics/ozon-analytics-table';
 import {
   Dialog,
   DialogContent,
@@ -118,11 +129,23 @@ function defaultColumns(): Column[] {
   ];
 }
 
+/** Конфиг импорта из Ozon Аналитика (v0.22.0). */
+const ImportSourceSchema = z.object({
+  blockId: z.string(),
+  pageKey: z.string(),
+  columns: z.array(z.string()).default([]),
+  matchBy: z.enum(['article', 'sku']).default('article'),
+  mode: z.enum(['merge', 'replace']).default('merge'),
+  syncOnMount: z.boolean().default(false),
+  lastImportedAt: z.string().optional(),
+});
+
 const ConfigSchema = z.object({
   title: z.string().default('Мой магазин'),
   global: GlobalSchema.default(GlobalSchema.parse({})),
   columns: z.array(ColumnSchema).default([]),
   rows: z.array(RowSchema).default([]),
+  importSource: ImportSourceSchema.optional(),
 });
 
 type Config = z.infer<typeof ConfigSchema>;
@@ -172,6 +195,10 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
   const showKopecks = settings.showKopecks;
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [editingCol, setEditingCol] = useState<string | null>(null);
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
+  const [importInProgress, setImportInProgress] = useState(false);
+  const [importNotice, setImportNotice] = useState<string | null>(null);
+  const lastSyncRef = useRef<number>(0);
 
   const persist = useCallback(
     (patch: Partial<Config>) => {
@@ -179,6 +206,151 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
     },
     [config, onConfigChange],
   );
+
+  /**
+   * Merge Ozon-аналитики в текущие columns/rows.
+   *  - Колонки: для каждой выбранной Ozon-колонки добавляем в config.columns
+   *    запись из OZON_TO_MY_STORE_COLUMN_MAP, если её ещё нет (по id).
+   *  - Строки: ключ matchBy (article|sku). Существующая строка → обновить
+   *    только values[colId] для импортируемых колонок. Новая строка →
+   *    добавить с article/name из Ozon. Mode='replace' → стираем все строки
+   *    перед merge.
+   */
+  const mergeOzonRowsIntoConfig = useCallback(
+    (rows: OzonAnalyticsRow[], settingsArg: OzonImportSettings) => {
+      const importedKeys = settingsArg.columns.filter(
+        (k): k is TableColumnKey => k in OZON_TO_MY_STORE_COLUMN_MAP,
+      );
+
+      // 1. Подготовим набор новых колонок (только тех, которых ещё нет).
+      const existingIds = new Set(config.columns.map((c) => c.id));
+      const newColumns: Column[] = [];
+      for (const k of importedKeys) {
+        const def = OZON_TO_MY_STORE_COLUMN_MAP[k];
+        if (existingIds.has(def.id)) continue;
+        newColumns.push({
+          id: def.id,
+          label: def.label,
+          type: def.type,
+          unit: def.unit,
+          width: def.width,
+        });
+      }
+      const nextColumns = [...config.columns, ...newColumns];
+
+      // 2. Подготовим merge-карту: ключ → существующая строка.
+      const baseRows = settingsArg.mode === 'replace' ? [] : config.rows.slice();
+      const byKey = new Map<string, Row>();
+      const keyOf = (article: string | null | undefined, sku: string | null | undefined) =>
+        (settingsArg.matchBy === 'sku' ? sku ?? '' : article ?? '').toLowerCase().trim();
+      for (const row of baseRows) {
+        const k = keyOf(row.article, row.values['ozonSku'] as string | undefined);
+        if (k) byKey.set(k, row);
+      }
+
+      // 3. Применяем impore.
+      for (const ozon of rows) {
+        const k = keyOf(ozon.article, ozon.sku);
+        if (!k) continue;
+        const existing = byKey.get(k);
+        if (existing) {
+          // Обновляем только импортируемые колонки, не трогаем остальные.
+          const nextValues = { ...existing.values };
+          for (const colKey of importedKeys) {
+            const def = OZON_TO_MY_STORE_COLUMN_MAP[colKey];
+            const value = extractOzonValue(ozon, colKey);
+            if (value !== null) nextValues[def.id] = value;
+          }
+          byKey.set(k, { ...existing, values: nextValues });
+        } else {
+          // Новая строка
+          const nextValues: Record<string, number | string> = {};
+          for (const colKey of importedKeys) {
+            const def = OZON_TO_MY_STORE_COLUMN_MAP[colKey];
+            const value = extractOzonValue(ozon, colKey);
+            if (value !== null) nextValues[def.id] = value;
+          }
+          byKey.set(k, {
+            id: makeId('r'),
+            article: ozon.article ?? '',
+            name: ozon.name ?? '',
+            values: nextValues,
+            bindings: {},
+          });
+        }
+      }
+
+      const nextRows = Array.from(byKey.values());
+
+      persist({
+        columns: nextColumns,
+        rows: nextRows,
+        importSource: {
+          blockId: settingsArg.blockId,
+          pageKey: settingsArg.pageKey,
+          columns: settingsArg.columns,
+          matchBy: settingsArg.matchBy,
+          mode: settingsArg.mode,
+          syncOnMount: settingsArg.syncOnMount,
+          lastImportedAt: new Date().toISOString(),
+        },
+      });
+
+      return { rowsCount: nextRows.length, columnsAdded: newColumns.length };
+    },
+    [config.columns, config.rows, persist],
+  );
+
+  const runOzonImport = useCallback(
+    async (settingsArg: OzonImportSettings): Promise<void> => {
+      setImportInProgress(true);
+      try {
+        const res = await fetch('/api/unit-economics/import/ozon-analytics', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sourceBlockId: settingsArg.blockId,
+            sourcePageKey: settingsArg.pageKey,
+          }),
+        });
+        const data = await res.json();
+        if (!data.ok) {
+          throw new Error(data.error ?? `HTTP ${res.status}`);
+        }
+        const rows = (data.rows ?? []) as OzonAnalyticsRow[];
+        const stats = mergeOzonRowsIntoConfig(rows, settingsArg);
+        lastSyncRef.current = Date.now();
+        setImportNotice(
+          `Импортировано ${stats.rowsCount} товаров` +
+            (stats.columnsAdded > 0 ? `, +${stats.columnsAdded} колонок` : ''),
+        );
+        setTimeout(() => setImportNotice(null), 3500);
+      } finally {
+        setImportInProgress(false);
+      }
+    },
+    [mergeOzonRowsIntoConfig],
+  );
+
+  /** Live-sync: при mount/изменении importSource.syncOnMount тихо обновляем. */
+  const importSource = config.importSource;
+  useEffect(() => {
+    if (!importSource || !importSource.syncOnMount) return;
+    // Throttle 30 sec.
+    const now = Date.now();
+    if (now - lastSyncRef.current < 30_000) return;
+    runOzonImport({
+      blockId: importSource.blockId,
+      pageKey: importSource.pageKey,
+      columns: importSource.columns as TableColumnKey[],
+      matchBy: importSource.matchBy,
+      mode: importSource.mode,
+      syncOnMount: importSource.syncOnMount,
+    }).catch(() => {
+      // ignore silent sync errors
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [importSource?.syncOnMount, importSource?.blockId, importSource?.pageKey]);
 
   const updateGlobal = useCallback(
     <K extends keyof GlobalParams>(key: K, value: GlobalParams[K]) => {
@@ -419,6 +591,15 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
             className="hidden"
             disabled
           />
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setImportDialogOpen(true)}
+            disabled={importInProgress}
+            title="Импортировать данные из блока «Ozon · Аналитика»"
+          >
+            <Download /> Из Ozon Аналитики
+          </Button>
           <Button variant="outline" size="sm" onClick={() => addColumn()}>
             <Plus /> Колонка
           </Button>
@@ -433,6 +614,30 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
           </Button>
         </div>
       </div>
+
+      {/* Import notice + live-sync indicator */}
+      {(importNotice || config.importSource?.lastImportedAt) && (
+        <div className="flex items-center justify-between gap-2 border-b border-border/40 bg-sky-50/40 px-3 py-1 text-[11px] dark:bg-sky-950/30">
+          {importNotice ? (
+            <span className="text-sky-800 dark:text-sky-300">{importNotice}</span>
+          ) : (
+            <span className="text-muted-foreground">
+              Импорт из Ozon Аналитики:{' '}
+              {new Date(config.importSource!.lastImportedAt!).toLocaleString('ru-RU')}
+              {config.importSource?.syncOnMount && ' · авто-синхронизация'}
+            </span>
+          )}
+          {config.importSource && (
+            <button
+              type="button"
+              onClick={() => persist({ importSource: undefined })}
+              className="text-[10px] text-muted-foreground hover:text-red-500"
+            >
+              Отключить
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Global params */}
       <div className="flex flex-wrap items-center gap-3 border-b border-border/60 bg-muted/20 px-3 py-2 text-[11px]">
@@ -680,6 +885,24 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
           onBulkFill={(value) => bulkFillColumn(editingColumn.id, value)}
         />
       )}
+
+      <OzonImportFromAnalyticsDialog
+        open={importDialogOpen}
+        onClose={() => setImportDialogOpen(false)}
+        onImport={runOzonImport}
+        initialSettings={
+          config.importSource
+            ? {
+                blockId: config.importSource.blockId,
+                pageKey: config.importSource.pageKey,
+                columns: config.importSource.columns as TableColumnKey[],
+                matchBy: config.importSource.matchBy,
+                mode: config.importSource.mode,
+                syncOnMount: config.importSource.syncOnMount,
+              }
+            : undefined
+        }
+      />
     </Card>
   );
 }

@@ -24,7 +24,6 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { BlockGrid } from '@/components/blocks/block-grid';
-import { PagePeriodHeader } from '@/components/blocks/page-period-header';
 import {
   CashflowDataProvider,
   type CashflowSummary,
@@ -32,10 +31,7 @@ import {
   type CashflowTx,
 } from '@/lib/blocks/catalog/cashflow-data';
 import { TransactionDialog } from '@/lib/blocks/catalog/transaction-dialog';
-import { PagePeriodProvider } from '@/lib/blocks/page-period-context';
-import { PageSourceProvider } from '@/lib/blocks/page-source-context';
 import { DrillDownProvider } from '@/lib/blocks/drill-down';
-import { VirtualSourcesBridge } from '@/lib/blocks/virtual-sources';
 import type { BlockInstance } from '@/lib/blocks/types';
 import { formatRubles, formatDate } from '@/lib/utils';
 
@@ -59,70 +55,70 @@ export function CashflowClient({
   const [showImport, setShowImport] = useState(false);
 
   return (
-    <PagePeriodProvider pageKey="cashflow" defaultPreset="mtd">
-      <PageSourceProvider pageKey="cashflow" defaultValue={null}>
-        <DrillDownProvider>
-          <div className="mx-auto max-w-[1400px] space-y-3">
-            <div className="flex items-center justify-between gap-4 border-b border-border/60 pb-3">
-              <div className="min-w-0">
-                <h1 className="truncate text-lg font-semibold tracking-tight">Денежный поток</h1>
-                <p className="text-xs text-muted-foreground">
-                  Доходы и расходы — все блоки наследуют единый период страницы и источник
-                </p>
-              </div>
-              <div className="flex shrink-0 gap-1.5">
-                <Button variant="outline" size="sm" onClick={() => setShowImport(true)}>
-                  <Upload /> Импорт
-                </Button>
-                <Button size="sm" onClick={() => setShowAdd(true)}>
-                  <Plus /> Добавить
-                </Button>
-              </div>
-            </div>
-
-            <PagePeriodHeader
-              description="Период и источник — наследуются всеми KPI и графиками"
-              showSourceFilter
-            />
-
-              <BlockGrid pageKey="cashflow" tenantId={tenantId} initialBlocks={initialBlocks}>
-              {(grid) => (
-                <CashflowDataProvider
-                  value={{
-                    summary,
-                    topIncome,
-                    topExpense,
-                    transactions: initialTransactions,
-                  }}
-                >
-                  <VirtualSourcesBridge />
-                  {grid}
-                </CashflowDataProvider>
-              )}
-            </BlockGrid>
-
-            <TransactionDialog
-              open={showAdd}
-              initial={null}
-              onClose={() => setShowAdd(false)}
-              onSaved={() => {
-                setShowAdd(false);
-                router.refresh();
-              }}
-            />
-
-            <ImportDialog
-              open={showImport}
-              onClose={() => setShowImport(false)}
-              onDone={() => {
-                setShowImport(false);
-                router.refresh();
-              }}
-            />
+    <DrillDownProvider>
+      <div className="mx-auto max-w-[1400px] space-y-3">
+        <div className="flex items-center justify-between gap-4 border-b border-border/60 pb-3">
+          <div className="min-w-0">
+            <h1 className="truncate text-lg font-semibold tracking-tight">Денежный поток</h1>
+            <p className="text-xs text-muted-foreground">
+              Доходы и расходы — все блоки наследуют единый период страницы и источник
+            </p>
           </div>
-        </DrillDownProvider>
-      </PageSourceProvider>
-    </PagePeriodProvider>
+          <div className="flex shrink-0 gap-1.5">
+            <Button variant="outline" size="sm" onClick={() => setShowImport(true)}>
+              <Upload /> Импорт
+            </Button>
+            <Button size="sm" onClick={() => setShowAdd(true)}>
+              <Plus /> Добавить
+            </Button>
+          </div>
+        </div>
+
+        {/* v0.22.0: PagePeriodHeader + VirtualSourcesBridge теперь живут внутри
+            BlockGrid (auto-mount). PagePeriodProvider/PageSourceProvider тоже
+            создаются автоматически (если не обёрнуты снаружи). */}
+        <BlockGrid
+          pageKey="cashflow"
+          tenantId={tenantId}
+          initialBlocks={initialBlocks}
+          periodPanel="always"
+          showSourceFilter
+          periodPanelDescription="Период и источник — наследуются всеми KPI и графиками"
+        >
+          {(grid) => (
+            <CashflowDataProvider
+              value={{
+                summary,
+                topIncome,
+                topExpense,
+                transactions: initialTransactions,
+              }}
+            >
+              {grid}
+            </CashflowDataProvider>
+          )}
+        </BlockGrid>
+
+        <TransactionDialog
+          open={showAdd}
+          initial={null}
+          onClose={() => setShowAdd(false)}
+          onSaved={() => {
+            setShowAdd(false);
+            router.refresh();
+          }}
+        />
+
+        <ImportDialog
+          open={showImport}
+          onClose={() => setShowImport(false)}
+          onDone={() => {
+            setShowImport(false);
+            router.refresh();
+          }}
+        />
+      </div>
+    </DrillDownProvider>
   );
 }
 

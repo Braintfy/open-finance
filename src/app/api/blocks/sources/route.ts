@@ -4,6 +4,7 @@ import { and, eq, gte, ilike, sql } from 'drizzle-orm';
 import { auth } from '@/lib/auth';
 import { db } from '@/lib/db/client';
 import { blockLayouts } from '@/lib/db/schema/block-layouts';
+import { unitEconomicsTabs } from '@/lib/db/schema/unit-economics-tabs';
 import { transactions } from '@/lib/db/schema/transactions';
 import { loadLayout } from '@/lib/blocks/queries';
 import { getCashflowSummary, getCashflowKpi } from '@/lib/cashflow/queries';
@@ -147,9 +148,15 @@ function categoryRank(cat: string): number {
   return i === -1 ? CATEGORY_ORDER.length : i;
 }
 
-function pageLabel(pageKey: string): string {
+function pageLabel(pageKey: string, customLabels?: Record<string, string>): string {
+  if (customLabels?.[pageKey]) return customLabels[pageKey];
   if (PAGE_LABELS[pageKey]) return PAGE_LABELS[pageKey];
   if (pageKey.startsWith('board-')) return 'Доска';
+  // v0.22.0: custom unit-economics-вкладки. Если label не найден в БД —
+  // fallback на "Юнит-экономика · <hash>".
+  if (pageKey.startsWith('unit-economics-custom-')) {
+    return `Юнит-экономика · ${pageKey.slice('unit-economics-custom-'.length)}`;
+  }
   return pageKey;
 }
 
@@ -1142,7 +1149,28 @@ export async function GET() {
     .from(blockLayouts)
     .where(and(eq(blockLayouts.tenantId, tenantId), eq(blockLayouts.userId, userId)));
 
-  const pageKeys: string[] = Array.from(new Set([...DEFAULT_PAGE_KEYS, ...saved.map((r) => r.pageKey)]));
+  // v0.22.0: custom unit-economics-вкладки — динамические pageKeys + labels.
+  const unitTabsList = await db
+    .select({
+      pageKey: unitEconomicsTabs.pageKey,
+      label: unitEconomicsTabs.label,
+    })
+    .from(unitEconomicsTabs)
+    .where(
+      and(eq(unitEconomicsTabs.tenantId, tenantId), eq(unitEconomicsTabs.userId, userId)),
+    );
+  const customLabels: Record<string, string> = {};
+  for (const t of unitTabsList) {
+    customLabels[t.pageKey] = t.label;
+  }
+
+  const pageKeys: string[] = Array.from(
+    new Set([
+      ...DEFAULT_PAGE_KEYS,
+      ...unitTabsList.map((t) => t.pageKey),
+      ...saved.map((r) => r.pageKey),
+    ]),
+  );
   const now = new Date();
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
   const [monthlySummary, currencyRatesList] = await Promise.all([
@@ -1164,7 +1192,7 @@ export async function GET() {
     const blocks = await Promise.all(layout.blocks.map(async (block) => {
       const meta = typeMeta(block.type);
       const label = titleOf(block);
-      const pLabel = pageLabel(pageKey);
+      const pLabel = pageLabel(pageKey, customLabels);
       const fields = await fieldsForBlock(block, tenantId, monthlySummary, currencyRatesByCode);
       const allFields: SourceField[] = [
         ...fields,
@@ -1200,7 +1228,7 @@ export async function GET() {
       if (r !== 0) return r;
       return a.label.localeCompare(b.label, 'ru');
     });
-    return { pageKey, pageLabel: pageLabel(pageKey), blocks };
+    return { pageKey, pageLabel: pageLabel(pageKey, customLabels), blocks };
   }));
 
   return NextResponse.json({ ok: true, pages: [virtualPage, ...pages] });

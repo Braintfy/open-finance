@@ -1,73 +1,169 @@
-// PURPOSE: Клиентский UI раздела «Юнит-экономика» — три вкладки
-// (Ozon · Ozon мульти · Яндекс Маркет), каждая со своим BlockGrid.
+// PURPOSE: Клиентский UI раздела «Юнит-экономика» с CRUD-вкладками.
+// v0.22.0: вкладки динамические (rename / create / clone / delete) через
+// /api/unit-economics/tabs. Default-вкладки (Ozon, Ozon мульти, Яндекс,
+// Мой магазин) seed'ятся при первом визите. Custom — любой набор блоков.
 'use client';
 
-import { useState } from 'react';
-import { Calculator, Table as TableIcon, Layers, Store } from 'lucide-react';
+import { useCallback, useMemo, useRef, useState } from 'react';
+import {
+  Calculator,
+  Table as TableIcon,
+  Layers,
+  Store,
+  Plus,
+  Pencil,
+  Copy,
+  Trash2,
+  X,
+  Check,
+  MoreHorizontal,
+} from 'lucide-react';
 import { BlockGrid } from '@/components/blocks/block-grid';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+  DropdownMenuSeparator,
+} from '@/components/ui/dropdown-menu';
 import type { BlockInstance } from '@/lib/blocks/types';
 import { cn } from '@/lib/utils';
 
-type TabKey = 'ozon' | 'ozon-multi' | 'yandex' | 'my-store';
-
-const TABS: Array<{
-  key: TabKey;
-  label: string;
-  description: string;
-  icon: React.ComponentType<{ className?: string }>;
+export type ClientTab = {
+  id: string;
   pageKey: string;
-}> = [
-  {
-    key: 'ozon',
-    label: 'Ozon',
-    description: 'FBO / FBS · одиночный товар',
-    icon: Calculator,
-    pageKey: 'unit-economics-ozon',
-  },
-  {
-    key: 'ozon-multi',
-    label: 'Ozon мульти-артикул',
-    description: 'Таблица товаров с расчётом и привязками',
-    icon: TableIcon,
-    pageKey: 'unit-economics-ozon-multi',
-  },
-  {
-    key: 'yandex',
-    label: 'Яндекс Маркет',
-    description: 'FBY / FBS / DBS / Express',
-    icon: Layers,
-    pageKey: 'unit-economics-yandex',
-  },
-  {
-    key: 'my-store',
-    label: 'Мой магазин',
-    description: 'Своя таблица: формулы, привязки, колонки',
-    icon: Store,
-    pageKey: 'unit-economics-my-store',
-  },
-];
+  label: string;
+  icon: string | null;
+  order: number;
+  kind: 'default' | 'custom';
+  defaultKey: string | null;
+  blocks: BlockInstance[];
+};
+
+const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
+  Calculator,
+  Table: TableIcon,
+  Layers,
+  Store,
+};
+
+function iconFor(name: string | null): React.ComponentType<{ className?: string }> {
+  return (name && ICON_MAP[name]) || Store;
+}
 
 export function UnitEconomicsClient({
   tenantId,
-  ozonBlocks,
-  multiBlocks,
-  yandexBlocks,
-  myStoreBlocks,
+  initialTabs,
 }: {
   tenantId: string;
-  ozonBlocks: BlockInstance[];
-  multiBlocks: BlockInstance[];
-  yandexBlocks: BlockInstance[];
-  myStoreBlocks: BlockInstance[];
+  initialTabs: ClientTab[];
 }) {
-  const [active, setActive] = useState<TabKey>('ozon-multi');
-  const blocksByTab: Record<TabKey, BlockInstance[]> = {
-    ozon: ozonBlocks,
-    'ozon-multi': multiBlocks,
-    yandex: yandexBlocks,
-    'my-store': myStoreBlocks,
-  };
-  const activeTab = TABS.find((t) => t.key === active)!;
+  const [tabs, setTabs] = useState<ClientTab[]>(initialTabs);
+  const [active, setActive] = useState<string>(
+    initialTabs.find((t) => t.defaultKey === 'ozon-multi')?.id ?? initialTabs[0]?.id ?? '',
+  );
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingValue, setEditingValue] = useState('');
+  const [showCreate, setShowCreate] = useState(false);
+  const [deleteConfirmFor, setDeleteConfirmFor] = useState<ClientTab | null>(null);
+  const editInputRef = useRef<HTMLInputElement | null>(null);
+
+  const activeTab = useMemo(() => tabs.find((t) => t.id === active), [tabs, active]);
+
+  const renameTab = useCallback(async (id: string, label: string) => {
+    const trimmed = label.trim();
+    if (!trimmed) {
+      setEditingId(null);
+      return;
+    }
+    const prev = tabs;
+    setTabs((cur) => cur.map((t) => (t.id === id ? { ...t, label: trimmed } : t)));
+    setEditingId(null);
+    try {
+      const res = await fetch(`/api/unit-economics/tabs/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: trimmed }),
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error ?? 'rename failed');
+    } catch {
+      setTabs(prev);
+    }
+  }, [tabs]);
+
+  const createTab = useCallback(
+    async (label: string, cloneFromPageKey?: string) => {
+      const res = await fetch('/api/unit-economics/tabs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label, cloneFromPageKey }),
+      });
+      const data = await res.json();
+      if (!data.ok) return;
+      // Загрузим (пустой или склонированный) layout — клиент сам подтянет
+      // через BlockGrid (тот всё равно вызовет load), нам достаточно положить
+      // запись с пустыми blocks. Если клон — blocks подгрузятся при mount.
+      const newTab: ClientTab = {
+        id: data.tab.id,
+        pageKey: data.tab.pageKey,
+        label: data.tab.label,
+        icon: data.tab.icon,
+        order: data.tab.order,
+        kind: data.tab.kind,
+        defaultKey: data.tab.defaultKey,
+        blocks: [],
+      };
+      setTabs((cur) => [...cur, newTab].sort((a, b) => a.order - b.order));
+      setActive(newTab.id);
+      setShowCreate(false);
+    },
+    [],
+  );
+
+  const deleteTab = useCallback(async (id: string) => {
+    const target = tabs.find((t) => t.id === id);
+    if (!target) return;
+    const res = await fetch(`/api/unit-economics/tabs/${id}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!data.ok) return;
+    setTabs((cur) => cur.filter((t) => t.id !== id));
+    if (active === id) {
+      const fallback = tabs.find((t) => t.id !== id);
+      if (fallback) setActive(fallback.id);
+    }
+    setDeleteConfirmFor(null);
+  }, [tabs, active]);
+
+  function startRename(tab: ClientTab) {
+    setEditingId(tab.id);
+    setEditingValue(tab.label);
+    setTimeout(() => {
+      editInputRef.current?.focus();
+      editInputRef.current?.select();
+    }, 0);
+  }
 
   return (
     <div className="mx-auto max-w-[1600px] space-y-3">
@@ -78,41 +174,219 @@ export function UnitEconomicsClient({
             Маржа, P&amp;L и окупаемость товаров на маркетплейсах
           </p>
         </div>
+        <Button size="sm" variant="outline" onClick={() => setShowCreate(true)}>
+          <Plus /> Новая вкладка
+        </Button>
       </div>
 
-      <div className="flex flex-wrap gap-1 border-b border-border/40 pb-0">
-        {TABS.map((tab) => {
-          const Icon = tab.icon;
-          const isActive = active === tab.key;
+      <div className="flex flex-wrap items-center gap-1 border-b border-border/40 pb-0">
+        {tabs.map((tab) => {
+          const Icon = iconFor(tab.icon);
+          const isActive = active === tab.id;
+          const isEditing = editingId === tab.id;
           return (
-            <button
-              key={tab.key}
-              type="button"
-              onClick={() => setActive(tab.key)}
+            <div
+              key={tab.id}
               className={cn(
-                'group flex items-center gap-2 rounded-t-md border-b-2 px-3 py-1.5 text-[13px] transition-colors',
+                'group flex items-center gap-1 rounded-t-md border-b-2 px-2 py-1.5 transition-colors',
                 isActive
                   ? 'border-primary text-foreground'
                   : 'border-transparent text-muted-foreground hover:text-foreground',
               )}
             >
-              <Icon className="h-3.5 w-3.5" />
-              <div className="flex flex-col text-left">
-                <span className={isActive ? 'font-semibold' : 'font-medium'}>{tab.label}</span>
-                <span className="text-[10px] text-muted-foreground">{tab.description}</span>
-              </div>
-            </button>
+              <button
+                type="button"
+                onClick={() => !isEditing && setActive(tab.id)}
+                onDoubleClick={() => startRename(tab)}
+                className="flex items-center gap-2 text-[13px]"
+                title="Двойной клик — переименовать"
+              >
+                <Icon className="h-3.5 w-3.5" />
+                {isEditing ? (
+                  <input
+                    ref={editInputRef}
+                    value={editingValue}
+                    onChange={(e) => setEditingValue(e.target.value)}
+                    onBlur={() => renameTab(tab.id, editingValue)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') renameTab(tab.id, editingValue);
+                      if (e.key === 'Escape') setEditingId(null);
+                    }}
+                    className="h-6 w-32 rounded border border-border/60 bg-background px-1.5 text-[13px] outline-none focus:ring-1 focus:ring-primary"
+                  />
+                ) : (
+                  <span className={isActive ? 'font-semibold' : 'font-medium'}>{tab.label}</span>
+                )}
+              </button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    className="rounded p-0.5 text-muted-foreground opacity-0 transition group-hover:opacity-100 hover:bg-accent hover:text-foreground"
+                    aria-label="Меню вкладки"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <MoreHorizontal className="h-3 w-3" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-44">
+                  <DropdownMenuItem onClick={() => startRename(tab)}>
+                    <Pencil className="mr-2 h-3.5 w-3.5" /> Переименовать
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() =>
+                      createTab(`${tab.label} (копия)`, tab.pageKey)
+                    }
+                  >
+                    <Copy className="mr-2 h-3.5 w-3.5" /> Дублировать
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    onClick={() => setDeleteConfirmFor(tab)}
+                    className="text-red-600 focus:text-red-700"
+                  >
+                    <Trash2 className="mr-2 h-3.5 w-3.5" /> Удалить
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           );
         })}
+        {tabs.length === 0 && (
+          <p className="px-2 py-3 text-xs text-muted-foreground">
+            Нет вкладок. Создайте первую через «Новая вкладка».
+          </p>
+        )}
       </div>
 
-      {/* Render only the active grid (each grid persists its own layout) */}
-      <BlockGrid
-        key={activeTab.pageKey}
-        pageKey={activeTab.pageKey}
-        tenantId={tenantId}
-        initialBlocks={blocksByTab[active]}
+      {activeTab && (
+        <BlockGrid
+          key={activeTab.pageKey}
+          pageKey={activeTab.pageKey}
+          tenantId={tenantId}
+          initialBlocks={activeTab.blocks}
+        />
+      )}
+
+      <CreateTabDialog
+        open={showCreate}
+        onClose={() => setShowCreate(false)}
+        existingTabs={tabs}
+        onCreate={createTab}
       />
+
+      <AlertDialog
+        open={deleteConfirmFor !== null}
+        onOpenChange={(o) => !o && setDeleteConfirmFor(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Удалить вкладку «{deleteConfirmFor?.label}»?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {deleteConfirmFor?.kind === 'default'
+                ? 'Дефолтная вкладка будет скрыта (можно восстановить через «Сбросить»). Layout сохранится.'
+                : 'Кастомная вкладка и все её блоки будут удалены безвозвратно.'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Отмена</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => deleteConfirmFor && deleteTab(deleteConfirmFor.id)}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deleteConfirmFor?.kind === 'default' ? 'Скрыть' : 'Удалить'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
+  );
+}
+
+function CreateTabDialog({
+  open,
+  onClose,
+  existingTabs,
+  onCreate,
+}: {
+  open: boolean;
+  onClose: () => void;
+  existingTabs: ClientTab[];
+  onCreate: (label: string, cloneFromPageKey?: string) => void;
+}) {
+  const [label, setLabel] = useState('');
+  const [cloneFrom, setCloneFrom] = useState<string>('');
+
+  function reset() {
+    setLabel('');
+    setCloneFrom('');
+  }
+
+  function submit() {
+    if (!label.trim()) return;
+    onCreate(label.trim(), cloneFrom || undefined);
+    reset();
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        if (!o) {
+          reset();
+          onClose();
+        }
+      }}
+    >
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Новая вкладка</DialogTitle>
+          <DialogDescription>
+            Создайте пустую вкладку или скопируйте существующую (вместе с блоками).
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="tab-label">Название</Label>
+            <Input
+              id="tab-label"
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              placeholder="Например: Wildberries или Мой ассортимент"
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && label.trim()) submit();
+              }}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="tab-clone">Скопировать из (опционально)</Label>
+            <select
+              id="tab-clone"
+              value={cloneFrom}
+              onChange={(e) => setCloneFrom(e.target.value)}
+              className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+            >
+              <option value="">— Пустая вкладка —</option>
+              {existingTabs.map((t) => (
+                <option key={t.id} value={t.pageKey}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => { reset(); onClose(); }}>
+            <X /> Отмена
+          </Button>
+          <Button onClick={submit} disabled={!label.trim()}>
+            <Check /> Создать
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

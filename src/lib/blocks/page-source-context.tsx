@@ -31,7 +31,7 @@ type PageSourceCtx = {
   setValue: (v: PageSourceValue) => void;
 };
 
-const PageSourceContext = createContext<PageSourceCtx | null>(null);
+export const PageSourceContext = createContext<PageSourceCtx | null>(null);
 
 function storageKey(pageKey: string): string {
   return `page:${pageKey}:source:v1`;

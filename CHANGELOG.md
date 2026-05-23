@@ -1,5 +1,83 @@
 # Changelog
 
+## [0.22.0] - 2026-05-22
+
+**Доработки блочной системы**. Четыре независимые улучшения UX, охватывающие formula UX в `custom.data`, глобальную панель «Период и источник», CRUD-вкладки в Юнит-экономике и импорт данных из «Ozon · Аналитика» в «Мой магазин · таблица».
+
+### A. `custom.data` — гибридный formula UX
+
+- **Перетаскиваемый popover**: окно редактирования формулы можно тащить за заголовок (drag-handle с иконкой `Move`), позиция сохраняется до закрытия. Реализовано через нативный `pointermove` + `transform: translate`, без зависимости от dnd-kit (popover не вписывается в drag-drop контекст блоков).
+- **Editable formula bar**: строка формул под header'ом теперь полноценный `<Textarea>` (раньше read-only). Делит общий state с popover'ом через `FormulaSession: { rowId, columnId, mode, valueDraft, formulaDraft, caretPos }`. Фокус в баре синхронизирует `caretPos`.
+- **Cell-click-to-insert**: когда `mode === 'formula'`, клик по другой ячейке вызывает `insertIntoFormula(cellAddress(rowIdx, colIdx))` — popover остаётся открытым, draft и caret обновляются в реальном времени. Защита от случайного закрытия через `onInteractOutside={(e) => e.preventDefault()}`.
+- **Settings toggle** `cellPopoverEnabled` (default `true`) — если выключить, редактирование только через formula bar (Excel-like UX), без popover. Подсказка под чекбоксом объясняет режим.
+- **Hint-плашка** возле formula-bar, читаемая 1 раз (флаг в `localStorage['custom-data:formula-hint:dismissed']`).
+
+### B. Глобальная панель «Период и источник» в `BlockGrid`
+
+- **Auto-mount providers**: `BlockGrid` теперь сам оборачивает себя в `PagePeriodProvider` + `PageSourceProvider`, если они не предоставлены ancestor'ом. Раньше providers монтировались вручную только в `cashflow-client`. Теперь панель работает на dashboard, unit-economics, boards, inbox и любых будущих страницах без правок page-client'ов.
+- **Auto-visibility**: новый hook `usePagePeriodHeaderVisibility(pageKey, blocks)` — дефолт «показана», если на странице есть bound-блок (`stat.*`, `chart.cashflow`, `top-categories`, `kpi.grid` с `sourceBinding.mode === 'global'` или `cashflow.transactions` без `defaultPeriodOverride`). Иначе — collapsed (узкая полоска ~28px с резюме «MTD · Все источники» и chevron'ом).
+- **User override** — toggle-кнопка (`Eye` / `EyeOff`) в edit-mode toolbar, пишет `localStorage[page:${pageKey}:periodHeaderHidden:v1]`. Перекрывает data-дефолт.
+- **`VirtualSourcesBridge`** монтируется условно (когда на странице есть bound-блоки), чтобы виртуальные источники работали везде.
+- **Cashflow-client упрощён** — убраны ручные `PagePeriodProvider` / `PageSourceProvider` / `<PagePeriodHeader>` / `<VirtualSourcesBridge>`, теперь это всё внутри `BlockGrid`.
+
+### C. Юнит-экономика — CRUD-вкладки
+
+- **БД-схема `unit_economics_tabs`** (`src/lib/db/schema/unit-economics-tabs.ts`): tenant-scoped + user-scoped, поля `pageKey`, `label`, `icon`, `order`, `kind: 'default' | 'custom'`, `defaultKey`. Уникальный constraint `(tenant_id, user_id, page_key)`.
+- **API**: `GET/POST /api/unit-economics/tabs` (list + create + clone), `PATCH/DELETE /api/unit-economics/tabs/[id]` (rename + delete). Первый GET seed'ит 4 default-вкладки (`ozon`, `ozon-multi`, `yandex`, `my-store`). Удаление default — soft (hidden flag, можно вернуть «Сбросить»). Custom — hard delete + cleanup `block_layouts`.
+- **UI**: `unit-economics-client.tsx` переписан — TABS теперь из server-пропса. Возле каждой вкладки `DropdownMenu` (3 действия: Переименовать, Дублировать, Удалить). Inline rename по double-click. Кнопка `+` открывает диалог «Новая вкладка» (label + icon + radio «Пустая» / «Скопировать из…»).
+- **Custom pageKey**: `unit-economics-custom-{nanoid8()}`. Клонирование делает `loadLayout(source) → saveLayout(new)` server-side.
+- **Block marketplace** теперь резолвит wildcard `unit-economics-custom-*` — на custom-вкладках доступны все `unit.*` блоки.
+- **Источники в picker'е** (`/api/blocks/sources`) — лейблы custom-вкладок резолвятся динамически из `unit_economics_tabs`.
+
+### D. Импорт из «Ozon · Аналитика» в «Мой магазин · таблица»
+
+- **Config-extension**: `unit.my-store-table` получил поле `importSource: { blockId, pageKey, columns, matchBy, mode, syncOnMount, lastImportedAt }`.
+- **Mapping utility** `src/lib/unit-economics/ozon-to-my-store.ts` — для каждой из 29 Ozon-колонок (`TableColumnKey`) задан соответствующий `MyStoreColumnDef` (id, label, type, unit, positive) + функция `extractOzonValue(row, key)`. Особые случаи: `marginRub = priceRub - costRub`, `stock = stockMarketplace + stockOwn`, `returnPct`, `ctr`, `cpc`, `cpm` — derived metrics.
+- **Dialog** `OzonImportFromAnalyticsDialog` — 3 шага: (1) выбор source-блока через `/api/blocks/sources?type=unit.ozon-analytics`; (2) multi-select колонок (дефолт: 5 ключевых); (3) match key (`article` / `sku`) + режим (`merge` / `replace`) + чекбокс «Синхронизировать автоматически».
+- **Server endpoint** `POST /api/unit-economics/import/ozon-analytics` — принимает `{sourceBlockId, sourcePageKey}`, читает конфиг блока из БД, резолвит period + accountId, проксирует запрос в существующий `/api/marketplaces/analytics/ozon`, возвращает rows.
+- **Live-sync**: `useEffect` в `RenderMyStoreTable` триггерит re-import на mount если `syncOnMount === true`. Throttle 30s через `lastSyncRef`. UI-индикатор «Импорт из Ozon Аналитики: {date} · авто-синхронизация» в notice-плашке под toolbar.
+- **Toolbar-кнопка** «Из Ozon Аналитики» (иконка `Download`) рядом с disabled XLSX-импортом.
+
+### Added
+
+- **`src/lib/blocks/use-page-period-visibility.ts`** (NEW) — `pageHasGlobalBoundBlocks(blocks)` + `usePagePeriodHeaderVisibility(pageKey, blocks)`.
+- **`src/lib/db/schema/unit-economics-tabs.ts`** (NEW) — Drizzle pgTable + `DEFAULT_UNIT_TABS` константа.
+- **`src/lib/unit-economics/tabs-queries.ts`** (NEW) — `listTabs`, `createTab`, `renameTab`, `reorderTabs`, `deleteTab`, `nanoid8`.
+- **`src/lib/unit-economics/ozon-to-my-store.ts`** (NEW) — `OZON_TO_MY_STORE_COLUMN_MAP`, `extractOzonValue`, `DEFAULT_IMPORT_COLUMNS`, типы `ImportMode`, `MatchBy`, `OzonAnalyticsSourceConfig`.
+- **`src/app/api/unit-economics/tabs/route.ts`** + **`[id]/route.ts`** (NEW) — CRUD endpoints.
+- **`src/app/api/unit-economics/import/ozon-analytics/route.ts`** (NEW) — proxy endpoint для импорта.
+- **`src/components/unit-economics/ozon-import-from-analytics-dialog.tsx`** (NEW) — 3-step wizard.
+- **`scripts/test-formula-pick-mode.ts`** (NEW) — 18 тестов для `cellAddress`, `colLabel`, `insertIntoFormula` (caret management, auto-prefix `=`).
+- **`scripts/test-period-panel-visibility.ts`** (NEW) — 13 тестов для `pageHasGlobalBoundBlocks` + visibility resolver.
+- **`scripts/test-ozon-import-mapping.ts`** (NEW) — 50 тестов: completeness map, unique IDs, `extractOzonValue`, merge by article/sku, replace mode.
+- **`scripts/test-unit-tabs-crud.ts`** (NEW) — 12 тестов: DEFAULT_UNIT_TABS, custom pageKey pattern, reorder, delete-with-fallback.
+- **`docs/CUSTOM_DATA_BLOCK.md`** (NEW) — гибридный formula UX, режимы, hint, settings toggle.
+- **`docs/UNIT_ECONOMICS_TABS.md`** (NEW) — схема БД, API, CRUD-поведение, default vs custom tabs.
+
+### Changed
+
+- **`src/lib/blocks/catalog/custom-data.tsx`** — крупный рефакторинг (~+400 строк): `FormulaSession`-стейт в `RenderCustomData`, `CellTriggerButton` + `PopoverEditorPanel` (split из `CellPopoverEditor`), draggable popover (pointermove drag), editable formula bar, cell-pick mode, settings toggle, hint plate.
+- **`src/components/blocks/block-grid.tsx`** — `BlockGrid` теперь outer-wrapper с conditional providers; `BlockGridInner` с `usePagePeriodHeaderVisibility`; toggle-кнопка в edit toolbar; conditional `VirtualSourcesBridge`.
+- **`src/components/blocks/page-period-header.tsx`** — добавлены props `collapsed` + `onToggleCollapsed`; collapsed-mode рендерит компактную полоску с резюме и `ChevronDown`.
+- **`src/lib/blocks/page-period-context.tsx`** + **`page-source-context.tsx`** — `PagePeriodContext` / `PageSourceContext` теперь exported (нужно для `useContext` в `BlockGrid`).
+- **`src/app/(app)/cashflow/cashflow-client.tsx`** — убраны ручные `PagePeriodProvider` / `PageSourceProvider` / `<PagePeriodHeader>` / `<VirtualSourcesBridge>` (теперь в `BlockGrid`).
+- **`src/lib/db/schema/index.ts`** — экспорт `unit-economics-tabs`.
+- **`src/app/(app)/unit-economics/page.tsx`** — server-side `listTabs()` → `loadLayout()` для каждой → пропсом в client.
+- **`src/app/(app)/unit-economics/unit-economics-client.tsx`** — переписан: `initialTabs` пропс, `ICON_MAP`, inline rename, DropdownMenu actions, `CreateTabDialog` inline component, `AlertDialog` для delete-confirm.
+- **`src/app/api/blocks/sources/route.ts`** — fetch `unit_economics_tabs`, `customLabels` map передаётся в `pageLabel`.
+- **`src/lib/blocks/catalog/unit-my-store-table.tsx`** — `importSource` field в config, `mergeOzonRowsIntoConfig`, `runOzonImport`, live-sync `useEffect`, toolbar-кнопка, notice-плашка.
+
+### Migration
+
+```bash
+pnpm db:generate
+pnpm db:migrate # пользователь применяет вручную
+```
+
+Существующие пользователи получат 4 default-вкладки автоматически при первом GET `/api/unit-economics/tabs`. Custom-вкладки можно создавать через UI кнопкой «+».
+
+---
+
 ## [0.21.0] - 2026-05-22
 
 **Source Binding для Cashflow блоков**. Большое архитектурное изменение: KPI / chart / top-categories / kpi.grid блоки больше не делают tenant-wide запросы напрямую — они привязываются к конкретному блоку `cashflow.transactions` как явному источнику данных. Это устраняет «магию», когда KPI на дашборде показывают те же 643 442 ₽, что и на странице `/cashflow`, без явной связи в UI или mindmap.

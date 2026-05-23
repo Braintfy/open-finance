@@ -59,7 +59,7 @@ type PagePeriodCtx = {
   reset: () => void;
 };
 
-const PagePeriodContext = createContext<PagePeriodCtx | null>(null);
+export const PagePeriodContext = createContext<PagePeriodCtx | null>(null);
 
 function storageKey(pageKey: string): string {
   return `page:${pageKey}:period:v1`;
