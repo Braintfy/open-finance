@@ -1,5 +1,62 @@
 # Changelog
 
+## [0.22.1] - 2026-05-23
+
+**Patch v0.22.0**: фиксы UI-мелочей (chevron «Период страницы», empty-source placeholder) + крупное расширение Ozon sync API под incremental backfill (диапазон дат), новая универсальная `OzonSyncDialog` модалка с toolbar-кнопкой в `unit.ozon-analytics`.
+
+### A. `PagePeriodHeader` — chevron в фиксированное место
+
+- **Layout перестроен**: вместо одной `flex-wrap` строки с иконкой/описанием/picker'ом/chevron теперь две строки.
+  - **Row 1** (`flex` без wrap): `CalendarRange` иконка + описание (truncate, `min-w-0 flex-1`) + `ChevronUp` (`ml-auto shrink-0`). Chevron всегда top-right.
+  - **Row 2** (`flex-wrap`): `SourceFilterChips` + `PeriodPicker compact`.
+- **Bug fix**: на узком экране PeriodPicker раньше переносился на новую строку и тащил chevron вниз — теперь chevron не зависит от wrap'а.
+
+### B. `EmptySourcePlaceholder` — fit в маленькие блоки
+
+- **Семантика**: `title` теперь короткое название блока (truncate, single-line), `subtitle` — статус («источник не привязан» / «источник недоступен», `line-clamp-1`, muted).
+- **Compact-режим**: иконка `h-6 w-6` (было `h-7 w-7`), padding `p-1.5` (было `p-2`), `description` скрыт. Помещается в стандартный 2×2 блок без overflow.
+- **CTA**: кнопка «Источник» (вместо длинного «Выбрать источник») — compact с иконкой Settings, не вылезает за нижнюю границу карточки.
+- **Callers обновлены**: `stat.income/expense/balance/custom`, `cashflow.top-categories`, `chart.cashflow`, `kpi.grid` — теперь передают `title` + отдельный `subtitle`, без склейки строки.
+
+### C. Ozon sync API — поддержка `fromDate`/`toDate`/`force` (incremental backfill)
+
+- **`POST /api/marketplaces/accounts/[id]/sync` BodySchema расширен**: добавлены поля `fromDate` (ISO YYYY-MM-DD, MSC), `toDate`, `force`. Валидация: оба или ни одного, `from ≤ to`.
+- **`StageContext` получил `overrideFromDate`/`overrideToDate`/`force`** — date-aware стейджи (`analyticsData`, `orders`, `transactions`, `perfExpenseDaily`, `perfCpoDaily`, `perfSkuStats`) используют override-окно вместо `settings.*WindowDays`.
+- **catalog/snapshot стейджи** (`products`, `prices`, `stocks`, `turnover`, `clusters`, `warehouseStocks`, `realization`) override игнорируют — они работают как раньше.
+- **Perf-стейджи** в override-режиме делают один attempt без retry-loop (retry-логика подбора окна не нужна, когда юзер сам задал даты). Helper `buildPerfPeriodFromOverride(from, to)` clamp'ит до `MAX_PERF_WINDOW_DAYS=62`.
+- **DELETE+INSERT по диапазону**: `analyticsData` чистит ровно `[overrideFromDate, overrideToDate]` перед записью (idempotent для override). Orders/transactions — upsert по primary key (idempotent by design).
+- **Тесты**: `scripts/test-ozon-sync-incremental.ts` (22 теста) — `buildPerfPeriodFromOverride` clamp/range/edge-cases, BodySchema валидация, pair-validation (from+to обязательно вместе).
+
+### D. Универсальная `OzonSyncDialog` + toolbar-кнопка в `unit.ozon-analytics`
+
+- **Новый компонент** `src/components/marketplaces/ozon-sync-dialog.tsx` — модалка с 3 секциями:
+  - **Диапазон дат** (preset chips «Вчера», «Последние 3/7/30 дней», «Полное окно настройки», «Произвольный диапазон» + date-inputs). Hint: MSC timezone.
+  - **Стейджи** (collapsible, по группам: Каталог / Продажи / Реклама). Smart defaults: при выборе incremental preset — авто-включаются date-aware стейджи; при «Полное окно» — все стейджи. Бейдж «без даты» рядом с catalog-стейджами.
+  - **Опции** (collapsible) — toggle `force` с пояснением.
+- **Polling прогресса**: после POST получаем `jobId`, поллим `GET /api/marketplaces/accounts/[id]/jobs/[jobId]` каждые 1.5s. UI показывает текущий стейдж + processed count. По завершении — success/error баннер + `onCompleted` callback.
+- **Toolbar-кнопка `<CloudDownload> Sync`** в `unit.ozon-analytics` рядом с ↻ Refresh. По клику открывает диалог с `defaultPreset='yesterday'`. По завершении вызывает `fetchData()` (re-fetch таблицы из БД).
+- **Disabled-state**: если `config.accountId` пустой — кнопка disabled с tooltip.
+
+### Файлы
+
+**Изменены:**
+- `src/components/blocks/page-period-header.tsx` — layout перестроен (chevron в Row 1)
+- `src/components/blocks/empty-source-placeholder.tsx` — title/subtitle разделение, compact-режим
+- `src/lib/blocks/catalog/{stat-custom,chart-cashflow,cashflow,kpi-grid}.tsx` — обновлены вызовы EmptySourcePlaceholder
+- `src/app/api/marketplaces/accounts/[id]/sync/route.ts` — расширен BodySchema, пробрасывает override в runFullSync
+- `src/lib/marketplaces/ozon/sync/types.ts` — `StageContext` получил overrideFromDate/ToDate/force
+- `src/lib/marketplaces/ozon/sync/full.ts` — пробрасывает override в STAGE_RUNNERS
+- `src/lib/marketplaces/ozon/sync/{analytics-data,orders,transactions}.ts` — honor override
+- `src/lib/marketplaces/ozon/sync/perf-{expense-daily,cpo-daily,sku-stats}.ts` — honor override, single attempt
+- `src/lib/marketplaces/ozon/sync/perf-period.ts` — `buildPerfPeriodFromOverride()`
+- `src/lib/blocks/catalog/unit-ozon-analytics.tsx` — toolbar-кнопка Sync + Dialog
+
+**Созданы:**
+- `src/components/marketplaces/ozon-sync-dialog.tsx`
+- `scripts/test-ozon-sync-incremental.ts`
+
+---
+
 ## [0.22.0] - 2026-05-22
 
 **Доработки блочной системы**. Четыре независимые улучшения UX, охватывающие formula UX в `custom.data`, глобальную панель «Период и источник», CRUD-вкладки в Юнит-экономике и импорт данных из «Ozon · Аналитика» в «Мой магазин · таблица».

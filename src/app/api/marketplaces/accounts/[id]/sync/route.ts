@@ -19,6 +19,8 @@ export const maxDuration = 300; // запас на Vercel-deploy
 
 type RouteCtx = { params: Promise<{ id: string }> };
 
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
 const BodySchema = z
   .object({
     /** Запустить только один стейдж (все остальные — skipped). */
@@ -29,6 +31,21 @@ const BodySchema = z
      * Незаявленные стейджи останутся со значением из account.syncSettings.
      */
     stages: z.record(z.enum(OZON_FULL_STAGES), z.boolean()).optional(),
+    /**
+     * v0.22.1: Override sliding-window для date-aware стейджей. Если задано
+     * (оба поля) — стейдж analyticsData/orders/transactions/perf-* загружает
+     * только этот диапазон, а не settings.*WindowDays. Формат YYYY-MM-DD MSC.
+     * Для catalog/snapshot-стейджей (products/prices/stocks/turnover/clusters/
+     * warehouseStocks/realization) — игнорируется.
+     */
+    fromDate: z.string().regex(ISO_DATE_RE).optional(),
+    toDate: z.string().regex(ISO_DATE_RE).optional(),
+    /**
+     * v0.22.1: Принудительная перезапись существующих rows в окне (DELETE+INSERT).
+     * Сейчас daily-таблицы и так перезаписывают окно — флаг зарезервирован под
+     * будущую оптимизацию skip-if-already-loaded.
+     */
+    force: z.boolean().optional(),
     /** Декоративное поле от UI, нам не нужно. */
     kind: z.string().optional(),
   })
@@ -60,6 +77,23 @@ export async function POST(req: Request, ctx: RouteCtx) {
     const stagesOverride = body?.stages as
       | Partial<Record<OzonStageKind, boolean>>
       | undefined;
+    const overrideFromDate = body?.fromDate;
+    const overrideToDate = body?.toDate;
+    const force = body?.force === true;
+
+    // Если задано одно из date-полей — нужны оба.
+    if ((overrideFromDate && !overrideToDate) || (!overrideFromDate && overrideToDate)) {
+      return NextResponse.json(
+        { ok: false, error: 'fromDate и toDate должны быть заданы вместе' },
+        { status: 400 },
+      );
+    }
+    if (overrideFromDate && overrideToDate && overrideFromDate > overrideToDate) {
+      return NextResponse.json(
+        { ok: false, error: 'fromDate должно быть <= toDate' },
+        { status: 400 },
+      );
+    }
 
     const initStages = (
       onlyStage ? [onlyStage] : ([...OZON_FULL_STAGES] as OzonStageKind[])
@@ -84,6 +118,9 @@ export async function POST(req: Request, ctx: RouteCtx) {
       jobId: job.id,
       onlyStage,
       stagesOverride,
+      overrideFromDate,
+      overrideToDate,
+      force,
     }).catch((e) => {
       console.error('[marketplaces] runFullSync background error:', e);
     });

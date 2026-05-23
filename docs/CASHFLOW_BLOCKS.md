@@ -1,5 +1,9 @@
-# Cashflow Blocks Guide (v0.21.0)
+# Cashflow Blocks Guide (v0.22.1)
 
+> **v0.22.1 update — UI patches**:
+> 1. **`PagePeriodHeader` layout** (`src/components/blocks/page-period-header.tsx`): chevron сворачивания вынесен в отдельный header-row (Row 1: иконка + описание truncate + chevron `ml-auto shrink-0`; Row 2: SourceFilterChips + PeriodPicker, может wrap'аться). Раньше на узком экране PeriodPicker переносился и тащил chevron вниз — теперь chevron всегда в фиксированном top-right.
+> 2. **`EmptySourcePlaceholder` semantic + compact** (`src/components/blocks/empty-source-placeholder.tsx`): разделение `title` (truncate, короткое название блока) и `subtitle` (line-clamp-1, muted, статус «источник не привязан»). Compact-режим уменьшает иконку (`h-6 w-6`), padding (`p-1.5`) и скрывает description — placeholder помещается в стандартный 2×2 блок. CTA-кнопка переименована в «Источник» (вместо «Выбрать источник»). Callers (`stat-custom`, `chart-cashflow`, `cashflow`, `kpi-grid`) обновлены: больше не склеивают `${title}: источник не привязан` в одну строку.
+>
 > **v0.21.0 update — Source Binding**: KPI / chart / top-categories / kpi.grid больше не делают tenant-wide запросы напрямую — они **привязываются** к конкретному блоку `cashflow.transactions` через настройки. Три режима: `empty` (дефолт для новых; placeholder с CTA), `global` (текущее поведение — page period+source), `block` (тянуть фильтры из view конкретного tx-блока). Auto-migration существующих layouts: если на странице есть `cashflow.transactions` — все consumer'ы auto-bind к первому; если нет — `empty`. См. подраздел [«Source Binding»](#source-binding-v0210) ниже.
 >
 > **v0.20.0 update**: добавлен **page-level source filter** (см. `PageSourceProvider` / `useEffectiveSource`), **virtual sources** для bindings без `stat.*` блоков (см. `src/lib/blocks/virtual-sources.tsx`), **kpi.grid** блок (см. `docs/KPI_GRID.md`), **BLOCK_PRESETS** для одного клика (excel.cell + cashflow). Старые `stat.income / stat.expense / stat.balance` помечены `tags: ['legacy']` (работают, но новые пользователи добавляют через пресеты).

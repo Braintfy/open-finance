@@ -7,7 +7,14 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useBlockValuePublisher } from '@/lib/blocks/values';
-import { BarChart3, Check, Download, Loader2, RefreshCw } from 'lucide-react';
+import {
+  BarChart3,
+  Check,
+  CloudDownload,
+  Download,
+  Loader2,
+  RefreshCw,
+} from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { useLastFetched } from '@/lib/blocks/use-last-fetched';
 import type { BlockDef, BlockRenderProps, BlockSettingsFormProps } from '../types';
@@ -25,6 +32,7 @@ import {
   type AnalyticsFilterId,
 } from '@/components/unit-economics/ozon-analytics-filters';
 import { OzonAnalyticsSettingsForm } from '@/components/unit-economics/ozon-analytics-settings-form';
+import { OzonSyncDialog } from '@/components/marketplaces/ozon-sync-dialog';
 import { useMarketplaceAccounts } from '@/lib/marketplaces/use-accounts';
 import {
   OZON_ANALYTICS_PERIOD_PRESETS,
@@ -83,6 +91,8 @@ function RenderOzonAnalytics({ instance, onConfigChange }: BlockRenderProps) {
   const [response, setResponse] = useState<OzonAnalyticsResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // v0.22.1: sync-модалка
+  const [syncDialogOpen, setSyncDialogOpen] = useState(false);
   // sort=null = «без сортировки», порядок rows как пришёл из API.
   // Cycle через UI: null → desc → asc → null.
   const [sort, setSort] = useState<TableSort | null>(null);
@@ -342,6 +352,7 @@ function RenderOzonAnalytics({ instance, onConfigChange }: BlockRenderProps) {
   }, [filteredRows, sort, config.visibleColumns, periodPreset, customFrom, customTo, periodDays, response]);
 
   return (
+    <>
     <Card className="flex h-full flex-col overflow-hidden p-0">
       {/* Header: period + refresh + export */}
       <div className="flex flex-wrap items-center gap-2 border-b border-border/40 px-3 py-2">
@@ -416,9 +427,19 @@ function RenderOzonAnalytics({ instance, onConfigChange }: BlockRenderProps) {
             onClick={() => fetchData()}
             disabled={loading}
             className="inline-flex items-center gap-1 rounded-md border border-border/60 px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
-            title="Обновить"
+            title="Обновить (re-fetch из БД)"
           >
             <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
+          </button>
+          <button
+            type="button"
+            onClick={() => setSyncDialogOpen(true)}
+            disabled={!config.accountId}
+            className="inline-flex items-center gap-1 rounded-md border border-border/60 px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
+            title="Синхронизировать с Ozon (загрузить новые данные)"
+          >
+            <CloudDownload className="h-3 w-3" />
+            <span className="hidden sm:inline">Sync</span>
           </button>
           <Button
             variant="outline"
@@ -591,6 +612,19 @@ CPC/CPO — breakdown per-SKU/CPO (может не суммироваться в
         )}
       </div>
     </Card>
+    <OzonSyncDialog
+      open={syncDialogOpen}
+      onOpenChange={setSyncDialogOpen}
+      accountId={config.accountId ?? null}
+      defaultPreset="yesterday"
+      onCompleted={async ({ status }) => {
+        if (status !== 'error') {
+          // Auto re-fetch таблицы (cache бамп сделан на сервере в стейджах).
+          await fetchData();
+        }
+      }}
+    />
+    </>
   );
 }
 

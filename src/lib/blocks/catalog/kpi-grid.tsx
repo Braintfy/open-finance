@@ -481,7 +481,8 @@ function RenderKpiGrid({ instance }: BlockRenderProps) {
           </div>
         </div>
         <EmptySourcePlaceholder
-          title="Источник данных не привязан"
+          title="KPI-сетка"
+          subtitle="источник не привязан"
           description="Привяжите блок KPI-сетки к списку операций, чтобы видеть метрики из выбранного среза."
           onOpenSettings={onOpenSettings}
           compact={compact}

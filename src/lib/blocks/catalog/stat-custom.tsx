@@ -358,7 +358,8 @@ function RenderStatCustom({ instance }: BlockRenderProps) {
   if (sourceBinding.mode === 'empty') {
     return (
       <EmptySourcePlaceholder
-        title={`${title}: источник не привязан`}
+        title={title}
+        subtitle="источник не привязан"
         onOpenSettings={() => openBlockSettings(instance.id)}
         compact={density === 'xs' || density === 'sm'}
       />
@@ -367,7 +368,8 @@ function RenderStatCustom({ instance }: BlockRenderProps) {
   if (bound === 'missing') {
     return (
       <EmptySourcePlaceholder
-        title={`${title}: источник недоступен`}
+        title={title}
+        subtitle="источник недоступен"
         description="Привязанный блок «Список операций» был удалён или находится на другой странице."
         onOpenSettings={() => openBlockSettings(instance.id)}
         compact={density === 'xs' || density === 'sm'}

@@ -10,7 +10,11 @@ import { getExpenseDaily, sumExpenseRows } from '../performance/endpoints';
 import { OzonPerfApiError } from '../performance/client';
 import { rublesToKopecks } from '@/lib/unit-economics/types';
 import { runStageWithTiming, type StageContext, type StageResult } from './types';
-import { buildPerfPeriod, type PerfPeriod } from './perf-period';
+import {
+  buildPerfPeriod,
+  buildPerfPeriodFromOverride,
+  type PerfPeriod,
+} from './perf-period';
 import { invalidateOzonAnalyticsCache } from '../analytics-cache';
 
 const MAX_WINDOW_DAYS = 62;
@@ -41,25 +45,42 @@ export async function syncPerfExpenseDailyStage(
       };
     }
 
-    let requestedWindow = ctx.settings.perfWindowDays ?? 30;
     const warnings: string[] = [];
-    if (requestedWindow > MAX_WINDOW_DAYS) {
-      warnings.push(
-        `Окно ${requestedWindow}d > 62d (лимит Performance API). Clamp до 62d.`,
+
+    // v0.22.1: override-режим — один attempt без retry, с явными датами.
+    const hasOverride = !!(ctx.overrideFromDate && ctx.overrideToDate);
+
+    let period: PerfPeriod;
+    let attempts: Array<{ windowDays: number; lagDays: number }>;
+    if (hasOverride) {
+      period = buildPerfPeriodFromOverride(ctx.overrideFromDate!, ctx.overrideToDate!);
+      if (period.windowDays > MAX_WINDOW_DAYS) {
+        warnings.push(
+          `Окно ${period.windowDays}d > 62d (лимит Performance API). Используется clamp ${period.dateFrom}…${period.dateTo}.`,
+        );
+      }
+      attempts = [{ windowDays: period.windowDays, lagDays: 0 }];
+    } else {
+      let requestedWindow = ctx.settings.perfWindowDays ?? 30;
+      if (requestedWindow > MAX_WINDOW_DAYS) {
+        warnings.push(
+          `Окно ${requestedWindow}d > 62d (лимит Performance API). Clamp до 62d.`,
+        );
+        requestedWindow = MAX_WINDOW_DAYS;
+      }
+      const windows: number[] = RETRY_WINDOWS.filter((w) => w <= requestedWindow);
+      if (!windows.includes(requestedWindow)) windows.unshift(requestedWindow);
+      attempts = windows.flatMap((windowDays) =>
+        RETRY_END_LAGS.map((lagDays) => ({ windowDays, lagDays })),
       );
-      requestedWindow = MAX_WINDOW_DAYS;
+      period = buildPerfPeriod(requestedWindow);
     }
 
-    const windows: number[] = RETRY_WINDOWS.filter((w) => w <= requestedWindow);
-    if (!windows.includes(requestedWindow)) windows.unshift(requestedWindow);
-    const attempts = windows.flatMap((windowDays) =>
-      RETRY_END_LAGS.map((lagDays) => ({ windowDays, lagDays })),
-    );
-
-    let period: PerfPeriod = buildPerfPeriod(requestedWindow);
     let rows: Awaited<ReturnType<typeof getExpenseDaily>> | null = null;
     for (const [index, attempt] of attempts.entries()) {
-      period = buildPerfPeriod(attempt.windowDays, new Date(), attempt.lagDays);
+      if (!hasOverride) {
+        period = buildPerfPeriod(attempt.windowDays, new Date(), attempt.lagDays);
+      }
       try {
         rows = await getExpenseDaily(ctx.perfClient, {
           dateFrom: period.dateFrom,

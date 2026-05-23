@@ -9,9 +9,19 @@ const PAGE = 1000;
 
 export async function syncOrdersStage(ctx: StageContext): Promise<StageResult> {
   return runStageWithTiming(async () => {
-    const days = ctx.settings.ordersWindowDays ?? 30;
-    const to = new Date();
-    const since = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
+    // v0.22.1: override [fromDate..toDate] для incremental backfill. iso → Date
+    // с UTC-midnight (Ozon принимает ISO instant); to делаем end-of-day +1d.
+    let since: Date;
+    let to: Date;
+    if (ctx.overrideFromDate && ctx.overrideToDate) {
+      since = new Date(ctx.overrideFromDate + 'T00:00:00Z');
+      // Включительный toDate → конец дня + 1ms (Ozon API использует [since, to))
+      to = new Date(ctx.overrideToDate + 'T23:59:59.999Z');
+    } else {
+      const days = ctx.settings.ordersWindowDays ?? 30;
+      to = new Date();
+      since = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
+    }
 
     let processed = 0;
 

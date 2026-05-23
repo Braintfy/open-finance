@@ -9,9 +9,17 @@ const PAGE_SIZE = 1000;
 
 export async function syncTransactionsStage(ctx: StageContext): Promise<StageResult> {
   return runStageWithTiming(async () => {
-    const days = ctx.settings.transactionsWindowDays ?? 30;
-    const to = new Date();
-    const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
+    // v0.22.1: override [fromDate..toDate] для incremental backfill.
+    let from: Date;
+    let to: Date;
+    if (ctx.overrideFromDate && ctx.overrideToDate) {
+      from = new Date(ctx.overrideFromDate + 'T00:00:00Z');
+      to = new Date(ctx.overrideToDate + 'T23:59:59.999Z');
+    } else {
+      const days = ctx.settings.transactionsWindowDays ?? 30;
+      to = new Date();
+      from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
+    }
 
     let processed = 0;
     let page = 1;

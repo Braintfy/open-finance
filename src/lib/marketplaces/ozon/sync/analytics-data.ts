@@ -52,10 +52,19 @@ function moscowToday(): string {
 
 export async function syncAnalyticsDataStage(ctx: StageContext): Promise<StageResult> {
   return runStageWithTiming(async () => {
-    const windowDays = ctx.settings.analyticsWindowDays ?? 90;
-    // dateTo = вчера, чтобы не цеплять незавершённый день (как в perf-period).
-    const dateTo = shiftIsoDate(moscowToday(), -1);
-    const dateFrom = shiftIsoDate(dateTo, -(windowDays - 1));
+    // v0.22.1: если задан override (для incremental backfill «только вчера»
+    // или произвольного диапазона) — используем его. Иначе sliding-window.
+    let dateFrom: string;
+    let dateTo: string;
+    if (ctx.overrideFromDate && ctx.overrideToDate) {
+      dateFrom = ctx.overrideFromDate;
+      dateTo = ctx.overrideToDate;
+    } else {
+      const windowDays = ctx.settings.analyticsWindowDays ?? 90;
+      // dateTo = вчера, чтобы не цеплять незавершённый день (как в perf-period).
+      dateTo = shiftIsoDate(moscowToday(), -1);
+      dateFrom = shiftIsoDate(dateTo, -(windowDays - 1));
+    }
 
     let processed = 0;
     let tier: AnalyticsDataTier = 'premium-plus';

@@ -17,7 +17,11 @@ import {
 import { OzonPerfApiError } from '../performance/client';
 import { rublesToKopecks } from '@/lib/unit-economics/types';
 import { runStageWithTiming, type StageContext, type StageResult } from './types';
-import { buildPerfPeriod, type PerfPeriod } from './perf-period';
+import {
+  buildPerfPeriod,
+  buildPerfPeriodFromOverride,
+  type PerfPeriod,
+} from './perf-period';
 import { invalidateOzonAnalyticsCache } from '../analytics-cache';
 
 const CPO_ADV_TYPES = ['ALL_SKU_PROMO', 'SEARCH_PROMO'] as const;
@@ -84,13 +88,26 @@ export async function syncPerfCpoDailyStage(ctx: StageContext): Promise<StageRes
     const hasAllSkuPromo = activeCpo.some((c) => c.advObjectType === 'ALL_SKU_PROMO');
     const hasSearchPromo = activeCpo.some((c) => c.advObjectType === 'SEARCH_PROMO');
 
-    const windows: number[] = RETRY_WINDOWS.filter((w) => w <= requestedWindow);
-    if (!windows.includes(requestedWindow)) windows.unshift(requestedWindow);
-    const attempts = windows.flatMap((windowDays) =>
-      RETRY_END_LAGS.map((lagDays) => ({ windowDays, lagDays })),
-    );
-
-    let period: PerfPeriod = buildPerfPeriod(requestedWindow);
+    // v0.22.1: override-режим — один attempt без retry, явные даты.
+    const hasOverride = !!(ctx.overrideFromDate && ctx.overrideToDate);
+    let period: PerfPeriod;
+    let attempts: Array<{ windowDays: number; lagDays: number }>;
+    if (hasOverride) {
+      period = buildPerfPeriodFromOverride(ctx.overrideFromDate!, ctx.overrideToDate!);
+      if (period.windowDays > MAX_WINDOW_DAYS) {
+        localWarnings.push(
+          `Окно ${period.windowDays}d > 62d (лимит Performance API). Используется clamp ${period.dateFrom}…${period.dateTo}.`,
+        );
+      }
+      attempts = [{ windowDays: period.windowDays, lagDays: 0 }];
+    } else {
+      const windows: number[] = RETRY_WINDOWS.filter((w) => w <= requestedWindow);
+      if (!windows.includes(requestedWindow)) windows.unshift(requestedWindow);
+      attempts = windows.flatMap((windowDays) =>
+        RETRY_END_LAGS.map((lagDays) => ({ windowDays, lagDays })),
+      );
+      period = buildPerfPeriod(requestedWindow);
+    }
     const warnings: string[] = [...localWarnings];
     let processed = 0;
     let totalRows = 0;
@@ -101,9 +118,11 @@ export async function syncPerfCpoDailyStage(ctx: StageContext): Promise<StageRes
       );
     }
 
-    // Окно sync (retry).
+    // Окно sync (retry). В override-режиме period фиксирован — retry не меняет окно.
     for (const [index, attempt] of attempts.entries()) {
-      period = buildPerfPeriod(attempt.windowDays, new Date(), attempt.lagDays);
+      if (!hasOverride) {
+        period = buildPerfPeriod(attempt.windowDays, new Date(), attempt.lagDays);
+      }
       try {
         await getExpenseDaily(ctx.perfClient, {
           dateFrom: period.dateFrom,
@@ -129,7 +148,9 @@ export async function syncPerfCpoDailyStage(ctx: StageContext): Promise<StageRes
     if (hasAllSkuPromo) {
       let uuid: string | null = null;
       for (const [index, attempt] of attempts.entries()) {
-        period = buildPerfPeriod(attempt.windowDays, new Date(), attempt.lagDays);
+        if (!hasOverride) {
+          period = buildPerfPeriod(attempt.windowDays, new Date(), attempt.lagDays);
+        }
         try {
           uuid = await submitCpoDailyReport(ctx.perfClient, {
             dateFrom: period.dateFrom,

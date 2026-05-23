@@ -27,7 +27,12 @@ import {
 import { OzonPerfApiError } from '../performance/client';
 import { rublesToKopecks } from '@/lib/unit-economics/types';
 import { runStageWithTiming, type StageContext, type StageResult } from './types';
-import { buildPerfPeriod, describePeriod, type PerfPeriod } from './perf-period';
+import {
+  buildPerfPeriod,
+  buildPerfPeriodFromOverride,
+  describePeriod,
+  type PerfPeriod,
+} from './perf-period';
 import { invalidateOzonAnalyticsCache } from '../analytics-cache';
 
 /**
@@ -118,13 +123,21 @@ export async function syncPerfSkuStatsStage(ctx: StageContext): Promise<StageRes
     }
 
     // 2) Строим окно period с retry-логикой (windowDays + lagDays).
-    const windows: number[] = RETRY_WINDOWS.filter((w) => w <= requestedWindow);
-    if (!windows.includes(requestedWindow)) windows.unshift(requestedWindow);
-    const attempts = windows.flatMap((windowDays) =>
-      RETRY_END_LAGS.map((lagDays) => ({ windowDays, lagDays })),
-    );
-
-    let period: PerfPeriod = buildPerfPeriod(requestedWindow);
+    // v0.22.1: override-режим — один attempt без retry.
+    const hasOverride = !!(ctx.overrideFromDate && ctx.overrideToDate);
+    let period: PerfPeriod;
+    let attempts: Array<{ windowDays: number; lagDays: number }>;
+    if (hasOverride) {
+      period = buildPerfPeriodFromOverride(ctx.overrideFromDate!, ctx.overrideToDate!);
+      attempts = [{ windowDays: period.windowDays, lagDays: 0 }];
+    } else {
+      const windows: number[] = RETRY_WINDOWS.filter((w) => w <= requestedWindow);
+      if (!windows.includes(requestedWindow)) windows.unshift(requestedWindow);
+      attempts = windows.flatMap((windowDays) =>
+        RETRY_END_LAGS.map((lagDays) => ({ windowDays, lagDays })),
+      );
+      period = buildPerfPeriod(requestedWindow);
+    }
     const warnings: string[] = [...localWarnings];
     let processed = 0;
     let totalRows = 0;
@@ -135,9 +148,12 @@ export async function syncPerfSkuStatsStage(ctx: StageContext): Promise<StageRes
     // 3) Каждой кампании — отдельный отчёт (CSV, не ZIP).
     for (const [campaignIdx, campaignId] of campaignIds.entries()) {
       // 3.1) Генерируем отчёт с retry уменьшенного окна при 400.
+      // v0.22.1: в override-режиме period фиксирован — retry не меняет окно.
       let uuid: string | null = null;
       for (const [index, attempt] of attempts.entries()) {
-        period = buildPerfPeriod(attempt.windowDays, new Date(), attempt.lagDays);
+        if (!hasOverride) {
+          period = buildPerfPeriod(attempt.windowDays, new Date(), attempt.lagDays);
+        }
         try {
           uuid = await submitStatisticsReport(ctx.perfClient, {
             dateFrom: period.dateFrom,

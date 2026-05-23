@@ -87,6 +87,15 @@ export type RunFullSyncArgs = {
    * выключает, отсутствие ключа = взять из `settings`.
    */
   stagesOverride?: Partial<Record<OzonStageKind, boolean>>;
+  /**
+   * v0.22.1: Override sliding-window для date-aware стейджей. Прокидывается
+   * в `StageContext.overrideFromDate/ToDate`. Если не задано — стейджи
+   * используют `settings.*WindowDays`.
+   */
+  overrideFromDate?: string;
+  overrideToDate?: string;
+  /** v0.22.1: Принудительная перезапись (см. StageContext.force). */
+  force?: boolean;
 };
 
 export async function runFullSync(args: RunFullSyncArgs): Promise<void> {
@@ -177,7 +186,15 @@ export async function runFullSync(args: RunFullSyncArgs): Promise<void> {
     };
     await updateSyncJobStage({ jobId: args.jobId, stage, state: runningState });
 
-    const result = await STAGE_RUNNERS[stage]({ ...baseCtx, client, perfClient, settings });
+    const result = await STAGE_RUNNERS[stage]({
+      ...baseCtx,
+      client,
+      perfClient,
+      settings,
+      overrideFromDate: args.overrideFromDate,
+      overrideToDate: args.overrideToDate,
+      force: args.force,
+    });
     totalProcessed += result.itemsProcessed;
 
     if (isPerfStage) {

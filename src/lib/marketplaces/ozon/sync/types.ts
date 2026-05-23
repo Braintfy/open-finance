@@ -18,6 +18,22 @@ export type StageContext = UpsertContext & {
   settings: OzonSyncSettings;
   /** Callback для inline progress reporting (не обязателен). */
   onProgress?: (processed: number, total?: number) => void;
+  /**
+   * v0.22.1: Override sliding-window для date-aware стейджей
+   * (analyticsData / orders / transactions / perf-*). Если задано — стейдж
+   * использует [overrideFromDate, overrideToDate] вместо `settings.*WindowDays`.
+   * Формат: YYYY-MM-DD в Europe/Moscow, включительно.
+   * Стейджи без даты (products / prices / stocks / turnover / clusters /
+   * warehouseStocks / realization) override игнорируют.
+   */
+  overrideFromDate?: string;
+  overrideToDate?: string;
+  /**
+   * v0.22.1: «Принудительная» перезапись. Сейчас daily-таблицы и так
+   * DELETE+INSERT в окне — флаг зарезервирован под будущую оптимизацию
+   * (skip-if-already-loaded для orders/transactions upsert).
+   */
+  force?: boolean;
 };
 
 export type StageResult = {

@@ -6,18 +6,25 @@
 > зафиксировать «что делать дальше», «где смотреть изменения у Ozon»,
 > и «где будет AI-документация».
 
-## 0. Где мы сейчас (v0.17.0)
+## 0. Где мы сейчас (v0.22.1)
 
 - ✅ Подключение Ozon-аккаунта через `/settings/integrations` (api_key AES-256-GCM).
-- ✅ 7 стейджей синхронизации: products / prices / stocks / orders / realization / transactions / turnover.
-- ✅ Тогглы «что синхронизировать», окна (orders/transactions), история job'ов.
+- ✅ 15 стейджей синхронизации: products / prices / stocks / analyticsData / orders / realization / transactions / turnover / clusters / warehouseStocks / perfCampaigns / perfSkuStats / perfCpoDaily / perfExpenseDaily / perfPhrases.
+- ✅ Тогглы «что синхронизировать», окна (orders/transactions/analytics/perf), история job'ов.
 - ✅ Plan-gate multi-store (Pro+).
-- ✅ Кнопка «Загрузить из Ozon» в `unit.ozon-multi-table` и `unit.ozon-calculator` + product picker.
-- ✅ Таблицы: `marketplace_accounts`, `ozon_sync_jobs`, `ozon_orders`, `ozon_realization`, `ozon_transactions`.
-- ❌ Cron / авто-синхронизация (поля в схеме есть, BullMQ-воркер — TODO).
-- ❌ Аналитические блоки на основе синхронизированных данных.
+- ✅ Кнопка «Загрузить из Ozon» в `unit.ozon-multi-table`, `unit.ozon-calculator` + product picker.
+- ✅ **Incremental backfill (v0.22.1)**: sync API принимает `fromDate`/`toDate`/`force` — можно догрузить «вчерашний день» одним кликом без полного 90-дневного окна. Date-aware стейджи (`analyticsData`, `orders`, `transactions`, `perf-*`) honor override; catalog/snapshot стейджи (`products`, `prices`, `stocks`, `turnover`, `clusters`, `warehouseStocks`, `realization`) игнорируют. См. CHANGELOG v0.22.1.
+- ✅ **`OzonSyncDialog` (v0.22.1)**: универсальная модалка синхронизации с диапазоном дат, выбором стейджей по группам и polling статуса. Toolbar-кнопка в `unit.ozon-analytics`. Кандидат на rollout в другие `unit.ozon-*` блоки (см. ниже).
+- ✅ Аналитические блоки: `unit.ozon-analytics` (per-product таблица с фильтрами), `unit.ozon-kpi`, `unit.ozon-chart`, `unit.ozon-campaigns`, `unit.ozon-abc`, `unit.ozon-ai-insights`, `unit.ozon-search-phrases`, `unit.ozon-top-ads`, `unit.ozon-warehouse-clusters`.
+- ✅ Таблицы: `marketplace_accounts`, `ozon_sync_jobs`, `ozon_orders`, `ozon_realization`, `ozon_transactions`, `ozon_analytics_daily`, `ozon_perf_*` (5 шт.), `ozon_clusters`, `ozon_warehouse_stocks`.
+- ❌ Cron / авто-синхронизация (поля в схеме есть, BullMQ-воркер — TODO). **Теперь когда есть incremental backfill — auto-cron может ежедневно догружать «вчера» вместо полного re-sync.**
 - ❌ WB / Я.Маркет коннекторы (схема мультимаркетная, нужен код).
 - ❌ AI-документация `docs/MARKETPLACES_OZON.md`.
+
+### Next steps after v0.22.1
+1. **BullMQ auto-yesterday cron** — теперь упрощается: воркер по cron вызывает sync с `{ fromDate: yesterday, toDate: yesterday, stages: { analyticsData: true, orders: true, perf*: true } }`. Намного дешевле, чем полный 90-дневный sync. См. раздел 1 ниже.
+2. **Rollout `OzonSyncDialog`** в остальные `unit.ozon-*` блоки (`unit.ozon-kpi`, `unit.ozon-chart`, `unit.ozon-campaigns`, и т.д.) — компонент уже универсальный, нужна только toolbar-кнопка.
+3. **`force` опция**: текущая семантика — синоним overwrite (daily-таблицы и так DELETE+INSERT). Под будущую оптимизацию: добавить `skip-if-already-loaded` для orders/transactions upsert (когда уже есть row — пропустить, если `force=false`), это сильно ускорит daily auto-cron.
 
 ## 1. Приоритетный следующий блок — BullMQ cron для авто-синхронизации (Этап 6.1)
 

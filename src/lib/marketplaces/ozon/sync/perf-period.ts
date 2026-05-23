@@ -60,6 +60,38 @@ export function buildPerfPeriod(
   return { dateFrom, dateTo, windowDays: clamped };
 }
 
+/**
+ * v0.22.1: Строит окно из явных override-дат, с clamp до Performance-лимита.
+ * Если `from > to` — возвращает диапазон с одним днём = `to`. Если разница
+ * больше `MAX_PERF_WINDOW_DAYS` — сдвигает `from` к `to - MAX`.
+ */
+export function buildPerfPeriodFromOverride(
+  fromIso: string,
+  toIso: string,
+): PerfPeriod {
+  const dateTo = toIso;
+  let dateFrom = fromIso;
+  if (dateFrom > dateTo) {
+    dateFrom = dateTo;
+  }
+  const days = diffDaysInclusive(dateFrom, dateTo);
+  if (days > MAX_PERF_WINDOW_DAYS) {
+    dateFrom = shiftIsoDate(dateTo, -(MAX_PERF_WINDOW_DAYS - 1));
+  }
+  return {
+    dateFrom,
+    dateTo,
+    windowDays: diffDaysInclusive(dateFrom, dateTo),
+  };
+}
+
+function diffDaysInclusive(fromIso: string, toIso: string): number {
+  const from = new Date(fromIso + 'T00:00:00Z');
+  const to = new Date(toIso + 'T00:00:00Z');
+  const ms = to.getTime() - from.getTime();
+  return Math.max(1, Math.floor(ms / (24 * 60 * 60 * 1000)) + 1);
+}
+
 /** Форматирует период для отображения пользователю в ошибках/предупреждениях. */
 export function describePeriod(p: PerfPeriod): string {
   return `${p.dateFrom}…${p.dateTo} (${p.windowDays}d, MSC)`;

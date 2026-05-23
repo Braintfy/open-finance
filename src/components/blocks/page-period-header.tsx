@@ -74,13 +74,26 @@ export function PagePeriodHeader({
   }
 
   return (
-    <div className="sticky top-0 z-30 -mx-1 mb-1 flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 rounded-md border border-border/60 bg-background/95 px-3 py-2 backdrop-blur supports-[backdrop-filter]:bg-background/85">
+    <div className="sticky top-0 z-30 -mx-1 mb-1 flex flex-col gap-1.5 rounded-md border border-border/60 bg-background/95 px-3 py-2 backdrop-blur supports-[backdrop-filter]:bg-background/85">
+      {/* Row 1 (nowrap): иконка + описание (truncate) + chevron всегда top-right */}
       <div className="flex min-w-0 items-center gap-2 text-[12px] text-muted-foreground">
         <CalendarRange className="h-3.5 w-3.5 shrink-0" />
-        <span className="truncate">
+        <span className="min-w-0 flex-1 truncate">
           {description ?? 'Период страницы (наследуется блоками)'}
         </span>
+        {onToggleCollapsed && (
+          <button
+            type="button"
+            onClick={() => onToggleCollapsed(true)}
+            className="ml-auto shrink-0 rounded p-0.5 text-muted-foreground transition hover:bg-accent hover:text-foreground"
+            title="Свернуть панель"
+            aria-label="Свернуть панель периода"
+          >
+            <ChevronUp className="h-3.5 w-3.5" />
+          </button>
+        )}
       </div>
+      {/* Row 2 (wrap): source-чипы + period-picker */}
       <div className="flex flex-wrap items-center gap-2">
         {showSourceFilter && sourceCtx.pageKey ? (
           <SourceFilterChips
@@ -90,17 +103,6 @@ export function PagePeriodHeader({
           />
         ) : null}
         <PeriodPicker value={value} onChange={onChange} compact />
-        {onToggleCollapsed && (
-          <button
-            type="button"
-            onClick={() => onToggleCollapsed(true)}
-            className="rounded p-0.5 text-muted-foreground transition hover:bg-accent hover:text-foreground"
-            title="Свернуть панель"
-            aria-label="Свернуть панель периода"
-          >
-            <ChevronUp className="h-3.5 w-3.5" />
-          </button>
-        )}
       </div>
     </div>
   );
