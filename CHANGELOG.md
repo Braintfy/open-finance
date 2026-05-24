@@ -1,5 +1,166 @@
 # Changelog
 
+## [0.22.4] - 2026-05-24
+
+**Infra/Memory**: переход с mempalace на **agentmemory** MCP server. Mempalace deprecated после неуспешной попытки `migrate --yes` (зависла на 30+ минут на 148MB chroma.sqlite3 — root cause [Issue #832](https://github.com/MemPalace/mempalace/issues/832): chromadb concurrency повреждает HNSW индекс при одновременной работе hooks + sync + MCP).
+
+### A. Установка agentmemory (`rohitg00/agentmemory`, 17K stars, v0.9.21)
+
+- **Стек:** `agentmemory` MCP server на :3111 + viewer на :3113 + `iii-engine v0.11.2` (native Rust runtime, ~5MB бинарник в `~/.local/bin/iii`) + опц. `@xenova/transformers` для local embeddings.
+- **Метрики:** 95.2% R@5 на LongMemEval-S, ~1900 токенов/сессия, 51 MCP tools (memory_smart_search, memory_save, memory_sessions, memory_recall, memory_audit, memory_export, etc.), 12 auto-capture hooks, BM25 + Vector + Knowledge Graph через RRF.
+- **Storage:** local SQLite в `~/.agentmemory/`, ~50MB на 1000 сессий.
+- **Cursor wiring:** обновлён `~/.cursor/mcp.json` — заменён `mempalace` на `agentmemory` через `@agentmemory/mcp` shim с `AGENTMEMORY_URL=http://localhost:3111`. Backup старого config: `~/.cursor/mcp.json.backup-20260524-094149`.
+- **launchd:** новый агент `~/Library/LaunchAgents/com.agentmemory.server.plist` — auto-start на login, KeepAlive on crash, ThrottleInterval 15s. PATH включает `~/.volta/bin` и `~/.local/bin` (для iii-engine).
+- **Логи:** `~/Library/Logs/agentmemory.{out,err}.log`.
+
+### B. Скрипты
+
+- **`scripts/install-agentmemory.sh`** (213 строк, исполняемый, интерактивный):
+  1. Проверка Node.js ≥20.
+  2. Скачивание iii-engine v0.11.2 (auto-detect arm64/x64) в `~/.local/bin/iii`.
+  3. Опц. global install `@xenova/transformers` (Y по умолчанию, +8pp recall vs BM25-only).
+  4. Опц. global install `@agentmemory/agentmemory` (Y по умолчанию, избегает npx version-cache).
+  5. Load launchd-агента, ожидание health endpoint (до 60s).
+  6. Запуск `agentmemory doctor`.
+- **`scripts/import-claude-transcripts.sh`** (75 строк, исполняемый):
+  - Импорт `~/.claude/projects/**.jsonl` через `agentmemory import-jsonl` (если использовался Claude Code CLI).
+  - Cursor транскрипты — формат отличается, прямой импорт не сработает (документировано в скрипте).
+
+### C. Документация
+
+- **`docs/MEMORY_SETUP.md`** (полное руководство, ~350 строк):
+  - TL;DR + zachem.
+  - Полная диаграмма стека (Static + Dynamic + Runtime + Archives).
+  - Что устанавливается (таблица: iii-engine, @agentmemory/agentmemory, @xenova/transformers, launchd plist, Cursor MCP, SQLite storage).
+  - Step-by-step установка через скрипт + ручная альтернатива.
+  - **«MCP shim vs full server»** — критическое объяснение почему может видеться только 7 tools вместо 51.
+  - LLM провайдеры (NO-OP по умолчанию, опц. Anthropic/OpenAI через `~/.agentmemory/.env`).
+  - Управление сервером (launchctl/agentmemory CLI/doctor).
+  - Backup/restore через export JSON API.
+  - Безопасность (localhost-only, privacy filter, `<private>` tags).
+  - Troubleshooting (8 типовых проблем с пошаговыми фиксами).
+  - Сравнительная таблица с mem0/Letta/mempalace/CLAUDE.md.
+- **`docs/MEMPALACE_RUNBOOK.md`** — отмечен как deprecated, оставлен для исторической ссылки и опц. cleanup.
+
+### D. Обновление static-памяти
+
+- **`MEMORY.md`** — секция «MemPalace integration» заменена на «AI memory integration (agentmemory)»: launchd-агент, iii-engine v0.11.2, 51 vs 7 MCP tools, NO-OP LLM default, ссылки на скрипты и docs.
+- **`START.md`** — секция «MemPalace — статус и правила» заменена на «AI memory — agentmemory (с v0.22.4)»: статус нового стека, как использовать в Cursor чате, viewer URL.
+- **`LEARNING_LOG.md`** — добавлены 2 записи:
+  - `2026-05-24 — mempalace окончательно сломан (Issue #832), переход на agentmemory`.
+  - `2026-05-24 — agentmemory README критично отличается от dev.to статьи` (7 ключевых деталей: iii-engine обязателен, shim 7 vs 51 tools, @xenova/transformers отдельно, NO-OP LLM default, AUTO_COMPRESS off, `agentmemory connect cursor`, npx version cache).
+
+### E. Команды для пользователя
+
+```bash
+# 1. Установить agentmemory (интерактивный, ~2 мин + npm install времени)
+cd /Users/firay/open-finance/open-finance
+./scripts/install-agentmemory.sh
+
+# 2. Перезапустить Cursor (Cmd+Q и снова открыть)
+
+# 3. Проверить — в Cursor: Settings → MCP Servers → agentmemory должен быть зелёным
+curl http://localhost:3111/agentmemory/health
+open http://localhost:3113
+
+# 4. (Опц.) После 1-2 недель использования удалить старый mempalace
+rm -rf ~/.mempalace                # активный
+# ~/.mempalace.backup-* — оставить ещё на месяц на всякий случай
+
+# 5. Закоммитить
+git add -A
+git commit -m "v0.22.4: switch from mempalace to agentmemory MCP
+
+- mempalace deprecated (Issue #832 chromadb concurrency)
+- agentmemory: 51 MCP tools, BM25+Vector+Graph (RRF), 95.2% R@5
+- iii-engine v0.11.2 native runtime
+- launchd auto-start, ~/Library/LaunchAgents/com.agentmemory.server.plist
+- Updated ~/.cursor/mcp.json (mempalace → agentmemory), backup kept
+- scripts/install-agentmemory.sh interactive installer
+- docs/MEMORY_SETUP.md comprehensive guide"
+git push origin main
+```
+
+## [0.22.3] - 2026-05-23
+
+**Infra/Memory**: capital переработка системы AI-памяти — сжатие `MEMORY.md` ×2.8, переход на Cursor 2026 `.cursor/rules/*.mdc` path-scoped правила, runbook для починки MemPalace, append-only `LEARNING_LOG.md`, скрипты синхронизации, custom skill для bootstrap'а.
+
+### A. `MEMORY.md` сжат с 908 → 321 строк (–65%)
+
+- **Bug**: `MEMORY.md` объявлен как «~5K токенов» в `CLAUDE.md`, фактически 908 строк (~45K токенов). Каждая новая сессия съедала 25% контекста Sonnet 200K на чтение устаревших грабель v0.10-v0.20.
+- **Fix**: исторические нарративы по версиям вынесены в `docs/memory-archive/{README,v0.10-v0.16,v0.17,v0.18,v0.19-v0.20,v0.21-v0.22}.md` (827 строк, читаются **только по запросу** задачи).
+- **Оставлено в `MEMORY.md`**: bootstrap routing, идентичность, hard rules, стек, структура, инварианты Block-Grid, актуальный каталог блоков, активные грабли последних 2-3 версий (v0.21-v0.22), универсальные грабли (не привязаны к версии).
+- **Эффект**: bootstrap новой сессии теперь стоит ~9K токенов (`START.md` + `MEMORY.md` + git log) вместо ~50K.
+
+### B. `.cursor/rules/*.mdc` — path-scoped правила Cursor 2026
+
+- Создана папка **`.cursor/rules/`** с 7 файлами:
+  - `project-context.mdc` (36 строк, `alwaysApply: true`) — короткий always-on контекст: идентичность + hard rules.
+  - `blocks.mdc` (72 строки, globs `src/lib/blocks/**`, `src/components/blocks/**`) — Block-Grid инварианты, hooks rules, RSC/SC, sticky cells, appearance, добавление блоков.
+  - `ai-tools.mdc` (68 строк, globs `src/lib/ai/**`, `src/app/api/ai/**`) — Tools Layer, providers, streaming NDJSON, Vision, tenant settings JSONB, RAG TODO.
+  - `marketplaces.mdc` (101 строка, globs `src/lib/marketplaces/**`, `src/app/api/marketplaces/**`) — Ozon Seller + Performance API, ключевые файлы, sync stages, активные грабли, обновление API формы.
+  - `drizzle.mdc` (110 строк, globs `src/lib/db/**`, `drizzle/**`) — multi-tenant, postgres.js Date gotcha, try/catch in routes, JSONB merge, onConflictDoUpdate fallback, pgvector.
+  - `security.mdc` (87 строк, globs auth/crypto/billing/env) — AES-256-GCM, NextAuth v5, tenant isolation, биллинг, 152-ФЗ, env vars, pnpm audit.
+  - `unit-economics.mdc` (117 строк, globs `src/lib/unit-economics/**`) — types/calculate/migrate, tariff versioning, multi-cluster FBS, UI инварианты, XLSX, aggregate outputs.
+- **Эффект**: вместо загрузки полного `CLAUDE.md` правил в каждой задаче, Cursor IDE подгружает только релевантные `.mdc` по globs (`alwaysApply: true` для project-context + 1-2 path-scoped). Экономия токенов на каждую задачу ×3-5.
+
+### C. `docs/MEMPALACE_RUNBOOK.md` — manual fix для chromadb 1.5.6
+
+- **Проблема**: `mempalace status/search/wake-up` зависают на 24600 drawers (palace создан старой ChromaDB; новая 1.5.6 не может открыть). `migrate` зависает в sandbox-агенте из-за блокировки `~/.mempalace/palace.pre-migrate.*`.
+- **Решение**: всё mempalace-обслуживание оформлено как пользовательский runbook (`docs/MEMPALACE_RUNBOOK.md`, 206 строк) — kill старых hook processes, backup, cleanup locks, migrate, fallback re-init, prune мусорных wings (sessions/braint/ozguard/UUID-wings), проверка работоспособности.
+- **AI-агенты НЕ выполняют** команды runbook сами — только подсказывают, что запустить пользователю.
+
+### D. `scripts/sync-mempalace.sh` + `install-hooks.sh`
+
+- **`scripts/sync-mempalace.sh`** (66 строк, исполняемый) — синхронизирует `~/.mempalace/sources/open-finance/current-context-v{version}.md` с актуальным `MEMORY.md` (+ git log -30). Версия извлекается из `CHANGELOG.md`. Старые snapshots удаляются. Re-indexing в mempalace через `mempalace mine ... --mode docs` с timeout 30s; graceful warning если mempalace зависает.
+- **`scripts/install-hooks.sh`** (83 строки, исполняемый) — устанавливает в `.git/hooks/`:
+  - `pre-push` — запускает `sync-mempalace.sh` (не блокирует push при ошибке).
+  - `pre-commit` — secret scanner (запрещённые файлы `.env*`, `*.pem`, `*.key`, `credentials*`, `secret*`, `id_rsa`, `id_ed25519` + grep на типовые API keys, OpenAI `sk-*`, GitHub `ghp_*`).
+- Выполнено: старый snapshot `current-context-v0.10.3.md` (от 2026-05-13!) удалён, создан актуальный `current-context-v0.22.2.md` (363 строки, 36KB).
+
+### E. `LEARNING_LOG.md` — append-only AI learnings
+
+- Новый файл `LEARNING_LOG.md` (77 строк) — append-only журнал для новых граблей/инсайтов AI-агентов. Формат: `### YYYY-MM-DD — название` + Контекст/Грабля/Причина/Фикс/Урок. Раз в неделю релевантные записи мигрируют в `MEMORY.md` (раздел «Активные грабли»), устаревшие — в `docs/memory-archive/`.
+- Первые 5 записей: mempalace migrate в sandbox, `MEMORY.md` достиг 908 строк, устаревшие версии в MemPalace индексе, Cursor 2026 `.mdc` rules, `.cursor/` blocked sandbox по умолчанию.
+
+### F. `~/.claude/skills/open-finance-bootstrap/SKILL.md` — custom skill
+
+- Новый custom skill для Claude — триггер словами «загрузи контекст Open Finance», «прогрев of», «bootstrap open finance». Выполняет строго 3 шага: Read `START.md` → Read `MEMORY.md` → `git log --oneline -20`. После этого работа любой сложности без дополнительных чтений.
+- Дублирует hard rules для случая когда skill уже подцепился, но `CLAUDE.md`/`AGENTS.md` ещё не загружен.
+
+### G. Обновлены `START.md`, `CLAUDE.md`, `AGENTS.md`
+
+- **`START.md`** (125 → 139 строк) — добавлена секция про Cursor 2026 `.cursor/rules/*.mdc`, упоминание `MEMPALACE_RUNBOOK.md`, актуальные ссылки на `docs/memory-archive/` для исторических вопросов, упоминание `LEARNING_LOG.md`.
+- **`CLAUDE.md`** (200 → 257 строк) — добавлена секция «Cursor 2026 — path-scoped rules» с описанием всех 7 `.mdc` файлов, секция «MemPalace integration» переписана (только точечный search; runbook для починки), упоминание `LEARNING_LOG.md` в процессе работы.
+- **`AGENTS.md`** (118 → 171 строка) — добавлена секция «Cursor IDE — path-scoped rules», ссылка на `LEARNING_LOG.md`, актуализированы пути и количества строк (`CHANGELOG.md` 2981, `PLAN.md` 1427), добавлен пример Block (catalog/my-block.tsx) в Common Patterns.
+
+### H. Архивированные файлы
+
+- **`docs/memory-archive/README.md`** (38 строк) — индекс архива.
+- **`docs/memory-archive/v0.10-v0.16.md`** (125 строк) — foundational features (Block-Grid, Inbox MVP, AI streaming, Boards, Sheet, currency).
+- **`docs/memory-archive/v0.17.md`** (96 строк) — Ozon Seller API foundation, sync-as-data-source, settings UI.
+- **`docs/memory-archive/v0.18.md`** (235 строк) — Performance API, analytics, КPI/Chart блоки, top-ads/abc/search-phrases, диагностика, MSC period, ozon-ads-totals.
+- **`docs/memory-archive/v0.19-v0.20.md`** (101 строка) — AI Vision, Sheet parity, Source binding v0 (только cashflow.transactions), KPI grid.
+- **`docs/memory-archive/v0.21-v0.22.md`** (130 строк) — Source binding v1 (KPI/chart/top-categories/kpi.grid), formula UX, page period panel, Ozon incremental sync.
+
+### Команды для пользователя
+
+```bash
+# Установить git hooks
+./scripts/install-hooks.sh
+
+# Починить mempalace (если зависает)
+# См. docs/MEMPALACE_RUNBOOK.md
+
+# Синхронизировать mempalace source вручную
+./scripts/sync-mempalace.sh
+
+# Закоммитить
+git add -A
+git commit -m "v0.22.3: memory infra overhaul — compact MEMORY.md, Cursor 2026 rules, MemPalace runbook"
+git push origin main
+```
+
 ## [0.22.2] - 2026-05-23
 
 **Patch v0.22.1**: фикс «сломанной» кнопки `Из блока` в источнике данных + унификация sync-UI вокруг `OzonSyncDialog` (header `/marketplaces/ozon`, Settings → Integrations → AccountCard) + smart auto-preset для диалога (диапазон вычисляется из `lastSyncAt`).

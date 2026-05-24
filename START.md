@@ -1,29 +1,30 @@
-# START.md — bootstrap-контекст Open Finance
+# START.md — bootstrap Open Finance
 
-> Единственный файл, который AI-агент должен прочитать первым в новой сессии.
-> Триггер пользователя: **«загрузи контекст Open Finance»** или **«прогрев of»**.
-> Вся остальная документация подгружается **по запросу задачи**, не по умолчанию.
+> Первый файл AI-агента в новой сессии. Триггер: «загрузи контекст Open Finance» / «прогрев of».
+> Остальная документация — **по запросу**, не по умолчанию.
 
-## Что делать в новой сессии (3 шага, ~6–8K токенов)
+## Bootstrap (3 шага, ~9K токенов)
 
-1. Прочитать этот `START.md`.
-2. Прочитать `MEMORY.md` — актуальный handoff (~5K токенов).
-3. Запустить `git -C /Users/firay/open-finance/open-finance log --oneline -20`.
+1. **`START.md`** (этот файл) — карта проекта, правила, маршрутизация.
+2. **`MEMORY.md`** (~5K токенов) — текущее состояние, инварианты, активные грабли.
+3. **`git -C /Users/firay/open-finance/open-finance log --oneline -20`** — последние коммиты.
 
-После этих шагов **можно начинать работу любой сложности**. Дальше подгружается только то, что нужно для конкретной задачи (см. таблицу ниже).
+После этого можно работать любой сложности. Дальше — **только релевантное конкретной задаче** (см. таблицу маршрутизации).
+
+> В Cursor IDE дополнительно автоматически загружается `.cursor/rules/project-context.mdc` (`alwaysApply: true`, ~80 строк) — он короче `START.md` и работает как «всегда включённый минимум». При работе с конкретными подсистемами Cursor сам прицепляет `.cursor/rules/{blocks,marketplaces,ai-tools,drizzle,security,unit-economics}.mdc` по globs.
 
 ## Идентичность
 
-**Open Finance** — AI-первая модульная финансовая платформа для предпринимателей РФ (селлеры OZON/WB/ЯМ, ИП, фрилансеры, малый бизнес). Сейчас — Next.js 15 SaaS. Phase 2 — Tauri 2.0 desktop. Phase 3 — React Native mobile.
+**Open Finance** — AI-первая модульная финансовая платформа для предпринимателей РФ (селлеры OZON/WB/ЯМ, ИП, фрилансеры, малый бизнес). Сейчас — Next.js 15 SaaS. Phase 2 — Tauri 2.0. Phase 3 — React Native + Expo.
 
-Главная архитектурная идея: **почти каждая страница = настраиваемый BlockGrid**. Новая фича обычно = новый block type в `src/lib/blocks/catalog/`, а не статичная страница.
+Главная идея: **почти каждая страница = настраиваемый BlockGrid**. Новая фича обычно = новый block type в `src/lib/blocks/catalog/`, а не статичная страница.
 
-Источник правды по статусу — `MEMORY.md` и `CHANGELOG.md`. `package.json` версия отстаёт.
+Источник правды: `CHANGELOG.md` + `git log` (текущая v0.22.2, `package.json` 0.5.0 устарел).
 
 ## Жёсткие правила (MUST NOT)
 
 - НЕ делать `git add/commit/push` — давать команды пользователю.
-- НЕ запускать DB-миграции — давать команды пользователю.
+- НЕ запускать DB-миграции — давать команды.
 - НЕ коммитить `.env`, секреты, ключи, токены.
 - НЕ использовать `npm`/`yarn` — только `pnpm`.
 - НЕ использовать Prisma — только Drizzle ORM.
@@ -44,59 +45,65 @@ Next.js 15 App Router + TS + Tailwind + shadcn/ui + Drizzle ORM + Postgres 16 + 
 ```
 src/
 ├── app/                  Next.js App Router (pages, api/)
-│   ├── (app)/            authenticated shell
+│   ├── (app)/            authenticated shell (dashboard, cashflow, inbox, boards, unit-economics, marketplace, settings, admin)
 │   ├── (auth)/           login/register/forgot
-│   └── api/              auth, blocks, cashflow, inbox, ai, boards
-├── components/blocks/    BlockGrid shell, chrome, dialogs, relation overlay
+│   └── api/              auth, blocks, cashflow, inbox, ai, boards, marketplaces, currency
+├── components/blocks/    BlockGrid shell, chrome, dialogs, relations overlay
+├── components/marketplaces/  GlobalSyncIndicator, SyncAllButton, OzonSyncDialog
+├── components/unit-economics/  калькуляторы, sync UI, biding picker, analytics table
 ├── components/micro-agent/  AI dialog
 ├── components/ui/        shadcn primitives
-├── lib/ai/               providers, micro-agent, tools, memory stubs
-├── lib/blocks/           types, registry, catalog, values, relations
+├── lib/ai/               providers, micro-agent, tools, vision, memory (TODO)
+├── lib/blocks/           types, registry, catalog/, values, relations, source-binding
 ├── lib/boards/           Boards CRUD
-├── lib/db/               Drizzle client + schema
+├── lib/currency/         CBR fetch, queries
+├── lib/db/               Drizzle client + schema/
 ├── lib/inbox/            IMAP, MIME, crypto, queries
+├── lib/marketplaces/     Ozon Seller API + Performance API
+├── lib/unit-economics/   tariffs, calculate, bindings, store-formula
 ├── lib/env.ts            typed env
 └── modules/              business modules (cashflow, inbox, communications)
 ```
 
-## Маршрутизация: какую задачу — какие файлы читать
+## Маршрутизация задач
 
-| Тип задачи | Что читать (только это, не всё подряд) |
+> Грузить только это, не всё подряд. Cursor дополнительно сам прицепит `.cursor/rules/*.mdc` по globs.
+
+| Тип задачи | Что читать |
 |---|---|
-| Новый/правка блока, BlockGrid поведение | `src/lib/blocks/types.ts`, `src/lib/blocks/registry.ts`, `src/components/blocks/block-grid.tsx`, нужный файл из `src/lib/blocks/catalog/` |
-| AI-чат, streaming, micro-agent | `src/app/api/ai/chat/route.ts`, `src/components/micro-agent/micro-agent-dialog.tsx`, `src/lib/ai/providers/{ollama,openai-compat,proxy}.ts` |
-| Новый AI tool | `src/lib/ai/tools/index.ts` + пример `src/lib/ai/tools/query-inbox-messages.ts`, потом `docs/AI_TOOLS.md` |
-| Inbox / IMAP / Telegram | `src/lib/inbox/{imap,mime,crypto,queries}.ts`, `src/lib/blocks/catalog/inbox-channel-feed.tsx`, `docs/EMAIL_BEGET.md` |
-| Курсы валют / `currency.rates` блок | `src/lib/currency/{types,queries,sources/cbr}.ts`, `src/lib/blocks/catalog/currency-rates.tsx`, `src/app/api/currency/rates/{route,refresh/route}.ts`, `drizzle/init/06-currency.sql` |
-| Интеграции маркетплейсов (Ozon Seller API) | `src/lib/marketplaces/{types,crypto,queries,use-accounts}.ts`, `src/lib/marketplaces/ozon/{client,endpoints,types,upsert,upsert-plan}.ts` + `sync/*.ts`, `src/app/api/marketplaces/accounts/**`, `src/app/(app)/settings/integrations/{page,integrations-client}.tsx`, `src/components/integrations/ozon-key-help.tsx`, `src/components/unit-economics/{ozon-sync-button,ozon-product-picker-dialog,ozon-sync-settings-form,ozon-sync-settings-dialog,ozon-sync-preview-dialog,ozon-sync-diff}.tsx`, `drizzle/init/07-marketplaces.sql`. При работе с самим API — смотреть `OZON_API_VERSION_MAP` в `endpoints.ts` (единая точка версионирования). **`OzonClient.post()` lenient по умолчанию** (warning + raw на Zod fail) — `{ strict: true }` для критичных. **Sync upsert идемпотентен через `planUnitProductUpsertFromOzon()`** (см. секцию «Marketplace Integrations v0.17.2» в `MEMORY.md`): условные set + `sql\`unit_products.X\`` fallback, чтобы поздние стейджи не затирали ранние. Sync-блок: `config.sync = { accountId, conflictPolicy, matchBy, columnMap, stockSource, treatZeroAsEmpty }`. Diff собирается `buildSyncDiff()` (pure-function, 32 теста в `scripts/test-ozon-sync-diff.ts`) и показывается в `OzonSyncPreviewDialog`. **Settings — таб «Параметры» Settings-диалога блока** (через `BlockDef.SettingsForm`), не toolbar |
-| Аналитика per-product Ozon | Блок `unit.ozon-analytics`: `src/lib/blocks/catalog/{unit-ozon-analytics,unit-ozon-analytics-types}.tsx/.ts`, `src/components/unit-economics/{ozon-analytics-table,ozon-analytics-filters,ozon-analytics-settings-form}.tsx`, `src/app/api/marketplaces/analytics/ozon/route.ts`. Read-only таблица per-product за период с smart-фильтрами/баджами/XLSX-экспортом. SQL-агрегаты из `ozon_orders`+`ozon_transactions`, расчёт DRR/buyout/daysOfStock в Node. 29 тестов в `scripts/test-ozon-analytics.ts` |
-| Roadmap для marketplace-интеграций (что делать после v0.17.0, как мониторить изменения API, план аналитических блоков) | `docs/MARKETPLACES_FUTURE_PLAN.md` |
-| Boards | `src/lib/db/schema/boards.ts`, `src/lib/boards/queries.ts`, `src/app/(app)/boards/*`, `drizzle/init/03-boards.sql` |
-| Cashflow / транзакции | `src/lib/cashflow/*`, `src/modules/cashflow/*`, `src/app/api/cashflow/*` |
-| DB schema / миграции | `src/lib/db/schema/*`, `drizzle/init/*.sql`. После изменений: дать пользователю команды `pnpm db:generate && pnpm db:push`. |
-| Auth / NextAuth v5 | `src/lib/auth/*`, `src/app/(auth)/*`, `src/middleware.ts` |
-| Биллинг (Т-Касса/CloudPayments) | `src/lib/billing/*`, `docs/BILLING.md` |
-| Безопасность / секреты / 152-ФЗ | `docs/SECURITY.md` (ОБЯЗАТЕЛЬНО при любой работе с секретами/сетью/биллингом) |
-| Tauri / десктоп стратегия | `docs/DESKTOP_STRATEGY.md`, `docs/LICENSING.md` |
-| Локальный AI / Ollama / VPN | `docs/LOCAL_AI.md`, `docs/VPN_FOR_AI.md` |
-| Стратегия продукта, roadmap, обоснования | `PLAN.md` — читать **offset+limit** на нужный раздел, не файл целиком (1420 строк) |
-| История релизов | `git log --oneline -30` или `Read CHANGELOG.md offset=1 limit=80` (не весь файл — там 1199 строк) |
-| Работа с библиотекой (Next 15, Drizzle, shadcn, pgvector, Tauri 2) | Context7: `mcp0_resolve-library-id` → `mcp0_query-docs`, не более 3 вызовов |
+| **BlockGrid / новый block** | `src/lib/blocks/{types,registry}.ts`, `src/components/blocks/block-grid.tsx`, нужный файл из `src/lib/blocks/catalog/`. Cursor подтянет `.cursor/rules/blocks.mdc`. |
+| **AI-чат, streaming, micro-agent** | `src/app/api/ai/chat/route.ts`, `src/components/micro-agent/micro-agent-dialog.tsx`, `src/lib/ai/providers/{ollama,openai-compat,proxy}.ts`. Rules: `ai-tools.mdc`. |
+| **Новый AI tool** | `src/lib/ai/tools/index.ts` + пример `src/lib/ai/tools/query-inbox-messages.ts`, `docs/AI_TOOLS.md`. Rules: `ai-tools.mdc`. |
+| **AI Vision (распознавание чеков/счетов)** | `src/lib/ai/vision/{types,router}.ts`, `providers/{claude,openai,yandex,tesseract,mock}.ts`, `docs/AI_VISION.md`. |
+| **Inbox / IMAP** | `src/lib/inbox/{imap,mime,crypto,queries}.ts`, `src/lib/blocks/catalog/inbox-channel-feed.tsx`, `docs/EMAIL_BEGET.md`. |
+| **Курсы валют** | `src/lib/currency/{types,queries,sources/cbr}.ts`, `src/lib/blocks/catalog/currency-rates.tsx`, `src/app/api/currency/rates/{route,refresh/route}.ts`, `drizzle/init/06-currency.sql`. |
+| **Ozon Seller API / Performance API** | `src/lib/marketplaces/{types,crypto,queries,use-accounts}.ts`, `src/lib/marketplaces/ozon/{client,endpoints,types,upsert,upsert-plan,sync/*}.ts`, `src/app/api/marketplaces/**`, `src/app/(app)/settings/integrations/*`, `src/components/marketplaces/*`. Rules: `marketplaces.mdc`. При работе с API смотреть `OZON_API_VERSION_MAP` в `endpoints.ts`. **`OzonClient.post()` lenient** (warning + raw на Zod fail) — `{ strict: true }` для критичных. **Sync upsert идемпотентен через `planUnitProductUpsertFromOzon()`** (pure function, 47 unit-тестов). |
+| **Ozon Analytics (per-product, KPI, ABC, campaigns)** | Блоки `unit.ozon-*` в `src/lib/blocks/catalog/`, `src/components/unit-economics/ozon-analytics-*`, `src/app/api/marketplaces/ozon/{kpi,timeseries,top-ads,abc,campaigns,search-phrases,cluster-stocks-v2}/route.ts`. Все используют MSC `query-period.ts`. Ads totals — `src/lib/marketplaces/ozon/ads-totals.ts`. Rules: `marketplaces.mdc`. |
+| **Roadmap marketplace-интеграций** | `docs/MARKETPLACES_FUTURE_PLAN.md`, `docs/OZON_ADS_GAP.md`, `docs/MARKETPLACES_OZON_PERFORMANCE.md`. |
+| **Unit Economics (калькуляторы, multi-table, my store)** | `src/lib/unit-economics/{types,ozon,yandex,bindings,store-formula,ozon-to-my-store}.ts`, `src/components/unit-economics/*`, `src/app/api/unit-economics/**`. Rules: `unit-economics.mdc`. |
+| **Sheet / custom.data / excel.cell** | `src/lib/blocks/catalog/{sheet,custom-data,excel-cell}.tsx`, `docs/CUSTOM_DATA_BLOCK.md`. |
+| **KPI Grid** | `src/lib/blocks/catalog/kpi-grid.tsx`, `docs/KPI_GRID.md`. |
+| **Cashflow / транзакции** | `src/lib/cashflow/*`, `src/modules/cashflow/*`, `src/app/api/cashflow/*`, `docs/CASHFLOW_BLOCKS.md`. |
+| **Boards** | `src/lib/db/schema/boards.ts`, `src/lib/boards/queries.ts`, `src/app/(app)/boards/*`, `drizzle/init/03-boards.sql`. |
+| **DB schema / миграции** | `src/lib/db/schema/*`, `drizzle/init/*.sql`. После изменений: дать `pnpm db:generate && pnpm db:push`. Rules: `drizzle.mdc`. |
+| **Auth / NextAuth v5** | `src/lib/auth/*`, `src/app/(auth)/*`, `src/middleware.ts`. Rules: `security.mdc`. |
+| **Биллинг (Т-Касса/CloudPayments)** | `src/lib/billing/*`, `docs/BILLING.md`. Rules: `security.mdc`. |
+| **Безопасность / секреты / 152-ФЗ** | `docs/SECURITY.md` (**ОБЯЗАТЕЛЬНО** при работе с секретами/сетью/биллингом). Rules: `security.mdc` auto-loads на соотв. файлы. |
+| **Tauri / desktop** | `docs/DESKTOP_STRATEGY.md`, `docs/LICENSING.md`. |
+| **Локальный AI / Ollama / VPN** | `docs/LOCAL_AI.md`, `docs/VPN_FOR_AI.md`. |
+| **Стратегия продукта** | `PLAN.md` — **только нужный раздел через `Read offset+limit`**, не файл целиком (1427 строк). |
+| **История релизов** | `git log --oneline -30` или `Read CHANGELOG.md offset=1 limit=100`. НЕ весь файл (2981 строка). |
+| **Историческая память (v0.10-v0.22)** | `docs/memory-archive/` — конкретный файл версии по запросу. |
+| **Работа с библиотекой** (Next 15, Drizzle, shadcn, pgvector, Tauri 2) | Context7: `mcp0_resolve-library-id` → `mcp0_query-docs`, не более 3 вызовов. |
 
 ## Команды
 
 ```bash
-# dev
 pnpm install
 pnpm docker:up                          # Postgres + Redis
 pnpm db:push                            # применить schema (dev)
 pnpm dev                                # Next.js
-# проверка
-pnpm typecheck
-pnpm build
-# AI/память (опционально, не на старте — индекс содержит и устаревшие версии)
-mempalace search "конкретный вопрос" --wing open-finance
-mempalace status
+pnpm typecheck && pnpm build            # проверка
 ```
 
 ## После значимых изменений (обязательно)
@@ -105,16 +112,25 @@ mempalace status
 2. Обновить `MEMORY.md` (если изменились ключевые файлы/инварианты/грабли).
 3. Добавить запись в `CHANGELOG.md`.
 4. Дать пользователю git-команды (`git add -A && git commit -m "..." && git push origin main`) — **не выполнять самому**.
-5. Если обновлялся `MEMORY.md` — синхронизировать `~/.mempalace/sources/open-finance/current-context-v*.md` (внешний AI-handoff).
+5. (Опц.) `./scripts/sync-mempalace.sh` — обновить external AI handoff (если mempalace работает).
 
-## MemPalace — статус и правила
+## AI memory — agentmemory (с v0.22.4)
 
-- Палац **починен** (5288 drawers, 696 в open-finance), CLI работает.
-- В индексе **есть устаревшие версии** проекта (Tauri-only, Prisma, Python sidecar) — `mempalace wake-up --wing open-finance` поэтому **не используется как стартовый контекст**.
-- `mempalace search` использовать **точечно** для исторических вопросов («когда мы перешли с X на Y», «почему отказались от Z»), а не для текущего состояния.
-- Текущее состояние = `MEMORY.md` + `git log` + (по теме) конкретные файлы.
+**Старый стек:** mempalace (deprecated с v0.22.4, см. `docs/MEMPALACE_RUNBOOK.md`).
 
-## Ключевые грабли (не повторять)
+**Новый стек:** `agentmemory` MCP server на localhost:3111 + viewer на 3113. Управляется через launchd-агент `~/Library/LaunchAgents/com.agentmemory.server.plist` (auto-start).
+
+**Использование:**
+- В Cursor MCP подцеплен через `~/.cursor/mcp.json`. После запуска агента доступны **51 MCP tools** (memory_save, memory_smart_search, memory_sessions, memory_recall, etc.).
+- В чате: «найди в памяти, почему мы отказались от Vercel AI SDK» → агент вызовет `memory_smart_search`. «Запиши в память: X = Y» → `memory_save`.
+- Viewer: <http://localhost:3113> — live observation stream, session replay, knowledge graph.
+- Health: `curl http://localhost:3111/agentmemory/health`.
+- Установка: `./scripts/install-agentmemory.sh` (интерактивный, ставит iii-engine + agentmemory + опц. local embeddings).
+- Подробности: **`docs/MEMORY_SETUP.md`**.
+
+**Текущее состояние = `MEMORY.md` + `git log`** + (по теме) конкретные файлы. agentmemory = **опциональная** археология, не источник правды. Если сервер не отвечает — MCP shim даёт 7 fallback tools, Cursor работает дальше.
+
+## Ключевые грабли (топ-7, не повторять)
 
 - `sanitizeBlocks` на сервере выкидывает блоки — client-only catalog пуст в server bundle.
 - Sheet sources обязаны включать computed formulas + linked cells, не только raw saved cells.
@@ -122,4 +138,6 @@ mempalace status
 - Ollama fallback не должен выбирать embedding-only модели.
 - `useSearchParams` в Next 15 требует `<Suspense>`.
 - `bcryptjs` нельзя импортировать в edge/middleware.
-- Resize handle делается CSS hover на `.react-grid-item`, не JS marker.
+- postgres.js `sql\`${dateObj}\`` падает с TypeError — сначала `.toISOString()` + `::timestamp` cast.
+
+Полный список — в `MEMORY.md` (раздел «Активные грабли») и `LEARNING_LOG.md` (append-only).
