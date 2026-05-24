@@ -40,7 +40,7 @@ Context7: `mcp0_resolve-library-id` → `mcp0_query-docs`. Не более 3 в�
 - **Phase 2:** Tauri 2.0 desktop.
 - **Phase 3:** React Native + Expo mobile.
 - **Главная идея:** почти каждая страница = настраиваемый **BlockGrid** (Lego из блоков). Новая фича обычно = новый block type в `src/lib/blocks/catalog/`, а не статичная страница.
-- **Источник правды версии:** `CHANGELOG.md` + `git log` (`package.json` остался на `0.5.0`, не используется). Текущая версия — **v0.22.2** (2026-05-23).
+- **Источник правды версии:** `CHANGELOG.md` + `git log` (`package.json` остался на `0.5.0`, не используется). Текущая версия — **v0.23.0** (2026-05-24).
 
 ## Жёсткие правила
 
@@ -158,16 +158,18 @@ docs/memory-archive/      исторические разделы MEMORY.md (п�
 - **`/admin/ai/{local-models,providers,system-prompt}`** — admin AI.
 - **`/reset-password`** — Suspense + useSearchParams.
 
-## Активные грабли (последние версии v0.21-v0.22)
+## Активные грабли (последние версии v0.21-v0.23)
 
 > Исторические грабли (v0.10-v0.20) — в `docs/memory-archive/`.
 
+- **Unified period system (v0.23.0)** — `src/lib/blocks/use-block-period.ts` — единый хук для блоков с периодом. `period`/`isOverride`/`setOverride`/`resetToGlobal` API. `PagePeriodContext` расширен `registerBlock`/`unregisterBlock`/`countOverridden`/`resetAllOverrides` — registry в `useRef` чтобы не вызывать re-render всего поддерева. `PagePeriodHeader` показывает warning «Мастер-настройка» (dismissable через `localStorage`) + кнопку «Сбросить локальные (N)» через `useSyncExternalStore`. 9 Ozon-блоков + `cashflow.transactions` + `kpi.grid` мигрированы. `cashflow.transactions` теперь применяет `effectivePeriod` к fetch (раньше игнорировал). `BlockDef.usesPeriod?: boolean` flag в registry → `pageHasGlobalBoundBlocks` auto-show панели. Lock-badge `<Lock /> свой` на каждом overridden-блоке. Документация — `docs/PAGE_PERIODS.md`.
+- **`custom.data` sheet-style formula UX (v0.23.0)** — полностью переработан: popover убран (включая `Tabs` и `CurrencyInput`, который блокировал ввод операторов через `preventDefault`). Inline `<input>` в активной ячейке + sticky formula bar с operator toolbar (`+ - * / ( ) , :`). `EditSession` shape: `rowId/columnId/draft/caretPos/lastFocused` — `isFormula` derived из `draft.startsWith('=')`. Cell-click в formula-mode → `insertIntoDraft(addr)`. Binding picker (Link2) — компактный `CellRefPickerDialog` справа от formula bar. Документация — `docs/CUSTOM_DATA_BLOCK.md`.
 - **`SourceBindingPicker` (v0.22.2)** — кнопка «Из блока» использует локальный `uiMode` state (UI-only до выбора реального `blockId`). `value` НЕ перетирается невалидным `{ mode: 'block', blockId: '' }` — иначе round-trip через `readSourceBinding()` сбросит в `empty`. Warning под чипами с инструкцией если нет кандидатов на странице.
 - **`OzonSyncDialog` smart `auto` preset (v0.22.2)** — резолвится из `account.lastSyncAt`: null/недоступно → 30d; ≤1d → только вчера; 2–90d → от lastSync до вчера; >90d → fallback 30d; будущее → from=yesterday. Чип `auto` с `<Sparkles>` иконкой. `describePreset('auto', lastSyncAt)` показывает «Догрузим N дн.: YYYY-MM-DD → YYYY-MM-DD» в hint и tooltip. Pure helpers в `src/components/marketplaces/ozon-sync-presets.ts` (26 тестов).
 - **Date-override в Ozon sync (v0.22.1)** — `POST /api/marketplaces/accounts/[id]/sync` принимает `{fromDate, toDate, force}`. Date-aware стейджи (`analyticsData`, `orders`, `transactions`, `perf-*`) honor override. Catalog/snapshot стейджи (`products`, `prices`, `stocks`, `turnover`, `clusters`, `warehouseStocks`, `realization`) игнорируют. Perf-стейджи в override-режиме single attempt без retry.
 - **`PagePeriodHeader` chevron (v0.22.1)** — chevron в отдельной Row 1 (`flex` без wrap, `ml-auto shrink-0`); PeriodPicker в Row 2 с `flex-wrap`. На узком экране chevron не тянется вниз вместе с picker'ом.
 - **`EmptySourcePlaceholder` compact (v0.22.1)** — `title` (truncate, short) + `subtitle` (line-clamp-1, muted). Compact: иконка `h-6 w-6`, `p-1.5`, `description` скрыт. Callers передают `title` отдельно от `subtitle`.
-- **`custom.data` formula UX (v0.22.0)** — общий `FormulaSession` state, draggable popover, editable formula bar, cell-pick mode (`onInteractOutside={(e) => e.preventDefault()}`), settings toggle `cellPopoverEnabled`, hint-плашка с `localStorage`.
+- **`custom.data` formula UX (v0.22.0)** — *Устаревшее, v0.23.0 целиком переписан в sheet-style.* Общий `FormulaSession` state, draggable popover, editable formula bar, cell-pick mode, settings toggle `cellPopoverEnabled`, hint-плашка.
 - **`BlockGrid` auto-mount providers (v0.22.0)** — outer-wrapper проверяет `useContext(PagePeriodContext) === null` → conditional `PagePeriodProvider`/`PageSourceProvider`/`VirtualSourcesBridge`. `cashflow-client.tsx` упрощён.
 - **`unit_economics_tabs` (v0.22.0)** — tenant+user scoped CRUD. Default seed'ятся (4 шт.), custom `unit-economics-custom-{nanoid8()}`. Block marketplace wildcard `unit-economics-custom-*`. Миграция `drizzle/0003_outstanding_energizer.sql`.
 - **`unit.my-store-table` import из `unit.ozon-analytics` (v0.22.0)** — `importSource: {blockId, pageKey, columns, matchBy, mode, syncOnMount}`. Mapping `OZON_TO_MY_STORE_COLUMN_MAP` (29 колонок). Live-sync throttle 30s через `lastSyncRef`.

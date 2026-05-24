@@ -13,6 +13,7 @@ import {
   CloudDownload,
   Download,
   Loader2,
+  Lock,
   RefreshCw,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
@@ -41,7 +42,7 @@ import {
   type OzonAnalyticsBlockConfig,
   type OzonAnalyticsPeriodPreset,
 } from './unit-ozon-analytics-types';
-import { usePersistedPeriod } from '../use-persisted-period';
+import { useBlockPeriod } from '../use-block-period';
 import type { OzonAnalyticsResponse } from '@/app/api/marketplaces/analytics/ozon/route';
 
 function parseConfig(raw: unknown): OzonAnalyticsBlockConfig {
@@ -74,20 +75,43 @@ function RenderOzonAnalytics({ instance, onConfigChange }: BlockRenderProps) {
 
   const [activeFilter, setActiveFilter] = useState<AnalyticsFilterId>(config.defaultFilter);
   const {
-    preset: periodPreset,
-    setPreset: setPeriodPreset,
-    customFrom,
-    setCustomFrom,
-    customTo,
-    setCustomTo,
-  } = usePersistedPeriod({
+    period: blockPeriod,
+    setOverride: setPeriodOverride,
+    resetToGlobal: resetPeriodToGlobal,
+    isOverride: isPeriodOverride,
+  } = useBlockPeriod({
     instanceId: instance.id,
-    initial: {
-      preset: config.periodPreset,
-      customFrom: config.customFrom,
-      customTo: config.customTo,
-    },
+    configOverride:
+      config.periodPreset !== '30d' || config.customFrom || config.customTo
+        ? {
+            preset: config.periodPreset,
+            customFrom: config.customFrom,
+            customTo: config.customTo,
+          }
+        : null,
+    defaultMode: 'global',
   });
+  const periodPreset = blockPeriod.preset;
+  const customFrom = blockPeriod.customFrom;
+  const customTo = blockPeriod.customTo;
+  const setPeriodPreset = useCallback(
+    (preset: OzonAnalyticsPeriodPreset) => {
+      setPeriodOverride({ preset, customFrom: blockPeriod.customFrom, customTo: blockPeriod.customTo });
+    },
+    [setPeriodOverride, blockPeriod.customFrom, blockPeriod.customTo],
+  );
+  const setCustomFrom = useCallback(
+    (next: string | null) => {
+      setPeriodOverride({ preset: blockPeriod.preset, customFrom: next, customTo: blockPeriod.customTo });
+    },
+    [setPeriodOverride, blockPeriod.preset, blockPeriod.customTo],
+  );
+  const setCustomTo = useCallback(
+    (next: string | null) => {
+      setPeriodOverride({ preset: blockPeriod.preset, customFrom: blockPeriod.customFrom, customTo: next });
+    },
+    [setPeriodOverride, blockPeriod.preset, blockPeriod.customFrom],
+  );
   const [response, setResponse] = useState<OzonAnalyticsResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -407,6 +431,17 @@ function RenderOzonAnalytics({ instance, onConfigChange }: BlockRenderProps) {
                 className="rounded-md border border-border/60 bg-background px-1 py-0.5 text-[11px]"
               />
             </span>
+          )}
+          {isPeriodOverride && (
+            <button
+              type="button"
+              onClick={resetPeriodToGlobal}
+              className="inline-flex h-5 shrink-0 items-center gap-0.5 rounded bg-amber-50 px-1.5 text-[10px] font-medium text-amber-700 ring-1 ring-amber-200 transition hover:bg-amber-100 dark:bg-amber-950 dark:text-amber-300 dark:ring-amber-900"
+              title="Локальный период этого блока. Клик — вернуться к периоду страницы."
+            >
+              <Lock className="h-2.5 w-2.5" />
+              свой
+            </button>
           )}
         </div>
         <div className="ml-auto flex items-center gap-1.5">

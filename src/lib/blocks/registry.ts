@@ -47,7 +47,13 @@ import { CurrencyRatesBlock } from './catalog/currency-rates';
  */
 const BLOCK_META: Record<
   string,
-  { tags?: string[]; recommendedFor?: string[]; source?: BlockDef['source']; iconName: string }
+  {
+    tags?: string[];
+    recommendedFor?: string[];
+    source?: BlockDef['source'];
+    iconName: string;
+    usesPeriod?: boolean;
+  }
 > = {
   'stat.income': {
     // tag 'legacy' — старый KPI-блок. Новые пользователи добавляют через
@@ -55,31 +61,37 @@ const BLOCK_META: Record<
     tags: ['cashflow', 'kpi', 'finance', 'legacy'],
     recommendedFor: [],
     iconName: 'ArrowDown',
+    usesPeriod: true,
   },
   'stat.expense': {
     tags: ['cashflow', 'kpi', 'finance', 'legacy'],
     recommendedFor: [],
     iconName: 'ArrowUp',
+    usesPeriod: true,
   },
   'stat.balance': {
     tags: ['cashflow', 'kpi', 'finance', 'legacy'],
     recommendedFor: [],
     iconName: 'Wallet',
+    usesPeriod: true,
   },
   'stat.custom': {
     tags: ['kpi', 'custom', 'finance'],
     recommendedFor: ['cashflow', 'dashboard'],
     iconName: 'Sparkles',
+    usesPeriod: true,
   },
   'cashflow.top-categories': {
     tags: ['cashflow', 'analytics'],
     recommendedFor: ['cashflow', 'dashboard'],
     iconName: 'BarChart3',
+    usesPeriod: true,
   },
   'cashflow.transactions': {
     tags: ['cashflow', 'tables'],
     recommendedFor: ['cashflow'],
     iconName: 'ListOrdered',
+    usesPeriod: true,
   },
   sheet: { tags: ['tables', 'spreadsheet', 'universal'], recommendedFor: [], iconName: 'Table2' },
   'navigate.card': { tags: ['navigation', 'dashboard'], recommendedFor: ['dashboard'], iconName: 'Link' },
@@ -90,11 +102,13 @@ const BLOCK_META: Record<
     tags: ['cashflow', 'kpi', 'finance', 'analytics'],
     recommendedFor: ['cashflow', 'dashboard'],
     iconName: 'Wallet',
+    usesPeriod: true,
   },
   'chart.cashflow': {
     tags: ['charts', 'cashflow'],
     recommendedFor: ['cashflow', 'dashboard'],
     iconName: 'BarChart3',
+    usesPeriod: true,
   },
   'ai.micro-agent': { tags: ['ai', 'universal'], recommendedFor: [], iconName: 'Sparkles' },
   'inbox.channel-feed': {
@@ -121,21 +135,25 @@ const BLOCK_META: Record<
     tags: ['marketplace', 'analytics', 'ozon', 'tables'],
     recommendedFor: ['unit-economics-ozon-multi', 'marketplaces-ozon-dashboard', 'dashboard'],
     iconName: 'BarChart3',
+    usesPeriod: true,
   },
   'unit.ozon-kpi': {
     tags: ['marketplace', 'analytics', 'ozon', 'kpi'],
     recommendedFor: ['marketplaces-ozon-dashboard', 'dashboard'],
     iconName: 'Activity',
+    usesPeriod: true,
   },
   'unit.ozon-chart': {
     tags: ['marketplace', 'analytics', 'ozon', 'charts'],
     recommendedFor: ['marketplaces-ozon-dashboard', 'dashboard'],
     iconName: 'LineChart',
+    usesPeriod: true,
   },
   'unit.ozon-top-ads': {
     tags: ['marketplace', 'analytics', 'ozon', 'ads', 'performance'],
     recommendedFor: ['marketplaces-ozon-dashboard'],
     iconName: 'Megaphone',
+    usesPeriod: true,
   },
   'unit.ozon-stock-clusters': {
     tags: ['marketplace', 'analytics', 'ozon', 'inventory'],
@@ -146,16 +164,19 @@ const BLOCK_META: Record<
     tags: ['marketplace', 'analytics', 'ozon', 'inventory', 'clusters'],
     recommendedFor: ['marketplaces-ozon-dashboard'],
     iconName: 'Map',
+    usesPeriod: true,
   },
   'unit.ozon-search-phrases': {
     tags: ['marketplace', 'analytics', 'ozon', 'ads', 'performance'],
     recommendedFor: ['marketplaces-ozon-dashboard'],
     iconName: 'Search',
+    usesPeriod: true,
   },
   'unit.ozon-campaigns': {
     tags: ['marketplace', 'analytics', 'ozon', 'ads', 'performance'],
     recommendedFor: ['marketplaces-ozon-dashboard'],
     iconName: 'Megaphone',
+    usesPeriod: true,
   },
   'unit.ozon-data-health': {
     tags: ['marketplace', 'ozon', 'health', 'status'],
@@ -166,11 +187,13 @@ const BLOCK_META: Record<
     tags: ['marketplace', 'analytics', 'ozon', 'abc'],
     recommendedFor: ['marketplaces-ozon-dashboard'],
     iconName: 'PieChart',
+    usesPeriod: true,
   },
   'unit.ozon-ai-insights': {
     tags: ['marketplace', 'analytics', 'ozon', 'ai'],
     recommendedFor: ['marketplaces-ozon-dashboard'],
     iconName: 'Sparkles',
+    usesPeriod: true,
   },
   'unit.yandex-calculator': {
     tags: ['marketplace', 'unit-economics', 'yandex'],
@@ -198,6 +221,7 @@ function withMeta(def: BlockDef): BlockDef {
     recommendedFor: def.recommendedFor ?? meta.recommendedFor,
     source: def.source ?? meta.source ?? 'builtin',
     iconName: def.iconName ?? meta.iconName,
+    usesPeriod: def.usesPeriod ?? meta.usesPeriod,
   };
 }
 

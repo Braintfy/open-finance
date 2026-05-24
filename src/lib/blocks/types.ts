@@ -168,6 +168,12 @@ export type BlockDef = {
    * 'builtin' (default) — встроенный, 'user' — созданный юзером, 'paid' — куплен.
    */
   source?: 'builtin' | 'user' | 'paid';
+  /**
+   * Блок использует period-настройку (через `useBlockPeriod` или
+   * `useEffectivePeriod`). Включается в `pageHasGlobalBoundBlocks` →
+   * page-period panel auto-show на странице.
+   */
+  usesPeriod?: boolean;
   configSchema?: z.ZodSchema;
   /** Дефолтный config для нового инстанса */
   defaultConfig?: () => Record<string, unknown>;

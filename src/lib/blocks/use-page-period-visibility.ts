@@ -7,6 +7,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import type { BlockInstance } from './types';
+import { getBlockDef } from './registry';
 import {
   BOUND_BLOCK_TYPES,
   TX_BLOCK_TYPE,
@@ -23,6 +24,9 @@ void BOUND_BLOCK_TYPES; // referenced for tree-shaking; isBoundBlockType wraps t
  *    `sourceBinding.mode === 'global'` (или без sourceBinding вообще — legacy).
  *  - `cashflow.transactions` без явного `defaultPeriodOverride` — он
  *    показывает список по page-периоду.
+ *  - v0.23: любой блок с `BlockDef.usesPeriod = true` (Ozon-блоки и пр.),
+ *    т.к. через `useBlockPeriod` они автоматически наследуют page-period
+ *    в global-режиме.
  */
 export function pageHasGlobalBoundBlocks(blocks: BlockInstance[]): boolean {
   for (const b of blocks) {
@@ -36,9 +40,14 @@ export function pageHasGlobalBoundBlocks(blocks: BlockInstance[]): boolean {
       if (!hasPeriodOverride) return true;
       continue;
     }
-    if (!isBoundBlockType(b.type)) continue;
-    const binding = readSourceBinding(b.config);
-    if (!binding || binding.mode === 'global') return true;
+    if (isBoundBlockType(b.type)) {
+      const binding = readSourceBinding(b.config);
+      if (!binding || binding.mode === 'global') return true;
+      continue;
+    }
+    // v0.23: для остальных блоков смотрим в registry — usesPeriod flag.
+    const def = getBlockDef(b.type);
+    if (def?.usesPeriod) return true;
   }
   return false;
 }

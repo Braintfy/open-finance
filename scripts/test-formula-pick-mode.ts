@@ -1,11 +1,13 @@
-// PURPOSE: Тесты для cell-pick режима в custom.data (v0.22.0).
+// PURPOSE: Тесты для cell-pick / formula-bar логики custom.data (v0.22.5).
 // Покрытие:
-//   - cellAddress(rowIdx, colIdx) — генерирует правильные A1-адреса
-//   - insertIntoFormula логика — вставка cellAddress в draft с учётом каретки
-//   - проверка что draft всегда начинается с '=' после insertIntoFormula
+//   - cellAddress(rowIdx, colIdx) — генерирует правильные A1-адреса.
+//   - insertIntoDraft(prev, text, { forceFormula }) — вставка cellAddress /
+//     оператора / @-ссылки в draft с учётом каретки и автопрефикса '='.
+//   - isFormulaDraft(draft) — определение режима формулы.
 // Запуск: pnpm tsx scripts/test-formula-pick-mode.ts
 
 import { cellAddress, colLabel } from '../src/lib/blocks/custom-data-formulas';
+import { insertIntoDraft } from '../src/lib/blocks/catalog/custom-data';
 
 let passed = 0;
 let failed = 0;
@@ -35,55 +37,52 @@ ok('A B C D E', ['A', 'B', 'C', 'D', 'E'].every((l, i) => colLabel(i) === l));
 ok('Z → AA → AB', colLabel(25) === 'Z' && colLabel(26) === 'AA' && colLabel(27) === 'AB');
 
 // ============================================================================
-// insertIntoFormula — replicated logic из RenderCustomData
+// insertIntoDraft — общая утилита для cell-pick / operator-toolbar / @связать
 
-function insertIntoFormula(
-  prev: { formulaDraft: string; caretPos: number | null },
-  text: string,
-): { formulaDraft: string; caretPos: number; mode: 'formula' } {
-  let draft = prev.formulaDraft;
-  let pos = prev.caretPos ?? draft.length;
-  if (!draft.startsWith('=')) {
-    draft = '=' + draft;
-    pos += 1;
-  }
-  pos = Math.max(1, Math.min(pos, draft.length));
-  const before = draft.slice(0, pos);
-  const after = draft.slice(pos);
-  const nextDraft = before + text + after;
-  return { formulaDraft: nextDraft, caretPos: pos + text.length, mode: 'formula' };
-}
-
-console.log('\n=== insertIntoFormula logic ===');
+console.log('\n=== insertIntoDraft (forceFormula=true, cell-pick) ===');
 {
-  // Пустой draft с '='
-  const r = insertIntoFormula({ formulaDraft: '=', caretPos: 1 }, 'A1');
-  ok('empty draft → =A1', r.formulaDraft === '=A1');
+  // Пустой draft + forceFormula → начинаем с '='
+  const r = insertIntoDraft({ draft: '', caretPos: 0 }, 'A1', { forceFormula: true });
+  ok('empty + A1 → =A1', r.draft === '=A1');
+  ok('caret в конце (3)', r.caretPos === 3);
+}
+{
+  // '=' + 'A1' в конец
+  const r = insertIntoDraft({ draft: '=', caretPos: 1 }, 'A1', { forceFormula: true });
+  ok('= + A1 → =A1', r.draft === '=A1');
   ok('caret в конце', r.caretPos === 3);
-  ok('mode = formula', r.mode === 'formula');
 }
 {
   // Insert в середине
-  const r = insertIntoFormula({ formulaDraft: '=A1+B1', caretPos: 4 }, 'C1*');
-  ok('insert в середине = =A1+C1*B1', r.formulaDraft === '=A1+C1*B1');
+  const r = insertIntoDraft({ draft: '=A1+B1', caretPos: 4 }, 'C1*', { forceFormula: true });
+  ok('insert в середине = =A1+C1*B1', r.draft === '=A1+C1*B1');
   ok('caret после вставки', r.caretPos === 7);
 }
 {
-  // Draft без = → автодобавление
-  const r = insertIntoFormula({ formulaDraft: '5+', caretPos: 2 }, 'A1');
-  ok('добавлен = в начало', r.formulaDraft === '=5+A1');
+  // Draft без '=' + forceFormula → автодобавление '='
+  const r = insertIntoDraft({ draft: '5', caretPos: 1 }, '+A1', { forceFormula: true });
+  ok('добавлен = в начало', r.draft === '=5+A1');
   ok('caret сдвинут на +1', r.caretPos === 5);
 }
 {
   // caretPos = null → end-of-string
-  const r = insertIntoFormula({ formulaDraft: '=SUM(', caretPos: null }, 'A1');
-  ok('null caret → end', r.formulaDraft === '=SUM(A1');
+  const r = insertIntoDraft({ draft: '=SUM(', caretPos: null }, 'A1', { forceFormula: true });
+  ok('null caret → end', r.draft === '=SUM(A1');
   ok('caret = length', r.caretPos === 7);
 }
+
+console.log('\n=== insertIntoDraft (forceFormula=false, обычная вставка текста) ===');
 {
-  // caret = 0 → clamp до 1 (после '=')
-  const r = insertIntoFormula({ formulaDraft: '=A1', caretPos: 0 }, 'X');
-  ok('caret 0 → clamp до 1', r.formulaDraft === '=XA1' && r.caretPos === 2);
+  // Значение без = (не формула)
+  const r = insertIntoDraft({ draft: '100', caretPos: 2 }, '5', {});
+  ok('100[2]+5 → 1050', r.draft === '1050');
+  ok('caret после', r.caretPos === 3);
+}
+{
+  // Пустой draft без forceFormula — стандартная вставка
+  const r = insertIntoDraft({ draft: '', caretPos: 0 }, 'hello', {});
+  ok('empty + hello → hello', r.draft === 'hello');
+  ok('caret = 5', r.caretPos === 5);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

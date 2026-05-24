@@ -47,6 +47,7 @@ import { resolveIconWithAnimation } from '../icon-resolver';
 import { useBlockDensity } from '@/components/blocks/block-size';
 import { useBlockValuePublisher } from '../values';
 import { useEffectivePeriod } from '../page-period-context';
+import { useBlockPeriod } from '../use-block-period';
 import { useEffectiveSource } from '../page-source-context';
 import { usePersistedPeriodWithGlobal } from '../use-persisted-period';
 import { usePersistedSourceWithGlobal } from '../use-persisted-source';
@@ -1371,21 +1372,29 @@ function RenderTransactionsList({ instance }: BlockRenderProps) {
   const ctx = useCashflowData();
   const drill = useDrillDown();
 
-  // Period: cfg.defaultPeriodOverride > page-level.
-  const periodInitial =
-    cfg.defaultPeriodOverride == null
-      ? { mode: 'global' as const }
-      : {
-          mode: 'override' as const,
+  // Period: cfg.defaultPeriodOverride > page-level. Используем единый
+  // useBlockPeriod hook — он сам решает global vs override и регистрирует
+  // блок в PagePeriodContext для счётчика overridden / mass-reset.
+  const {
+    period: effectivePeriod,
+    source: periodSource,
+    override: periodOverride,
+    setOverride: setPeriodOverride,
+    resetToGlobal: resetPeriodToGlobal,
+    isOverride: isPeriodOverride,
+  } = useBlockPeriod({
+    instanceId: instance.id,
+    configOverride: cfg.defaultPeriodOverride
+      ? {
           preset: cfg.defaultPeriodOverride.preset,
           customFrom: cfg.defaultPeriodOverride.customFrom ?? null,
           customTo: cfg.defaultPeriodOverride.customTo ?? null,
-        };
-  const { override: periodOverride } = usePersistedPeriodWithGlobal({
-    instanceId: instance.id,
-    initial: periodInitial,
+        }
+      : null,
+    defaultMode: 'global',
   });
-  const { value: effectivePeriod } = useEffectivePeriod(instance.id, periodOverride);
+  void periodSource;
+  void periodOverride;
 
   // Source: cfg.defaultSourceOverride > page-level. Effective source ↘
   // также может быть переопределён runtime-фильтром ниже.
@@ -1426,7 +1435,17 @@ function RenderTransactionsList({ instance }: BlockRenderProps) {
   const [clearAll, setClearAll] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
 
-  const filterKey = `${filterType}|${filterCounterparty}|${filterCategoryName}|${effectiveSource ?? ''}`;
+  // Резолвим effectivePeriod в ISO from/to для fetch (API принимает `from`/`to`).
+  const effectivePeriodRange = useMemo(() => {
+    const resolved = resolvePeriod(
+      effectivePeriod.preset,
+      effectivePeriod.customFrom,
+      effectivePeriod.customTo,
+    );
+    return { from: resolved.from.toISOString(), to: resolved.to.toISOString() };
+  }, [effectivePeriod.preset, effectivePeriod.customFrom, effectivePeriod.customTo]);
+
+  const filterKey = `${filterType}|${filterCounterparty}|${filterCategoryName}|${effectiveSource ?? ''}|${effectivePeriodRange.from}|${effectivePeriodRange.to}`;
 
   async function fetchPage(cursor: { occurredAt: string; id: string } | null) {
     setLoading(true);
@@ -1436,6 +1455,10 @@ function RenderTransactionsList({ instance }: BlockRenderProps) {
       if (filterCounterparty) params.set('counterparty', filterCounterparty);
       if (filterCategoryName) params.set('categoryName', filterCategoryName);
       if (effectiveSource) params.set('source', effectiveSource);
+      // Effective period → from/to для бэкенда (v0.22.5: блок теперь учитывает
+      // page-level / per-block override период вместо игнорирования).
+      params.set('from', effectivePeriodRange.from);
+      params.set('to', effectivePeriodRange.to);
       if (cursor) {
         params.set('cursorAt', cursor.occurredAt);
         params.set('cursorId', cursor.id);
@@ -1480,20 +1503,18 @@ function RenderTransactionsList({ instance }: BlockRenderProps) {
     () => rows.filter((r) => r.type === 'expense').reduce((s, r) => s + r.amount, 0),
     [rows],
   );
-  // Публикуем «view» блока (config-defined фильтры) как источник для
-  // bound консьюмеров. Это намеренно НЕ runtime-фильтры — иначе любая
-  // экспериментальная фильтрация в UI ломала бы dependent KPI.
-  // Runtime-фильтры остаются ephemeral и видны только внутри блока.
+  // Публикуем «view» блока (config-defined фильтры + effective period) как
+  // источник для bound консьюмеров. v0.22.5: period теперь = effective (с
+  // учётом page-level / override), чтобы dependent KPI/charts использовали
+  // тот же период что отображается в этом блоке. Runtime-фильтры (type/cp/
+  // category в UI) остаются ephemeral и не публикуются.
   const txFilters = useMemo(() => {
     return JSON.stringify({
-      period:
-        cfg.defaultPeriodOverride == null
-          ? null
-          : {
-              preset: cfg.defaultPeriodOverride.preset,
-              customFrom: cfg.defaultPeriodOverride.customFrom ?? null,
-              customTo: cfg.defaultPeriodOverride.customTo ?? null,
-            },
+      period: {
+        preset: effectivePeriod.preset,
+        customFrom: effectivePeriod.customFrom,
+        customTo: effectivePeriod.customTo,
+      },
       type: cfg.defaultType === 'all' ? null : cfg.defaultType,
       source:
         cfg.defaultSourceOverride === undefined ? null : cfg.defaultSourceOverride,
@@ -1501,7 +1522,9 @@ function RenderTransactionsList({ instance }: BlockRenderProps) {
       categoryName: cfg.defaultCategoryName ?? null,
     });
   }, [
-    cfg.defaultPeriodOverride,
+    effectivePeriod.preset,
+    effectivePeriod.customFrom,
+    effectivePeriod.customTo,
     cfg.defaultType,
     cfg.defaultSourceOverride,
     cfg.defaultCounterparty,
@@ -1523,7 +1546,6 @@ function RenderTransactionsList({ instance }: BlockRenderProps) {
      */
     __txFilters: txFilters,
   });
-  void effectivePeriod; // эффективный период вычислен для будущих использований (display и т.д.)
 
   async function deleteOne(id: string) {
     const res = await fetch(`/api/cashflow/transactions/${id}`, { method: 'DELETE' });
@@ -1566,9 +1588,22 @@ function RenderTransactionsList({ instance }: BlockRenderProps) {
   return (
     <Card className="flex h-full flex-col overflow-hidden">
       <CardHeader className="flex shrink-0 flex-row items-center justify-between gap-2 pb-2">
-        <CardTitle className="truncate text-base">
-          {instance.appearance?.title ?? cfg.title ?? 'История операций'}
-        </CardTitle>
+        <div className="flex min-w-0 items-center gap-2">
+          <CardTitle className="truncate text-base">
+            {instance.appearance?.title ?? cfg.title ?? 'История операций'}
+          </CardTitle>
+          {isPeriodOverride && (
+            <button
+              type="button"
+              onClick={() => resetPeriodToGlobal()}
+              className="inline-flex h-5 shrink-0 items-center gap-0.5 rounded bg-amber-50 px-1.5 text-[10px] font-medium text-amber-700 ring-1 ring-amber-200 transition hover:bg-amber-100 dark:bg-amber-950 dark:text-amber-300 dark:ring-amber-900"
+              title={`Локальный период: ${describePeriodShort(effectivePeriod.preset as PeriodPreset, effectivePeriod.customFrom, effectivePeriod.customTo)}. Клик — вернуть глобальный.`}
+            >
+              <Lock className="h-2.5 w-2.5" />
+              {PRESET_LABELS[effectivePeriod.preset as PeriodPreset] ?? effectivePeriod.preset}
+            </button>
+          )}
+        </div>
         <div className="flex shrink-0 gap-1">
           <Button
             variant={filtersOpen || hasActiveFilters ? 'default' : 'outline'}
@@ -1637,6 +1672,23 @@ function RenderTransactionsList({ instance }: BlockRenderProps) {
             value={filterCategoryName}
             onChange={(e) => setFilterCategoryName(e.target.value)}
             className="h-7 w-[160px] text-[11px]"
+          />
+          {/* Inline period picker — переключает блок в override-mode.
+              Если уже override, lock-badge в header'е даст вернуться к global. */}
+          <PeriodPicker
+            value={{
+              preset: effectivePeriod.preset as PeriodPreset,
+              customFrom: effectivePeriod.customFrom,
+              customTo: effectivePeriod.customTo,
+            }}
+            onChange={(v) =>
+              setPeriodOverride({
+                preset: v.preset,
+                customFrom: v.customFrom ?? null,
+                customTo: v.customTo ?? null,
+              })
+            }
+            compact
           />
           {hasActiveFilters && (
             <Button

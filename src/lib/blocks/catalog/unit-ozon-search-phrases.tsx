@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { z } from 'zod';
-import { Search, AlertCircle, Check, Info, RefreshCw } from 'lucide-react';
+import { Search, AlertCircle, Check, Info, Lock, RefreshCw } from 'lucide-react';
 import { useLastFetched } from '@/lib/blocks/use-last-fetched';
 import { Card } from '@/components/ui/card';
 import {
@@ -17,7 +17,7 @@ import {
 import { OzonAccountSelector } from '@/components/marketplaces/ozon-account-selector';
 import { useMarketplaceAccounts } from '@/lib/marketplaces/use-accounts';
 import { useBlockValuePublisher } from '@/lib/blocks/values';
-import { usePersistedPeriodValue } from '@/lib/blocks/use-persisted-period';
+import { useBlockPeriod } from '@/lib/blocks/use-block-period';
 import { autoColumnWidth } from '@/lib/blocks/auto-column-width';
 import type {
   BlockDef,
@@ -42,14 +42,32 @@ function parseConfig(raw: unknown) {
 
 function RenderOzonSearchPhrases({ instance }: BlockRenderProps) {
   const config = useMemo(() => parseConfig(instance.config), [instance.config]);
-  const { value: period, setValue: setPeriod } = usePersistedPeriodValue({
+  const {
+    period,
+    setOverride: setPeriodOverride,
+    resetToGlobal: resetPeriodToGlobal,
+    isOverride: isPeriodOverride,
+  } = useBlockPeriod({
     instanceId: instance.id,
-    initial: {
-      preset: config.periodPreset,
-      customFrom: config.customFrom,
-      customTo: config.customTo,
-    },
+    configOverride:
+      config.periodPreset !== '30d' || config.customFrom || config.customTo
+        ? {
+            preset: config.periodPreset,
+            customFrom: config.customFrom,
+            customTo: config.customTo,
+          }
+        : null,
+    defaultMode: 'global',
   });
+  const setPeriod = useCallback(
+    (next: PeriodValue) =>
+      setPeriodOverride({
+        preset: next.preset,
+        customFrom: next.customFrom ?? null,
+        customTo: next.customTo ?? null,
+      }),
+    [setPeriodOverride],
+  );
   const [data, setData] = useState<OzonSearchPhrasesResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -202,7 +220,22 @@ function RenderOzonSearchPhrases({ instance }: BlockRenderProps) {
   return (
     <Card className="flex h-full flex-col overflow-hidden p-0">
       <div className="flex flex-wrap items-center gap-2 border-b border-border/40 px-3 py-2">
-        <PeriodPicker value={period} onChange={setPeriod} compact />
+        <PeriodPicker
+          value={{ preset: period.preset as PeriodPreset, customFrom: period.customFrom, customTo: period.customTo }}
+          onChange={setPeriod}
+          compact
+        />
+        {isPeriodOverride && (
+          <button
+            type="button"
+            onClick={resetPeriodToGlobal}
+            className="inline-flex h-5 shrink-0 items-center gap-0.5 rounded bg-amber-50 px-1.5 text-[10px] font-medium text-amber-700 ring-1 ring-amber-200 transition hover:bg-amber-100 dark:bg-amber-950 dark:text-amber-300 dark:ring-amber-900"
+            title="Локальный период этого блока. Клик — вернуться к периоду страницы."
+          >
+            <Lock className="h-2.5 w-2.5" />
+            свой
+          </button>
+        )}
         <span
           className="rounded-md border border-blue-200 bg-blue-50 px-1.5 py-0.5 text-[9px] font-medium text-blue-900 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-200"
           title="Поисковые фразы доступны только для CPC/CPM Search Promo кампаний. CPO (Оплата за заказ) — без детализации по фразам."

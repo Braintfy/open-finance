@@ -1,5 +1,52 @@
 # Changelog
 
+## [0.23.0] - 2026-05-24
+
+**Major UX**: переработана работа с **периодами на странице** (единая мастер-настройка + lock-badges на блоках) и **формулы в `custom.data`** (sheet-style inline-editor с formula bar и operator toolbar).
+
+### A. `custom.data` formula UX (sheet-style)
+
+- **Удалено**: popover-редактор ячеек целиком, `Tabs` (Значение/Формула/Связь), `CurrencyInput` (блокировал ввод операторов через `preventDefault`), draggable popover state, `cellPopoverEnabled` config flag, hint plate.
+- **Добавлено**:
+  - Inline `<input>` редактируется прямо в ячейке (`SortableRowGroup`) — как в `sheet.tsx`.
+  - Sticky **formula bar** под header'ом блока — единый editable textarea с operator toolbar (`+ - * / ( ) , :`) в formula-mode.
+  - Cell-click → вставляет адрес ячейки в курсорную позицию formula bar.
+  - Binding picker — компактная иконка `Link2` справа от formula bar открывает `CellRefPickerDialog`.
+- **Session model**: упрощён `EditSession` (5 полей: rowId/columnId/draft/caretPos/lastFocused) вместо старого `FormulaSession` (6 полей + 3 mode'а). `isFormula` теперь derived из `draft.startsWith('=')`.
+- **Тесты**: `scripts/test-formula-pick-mode.ts` переписан под новый `insertIntoDraft` / `isFormulaDraft`.
+- **Документация**: `docs/CUSTOM_DATA_BLOCK.md` обновлён.
+
+### B. Unified period system
+
+- **Новый хук**: `src/lib/blocks/use-block-period.ts` — единый API для блоков с периодом:
+  ```ts
+  const { period, source, override, setOverride, resetToGlobal, isOverride } =
+    useBlockPeriod({ instanceId, configOverride, onConfigChange, defaultMode });
+  ```
+  Под капотом: `usePersistedPeriodWithGlobal` + `useEffectivePeriod` + auto-регистрация в `PagePeriodContext` для mass-reset.
+- **`PagePeriodContext` расширен**: `registerBlock` / `unregisterBlock` / `countOverridden` / `subscribeRegistry` / `resetAllOverrides`. Registry хранится в `useRef` (не вызывает re-render всего поддерева).
+- **`PagePeriodHeader`**:
+  - Warning-чип «Мастер-настройка переключает блоки без локального периода» (dismissable через `localStorage`).
+  - Кнопка «Сбросить локальные (N)» — массовый mass-reset всех overridden-блоков.
+  - Counter overridden-блоков (через `useSyncExternalStore`) в collapsed-режиме как badge.
+- **Мигрированы**:
+  - 9 Ozon-блоков (analytics, kpi, chart, top-ads, warehouse-clusters, search-phrases, campaigns, abc, ai-insights) — теперь по дефолту наследуют global page-period.
+  - `cashflow.transactions` — `effectivePeriod` теперь **применяется к fetch** (`from`/`to` параметры в `/api/cashflow/transactions`), публикуется в `__txFilters` (вместо `cfg.defaultPeriodOverride`).
+  - `kpi.grid` — block-level через `useBlockPeriod`, per-cell `cell.periodOverride` отображается lock-badge на ячейке.
+- **Inline lock-badge** на всех мигрированных блоках: `<Lock /> свой` — клик возвращает блок к global.
+- **`BlockDef.usesPeriod?: boolean`** — новый optional flag, проставлен через `BLOCK_META` для всех period-блоков. `pageHasGlobalBoundBlocks` теперь учитывает этот флаг → `PagePeriodHeader` появляется автоматически на страницах с Ozon-блоками.
+
+### C. Документация
+
+- **`docs/PAGE_PERIODS.md`** (новый) — пошаговая инструкция как подключить новый блок к системе периодов.
+- **`docs/CUSTOM_DATA_BLOCK.md`** — обновлён под sheet-style UX.
+- `CHANGELOG.md` (этот файл), `MEMORY.md`, `START.md` — обновлены.
+
+### D. Тесты
+
+- `scripts/test-block-period.ts` — smoke-тест нового `useBlockPeriod` и registry-расширения `PagePeriodContext`.
+- `scripts/test-formula-pick-mode.ts` — обновлены под новую `insertIntoDraft` API.
+
 ## [0.22.4] - 2026-05-24
 
 **Infra/Memory**: переход с mempalace на **agentmemory** MCP server. Mempalace deprecated после неуспешной попытки `migrate --yes` (зависла на 30+ минут на 148MB chroma.sqlite3 — root cause [Issue #832](https://github.com/MemPalace/mempalace/issues/832): chromadb concurrency повреждает HNSW индекс при одновременной работе hooks + sync + MCP).

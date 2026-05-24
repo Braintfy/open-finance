@@ -83,6 +83,7 @@ src/
 | **Unit Economics (калькуляторы, multi-table, my store)** | `src/lib/unit-economics/{types,ozon,yandex,bindings,store-formula,ozon-to-my-store}.ts`, `src/components/unit-economics/*`, `src/app/api/unit-economics/**`. Rules: `unit-economics.mdc`. |
 | **Sheet / custom.data / excel.cell** | `src/lib/blocks/catalog/{sheet,custom-data,excel-cell}.tsx`, `docs/CUSTOM_DATA_BLOCK.md`. |
 | **KPI Grid** | `src/lib/blocks/catalog/kpi-grid.tsx`, `docs/KPI_GRID.md`. |
+| **Periods / page-period header / useBlockPeriod** | `src/lib/blocks/use-block-period.ts`, `src/lib/blocks/page-period-context.tsx`, `src/components/blocks/page-period-header.tsx`, `docs/PAGE_PERIODS.md` — **читать при добавлении нового блока с периодом**. |
 | **Cashflow / транзакции** | `src/lib/cashflow/*`, `src/modules/cashflow/*`, `src/app/api/cashflow/*`, `docs/CASHFLOW_BLOCKS.md`. |
 | **Boards** | `src/lib/db/schema/boards.ts`, `src/lib/boards/queries.ts`, `src/app/(app)/boards/*`, `drizzle/init/03-boards.sql`. |
 | **DB schema / миграции** | `src/lib/db/schema/*`, `drizzle/init/*.sql`. После изменений: дать `pnpm db:generate && pnpm db:push`. Rules: `drizzle.mdc`. |

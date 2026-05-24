@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { z } from 'zod';
-import { Sparkles, AlertTriangle, TrendingUp, ShoppingBag, RefreshCw } from 'lucide-react';
+import { Sparkles, AlertTriangle, TrendingUp, ShoppingBag, Lock, RefreshCw } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import {
@@ -20,7 +20,7 @@ import {
 } from '@/components/blocks/period-picker';
 import { OzonAccountSelector } from '@/components/marketplaces/ozon-account-selector';
 import { useBlockValuePublisher } from '@/lib/blocks/values';
-import { usePersistedPeriodValue } from '@/lib/blocks/use-persisted-period';
+import { useBlockPeriod } from '@/lib/blocks/use-block-period';
 import type {
   BlockDef,
   BlockRenderProps,
@@ -168,14 +168,32 @@ const INSIGHT_STYLES: Record<Insight['type'], { icon: typeof Sparkles; cls: stri
 
 function RenderOzonAiInsights({ instance }: BlockRenderProps) {
   const config = useMemo(() => parseConfig(instance.config), [instance.config]);
-  const { value: period, setValue: setPeriod } = usePersistedPeriodValue({
+  const {
+    period,
+    setOverride: setPeriodOverride,
+    resetToGlobal: resetPeriodToGlobal,
+    isOverride: isPeriodOverride,
+  } = useBlockPeriod({
     instanceId: instance.id,
-    initial: {
-      preset: config.periodPreset,
-      customFrom: config.customFrom,
-      customTo: config.customTo,
-    },
+    configOverride:
+      config.periodPreset !== '30d' || config.customFrom || config.customTo
+        ? {
+            preset: config.periodPreset,
+            customFrom: config.customFrom,
+            customTo: config.customTo,
+          }
+        : null,
+    defaultMode: 'global',
   });
+  const setPeriod = useCallback(
+    (next: PeriodValue) =>
+      setPeriodOverride({
+        preset: next.preset,
+        customFrom: next.customFrom ?? null,
+        customTo: next.customTo ?? null,
+      }),
+    [setPeriodOverride],
+  );
   const [insights, setInsights] = useState<Insight[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -253,7 +271,22 @@ function RenderOzonAiInsights({ instance }: BlockRenderProps) {
           <span className="text-sm font-medium">AI инсайты</span>
         </div>
         <div className="flex items-center gap-2">
-          <PeriodPicker value={period} onChange={setPeriod} compact />
+          <PeriodPicker
+            value={{ preset: period.preset as PeriodPreset, customFrom: period.customFrom, customTo: period.customTo }}
+            onChange={setPeriod}
+            compact
+          />
+          {isPeriodOverride && (
+            <button
+              type="button"
+              onClick={resetPeriodToGlobal}
+              className="inline-flex h-5 shrink-0 items-center gap-0.5 rounded bg-amber-50 px-1.5 text-[10px] font-medium text-amber-700 ring-1 ring-amber-200 transition hover:bg-amber-100 dark:bg-amber-950 dark:text-amber-300 dark:ring-amber-900"
+              title="Локальный период этого блока. Клик — вернуться к периоду страницы."
+            >
+              <Lock className="h-2.5 w-2.5" />
+              свой
+            </button>
+          )}
           <Button
             size="sm"
             variant="outline"

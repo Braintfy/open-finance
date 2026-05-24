@@ -2,13 +2,20 @@
 // Каждая строка имеет label + произвольный набор колонок. Каждая ячейка может быть либо
 // manual-значением, либо ссылкой на другой блок (@blockId.field) — как в excel.cell.
 // Блок публикует per-column агрегаты, чтобы их можно было @связать в формулах.
+//
+// v0.22.5: переписан UX редактирования формул в стиле sheet.tsx (без popover с табами):
+//   - Единый formula bar сверху + inline `<input>` в активной ячейке (sheet-style).
+//   - Operator toolbar (+ − × ÷ ( ) , :) в режиме формулы.
+//   - Cell-pick клик по другой ячейке вставляет ссылку (A1, B2) — как раньше.
+//   - Кнопка `@связать` в formula bar открывает CellRefPickerDialog;
+//     в режиме формулы вставляет @-токен, иначе создаёт binding (cell.ref).
+//   - Удалены: Popover с табами Значение/Формула/Связь, CurrencyInput-блокировка,
+//     draggable popover, cellPopoverEnabled setting, hint plate.
 'use client';
 
 import {
-  useCallback,
   useContext,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -30,8 +37,6 @@ import {
   GripVertical,
   FunctionSquare,
   AlertTriangle,
-  Move,
-  Lightbulb,
 } from 'lucide-react';
 import { z } from 'zod';
 import {
@@ -59,7 +64,6 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
-import { Textarea } from '@/components/ui/textarea';
 import {
   Dialog,
   DialogContent,
@@ -67,13 +71,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import {
-  Popover,
-  PopoverAnchor,
-  PopoverContent,
-} from '@/components/ui/popover';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { CurrencyInput } from '@/components/ui/currency-input';
 import { useBlockDensity } from '@/components/blocks/block-size';
 import { useFormatSettings, formatRublesWithSettings } from '@/lib/format-settings';
 import {
@@ -147,9 +144,9 @@ const ConfigSchema = z
     /** Override ширины первой («label») колонки в px. Undefined = автоширина. */
     labelColumnWidth: z.number().optional(),
     /**
-     * Если true (default) — клик по ячейке открывает popover с табами.
-     * Если false — Excel-режим: редактирование только через formula-bar
-     * сверху, popover не открывается. Связь/picker — отдельной кнопкой.
+     * Legacy (v0.22.0..v0.22.4) — был тоггл popover с табами. С v0.22.5 popover
+     * удалён, редактирование всегда через formula bar + inline input.
+     * Поле игнорируется (читается из старых configs, но не записывается).
      */
     cellPopoverEnabled: z.boolean().optional(),
   })
@@ -162,7 +159,6 @@ type Config = {
   publishColumnId?: string;
   showKopecks: boolean | null;
   labelColumnWidth?: number;
-  cellPopoverEnabled: boolean;
 };
 
 const DEFAULT_COLUMN_ID = 'amount';
@@ -243,8 +239,6 @@ function parseConfig(raw: unknown): Config {
       typeof data.labelColumnWidth === 'number' && data.labelColumnWidth > 0
         ? data.labelColumnWidth
         : undefined,
-    cellPopoverEnabled:
-      typeof data.cellPopoverEnabled === 'boolean' ? data.cellPopoverEnabled : true,
   };
 }
 
@@ -255,7 +249,6 @@ function serializeConfig(cfg: Config): Record<string, unknown> {
     publishMode: cfg.publishMode,
     publishColumnId: cfg.publishColumnId,
     showKopecks: cfg.showKopecks,
-    cellPopoverEnabled: cfg.cellPopoverEnabled,
   };
   if (typeof cfg.labelColumnWidth === 'number') out.labelColumnWidth = cfg.labelColumnWidth;
   return out;
@@ -809,60 +802,78 @@ function CellRefPickerDialog({
 }
 
 // ============================================================================
-// Cell editor — Notion-style popover + Excel-style formula bar
+// Cell editor — sheet-style inline input + formula bar
 // ============================================================================
 //
-// Архитектура (v0.22.0):
-//   - Единый top-level <Popover> в RenderCustomData, anchored на активную
-//     ячейку через <PopoverAnchor> (вместо per-cell Popover'ов).
-//   - Общая editing session живёт в RenderCustomData (см. FormulaSession).
-//   - Click по ячейке: если session в режиме 'formula' и target != active,
-//     вставляет cellAddress(target) в draft. Иначе — открывает редактор.
-//   - Popover draggable (внутренний transform на content-wrapper, clamp viewport).
-//   - В режиме 'formula' popover НЕ закрывается на outside-click, чтобы
-//     можно было кликать по другим ячейкам без потери формулы.
-//   - Если cellPopoverEnabled === false — popover не показывается,
-//     редактирование только через formula-bar сверху.
+// Архитектура (v0.22.5):
+//   - Единый source-of-truth — `EditSession` с одним полем `draft`.
+//   - Редактирование через два input'а: inline `<input>` в активной ячейке
+//     (autoFocus при активации) + formula bar сверху. Оба пишут в session.draft.
+//   - `isFormula(draft)` = `draft.startsWith('=')` — режим формулы.
+//   - В режиме формулы:
+//       • клик по другой ячейке вставляет cellAddress (cell-pick),
+//       • показывается operator toolbar (+ − × ÷ ( ) , :),
+//       • кнопка `@связать` вставляет @-токен.
+//   - Не в режиме формулы:
+//       • кнопка `@связать` создаёт binding (cell.ref).
+//   - Binding (cell.ref) — отдельное persistent состояние ячейки, не входит
+//     в session. Управляется через CellRefPickerDialog.
 
-type CellEditorMode = 'value' | 'formula' | 'binding';
-
-type FormulaSession = {
+type EditSession = {
   rowId: string;
   columnId: string;
-  mode: CellEditorMode;
-  valueDraft: string;
-  formulaDraft: string;
-  /** Положение каретки в formula textarea — нужно для insertCellRef. */
+  draft: string;
+  /** Положение каретки в input — нужно для cell-pick / operator toolbar. */
   caretPos: number | null;
+  /** Какой input был последним сфокусирован — туда возвращаем focus после insert. */
+  lastFocused: 'inline' | 'bar';
 };
 
-function detectMode(cell: Cell | undefined): CellEditorMode {
-  if (cell?.ref) return 'binding';
-  if (typeof cell?.v === 'string' && cell.v.startsWith('=')) return 'formula';
-  return 'value';
-}
-
-function initialValueDraft(cell: Cell | undefined): string {
-  if (cell?.ref) return '';
-  if (typeof cell?.v === 'number') return String(cell.v);
-  if (typeof cell?.v === 'string' && !cell.v.startsWith('=')) return cell.v;
-  return '';
-}
-
-function initialFormulaDraft(cell: Cell | undefined): string {
-  if (typeof cell?.v === 'string' && cell.v.startsWith('=')) return cell.v;
-  return '=';
-}
-
-function makeSession(rowId: string, columnId: string, cell: Cell | undefined): FormulaSession {
+function makeSession(rowId: string, columnId: string, cell: Cell | undefined): EditSession {
+  let draft = '';
+  if (!cell?.ref) {
+    if (typeof cell?.v === 'number') draft = String(cell.v);
+    else if (typeof cell?.v === 'string') draft = cell.v;
+  }
   return {
     rowId,
     columnId,
-    mode: detectMode(cell),
-    valueDraft: initialValueDraft(cell),
-    formulaDraft: initialFormulaDraft(cell),
+    draft,
     caretPos: null,
+    lastFocused: 'inline',
   };
+}
+
+function isFormulaDraft(draft: string): boolean {
+  return draft.startsWith('=');
+}
+
+/**
+ * Вставка text в draft на позиции каретки. Если draft не начинается с '=',
+ * добавляется автоматически (вставка cell-ref / operator переключает в режим формулы).
+ * Возвращает новый draft + caretPos. Pure — для тестов.
+ */
+export function insertIntoDraft(
+  prev: { draft: string; caretPos: number | null },
+  text: string,
+  options: { forceFormula?: boolean } = {},
+): { draft: string; caretPos: number } {
+  let draft = prev.draft;
+  let pos = prev.caretPos ?? draft.length;
+  if (options.forceFormula && !draft.startsWith('=')) {
+    draft = '=' + draft;
+    pos += 1;
+  }
+  pos = Math.max(0, Math.min(pos, draft.length));
+  // Если draft пустой и forceFormula → начинаем с '='
+  if (options.forceFormula && draft === '') {
+    draft = '=';
+    pos = 1;
+  }
+  const before = draft.slice(0, pos);
+  const after = draft.slice(pos);
+  const nextDraft = before + text + after;
+  return { draft: nextDraft, caretPos: pos + text.length };
 }
 
 // ============================================================================
@@ -939,246 +950,6 @@ function CellTriggerButton({
 }
 
 // ============================================================================
-// PopoverEditorPanel — содержимое popover'а; reads + writes session.
-// Не оборачивается в Popover (это делает RenderCustomData).
-// ============================================================================
-
-function PopoverEditorPanel({
-  session,
-  cell,
-  column,
-  showKopecks,
-  result,
-  formulaTextareaRef,
-  onSessionChange,
-  onCommit,
-  onCancel,
-  onClear,
-  onUnlink,
-  onRequestPicker,
-}: {
-  session: FormulaSession;
-  cell: Cell | undefined;
-  column: Column;
-  showKopecks: boolean;
-  result: FormulaResult | undefined;
-  formulaTextareaRef: React.RefObject<HTMLTextAreaElement | null>;
-  onSessionChange: (patch: Partial<FormulaSession>) => void;
-  onCommit: () => void;
-  onCancel: () => void;
-  onClear: () => void;
-  onUnlink: () => void;
-  onRequestPicker: () => void;
-}) {
-  const display = result
-    ? formatColumnValue(result.value, column.format, showKopecks)
-    : '—';
-  const isLinked = Boolean(cell?.ref);
-  const mode = session.mode;
-
-  return (
-    <>
-      <Tabs value={mode} onValueChange={(v) => onSessionChange({ mode: v as CellEditorMode })}>
-        <TabsList className="grid w-full grid-cols-3">
-          <TabsTrigger value="value">Значение</TabsTrigger>
-          <TabsTrigger value="formula">
-            <FunctionSquare className="h-3 w-3" />
-            Формула
-          </TabsTrigger>
-          <TabsTrigger value="binding">
-            <Link2 className="h-3 w-3" />
-            Связь
-          </TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="value" className="space-y-2">
-          {column.format === 'rubles' ? (
-            <CurrencyInput
-              value={toNumeric(session.valueDraft) ?? 0}
-              showKopecks={showKopecks}
-              onChange={(v) => onSessionChange({ valueDraft: String(v) })}
-              className="h-9 text-right text-sm tabular-nums"
-            />
-          ) : column.format === 'percent' || column.format === 'number' ? (
-            <Input
-              type="text"
-              inputMode="decimal"
-              value={session.valueDraft}
-              onChange={(e) => onSessionChange({ valueDraft: e.target.value })}
-              placeholder={column.format === 'percent' ? '0%' : '0'}
-              className="h-9 text-right text-sm tabular-nums"
-              autoFocus
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') onCommit();
-                if (e.key === 'Escape') onCancel();
-              }}
-            />
-          ) : (
-            <Input
-              type="text"
-              value={session.valueDraft}
-              onChange={(e) => onSessionChange({ valueDraft: e.target.value })}
-              placeholder="—"
-              className="h-9 text-sm"
-              autoFocus
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') onCommit();
-                if (e.key === 'Escape') onCancel();
-              }}
-            />
-          )}
-          <p className="text-[10px] text-muted-foreground">
-            Введите число/текст. Для формулы переключитесь на вкладку «Формула».
-          </p>
-        </TabsContent>
-
-        <TabsContent value="formula" className="space-y-2">
-          <Textarea
-            ref={formulaTextareaRef as React.Ref<HTMLTextAreaElement>}
-            value={session.formulaDraft}
-            onChange={(e) =>
-              onSessionChange({
-                formulaDraft: e.target.value,
-                caretPos: e.target.selectionStart,
-              })
-            }
-            onSelect={(e) =>
-              onSessionChange({ caretPos: (e.target as HTMLTextAreaElement).selectionStart })
-            }
-            onKeyUp={(e) =>
-              onSessionChange({ caretPos: (e.target as HTMLTextAreaElement).selectionStart })
-            }
-            onClick={(e) =>
-              onSessionChange({ caretPos: (e.target as HTMLTextAreaElement).selectionStart })
-            }
-            rows={3}
-            placeholder="=A1+B1  или  =[Метиленовый синий].qty*0.5"
-            className="font-mono text-[12px] leading-5"
-            autoFocus
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                e.preventDefault();
-                onCommit();
-              }
-              if (e.key === 'Escape') onCancel();
-            }}
-          />
-          <div className="flex items-center justify-between gap-2">
-            <button
-              type="button"
-              onClick={onRequestPicker}
-              className="inline-flex h-6 items-center gap-1 rounded bg-amber-50 px-2 text-[11px] font-semibold text-amber-700 transition hover:bg-amber-100 dark:bg-amber-950 dark:text-amber-300"
-              title="Вставить ссылку @блок.поле"
-            >
-              <Link2 className="h-3 w-3" /> @связать
-            </button>
-            {result && result.error && (
-              <span className="inline-flex items-center gap-1 rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-700 dark:bg-red-950 dark:text-red-300">
-                <AlertTriangle className="h-2.5 w-2.5" />
-                {result.error}
-              </span>
-            )}
-          </div>
-          <div className="rounded-md bg-sky-50/60 p-2 text-[10px] leading-relaxed text-sky-900 ring-1 ring-sky-200/60 dark:bg-sky-950/30 dark:text-sky-200 dark:ring-sky-900/60">
-            <p className="font-semibold">Клик по другой ячейке вставляет ссылку (A1, B2…)</p>
-            <p className="mt-1 text-muted-foreground">
-              Окно можно перетащить за заголовок. Открытие popover'а отключается в настройках блока.
-            </p>
-          </div>
-          <div className="rounded-md bg-muted/30 p-2 text-[10px] leading-relaxed text-muted-foreground">
-            <p>
-              <span className="font-semibold">A1-нотация:</span> <code>=A1+B2</code>,{' '}
-              <code>=SUM(A1:A10)</code>
-            </p>
-            <p>
-              <span className="font-semibold">Именованная:</span>{' '}
-              <code>=[Название строки].id_колонки * 0.5</code>
-            </p>
-            <p>
-              <span className="font-semibold">Cross-block:</span>{' '}
-              <code>=@блок.field + 100</code>
-            </p>
-          </div>
-        </TabsContent>
-
-        <TabsContent value="binding" className="space-y-2">
-          {isLinked ? (
-            <div className="space-y-2">
-              <div className="rounded-md border border-amber-200 bg-amber-50/40 p-2 text-[11px] dark:border-amber-900 dark:bg-amber-950/40">
-                <div className="font-mono text-amber-700 dark:text-amber-300">
-                  @{cell?.ref}
-                </div>
-                <div className="mt-1 text-muted-foreground">
-                  Текущее значение: <span className="font-semibold">{display}</span>
-                </div>
-              </div>
-              <div className="flex gap-1.5">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7 flex-1 text-xs"
-                  onClick={onRequestPicker}
-                >
-                  Выбрать другой
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7 text-xs"
-                  onClick={onUnlink}
-                >
-                  <Unlink className="h-3 w-3" /> Отвязать
-                </Button>
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <p className="text-[11px] text-muted-foreground">
-                Связать ячейку со значением другого блока. Изменения подтягиваются
-                автоматически.
-              </p>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-8 w-full text-xs"
-                onClick={onRequestPicker}
-              >
-                <Link2 className="h-3 w-3" /> Выбрать блок и поле
-              </Button>
-            </div>
-          )}
-        </TabsContent>
-      </Tabs>
-
-      <div className="mt-3 flex items-center justify-between gap-2 border-t border-border/40 pt-2">
-        <button
-          type="button"
-          onClick={onClear}
-          className="text-[10px] text-muted-foreground hover:text-red-500"
-        >
-          Очистить ячейку
-        </button>
-        <div className="flex gap-1.5">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 text-xs"
-            onClick={onCancel}
-          >
-            Отмена
-          </Button>
-          {mode !== 'binding' && (
-            <Button size="sm" className="h-7 text-xs" onClick={onCommit}>
-              Сохранить
-            </Button>
-          )}
-        </div>
-      </div>
-    </>
-  );
-}
-
-// ============================================================================
 // Render
 // ============================================================================
 
@@ -1197,45 +968,26 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
   const title = instance.appearance?.title ?? 'Данные';
   const liveValues = useAllBlockValues();
 
-  // pickerCell = ячейка, для которой открывается CellRefPickerDialog
-  // (вызывается из popover'а активной ячейки или из FormulaBar @связать).
-  const [pickerCell, setPickerCell] = useState<{ rowId: string; columnId: string } | null>(null);
+  // pickerCell — ячейка, для которой открывается CellRefPickerDialog.
+  // mode: 'binding' создаёт cell.ref; 'formula' вставляет @-токен в draft.
+  const [pickerCell, setPickerCell] = useState<
+    { rowId: string; columnId: string; mode: 'binding' | 'formula' } | null
+  >(null);
 
-  // activeCell = ячейка с открытым редактором (popover + formula-bar).
+  // activeCell — ячейка с открытым inline-редактором.
   const [activeCell, setActiveCell] = useState<{ rowId: string; columnId: string } | null>(null);
 
-  // Shared editing session — общий draft между popover и formula-bar.
-  // Существует только когда activeCell != null. cell-pick-mode вставляет
-  // cellAddress() в session.formulaDraft без закрытия popover'а.
-  const [session, setSession] = useState<FormulaSession | null>(null);
+  // Shared editing session — единый draft между inline-input и formula bar.
+  const [session, setSession] = useState<EditSession | null>(null);
 
-  // Draggable popover — смещение от Radix-якоря. Сбрасывается при смене activeCell.
-  const [popoverOffset, setPopoverOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
-  const dragRef = useRef<{ startX: number; startY: number; baseX: number; baseY: number } | null>(null);
-
-  // Hint plate (один раз на пользователя; dismissed flag — в localStorage).
-  const [hintDismissed, setHintDismissed] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return true;
-    try {
-      return window.localStorage.getItem('custom-data:formula-hint:dismissed') === '1';
-    } catch {
-      return true;
-    }
-  });
-
-  // Refs на formula-textarea в popover'е и formula-bar'е — нужны для
-  // восстановления фокуса/каретки после insertCellRef.
-  const popoverFormulaRef = useRef<HTMLTextAreaElement | null>(null);
-  const barFormulaRef = useRef<HTMLTextAreaElement | null>(null);
-  /** Какой textarea был последним сфокусирован — туда возвращаем focus после insert. */
-  const lastFocusedFormulaRef = useRef<'popover' | 'bar'>('popover');
+  // Refs на inline-input в ячейке + на formula bar. lastFocused в session
+  // указывает куда вернуть focus после cell-pick / operator click.
+  const inlineInputRef = useRef<HTMLInputElement | null>(null);
+  const formulaBarRef = useRef<HTMLInputElement | null>(null);
 
   /**
    * Drag-state для resize колонок. Локальный — обновляется на каждое движение
-   * мыши без записи в config (чтобы не дёргать persist). На mouseUp коммитим
-   * финальную ширину в config через patch().
-   *  - kind: 'label' — меняется ширина колонки названий строк
-   *  - kind: 'value' — column.width конкретной value-колонки
+   * мыши без записи в config. На mouseUp коммитим финальную ширину в config через patch().
    */
   const [dragState, setDragState] = useState<{
     kind: 'label' | 'value';
@@ -1245,39 +997,13 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
     currentWidth: number;
   } | null>(null);
 
-  // v0.20.1: SSR-safe mounted-gate. measureText() через canvas доступен
-  // только в браузере; на сервере fallback `text.length * 7` даёт другую
-  // ширину → hydration mismatch на gridTemplateColumns. До первой
-  // hydration мы рендерим с минимальной (детерминированной) шириной,
-  // а после mount пересчитываем по реальным размерам.
+  // v0.20.1: SSR-safe mounted-gate для canvas measureText (см. registry.ts grабли).
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
     setMounted(true);
   }, []);
 
-  // v0.22.0: Восстанавливаем каретку в textarea после insertIntoFormula.
-  // useLayoutEffect — чтобы selection встал ДО первого paint'а (избегаем
-  // визуального «прыжка» каретки). Объявлен в начале компонента, чтобы
-  // ESLint не путал его с nested-функциями ниже.
-  useLayoutEffect(() => {
-    if (!session || session.caretPos === null) return;
-    const target =
-      lastFocusedFormulaRef.current === 'bar' && barFormulaRef.current
-        ? barFormulaRef.current
-        : popoverFormulaRef.current ?? barFormulaRef.current;
-    if (target && target === document.activeElement) {
-      try {
-        target.setSelectionRange(session.caretPos, session.caretPos);
-      } catch {
-        // ignore (textarea не готова)
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session?.caretPos, session?.formulaDraft]);
-
   // ── Compute all cells + aggregates через единый evaluator ──
-  // computeAll рассчитывает FormulaResult per cell с поддержкой A1, [row].col
-  // и @blockId.field. Кэш переиспользуется через cellCache между ячейками.
   const { cache: cellCache, aggregates } = useMemo(
     () => computeAll(config.columns, config.rows, liveValues, config.publishMode),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1362,36 +1088,6 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
     });
   }
 
-  function pickRefForCell(block: SourceBlock, field: SourceField) {
-    if (!pickerCell) return;
-    const ref =
-      block.pageKey === 'current'
-        ? field.name === 'value'
-          ? block.blockId
-          : `${block.blockId}.${field.name}`
-        : `${block.pageKey}:${block.blockId}.${field.name}`;
-    // Если ячейка-источник picker'а == активная и сейчас редактируем формулу —
-    // вставляем @-токен в formulaDraft, не создавая binding (Excel-стиль).
-    if (
-      session &&
-      session.mode === 'formula' &&
-      session.rowId === pickerCell.rowId &&
-      session.columnId === pickerCell.columnId
-    ) {
-      insertIntoFormula(`@${ref}`);
-      setPickerCell(null);
-      return;
-    }
-    const next: Cell = {
-      v: typeof field.value === 'number' || typeof field.value === 'string' ? field.value : null,
-      ref,
-      isMoney: sourceFieldIsMoney(block, field),
-    };
-    updateCell(pickerCell.rowId, pickerCell.columnId, next);
-    setPickerCell(null);
-    deactivateCell();
-  }
-
   // ── Editing session helpers ──
 
   function rowAndCell(rowId: string, columnId: string): { row: Row | undefined; cell: Cell | undefined } {
@@ -1403,67 +1099,63 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
     const { cell } = rowAndCell(rowId, columnId);
     setActiveCell({ rowId, columnId });
     setSession(makeSession(rowId, columnId, cell));
-    setPopoverOffset({ x: 0, y: 0 });
   }
 
   function deactivateCell() {
     setActiveCell(null);
     setSession(null);
-    setPopoverOffset({ x: 0, y: 0 });
-    dragRef.current = null;
   }
 
-  /** Вставляет text в session.formulaDraft на позиции каретки. */
-  function insertIntoFormula(text: string) {
-    setSession((prev) => {
-      if (!prev) return prev;
-      let draft = prev.formulaDraft;
-      let pos = prev.caretPos ?? draft.length;
-      if (!draft.startsWith('=')) {
-        draft = '=' + draft;
-        pos += 1;
-      }
-      pos = Math.max(1, Math.min(pos, draft.length));
-      const before = draft.slice(0, pos);
-      const after = draft.slice(pos);
-      const nextDraft = before + text + after;
-      return {
-        ...prev,
-        mode: 'formula',
-        formulaDraft: nextDraft,
-        caretPos: pos + text.length,
-      };
-    });
-    setHintDismissed((dismissed) => {
-      if (dismissed) return dismissed;
+  /**
+   * Возвращает фокус активному input'у (inline или formula bar — по lastFocused).
+   * Используется после cell-pick / operator-click, когда фокус мог уйти.
+   */
+  function restoreInputFocus(target: 'inline' | 'bar', caret: number) {
+    setTimeout(() => {
+      const input = target === 'bar' ? formulaBarRef.current : inlineInputRef.current;
+      if (!input) return;
+      input.focus();
       try {
-        window.localStorage.setItem('custom-data:formula-hint:dismissed', '1');
+        input.setSelectionRange(caret, caret);
       } catch {
         // ignore
       }
-      return true;
+    }, 0);
+  }
+
+  /**
+   * Вставляет text в session.draft на позиции каретки. Если forceFormula=true и
+   * draft не начинается с '=', добавляется автоматически.
+   */
+  function insertIntoDraftWithSession(text: string, forceFormula = false) {
+    let nextCaret = 0;
+    let nextTarget: 'inline' | 'bar' = 'inline';
+    setSession((prev) => {
+      if (!prev) return prev;
+      const result = insertIntoDraft(
+        { draft: prev.draft, caretPos: prev.caretPos },
+        text,
+        { forceFormula },
+      );
+      nextCaret = result.caretPos;
+      nextTarget = prev.lastFocused;
+      return { ...prev, draft: result.draft, caretPos: result.caretPos };
     });
+    restoreInputFocus(nextTarget, nextCaret);
   }
 
   function handleCellClick(rowId: string, columnId: string) {
-    // Pick-mode: вставляем cellAddress без смены activeCell, popover не закрывается.
+    // Cell-pick: в режиме формулы клик по другой ячейке вставляет ссылку,
+    // НЕ переключая активную ячейку.
     if (
       session &&
-      session.mode === 'formula' &&
+      isFormulaDraft(session.draft) &&
       (session.rowId !== rowId || session.columnId !== columnId)
     ) {
       const rIdx = config.rows.findIndex((r) => r.id === rowId);
       const cIdx = config.columns.findIndex((c) => c.id === columnId);
       if (rIdx < 0 || cIdx < 0) return;
-      insertIntoFormula(cellAddress(rIdx, cIdx));
-      // Возвращаем фокус в активный textarea
-      setTimeout(() => {
-        const target =
-          lastFocusedFormulaRef.current === 'bar' && barFormulaRef.current
-            ? barFormulaRef.current
-            : popoverFormulaRef.current ?? barFormulaRef.current;
-        target?.focus();
-      }, 0);
+      insertIntoDraftWithSession(cellAddress(rIdx, cIdx), true);
       return;
     }
     activateCell(rowId, columnId);
@@ -1472,7 +1164,7 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
   /** Сохраняет session в config.rows[].cells. */
   function commitSession() {
     if (!session) return;
-    const { row, cell } = rowAndCell(session.rowId, session.columnId);
+    const { row } = rowAndCell(session.rowId, session.columnId);
     if (!row) {
       deactivateCell();
       return;
@@ -1482,34 +1174,23 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
       deactivateCell();
       return;
     }
+    const trimmed = session.draft.trim();
     let next: Cell;
-    if (session.mode === 'value') {
-      const trimmed = session.valueDraft.trim();
-      if (!trimmed) {
-        next = { v: null, ref: undefined, isMoney: undefined };
-      } else if (
-        column.format === 'rubles' ||
-        column.format === 'number' ||
-        column.format === 'percent'
-      ) {
-        const parsed = toNumeric(trimmed);
-        next = { v: parsed ?? trimmed, ref: undefined, isMoney: undefined };
-      } else {
-        next = { v: trimmed, ref: undefined, isMoney: undefined };
-      }
-    } else if (session.mode === 'formula') {
-      let v = session.formulaDraft.trim();
-      if (!v.startsWith('=')) v = '=' + v;
-      if (v === '=') {
-        next = { v: null, ref: undefined, isMoney: undefined };
-      } else {
-        next = { v, ref: undefined, isMoney: undefined };
-      }
+    if (!trimmed) {
+      next = { v: null, ref: undefined, isMoney: undefined };
+    } else if (trimmed === '=') {
+      next = { v: null, ref: undefined, isMoney: undefined };
+    } else if (trimmed.startsWith('=')) {
+      next = { v: trimmed, ref: undefined, isMoney: undefined };
+    } else if (
+      column.format === 'rubles' ||
+      column.format === 'number' ||
+      column.format === 'percent'
+    ) {
+      const parsed = toNumeric(trimmed);
+      next = { v: parsed ?? trimmed, ref: undefined, isMoney: undefined };
     } else {
-      // binding-tab: commit идёт через onRequestPicker → pickRefForCell
-      void cell;
-      deactivateCell();
-      return;
+      next = { v: trimmed, ref: undefined, isMoney: undefined };
     }
     updateCell(session.rowId, session.columnId, next);
     deactivateCell();
@@ -1528,59 +1209,94 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
   function unlinkActiveCell() {
     if (!activeCell) return;
     const { cell } = rowAndCell(activeCell.rowId, activeCell.columnId);
+    const nextV = cell?.v ?? null;
     updateCell(activeCell.rowId, activeCell.columnId, {
-      v: cell?.v ?? null,
+      v: nextV,
       ref: undefined,
       isMoney: undefined,
     });
-    setSession((prev) => (prev ? { ...prev, mode: 'value' } : prev));
+    // Обновляем session draft чтобы input показывал unlinked value.
+    setSession((prev) => {
+      if (!prev) return prev;
+      let draft = '';
+      if (typeof nextV === 'number') draft = String(nextV);
+      else if (typeof nextV === 'string') draft = nextV;
+      return { ...prev, draft, caretPos: draft.length };
+    });
   }
 
-  // ── Drag popover ──
-  const startPopoverDrag = useCallback((e: React.PointerEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    setPopoverOffset((prev) => {
-      dragRef.current = {
-        startX: e.clientX,
-        startY: e.clientY,
-        baseX: prev.x,
-        baseY: prev.y,
-      };
-      return prev;
-    });
-  }, []);
-
-  const onPopoverDrag = useCallback((e: React.PointerEvent) => {
-    if (!dragRef.current) return;
-    const dx = e.clientX - dragRef.current.startX;
-    const dy = e.clientY - dragRef.current.startY;
-    // Clamp by viewport (margin 16px), чтобы popover не уезжал за экран.
-    const margin = 16;
-    const vw = window.innerWidth - margin;
-    const vh = window.innerHeight - margin;
-    const nextX = Math.max(-vw, Math.min(vw, dragRef.current.baseX + dx));
-    const nextY = Math.max(-vh, Math.min(vh, dragRef.current.baseY + dy));
-    setPopoverOffset({ x: nextX, y: nextY });
-  }, []);
-
-  const endPopoverDrag = useCallback((e: React.PointerEvent) => {
-    try {
-      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
-    } catch {
-      // ignore
+  /**
+   * Обработчик выбора блок/поле в CellRefPickerDialog.
+   *   - mode === 'formula' → вставка @-токена в draft текущей session (без
+   *     создания binding'а).
+   *   - mode === 'binding' → создаёт постоянный cell.ref (binding), session
+   *     закрывается.
+   */
+  function pickRefForCell(block: SourceBlock, field: SourceField) {
+    if (!pickerCell) return;
+    const ref =
+      block.pageKey === 'current'
+        ? field.name === 'value'
+          ? block.blockId
+          : `${block.blockId}.${field.name}`
+        : `${block.pageKey}:${block.blockId}.${field.name}`;
+    if (
+      pickerCell.mode === 'formula' &&
+      session &&
+      session.rowId === pickerCell.rowId &&
+      session.columnId === pickerCell.columnId
+    ) {
+      insertIntoDraftWithSession(`@${ref}`, true);
+      setPickerCell(null);
+      return;
     }
-    dragRef.current = null;
-  }, []);
+    const next: Cell = {
+      v: typeof field.value === 'number' || typeof field.value === 'string' ? field.value : null,
+      ref,
+      isMoney: sourceFieldIsMoney(block, field),
+    };
+    updateCell(pickerCell.rowId, pickerCell.columnId, next);
+    setPickerCell(null);
+    deactivateCell();
+  }
 
-  function dismissHint() {
-    try {
-      window.localStorage.setItem('custom-data:formula-hint:dismissed', '1');
-    } catch {
-      // ignore
+  /** Открывает binding picker для активной ячейки. Тип определяется автоматически. */
+  function openBindingPicker() {
+    if (!activeCell || !session) return;
+    const mode: 'binding' | 'formula' = isFormulaDraft(session.draft) ? 'formula' : 'binding';
+    setPickerCell({ rowId: activeCell.rowId, columnId: activeCell.columnId, mode });
+  }
+
+  /** Вставка оператора/функции в draft. Автопрефикс '=' для операторов. */
+  function insertOperator(text: string) {
+    insertIntoDraftWithSession(text, true);
+  }
+
+  /** Common keyboard handler для inline-input и formula bar. */
+  function handleInputKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      commitSession();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      deactivateCell();
+    } else if (e.key === 'Tab') {
+      e.preventDefault();
+      commitSession();
+      // Переход к следующей колонке/строке (как в sheet)
+      if (!activeCell) return;
+      const cIdx = config.columns.findIndex((c) => c.id === activeCell.columnId);
+      const rIdx = config.rows.findIndex((r) => r.id === activeCell.rowId);
+      if (cIdx < 0 || rIdx < 0) return;
+      const nextC = e.shiftKey
+        ? Math.max(0, cIdx - 1)
+        : Math.min(config.columns.length - 1, cIdx + 1);
+      const nextCol = config.columns[nextC];
+      if (nextCol) {
+        setTimeout(() => activateCell(activeCell.rowId, nextCol.id), 0);
+      }
+      void rIdx;
     }
-    setHintDismissed(true);
   }
 
   // ── DnD reorder: колонки + строки через @dnd-kit/sortable ──
@@ -1781,21 +1497,12 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
   const activeColumn = activeCell
     ? config.columns.find((c) => c.id === activeCell.columnId)
     : undefined;
-  const activeRaw = (() => {
-    if (!activeCell || !activeCellData) return '';
-    if (activeCellData.ref) return `@${activeCellData.ref}`;
-    if (typeof activeCellData.v === 'string') return activeCellData.v;
-    if (typeof activeCellData.v === 'number') return String(activeCellData.v);
-    return '';
-  })();
-
-  // (useLayoutEffect для caret restore переехал в начало компонента,
-  // чтобы избежать ложного срабатывания react-hooks/rules-of-hooks)
-
-  // Pick-mode индикатор: подсвечивать кликабельные ячейки, когда session в режиме formula.
+  // Pick-mode индикатор: подсвечивать кликабельные ячейки в режиме формулы.
   const inPickMode = Boolean(
-    session && session.mode === 'formula' && activeCell !== null,
+    session && isFormulaDraft(session.draft) && activeCell !== null,
   );
+  const isLinked = Boolean(activeCellData?.ref);
+  const isFormulaSession = Boolean(session && isFormulaDraft(session.draft));
 
   // ── Render row helper (общий для virtual/non-virtual путей) ──
   function renderRow(row: Row, rIdx: number) {
@@ -1809,6 +1516,18 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
         showKopecks={showKopecks}
         activeCell={activeCell}
         inPickMode={inPickMode}
+        session={session}
+        inlineInputRef={inlineInputRef}
+        onSessionChange={(draft, caret) =>
+          setSession((prev) =>
+            prev ? { ...prev, draft, caretPos: caret, lastFocused: 'inline' } : prev,
+          )
+        }
+        onInlineFocus={() =>
+          setSession((prev) => (prev ? { ...prev, lastFocused: 'inline' } : prev))
+        }
+        onInlineKeyDown={handleInputKeyDown}
+        onInlineBlur={commitSession}
         onCellClick={(col) => handleCellClick(row.id, col.id)}
         onLabelChange={(label) => updateRow(row.id, { label })}
         onRemove={() => removeRow(row.id)}
@@ -1817,18 +1536,7 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
     );
   }
 
-  // Popover открыт когда есть activeCell. В режиме 'formula' Popover защищён
-  // от закрытия по outside-click (чтобы pick-mode работал). cellPopoverEnabled
-  // = false → popover не показываем, редактирование только через formula-bar.
-  const popoverOpen = activeCell !== null && config.cellPopoverEnabled;
-
   return (
-    <Popover
-      open={popoverOpen}
-      onOpenChange={(open) => {
-        if (!open) deactivateCell();
-      }}
-    >
     <Card
       className="flex h-full min-h-0 flex-col"
       onPointerMove={dragState ? onResizeMove : undefined}
@@ -1866,130 +1574,133 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
         </div>
       </header>
 
-      {/* Hint plate — однократная подсказка про cell-pick + draggable popover.
-          Закрывается крестиком и сохраняет dismissed в localStorage. */}
-      {!hintDismissed && (
-        <div className="mx-3 mb-1.5 flex items-start gap-2 rounded-md border border-sky-200 bg-sky-50/60 px-2 py-1.5 text-[11px] text-sky-900 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-200">
-          <Lightbulb className="mt-0.5 h-3 w-3 shrink-0" />
-          <div className="min-w-0 flex-1 leading-snug">
-            В режиме формулы клик по другой ячейке вставляет ссылку (A1, B2…).
-            Окно можно перетащить за заголовок. Открытие popover'а отключается в настройках блока.
-          </div>
-          <button
-            type="button"
-            onClick={dismissHint}
-            className="shrink-0 rounded p-0.5 text-sky-700 transition hover:bg-sky-100 dark:text-sky-300 dark:hover:bg-sky-900"
-            aria-label="Скрыть подсказку"
-          >
-            <X className="h-3 w-3" />
-          </button>
-        </div>
-      )}
-
-      {/* Formula bar — sticky thin row под header'ом, видна когда есть activeCell.
-          В режиме 'formula' (или когда popover отключён) — editable Textarea.
-          Иначе read-only превью. */}
+      {/* Formula bar — sheet-style: единственный input для активной ячейки,
+          всегда editable. При вводе '=' draft автоматически становится формулой. */}
       {activeCell && activeColumn && session && (
-        <div className="flex shrink-0 items-start gap-2 border-b border-border/40 bg-muted/20 px-3 py-1.5">
-          <span className="mt-1 inline-flex h-5 items-center rounded bg-background px-1.5 font-mono text-[10px] font-semibold text-muted-foreground ring-1 ring-border/60">
-            {activeAddr}
-          </span>
-          <FunctionSquare className="mt-1.5 h-3 w-3 shrink-0 text-muted-foreground" />
-          {session.mode === 'formula' || !config.cellPopoverEnabled ? (
-            <Textarea
-              ref={barFormulaRef as React.Ref<HTMLTextAreaElement>}
-              value={
-                session.mode === 'formula'
-                  ? session.formulaDraft
-                  : session.valueDraft
+        <div className="flex shrink-0 flex-col gap-1 border-b border-border/40 bg-muted/20 px-3 py-1.5">
+          <div className="flex items-center gap-2">
+            <span className="inline-flex h-5 shrink-0 items-center rounded bg-background px-1.5 font-mono text-[10px] font-semibold text-muted-foreground ring-1 ring-border/60">
+              {activeAddr}
+            </span>
+            <FunctionSquare className="h-3 w-3 shrink-0 text-muted-foreground" />
+            <input
+              ref={formulaBarRef}
+              value={session.draft}
+              onFocus={() =>
+                setSession((prev) => (prev ? { ...prev, lastFocused: 'bar' } : prev))
               }
-              onFocus={() => {
-                lastFocusedFormulaRef.current = 'bar';
-              }}
-              onChange={(e) => {
-                if (session.mode === 'formula') {
-                  setSession((prev) =>
-                    prev
-                      ? {
-                          ...prev,
-                          formulaDraft: e.target.value,
-                          caretPos: e.target.selectionStart,
-                        }
-                      : prev,
-                  );
-                } else {
-                  // Если popover отключён и пользователь начинает с '=' — переходим в formula-mode.
-                  const val = e.target.value;
-                  setSession((prev) =>
-                    prev
-                      ? {
-                          ...prev,
-                          valueDraft: val,
-                          formulaDraft: val.startsWith('=') ? val : prev.formulaDraft,
-                          mode: val.startsWith('=') ? 'formula' : prev.mode,
-                          caretPos: e.target.selectionStart,
-                        }
-                      : prev,
-                  );
-                }
-              }}
-              onSelect={(e) =>
+              onChange={(e) =>
                 setSession((prev) =>
                   prev
-                    ? { ...prev, caretPos: (e.target as HTMLTextAreaElement).selectionStart }
+                    ? {
+                        ...prev,
+                        draft: e.target.value,
+                        caretPos: e.target.selectionStart,
+                        lastFocused: 'bar',
+                      }
                     : prev,
                 )
               }
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey || !e.shiftKey)) {
-                  e.preventDefault();
-                  commitSession();
-                }
-                if (e.key === 'Escape') deactivateCell();
-              }}
-              rows={1}
+              onSelect={(e) =>
+                setSession((prev) =>
+                  prev
+                    ? {
+                        ...prev,
+                        caretPos: (e.target as HTMLInputElement).selectionStart,
+                      }
+                    : prev,
+                )
+              }
+              onKeyDown={handleInputKeyDown}
               placeholder={
-                session.mode === 'formula'
-                  ? 'Клик по ячейке вставит ссылку'
+                isFormulaSession
+                  ? 'Клик по ячейке вставит ссылку (A1, B2…)'
                   : 'Значение, или начните с = для формулы'
               }
-              className="min-w-0 flex-1 resize-none font-mono text-[11px] leading-5"
+              className="h-6 min-w-0 flex-1 border-0 bg-transparent p-0 font-mono text-[11px] outline-none focus:ring-0"
             />
-          ) : (
-            <code
-              className={cn(
-                'mt-1 min-w-0 flex-1 truncate font-mono text-[11px]',
-                activeResult?.error ? 'text-red-600' : 'text-foreground',
-              )}
-              title={activeRaw || 'пусто'}
-            >
-              {activeRaw || <span className="text-muted-foreground/60">пусто</span>}
-            </code>
-          )}
-          {(session.mode === 'formula' || !config.cellPopoverEnabled) && (
+            {isFormulaSession && (
+              <span className="inline-flex h-5 shrink-0 items-center rounded bg-blue-100 px-1.5 text-[10px] font-semibold text-blue-700 dark:bg-blue-950 dark:text-blue-300">
+                fx
+              </span>
+            )}
+            {isLinked && (
+              <button
+                type="button"
+                onClick={unlinkActiveCell}
+                className="inline-flex h-5 shrink-0 items-center gap-1 rounded bg-muted px-1.5 text-[10px] font-semibold text-muted-foreground transition hover:bg-accent"
+                title="Отвязать ячейку от источника"
+              >
+                <Unlink className="h-2.5 w-2.5" /> отвязать
+              </button>
+            )}
             <button
               type="button"
-              onClick={() => setPickerCell({ rowId: activeCell.rowId, columnId: activeCell.columnId })}
-              className="mt-1 inline-flex h-5 shrink-0 items-center gap-1 rounded bg-amber-50 px-1.5 text-[10px] font-semibold text-amber-700 transition hover:bg-amber-100 dark:bg-amber-950 dark:text-amber-300"
-              title="Вставить ссылку @блок.поле"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={openBindingPicker}
+              className="inline-flex h-5 shrink-0 items-center gap-1 rounded bg-amber-50 px-1.5 text-[10px] font-semibold text-amber-700 transition hover:bg-amber-100 dark:bg-amber-950 dark:text-amber-300"
+              title={
+                isFormulaSession
+                  ? 'Вставить @-ссылку в формулу'
+                  : 'Привязать ячейку к источнику (binding)'
+              }
             >
               <Link2 className="h-2.5 w-2.5" /> @связать
             </button>
+            {activeResult?.error && (
+              <span className="inline-flex shrink-0 items-center gap-1 rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-700 dark:bg-red-950 dark:text-red-300">
+                <AlertTriangle className="h-2.5 w-2.5" />
+                {activeResult.error}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={clearActiveCell}
+              className="text-[10px] text-muted-foreground hover:text-red-500"
+              title="Очистить ячейку"
+            >
+              <Trash2 className="h-3 w-3" />
+            </button>
+            <button
+              type="button"
+              onClick={deactivateCell}
+              className="text-[10px] text-muted-foreground hover:text-foreground"
+              aria-label="Закрыть редактор"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+          {/* Operator toolbar — показывается в режиме формулы */}
+          {isFormulaSession && (
+            <div className="flex items-center gap-1 overflow-x-auto pl-[58px]">
+              <span className="shrink-0 text-[10px] text-muted-foreground">Вставить:</span>
+              {['+', '-', '*', '/', '(', ')', ',', ':'].map((op) => (
+                <button
+                  key={op}
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => insertOperator(op)}
+                  className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-background font-mono text-[11px] ring-1 ring-border/60 transition hover:bg-accent"
+                  title={`Вставить «${op}»`}
+                >
+                  {op}
+                </button>
+              ))}
+              <div className="mx-1 h-3 w-px bg-border/50" />
+              {['SUM', 'AVG', 'MIN', 'MAX', 'COUNT'].map((fn) => (
+                <button
+                  key={fn}
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => insertOperator(`${fn}(`)}
+                  className="flex h-5 shrink-0 items-center rounded bg-blue-50 px-1.5 text-[10px] font-semibold text-blue-700 transition hover:bg-blue-100 dark:bg-blue-950 dark:text-blue-300 dark:hover:bg-blue-900"
+                  title={`Вставить ${fn}(`}
+                >
+                  {fn}
+                </button>
+              ))}
+            </div>
           )}
-          {activeResult?.error && (
-            <span className="mt-1 inline-flex items-center gap-1 rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-700 dark:bg-red-950 dark:text-red-300">
-              <AlertTriangle className="h-2.5 w-2.5" />
-              {activeResult.error}
-            </span>
-          )}
-          <button
-            type="button"
-            onClick={deactivateCell}
-            className="mt-1 text-[10px] text-muted-foreground hover:text-foreground"
-            aria-label="Закрыть редактор"
-          >
-            <X className="h-3 w-3" />
-          </button>
         </div>
       )}
 
@@ -2144,80 +1855,6 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
         onPick={pickRefForCell}
       />
     </Card>
-
-    {/* Top-level Popover content — anchored на active cell через PopoverAnchor
-        в SortableRowGroup. Inner-div применяет drag offset через transform,
-        что не конфликтует с Radix positioning (тот двигает Content). */}
-    {session && activeColumn && activeCellData !== undefined && (
-      <PopoverContent
-        align="start"
-        sideOffset={6}
-        className="w-80 p-0 shadow-xl"
-        onOpenAutoFocus={(e) => e.preventDefault()}
-        onInteractOutside={(e) => {
-          // В formula-mode не закрываем popover при кликах по ячейкам —
-          // они должны вставлять ссылки, а не закрывать редактор.
-          if (session.mode === 'formula') e.preventDefault();
-        }}
-        onPointerDownOutside={(e) => {
-          if (session.mode === 'formula') e.preventDefault();
-        }}
-      >
-        <div
-          style={{
-            transform: `translate(${popoverOffset.x}px, ${popoverOffset.y}px)`,
-            transition: dragRef.current ? 'none' : 'transform 0.12s ease-out',
-          }}
-        >
-          {/* Drag handle */}
-          <div
-            onPointerDown={startPopoverDrag}
-            onPointerMove={onPopoverDrag}
-            onPointerUp={endPopoverDrag}
-            onPointerCancel={endPopoverDrag}
-            className="flex cursor-move select-none items-center justify-between gap-2 rounded-t-md border-b border-border/40 bg-muted/40 px-2 py-1 text-[10px] text-muted-foreground"
-            title="Перетащите, чтобы переместить окно"
-          >
-            <span className="inline-flex items-center gap-1 font-mono font-semibold">
-              <Move className="h-2.5 w-2.5" /> {activeAddr} ·{' '}
-              <span className="truncate font-sans normal-case text-[10px]">
-                {activeColumn.label}
-              </span>
-            </span>
-            <button
-              type="button"
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={deactivateCell}
-              className="rounded p-0.5 hover:bg-background"
-              aria-label="Закрыть"
-            >
-              <X className="h-2.5 w-2.5" />
-            </button>
-          </div>
-          <div className="p-3">
-            <PopoverEditorPanel
-              session={session}
-              cell={activeCellData}
-              column={activeColumn}
-              showKopecks={showKopecks}
-              result={activeResult}
-              formulaTextareaRef={popoverFormulaRef}
-              onSessionChange={(patch) =>
-                setSession((prev) => (prev ? { ...prev, ...patch } : prev))
-              }
-              onCommit={commitSession}
-              onCancel={deactivateCell}
-              onClear={clearActiveCell}
-              onUnlink={unlinkActiveCell}
-              onRequestPicker={() =>
-                setPickerCell({ rowId: session.rowId, columnId: session.columnId })
-              }
-            />
-          </div>
-        </div>
-      </PopoverContent>
-    )}
-    </Popover>
   );
 }
 
@@ -2295,6 +1932,12 @@ function SortableRowGroup({
   showKopecks,
   activeCell,
   inPickMode,
+  session,
+  inlineInputRef,
+  onSessionChange,
+  onInlineFocus,
+  onInlineKeyDown,
+  onInlineBlur,
   onCellClick,
   onLabelChange,
   onRemove,
@@ -2307,6 +1950,12 @@ function SortableRowGroup({
   showKopecks: boolean;
   activeCell: { rowId: string; columnId: string } | null;
   inPickMode: boolean;
+  session: EditSession | null;
+  inlineInputRef: React.MutableRefObject<HTMLInputElement | null>;
+  onSessionChange: (draft: string, caretPos: number | null) => void;
+  onInlineFocus: () => void;
+  onInlineKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void;
+  onInlineBlur: () => void;
   onCellClick: (col: Column) => void;
   onLabelChange: (label: string) => void;
   onRemove: () => void;
@@ -2352,25 +2001,46 @@ function SortableRowGroup({
         // Pick-mode visual: подсвечиваем НЕ-активные ячейки как кликабельные
         // источники ссылок (текущая активная — не вставляется в саму себя).
         const cellInPickMode = inPickMode && !isActive;
-        const triggerButton = (
-          <CellTriggerButton
-            cell={row.cells[col.id]}
-            column={col}
-            showKopecks={showKopecks}
-            result={result}
-            pickModeActive={cellInPickMode}
-            onClick={() => onCellClick(col)}
-          />
-        );
         return (
           <div
             key={`${row.id}-${col.id}`}
-            className="relative flex items-center rounded-md border border-border/40 bg-muted/20 px-1"
+            className={cn(
+              'relative flex items-center rounded-md border bg-muted/20 px-1',
+              isActive ? 'border-primary ring-1 ring-primary/40' : 'border-border/40',
+            )}
           >
-            {isActive ? (
-              <PopoverAnchor asChild>{triggerButton}</PopoverAnchor>
+            {isActive && session ? (
+              <input
+                ref={inlineInputRef}
+                value={session.draft}
+                onFocus={onInlineFocus}
+                onChange={(e) =>
+                  onSessionChange(e.target.value, e.target.selectionStart)
+                }
+                onSelect={(e) =>
+                  onSessionChange(
+                    (e.target as HTMLInputElement).value,
+                    (e.target as HTMLInputElement).selectionStart,
+                  )
+                }
+                onKeyDown={onInlineKeyDown}
+                onBlur={onInlineBlur}
+                autoFocus
+                placeholder={col.format === 'text' ? '—' : '0'}
+                className={cn(
+                  'h-7 w-full min-w-0 border-0 bg-background px-1.5 font-mono text-xs tabular-nums outline-none focus:ring-0',
+                  col.format === 'text' ? 'text-left' : 'text-right',
+                )}
+              />
             ) : (
-              triggerButton
+              <CellTriggerButton
+                cell={row.cells[col.id]}
+                column={col}
+                showKopecks={showKopecks}
+                result={result}
+                pickModeActive={cellInPickMode}
+                onClick={() => onCellClick(col)}
+              />
             )}
           </div>
         );
@@ -2587,33 +2257,12 @@ function CustomDataSettingsForm({ config, onChange }: BlockSettingsFormProps) {
         </div>
       </div>
 
-      {/* Popover toggle (v0.22.0) */}
-      <div className="space-y-1.5">
-        <Label>Редактор ячеек</Label>
-        <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
-          <div className="min-w-0">
-            <div className="text-xs font-medium">Открывать popover на ячейке</div>
-            <div className="text-[11px] text-muted-foreground">
-              {parsed.cellPopoverEnabled
-                ? 'Клик по ячейке открывает редактор с табами «Значение/Формула/Связь».'
-                : 'Excel-режим: редактирование только через строку формул сверху. Клик по ячейке делает её активной, ввод и кнопка @связать — в строке формул.'}
-            </div>
-          </div>
-          <Switch
-            checked={parsed.cellPopoverEnabled}
-            onCheckedChange={(v) => patch({ cellPopoverEnabled: v })}
-          />
-        </div>
-        <p className="text-[10px] leading-snug text-muted-foreground">
-          Подсказка: в режиме формулы клик по другой ячейке вставляет ссылку (A1, B2…) — это
-          работает в обоих режимах. Окно popover можно перетащить за заголовок.
-        </p>
-      </div>
-
       <div className="rounded-md bg-muted/30 p-2.5 text-[11px] text-muted-foreground">
-        Ячейки с привязкой (`@`) автоматически подтягивают значения других блоков и
-        обновляются в реальном времени. Денежный формат сохраняется через `isMoney` флаг
-        (как в excel.cell).
+        Кликните по ячейке, чтобы редактировать. Введите <code className="font-mono">=</code>{' '}
+        чтобы переключиться в режим формулы — появится строка формул с кнопками операторов
+        (+ − × ÷, SUM, MIN…). В режиме формулы клик по другой ячейке вставит ссылку (A1, B2…),
+        а «@связать» откроет picker блок-источника. Ячейки с привязкой автоматически
+        подтягивают значения других блоков (как в excel.cell).
       </div>
     </div>
   );
@@ -2639,7 +2288,6 @@ export const CustomDataBlock: BlockDef = {
     rows: [],
     publishMode: 'sum',
     showKopecks: null,
-    cellPopoverEnabled: true,
   }),
   supportsDependencies: false,
   SettingsForm: CustomDataSettingsForm,

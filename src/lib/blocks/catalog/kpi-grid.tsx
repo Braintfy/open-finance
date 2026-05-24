@@ -26,12 +26,14 @@ import {
   TrendingUp,
   TrendingDown,
   Minus,
+  Lock,
   type LucideIcon,
 } from 'lucide-react';
 import { z } from 'zod';
 import type { BlockDef, BlockRenderProps, SourceBinding } from '../types';
 import { useBlockDensity } from '@/components/blocks/block-size';
 import { useEffectivePeriod } from '../page-period-context';
+import { useBlockPeriod } from '../use-block-period';
 import { useEffectiveSource } from '../page-source-context';
 import { useBlockValuePublisher } from '../values';
 import { useCashflowKpiLite } from '../virtual-sources';
@@ -345,8 +347,24 @@ function KpiCellRender({
     );
   }
 
+  // v0.23: lock-badge для ячейки с per-cell `periodOverride`.
+  // Помогает понять, что эта ячейка зависит от своего периода, а не от
+  // page-level / block-level periodOverride.
+  const cellHasOwnPeriod =
+    cell.periodOverride !== undefined && cell.periodOverride !== null;
+
   return (
-    <div className="flex h-full min-h-0 flex-col justify-between rounded-md border border-border/50 bg-card/40 p-2">
+    <div className="relative flex h-full min-h-0 flex-col justify-between rounded-md border border-border/50 bg-card/40 p-2">
+      {cellHasOwnPeriod && (
+        <button
+          type="button"
+          onClick={onOpenSettings}
+          className="absolute right-1 top-1 z-10 inline-flex h-4 items-center gap-0.5 rounded bg-amber-50 px-1 text-[9px] font-medium text-amber-700 ring-1 ring-amber-200 transition hover:bg-amber-100 dark:bg-amber-950 dark:text-amber-300 dark:ring-amber-900"
+          title="Период этой ячейки не синхронизирован с настройкой страницы. Откройте настройки блока, чтобы изменить."
+        >
+          <Lock className="h-2.5 w-2.5" />
+        </button>
+      )}
       <div className="flex items-center justify-between gap-1.5">
         <div className="flex min-w-0 items-center gap-1.5">
           <Icon className="h-3.5 w-3.5 shrink-0" style={{ color }} />
@@ -401,6 +419,25 @@ function RenderKpiGrid({ instance }: BlockRenderProps) {
   const compact = density === 'xs' || density === 'sm';
   const defaultBinding: SourceBinding = config.defaultSourceBinding ?? DEFAULT_SOURCE_BINDING;
   const onOpenSettings = useCallback(() => openBlockSettings(instance.id), [instance.id]);
+
+  // v0.23: регистрируем block в PagePeriodContext для счётчика overridden /
+  // mass-reset. block-level defaultPeriodOverride живёт в config и считается
+  // override относительно page-level. Per-cell `cell.periodOverride` —
+  // отдельный layer (lock-badge на ячейках).
+  const {
+    isOverride: isBlockPeriodOverride,
+    resetToGlobal: resetBlockPeriod,
+  } = useBlockPeriod({
+    instanceId: instance.id,
+    configOverride: config.defaultPeriodOverride
+      ? {
+          preset: config.defaultPeriodOverride.preset,
+          customFrom: config.defaultPeriodOverride.customFrom ?? null,
+          customTo: config.defaultPeriodOverride.customTo ?? null,
+        }
+      : null,
+    defaultMode: 'global',
+  });
 
   // Если block-level binding = empty И ни у одной ячейки нет per-cell
   // override — рисуем единый block-level placeholder.
@@ -495,7 +532,20 @@ function RenderKpiGrid({ instance }: BlockRenderProps) {
   return (
     <Card className={compact ? 'flex h-full flex-col p-2' : 'flex h-full flex-col p-3'}>
       <div className="mb-2 flex items-center justify-between gap-2">
-        <div className="truncate text-sm font-medium text-muted-foreground">{config.title}</div>
+        <div className="flex min-w-0 items-center gap-2">
+          <div className="truncate text-sm font-medium text-muted-foreground">{config.title}</div>
+          {isBlockPeriodOverride && (
+            <button
+              type="button"
+              onClick={resetBlockPeriod}
+              className="inline-flex h-5 shrink-0 items-center gap-0.5 rounded bg-amber-50 px-1.5 text-[10px] font-medium text-amber-700 ring-1 ring-amber-200 transition hover:bg-amber-100 dark:bg-amber-950 dark:text-amber-300 dark:ring-amber-900"
+              title="Локальный период этого блока. Клик — вернуться к периоду страницы."
+            >
+              <Lock className="h-2.5 w-2.5" />
+              свой
+            </button>
+          )}
+        </div>
       </div>
       <div className={'min-h-0 flex-1 ' + gridClass}>
         {config.cells.map((cell) => (

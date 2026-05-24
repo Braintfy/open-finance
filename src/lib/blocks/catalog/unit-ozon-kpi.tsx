@@ -24,7 +24,8 @@ import {
 import { OzonAccountSelector } from '@/components/marketplaces/ozon-account-selector';
 import { OzonSyncSection } from '@/components/unit-economics/ozon-sync-section';
 import { useBlockValuePublisher } from '@/lib/blocks/values';
-import { usePersistedPeriodValue } from '@/lib/blocks/use-persisted-period';
+import { useBlockPeriod } from '@/lib/blocks/use-block-period';
+import { Lock } from 'lucide-react';
 import type {
   BlockDef,
   BlockRenderProps,
@@ -112,14 +113,34 @@ const COMPARE_OPTIONS: Array<{ value: CompareMode; label: string; description: s
 
 function RenderOzonKpi({ instance }: BlockRenderProps) {
   const config = useMemo(() => parseConfig(instance.config), [instance.config]);
-  const { value: period, setValue: setPeriod } = usePersistedPeriodValue({
+  // v0.23: единый useBlockPeriod — блок по дефолту наследует global page period
+  // (override от PagePeriodHeader); inline PeriodPicker создаёт override.
+  const {
+    period,
+    setOverride: setPeriodOverride,
+    resetToGlobal: resetPeriodToGlobal,
+    isOverride: isPeriodOverride,
+  } = useBlockPeriod({
     instanceId: instance.id,
-    initial: {
-      preset: config.periodPreset,
-      customFrom: config.customFrom,
-      customTo: config.customTo,
-    },
+    configOverride:
+      config.periodPreset !== '7d' || config.customFrom || config.customTo
+        ? {
+            preset: config.periodPreset,
+            customFrom: config.customFrom,
+            customTo: config.customTo,
+          }
+        : null,
+    defaultMode: 'global',
   });
+  const setPeriod = useCallback(
+    (next: PeriodValue) =>
+      setPeriodOverride({
+        preset: next.preset,
+        customFrom: next.customFrom ?? null,
+        customTo: next.customTo ?? null,
+      }),
+    [setPeriodOverride],
+  );
   const [compareMode, setCompareMode] = useState<CompareMode>(config.compareMode);
   const [data, setData] = useState<OzonKpiResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -222,7 +243,22 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
   return (
     <Card className="flex h-full flex-col overflow-hidden p-3">
       <div className="mb-2 flex flex-wrap items-center gap-2">
-        <PeriodPicker value={period} onChange={setPeriod} compact />
+        <PeriodPicker
+          value={{ preset: period.preset as PeriodPreset, customFrom: period.customFrom, customTo: period.customTo }}
+          onChange={setPeriod}
+          compact
+        />
+        {isPeriodOverride && (
+          <button
+            type="button"
+            onClick={resetPeriodToGlobal}
+            className="inline-flex h-5 shrink-0 items-center gap-0.5 rounded bg-amber-50 px-1.5 text-[10px] font-medium text-amber-700 ring-1 ring-amber-200 transition hover:bg-amber-100 dark:bg-amber-950 dark:text-amber-300 dark:ring-amber-900"
+            title="Локальный период этого блока. Клик — вернуться к периоду страницы."
+          >
+            <Lock className="h-2.5 w-2.5" />
+            свой
+          </button>
+        )}
         {data?.period && (
           <span
             className="text-[10px] text-muted-foreground"

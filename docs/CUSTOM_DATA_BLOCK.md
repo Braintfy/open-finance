@@ -1,114 +1,154 @@
-# Блок «Данные» (`custom.data`) — гибридный formula UX
+# Блок «Данные» (`custom.data`) — sheet-style formula UX
 
-> Версия: v0.22.0 · Файл: [src/lib/blocks/catalog/custom-data.tsx](../src/lib/blocks/catalog/custom-data.tsx) · Engine: [src/lib/blocks/custom-data-formulas.ts](../src/lib/blocks/custom-data-formulas.ts)
+> Версия: v0.22.5 · Файл: [src/lib/blocks/catalog/custom-data.tsx](../src/lib/blocks/catalog/custom-data.tsx) · Engine: [src/lib/blocks/custom-data-formulas.ts](../src/lib/blocks/custom-data-formulas.ts)
 
 ## TL;DR
 
-Блок «Данные» — flexible spreadsheet-like grid с поддержкой формул (`=A1+B1`, `=SUM(...)`, cross-block `@blockId/colA`, named refs `@row.col`). Редактирование значений и формул работает через два связанных интерфейса: **inline popover** над ячейкой и **formula bar** под header'ом блока. Оба синхронизированы общим стейтом и поддерживают **cell-click-to-insert** для быстрой вставки ссылок.
+Блок «Данные» — flexible spreadsheet-like grid с поддержкой формул (`=A1+B1`, `=SUM(...)`, cross-block `@blockId/colA`, named refs `@row.col`). С v0.22.5 редактирование значений и формул работает в стиле блока «Таблица Excel» (`sheet.tsx`):
 
-## Режимы редактирования
+- **Inline `<input>`** в активной ячейке (autoFocus при клике).
+- **Formula bar** под header'ом блока (всегда editable + operator toolbar).
+- **Cell-click-to-insert** для вставки ссылок в режиме формулы.
+- **@связать** кнопка для binding'а или вставки `@ref`-токена в формулу.
 
-При фокусе на ячейке (`activateCell()`) создаётся **`FormulaSession`**:
+Popover с табами «Значение / Формула / Связь», `CurrencyInput`-блокировка операторов и draggable popover **удалены** — это упрощает UX и убирает баги (см. ниже).
+
+## Editing session (`EditSession`)
+
+При клике на ячейку (`activateCell()`) создаётся единая editing session:
 
 ```ts
-type FormulaSession = {
+type EditSession = {
   rowId: string;
   columnId: string;
-  mode: 'value' | 'formula' | 'binding';
-  valueDraft: string;          // черновик литерала
-  formulaDraft: string;        // черновик формулы (начинается с `=`)
-  caretPos: number | null;     // позиция каретки в formulaDraft
+  draft: string;               // ЕДИНЫЙ черновик: значение ИЛИ формула
+  caretPos: number | null;     // позиция каретки (для cell-pick)
+  lastFocused: 'inline' | 'bar'; // куда возвращать focus после insert
 };
+
+// Режим формулы определяется автоматически:
+const isFormula = draft.startsWith('=');
 ```
 
-Текущий session — единственный источник истины. И popover, и formula bar читают и пишут в один и тот же session. При commit (`Enter` / blur popover'a) — записываются в `block.config.rows[r].cells[c]`.
+Single source of truth: и inline-input в ячейке, и formula bar пишут в один `session.draft`. При commit (Enter / blur) draft записывается в `block.config.rows[r].cells[c].v`. Если строка начинается с `=` — сохраняется как формула (`v = '=A1+B1'`), иначе — как литерал.
 
-### Режим `value` (литерал)
-- Дефолт для новых ячеек.
-- Ввод числа / текста / `null` (пустая ячейка).
-- Tab «Значение» в popover'е.
-- Formula bar пустой или показывает текущее значение.
+## Formula bar (всегда editable)
 
-### Режим `formula` (вычисляемое)
-- Активируется при вводе `=` в любое поле (popover textarea или formula bar).
-- Cross-block: `=@KPI_ID/colA` ссылается на ячейку другого блока (см. `custom-data-formulas.ts`).
-- Named refs: `=@row1.colA` использует `row.label`/`column.label` как алиасы.
-- **Cell-click-to-insert** (см. ниже).
+Активируется при `activeCell != null`. Состоит из:
 
-### Режим `binding` (биндинг к external source)
-- Tab «Связь» в popover'е.
-- Привязка к `cashflow.transactions` блоку, `period.summary`, `kpi.*` — ячейка становится read-only, значение тянется из BlockValues store.
-- Не пересекается с formula-режимом (биндинг ≠ формула с `@blockId`).
+1. **Адрес ячейки** (`A1`, `B2`…) — read-only chip.
+2. **Иконка `fx`** — индикатор режима формулы.
+3. **`<input>`** — основное поле ввода, `value = session.draft`.
+4. **Бэйдж `fx`** — показывается когда `isFormula(draft)`.
+5. **Кнопка «отвязать»** — если ячейка binding'нута к источнику (`cell.ref != null`).
+6. **Кнопка «@связать»** — открывает `CellRefPickerDialog`. Поведение зависит от режима:
+   - В режиме формулы → вставляет `@blockId.field` в draft.
+   - Не в режиме формулы → создаёт binding (`cell.ref = ...`), session закрывается.
+7. **Кнопка «очистить»** (Trash2) — очищает ячейку, закрывает session.
+8. **Кнопка «закрыть»** (X) — отменяет редактирование.
+
+## Operator toolbar (только в режиме формулы)
+
+Под formula bar появляется компактная панель кнопок:
+
+```
++  −  ×  /  (  )  ,  :  |  SUM  AVG  MIN  MAX  COUNT
+```
+
+Каждая кнопка вставляет соответствующий символ/функцию в `draft` на позиции каретки (через общую утилиту `insertIntoDraft`). После клика focus возвращается в input, где был последний раз (через `session.lastFocused`).
+
+## Inline cell editing
+
+Активная ячейка рендерит `<input>` вместо обычной `CellTriggerButton`:
+- `autoFocus` при первой активации.
+- `value = session.draft` — синхронизирован с formula bar.
+- `onKeyDown`: `Enter` → commit + close, `Escape` → cancel, `Tab` / `Shift+Tab` → commit + перейти к следующей/предыдущей колонке.
+- `onBlur` → commit (с учётом cell-pick: при клике на другую ячейку blur не закрывает редактор, потому что мы перехватываем клик до blur'а).
+
+Border активной ячейки подсвечивается `border-primary + ring`.
 
 ## Cell-click-to-insert (pick mode)
 
-Когда `formulaSession.mode === 'formula'`, **клик по любой другой ячейке этого же блока** вызывает:
+Когда `draft.startsWith('=')`, клик по другой ячейке этого же блока вставляет её адрес в draft:
 
 ```ts
-insertIntoFormula(prev, cellAddress(rowIdx, colIdx))
-// например: prev.formulaDraft = '=A1+', click on B2 → '=A1+B2', caret в конце
+// pseudocode
+function handleCellClick(rowId, columnId) {
+  if (session && isFormulaDraft(session.draft) && cell !== activeCell) {
+    const addr = cellAddress(rIdx, cIdx);
+    insertIntoDraft(session, addr, { forceFormula: true });
+    return; // NOT activateCell — оставляем активную как есть
+  }
+  activateCell(rowId, columnId);
+}
 ```
 
 Что происходит:
-1. Popover **не** закрывается (защита через `onInteractOutside={(e) => e.preventDefault()}`).
-2. Анкор popover'а **не** меняется — окно остаётся над исходной ячейкой.
-3. Вставка идёт в позицию `caretPos`, draft и `caretPos` обновляются синхронно.
+1. Активная ячейка **не** меняется — formula bar и inline-input остаются на исходной.
+2. Адрес ячейки (`B2`) вставляется в `session.draft` на позиции каретки.
+3. Focus возвращается в input, где была каретка (inline или formula bar) через `setTimeout(0)`.
 4. Курсор-стиль на «других» ячейках — `cursor-cell` (визуальная индикация pick-режима).
 
 Это эталонная UX-механика Excel / Google Sheets: пользователь не должен ловить точную ячейку клавишами — клик мышкой работает в любом порядке.
 
-## Draggable popover
+## Binding (cell.ref)
 
-Popover можно перетащить за заголовок (drag-handle с иконкой `Move`):
-- Реализация: нативный `pointermove` + CSS `transform: translate(dx, dy)`, без зависимости от `@dnd-kit/core` (popover не должен попадать в drag-context блоков).
-- Offset хранится в `popoverOffset` state (per-session). Сбрасывается при закрытии.
-- `clamp()` границами viewport'а (через `getBoundingClientRect()`).
+Binding — это **отдельное persistent состояние ячейки**, не входящее в session. Когда `cell.ref != null`:
+- Ячейка показывает значение из `liveValues[ref]` (с fallback на `cell.v`).
+- В формулах других ячеек binding-source = `cell.v` (как обычное значение).
+- Visual: amber border + `Link2` icon в углу.
 
-Зачем: окно может перекрывать ячейку-цель в pick-mode, и пользователь должен иметь возможность отодвинуть его, не теряя session.
+Создание binding:
+- Кликнуть «@связать» в formula bar когда `draft` НЕ начинается с `=`.
+- Открывается `CellRefPickerDialog` (full-size dialog).
+- Выбор блока/поля → `cell = { v: liveValue, ref: 'blockId.field', isMoney: ... }`.
 
-## Settings toggle: `cellPopoverEnabled`
+Удаление binding: кнопка «отвязать» в formula bar → `cell.ref = undefined`, `v` остаётся как snapshot.
 
-Поле в `CustomDataSettings`:
+## insertIntoDraft (общая утилита, экспортируется для тестов)
+
 ```ts
-cellPopoverEnabled: z.boolean().optional() // default: true
+export function insertIntoDraft(
+  prev: { draft: string; caretPos: number | null },
+  text: string,
+  options: { forceFormula?: boolean } = {},
+): { draft: string; caretPos: number }
 ```
 
-- **Включено** (default): клик по ячейке → popover + formula bar (Notion-style).
-- **Выключено**: popover не показывается, клик по ячейке только активирует session — редактирование через formula bar (Excel-style). Pick-mode по-прежнему работает.
+Используется в:
+- `handleCellClick` → cell-pick (`forceFormula: true`).
+- `insertOperator` → operator toolbar (`forceFormula: true`).
+- `pickRefForCell` (formula mode) → @-ссылка (`forceFormula: true`).
 
-Подсказка под чекбоксом:
-> «Если выключить — работает как Excel: редактирование через строку формул сверху, клик по ячейке вставляет ссылку.»
-
-## Hint plate
-
-При первом открытии блока показывается одноразовая подсказка над formula-bar:
-> «💡 Клик по ячейке вставляет ссылку. Окно можно перетащить за заголовок. Можно отключить окно в настройках.»
-
-Закрывается крестиком, флаг — `localStorage['custom-data:formula-hint:dismissed']`.
+Если `forceFormula=true` и draft не начинается с `=`, добавляется автоматически. Pure-функция → покрыта unit-тестами.
 
 ## Data flow
 
 ```mermaid
 graph TD
-  Cell["Cell trigger click"] --> Activate["activateCell(rowId, colId)"]
-  Activate --> Session["FormulaSession created"]
-  Session --> Popover["Popover textarea"]
-  Session --> Bar["Formula bar (Textarea)"]
+  Cell["Cell click"] --> Activate["activateCell(rowId, colId)"]
+  Activate --> Session["EditSession { draft, caretPos, lastFocused }"]
+  Session --> Inline["Inline <input>"]
+  Session --> Bar["Formula bar <input>"]
 
-  Popover --> SyncDraft["onChange → setSession draft"]
+  Inline --> SyncDraft["onChange → setSession({ draft })"]
   Bar --> SyncDraft
 
-  CellInPick["Click on OTHER cell in formula mode"] --> InsertRef["insertIntoFormula(cellAddress(r,c))"]
+  CellInPick["Click on OTHER cell while isFormula"] --> InsertRef["insertIntoDraft(addr, forceFormula=true)"]
   InsertRef --> SyncDraft
 
-  SyncDraft --> Commit["Enter / blur → persist({rows: ...})"]
-  Commit --> Engine["evaluateAllCells(rows, columns, blockValues)"]
+  OpClick["Operator/SUM button"] --> InsertRef
+  AtClick["@связать (formula mode)"] --> InsertRef
+  AtClickBinding["@связать (value mode)"] --> CreateBinding["cell.ref = 'blockId.field'"]
+
+  SyncDraft --> Commit["Enter / Tab / blur → updateCell()"]
+  Commit --> Engine["evaluateAllCells(rows, columns, liveValues)"]
   Engine --> Render["Cell shows computed value"]
 ```
 
 ## Тесты
 
-- [scripts/test-formula-pick-mode.ts](../scripts/test-formula-pick-mode.ts) — `cellAddress`, `colLabel`, `insertIntoFormula` (caret management, auto-prefix `=`).
+- [scripts/test-formula-pick-mode.ts](../scripts/test-formula-pick-mode.ts) — `cellAddress`, `colLabel`, `insertIntoDraft` (caret management, auto-prefix `=`, cell-pick + operator scenarios).
 - [scripts/test-custom-data-formulas.ts](../scripts/test-custom-data-formulas.ts) — evaluator (литералы, A1, ranges, named refs, cross-block, cycle detection).
 
 Запуск:
@@ -117,8 +157,21 @@ pnpm tsx scripts/test-formula-pick-mode.ts
 pnpm tsx scripts/test-custom-data-formulas.ts
 ```
 
+## Что было удалено в v0.22.5 (миграция с popover-UX)
+
+| Удалено | Причина |
+|---|---|
+| Popover с табами «Значение/Формула/Связь» | Слишком много кликов; user-confusion: «куда печатать?» |
+| `CurrencyInput` в табе «Значение» | Блокировал ввод `+ − ( )` через `e.preventDefault()` |
+| Draggable popover | Workaround для перекрытия ячейки-цели; больше не нужен — popover'а нет |
+| `cellPopoverEnabled` setting | Был toggle Excel ↔ Notion-mode; теперь всегда Excel |
+| Hint plate про popover | Подсказка про несуществующую фичу |
+| `lastFocusedFormulaRef`, `popoverFormulaRef` | Sync двух textarea — теперь один input на каждое место |
+| `FormulaSession.{mode, valueDraft, formulaDraft}` | Упрощено до `draft` + автодетект `isFormula` |
+
+Backward compatibility: старые конфиги с `cellPopoverEnabled: false` парсятся без ошибок (поле игнорируется через z.passthrough).
+
 ## Известные ограничения
 
-- Drag-offset сбрасывается при закрытии popover'а (не персистится между сессиями — это by design, окно всегда открывается над исходной ячейкой).
-- Pick-mode работает только в пределах текущего блока. Cross-block ссылки `@blockId/cell` пока вводятся вручную (через autocomplete в textarea — Phase 2 roadmap).
-- При `cellPopoverEnabled === false` нет binding-picker'а — нужно открыть Settings блока. Это компромисс ради упрощённого UI.
+- Cross-block ссылки `@blockId.field` вводятся через picker (кнопка «@связать»), inline autocomplete пока нет — Phase 2 roadmap.
+- При редактировании binding'нутой ячейки (`cell.ref != null`) draft изначально пустой; чтобы получить раздельные value vs binding, нужно сначала «отвязать».
