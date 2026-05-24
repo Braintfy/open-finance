@@ -165,6 +165,14 @@ const ColumnSchema = z.object({
   width: z.number().optional(),
   publish: z.boolean().default(true),
   highlight: z.string().nullable().optional(),
+  /**
+   * v0.23.3: per-column override для отображения дробной части.
+   *   `true`  — показывать (1 234,56 ₽ / 1 234,56 / 12,5%).
+   *   `false` — скрыть (1 235 ₽ / 1 235 / 13%).
+   *   `null` / `undefined` — наследовать (row → block → global).
+   * Применяется ко всем числовым форматам (rubles/number/percent).
+   */
+  showKopecks: z.boolean().nullable().optional(),
 });
 type Column = z.infer<typeof ColumnSchema>;
 
@@ -180,6 +188,12 @@ const RowSchema = z.object({
   label: z.string(),
   cells: z.record(z.string(), CellSchema).default({}),
   highlight: z.string().nullable().optional(),
+  /**
+   * v0.23.3: per-row override для отображения дробной части. Имеет наивысший
+   * приоритет в resolveShowKopecks (row → column → block → global). Применяется
+   * ко всем cells этой строки независимо от формата колонки.
+   */
+  showKopecks: z.boolean().nullable().optional(),
 });
 type Row = z.infer<typeof RowSchema>;
 
@@ -259,6 +273,10 @@ function parseConfig(raw: unknown): Config {
     };
     if (typeof c.width === 'number') out.width = c.width;
     if (isHighlightId(c.highlight)) out.highlight = c.highlight;
+    // v0.23.3: per-column showKopecks override (3-state).
+    if (typeof c.showKopecks === 'boolean' || c.showKopecks === null) {
+      out.showKopecks = c.showKopecks;
+    }
     return out;
   });
   if (columns.length === 0) {
@@ -292,6 +310,11 @@ function parseConfig(raw: unknown): Config {
     };
     const rawHighlight = (r as { highlight?: unknown }).highlight;
     if (isHighlightId(rawHighlight)) out.highlight = rawHighlight;
+    // v0.23.3: per-row showKopecks override (3-state).
+    const rawShowKopecks = (r as { showKopecks?: unknown }).showKopecks;
+    if (typeof rawShowKopecks === 'boolean' || rawShowKopecks === null) {
+      out.showKopecks = rawShowKopecks;
+    }
     return out;
   });
 
@@ -404,6 +427,19 @@ function aggregateByMode(
   }
 }
 
+/**
+ * v0.23.3: единая семантика для всех числовых форматов.
+ *   `showKopecks=true`  → дробная часть отображается:
+ *     • rubles: `formatRublesWithSettings` (1 234,56 ₽).
+ *     • number: integer→0, else→max 2 (унаследованная эвристика).
+ *     • percent: max 2 + `%`.
+ *   `showKopecks=false` → дробная часть скрыта (округление до integer):
+ *     • rubles: `formatRublesWithSettings(false)` (1 235 ₽).
+ *     • number: max 0 (1 235).
+ *     • percent: max 0 + `%` (13%).
+ * Это позволяет одним переключателем (block/column/row) скрывать дробную часть
+ * во всех числовых форматах, а не только в рублёвых.
+ */
 function formatColumnValue(
   value: number | string | null,
   format: ColumnFormat,
@@ -415,11 +451,31 @@ function formatColumnValue(
   if (numeric === null) return String(value);
   if (format === 'rubles') return formatRublesWithSettings(numeric, showKopecks);
   if (format === 'percent') {
-    return `${numeric.toLocaleString('ru-RU', { maximumFractionDigits: 2 })}%`;
+    return `${numeric.toLocaleString('ru-RU', {
+      maximumFractionDigits: showKopecks ? 2 : 0,
+    })}%`;
   }
   return numeric.toLocaleString('ru-RU', {
-    maximumFractionDigits: Number.isInteger(numeric) ? 0 : 2,
+    maximumFractionDigits: showKopecks ? (Number.isInteger(numeric) ? 0 : 2) : 0,
   });
+}
+
+/**
+ * v0.23.3: резолвер showKopecks с приоритетом row → col → blockDefault.
+ * `blockDefault` уже резолвнутое значение блока (`block.showKopecks ?? global`),
+ * вычисляется один раз на верхнем уровне RenderCustomData. Per-cell вызывается
+ * каждый раз, когда нужно отформатировать значение.
+ *
+ * Pure-функция (без хуков), удобно покрыть unit-тестами.
+ */
+export function resolveShowKopecks(
+  row: { showKopecks?: boolean | null } | undefined,
+  col: { showKopecks?: boolean | null } | undefined,
+  blockDefault: boolean,
+): boolean {
+  if (row && typeof row.showKopecks === 'boolean') return row.showKopecks;
+  if (col && typeof col.showKopecks === 'boolean') return col.showKopecks;
+  return blockDefault;
 }
 
 /**
@@ -548,19 +604,23 @@ const MAX_VALUE_WIDTH = 220;
 /**
  * Авто-ширина value-колонки = max(header_label, max(formatted_cell_value)) + padding.
  * Header участвует тоже — иначе при пустых ячейках колонка обрезает заголовок.
+ *
+ * v0.23.3: `blockDefault` — резолвнутое значение блока (`block.showKopecks ?? global`).
+ * Per-row/per-col оверрайды резолвятся через `resolveShowKopecks(row, col, blockDefault)`
+ * на каждой ячейке, чтобы ширина учитывала реальный формат.
  */
 function computeValueColumnWidth(
   col: Column,
   rows: Row[],
   liveValues: LiveValues,
-  showKopecks: boolean,
+  blockDefault: boolean,
 ): number {
-  // Header text + icon (~14px ширина иконки + gap)
   const headerWidth = measureTextWidth(col.label.toUpperCase(), 10, 600) + 14;
   let maxCell = 0;
   for (const row of rows) {
     const resolved = resolveCellValue(row.cells[col.id], liveValues);
-    const text = formatColumnValue(resolved, col.format, showKopecks);
+    const cellShowKopecks = resolveShowKopecks(row, col, blockDefault);
+    const text = formatColumnValue(resolved, col.format, cellShowKopecks);
     const w = measureTextWidth(text, 12, 400);
     if (w > maxCell) maxCell = w;
   }
@@ -1012,6 +1072,66 @@ function HighlightPalettePopover({
 }
 
 // ============================================================================
+// DecimalsTogglePopover (v0.23.3) — 3-state переключатель «Дробная часть»
+// для выделенных строк/колонок: Show / Hide / Inherit (block default).
+// ============================================================================
+
+type DecimalsState = boolean | null;
+
+function DecimalsTogglePopover({
+  current,
+  onPick,
+  align = 'start',
+  children,
+}: {
+  /** Если у всех выделенных одинаковое значение — `true | false | null`; иначе `undefined` (mixed). */
+  current: DecimalsState | undefined;
+  onPick: (next: DecimalsState) => void;
+  align?: 'start' | 'center' | 'end';
+  children: React.ReactNode;
+}) {
+  const options: Array<{ value: DecimalsState; label: string; hint: string }> = [
+    { value: true, label: 'Показывать', hint: '1 234,56 / 12,5%' },
+    { value: false, label: 'Скрыть', hint: '1 235 / 13%' },
+    { value: null, label: 'Глобально', hint: 'наследовать от блока' },
+  ];
+  return (
+    <Popover>
+      <PopoverTrigger asChild>{children}</PopoverTrigger>
+      <PopoverContent
+        align={align}
+        className="w-48 p-1"
+        onCloseAutoFocus={(e) => e.preventDefault()}
+      >
+        <div className="flex flex-col gap-0.5">
+          {options.map((opt) => {
+            const active = current === opt.value;
+            return (
+              <button
+                key={String(opt.value)}
+                type="button"
+                onClick={() => onPick(opt.value)}
+                className={cn(
+                  'flex items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-xs transition',
+                  active
+                    ? 'bg-accent font-medium text-foreground'
+                    : 'text-foreground/80 hover:bg-accent/60',
+                )}
+              >
+                <span>{opt.label}</span>
+                <span className="font-mono text-[10px] text-muted-foreground">
+                  {opt.hint}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+// ============================================================================
 // CellTriggerButton — кликабельная ячейка (без popover-обёртки).
 // PopoverAnchor оборачивает её снаружи когда ячейка активна.
 // ============================================================================
@@ -1364,6 +1484,29 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
     if (next.rows || next.columns) patch(next);
   }
 
+  /**
+   * v0.23.3: применить override `showKopecks` ко всем выделенным
+   * строкам/колонкам. `null` = снять override (наследовать от blockDefault).
+   */
+  function applyShowKopecks(value: boolean | null) {
+    const next: Partial<Config> = {};
+    if (selectedRows.size > 0) {
+      next.rows = config.rows.map((r) =>
+        selectedRows.has(r.id)
+          ? { ...r, showKopecks: value === null ? undefined : value }
+          : r,
+      );
+    }
+    if (selectedCols.size > 0) {
+      next.columns = config.columns.map((c) =>
+        selectedCols.has(c.id)
+          ? { ...c, showKopecks: value === null ? undefined : value }
+          : c,
+      );
+    }
+    if (next.rows || next.columns) patch(next);
+  }
+
   function deleteSelected() {
     const next: Partial<Config> = {};
     if (selectedRows.size > 0) {
@@ -1641,9 +1784,13 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
     patch({ rows: arrayMove(config.rows, oldIdx, newIdx) });
   }
 
-  // Aggregate display in header — use primary column
+  // Aggregate display in header — use primary column (resolve per-col override).
   const headerAggregateText = primaryColumn
-    ? formatColumnValue(aggregates[primaryColumn.id] ?? 0, primaryColumn.format, showKopecks)
+    ? formatColumnValue(
+        aggregates[primaryColumn.id] ?? 0,
+        primaryColumn.format,
+        resolveShowKopecks(undefined, primaryColumn, showKopecks),
+      )
     : '—';
 
   // ── Авто-ширина колонок (хуки ВЫШЕ early-returns: иначе rules-of-hooks нарушаются) ──
@@ -1866,6 +2013,20 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
     const first = all[0];
     return all.every((h) => h === first) ? first ?? null : null;
   })();
+  // v0.23.3: общее значение showKopecks-override по выделенным строкам/колонкам.
+  // Нормализуем `undefined` → `null` (inherit), `true/false` остаётся как есть.
+  // Возвращает `undefined` если значения смешаны (mixed) — кнопка показывает «—».
+  const currentSelectionShowKopecks: DecimalsState | undefined = (() => {
+    const rows = config.rows.filter((r) => selectedRows.has(r.id));
+    const cols = config.columns.filter((c) => selectedCols.has(c.id));
+    const all: DecimalsState[] = [
+      ...rows.map((r) => (typeof r.showKopecks === 'boolean' ? r.showKopecks : null)),
+      ...cols.map((c) => (typeof c.showKopecks === 'boolean' ? c.showKopecks : null)),
+    ];
+    if (all.length === 0) return null;
+    const first = all[0];
+    return all.every((v) => v === first) ? first : undefined;
+  })();
 
   return (
     <Card
@@ -2062,6 +2223,30 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
               Подсветить
             </button>
           </HighlightPalettePopover>
+          {/* v0.23.3: переключатель «Дробная часть» (Show / Hide / Inherit). */}
+          <DecimalsTogglePopover
+            current={currentSelectionShowKopecks}
+            onPick={applyShowKopecks}
+            align="start"
+          >
+            <button
+              type="button"
+              className="inline-flex h-6 shrink-0 items-center gap-1 rounded bg-background px-2 text-[11px] font-medium text-foreground ring-1 ring-border/60 transition hover:bg-accent"
+              title="Дробная часть для выделенных (показать/скрыть/глобально)"
+            >
+              <Hash className="h-3 w-3" />
+              Десятичные
+              <span className="text-[10px] font-mono text-muted-foreground">
+                {currentSelectionShowKopecks === undefined
+                  ? '—'
+                  : currentSelectionShowKopecks === null
+                    ? 'глоб.'
+                    : currentSelectionShowKopecks
+                      ? 'вкл'
+                      : 'выкл'}
+              </span>
+            </button>
+          </DecimalsTogglePopover>
           <button
             type="button"
             onClick={deleteSelected}
@@ -2451,6 +2636,9 @@ function SortableRowGroup({
         const cellInPickMode = inPickMode && !isActive;
         const colHighlight = getHighlight(col.highlight);
         const colIsSelected = selectedCols.has(col.id);
+        // v0.23.3: разрешение showKopecks с приоритетом row → col → blockDefault.
+        // `showKopecks` (prop) уже — резолвнутое block-default значение.
+        const cellShowKopecks = resolveShowKopecks(row, col, showKopecks);
         return (
           <div
             key={`${row.id}-${col.id}`}
@@ -2489,7 +2677,7 @@ function SortableRowGroup({
               <CellTriggerButton
                 cell={row.cells[col.id]}
                 column={col}
-                showKopecks={showKopecks}
+                showKopecks={cellShowKopecks}
                 result={result}
                 pickModeActive={cellInPickMode}
                 onClick={() => onCellClick(col)}
@@ -2678,18 +2866,20 @@ function CustomDataSettingsForm({ config, onChange }: BlockSettingsFormProps) {
         </p>
       </div>
 
-      {/* Копейки */}
+      {/* v0.23.3: Дробная часть для всех числовых форматов (рубли/число/процент).
+          Раньше «Копейки (для рублёвых колонок)» — теперь применяется ко всем
+          числовым колонкам. Можно переопределить per-row/per-col через bulk-toolbar. */}
       <div className="space-y-1.5">
-        <Label>Копейки (для рублёвых колонок)</Label>
+        <Label>Дробная часть</Label>
         <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
           <div className="min-w-0">
-            <div className="text-xs font-medium">Показывать копейки</div>
+            <div className="text-xs font-medium">Показывать знаки после запятой</div>
             <div className="text-[11px] text-muted-foreground">
               {parsed.showKopecks === null
                 ? 'Используется глобальная настройка'
                 : parsed.showKopecks
-                  ? 'Включено (1 234,56 ₽)'
-                  : 'Выключено (1 235 ₽)'}
+                  ? 'Включено (1 234,56 ₽ / 12,5%)'
+                  : 'Выключено (1 235 ₽ / 13%)'}
             </div>
           </div>
           <div className="flex items-center gap-1.5">
@@ -2708,6 +2898,11 @@ function CustomDataSettingsForm({ config, onChange }: BlockSettingsFormProps) {
             />
           </div>
         </div>
+        <p className="text-[11px] text-muted-foreground">
+          Применяется ко всем числовым колонкам (рубли / число / процент). Чтобы переопределить
+          для отдельной строки или колонки — выделите её на сетке и используйте кнопку «Десятичные»
+          в верхнем тулбаре.
+        </p>
       </div>
 
       <div className="rounded-md bg-muted/30 p-2.5 text-[11px] text-muted-foreground">

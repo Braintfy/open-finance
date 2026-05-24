@@ -1,12 +1,13 @@
 // PURPOSE: Главная страница (минимальный лендинг — заглушка для MVP)
 import Link from 'next/link';
+import { APP_VERSION } from '@/lib/version';
 
 export default function HomePage() {
   return (
     <main className="container mx-auto flex min-h-screen flex-col items-center justify-center px-4 py-16">
       <div className="max-w-2xl space-y-8 text-center">
         <div className="space-y-3">
-          <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">v0.6.0 · MVP foundation</p>
+          <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">v{APP_VERSION} · MVP foundation</p>
           <h1 className="text-balance text-4xl font-semibold tracking-tight sm:text-5xl">
             Open Finance — AI Финансовый Управляющий
           </h1>

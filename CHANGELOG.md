@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.23.3] - 2026-05-24
+
+UI polish session: универсальный «скрыть дробную часть» в блоке Данные на 3 уровнях (block / column / row), sticky-сайдбар, автосинхронизация версии с `CHANGELOG.md`, hotzone-reveal AI/Settings во всех блоках.
+
+### Added
+
+- **`custom.data` — переключатель «Дробная часть»** теперь работает для всех числовых форматов (`rubles` / `number` / `percent`), а не только для рублёвых. На уровне колонки и строки — новый optional `showKopecks?: boolean | null` (3-state: показать / скрыть / наследовать). Новый helper `resolveShowKopecks(row, col, blockDefault)` — pure-функция с приоритетом row → col → blockDefault.
+- **`custom.data` bulk-toolbar — кнопка «Десятичные»** появляется при выделении строк/колонок. Popover с тремя опциями: «Показывать», «Скрыть», «Глобально» (снять override). Показывает текущее значение (`вкл` / `выкл` / `глоб.` / `—` если смешанное).
+- **`src/lib/version.ts`** — единственный источник версии в UI (`APP_VERSION`). Значение инжектируется через `next.config.mjs` build-time парсером `CHANGELOG.md` → `process.env.NEXT_PUBLIC_APP_VERSION`. Источник правды соответствует MEMORY.md (CHANGELOG, не `package.json`).
+- **`scripts/test-decimal-resolution.ts`** — 18 unit-тестов на `resolveShowKopecks` (priorities, inherit, edge cases, реалистичные use-cases).
+
+### Changed
+
+- **Sidebar (`src/app/(app)/layout.tsx`)** — `<aside>` теперь `sticky top-0 self-start h-screen overflow-y-auto`. Контент страницы скроллится, левая навигация остаётся видна. Версия в шапке сайдбара теперь автоматически синхронизирована с `CHANGELOG.md` (раньше хардкод `v0.9.0`).
+- **Landing page (`src/app/page.tsx`)** — версия `v{APP_VERSION} · MVP foundation` (раньше хардкод `v0.6.0`).
+- **BlockChrome AI / Settings toolbar** — управление видимостью переведено с JS-state `showControls` на чистый CSS-pattern (зеркальный resize-handle):
+  - Hot-zone в правом верхнем углу (`data-toolbar-hotzone`, 40×80px).
+  - CSS-правило `.react-grid-item:has([data-toolbar-hotzone]:hover) .block-toolbar { opacity: 1 }` в `block-grid.css`.
+  - Edit mode по-прежнему показывает toolbar всегда (через `.block-edit-mode`).
+  - Drag handle (top-center) сохраняет JS-hover-стейт без изменений.
+- **`formatColumnValue`** — единая семантика `showKopecks`:
+  - `rubles`: `formatRublesWithSettings` (без изменений).
+  - `number`: `maximumFractionDigits: showKopecks ? (isInteger ? 0 : 2) : 0`.
+  - `percent`: `maximumFractionDigits: showKopecks ? 2 : 0` + `%`.
+- **`custom.data` SettingsForm** — секция «Копейки (для рублёвых колонок)» переименована в «Дробная часть» с пояснением, что применяется ко всем числовым форматам.
+
+### Fixed
+
+- Дробная часть в `number` и `percent` колонках теперь действительно скрывается, когда пользователь отключает `showKopecks`. Раньше переключатель влиял только на рубли — пользователь видел дробные значения в процентных колонках даже при выключенных копейках.
+
 ## [0.23.2] - 2026-05-24
 
 ### Fixed

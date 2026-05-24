@@ -36,6 +36,31 @@
   opacity: 1;
 }
 
+/*
+  Action toolbar (AI + Settings + Delete, v0.23.3).
+  Зеркальный паттерн ресайз-хэндла: по умолчанию скрыт (opacity 0 + pointer-events none).
+  Появляется в трёх случаях:
+    1. Edit mode — `.react-grid-item.block-edit-mode`.
+    2. Курсор над hot-zone в правом верхнем углу
+       (`<div data-toolbar-hotzone>` в BlockChrome).
+    3. Курсор над самим toolbar (`.block-toolbar:hover`) — чтобы не моргал
+       во время клика по кнопке.
+  Используем CSS `:has()` — поддержан в Chrome 105+ / Safari 15.4+ / Firefox 121+.
+  SSR-безопасно (чисто CSS, без JS hover-стейта и таймеров).
+*/
+.react-grid-item .block-toolbar {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 100ms ease;
+}
+
+.react-grid-item.block-edit-mode .block-toolbar,
+.react-grid-item:has([data-toolbar-hotzone]:hover) .block-toolbar,
+.react-grid-item:has(.block-toolbar:hover) .block-toolbar {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 .react-grid-item.react-grid-item-resizing {
   z-index: 10;
   opacity: 0.95;

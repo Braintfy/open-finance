@@ -108,12 +108,18 @@ export function BlockChrome({
         <CrossPagePin block={block} currentPageKey={currentPageKey} />
       )}
 
-      {/* Action toolbar справа-сверху */}
+      {/*
+        Action toolbar справа-сверху (v0.23.3).
+        Видимость управляется CSS из `block-grid.css` — зеркальный паттерн
+        с resize-handle. Триггеры:
+          1. Edit mode (`.react-grid-item.block-edit-mode`).
+          2. Курсор над hot-zone в правом верхнем углу (`[data-toolbar-hotzone]`).
+          3. Курсор над самой панелью (`.block-toolbar:hover`) — не моргает.
+        Класс `block-toolbar` опознаётся CSS-правилом. Без `showControls`-JS-
+        стейта: один источник правды — CSS. Делает поведение идентичным ресайзу.
+      */}
       <div
-        className={
-          'absolute right-1 top-1 z-30 flex gap-1 transition-opacity duration-150 ' +
-          (showControls ? 'opacity-100' : 'pointer-events-none opacity-0')
-        }
+        className="block-toolbar absolute right-1 top-1 z-30 flex gap-1"
       >
         {onOpenAi && (
           <Button
@@ -149,6 +155,18 @@ export function BlockChrome({
           </Button>
         )}
       </div>
+
+      {/*
+        Toolbar hot-zone (v0.23.3): невидимая 40×72 область в правом верхнем углу.
+        Зеркало resize-hotzone — служит триггером CSS `:has([data-toolbar-hotzone]:hover)`
+        для показа `.block-toolbar`. Не блокирует клики по самому toolbar (там
+        `block-toolbar` имеет более высокий z-index 30 vs 15 у hotzone).
+      */}
+      <div
+        data-toolbar-hotzone
+        aria-hidden
+        className="pointer-events-auto absolute right-0 top-0 z-[15] h-10 w-20"
+      />
 
       {/* Micro-icon: блок участвует в связях */}
       {hasRelations && (

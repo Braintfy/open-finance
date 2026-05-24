@@ -1,6 +1,6 @@
 # Блок «Данные» (`custom.data`) — sheet-style formula UX
 
-> Версия: v0.23.2 · Файл: [src/lib/blocks/catalog/custom-data.tsx](../src/lib/blocks/catalog/custom-data.tsx) · Engine: [src/lib/blocks/custom-data-formulas.ts](../src/lib/blocks/custom-data-formulas.ts)
+> Версия: v0.23.3 · Файл: [src/lib/blocks/catalog/custom-data.tsx](../src/lib/blocks/catalog/custom-data.tsx) · Engine: [src/lib/blocks/custom-data-formulas.ts](../src/lib/blocks/custom-data-formulas.ts)
 
 ## TL;DR
 
@@ -220,9 +220,38 @@ Visual:
 
 Выделение **строк** и **колонок** взаимоисключающие: выбор одной секции очищает другую.
 
+## Дробная часть (v0.23.3)
+
+Универсальный переключатель «показывать знаки после запятой» работает для всех числовых форматов (`rubles` / `number` / `percent`). До v0.23.3 параметр `showKopecks` влиял только на рублёвые колонки.
+
+```ts
+// schema
+type Column = { ...; showKopecks?: boolean | null };
+type Row    = { ...; showKopecks?: boolean | null };
+type Config = { ...; showKopecks: boolean | null }; // блочный уровень
+
+// семантика
+//   true  → 1 234,56 ₽ / 1 234,56 / 12,5%
+//   false → 1 235 ₽   / 1 235   / 13%
+//   null  → наследовать
+```
+
+Приоритет резолва: **row → column → blockDefault** (`blockDefault = block.showKopecks ?? globalSettings.showKopecks`). Pure-функция `resolveShowKopecks(row, col, blockDefault)` экспортируется для тестов.
+
+UI:
+- **Уровень блока** — настройки блока (правая панель) → секция «Дробная часть» (Switch + «Сбросить»).
+- **Уровень строки / колонки** — выделить строки/колонки в сетке (клик по drag-handle, Shift / Cmd / Ctrl как обычно) → в bulk-toolbar появляется кнопка «Десятичные» с popover:
+  - **Показывать** — переопределить как `true`.
+  - **Скрыть** — переопределить как `false`.
+  - **Глобально** — снять override (вернуться к blockDefault).
+
+Если выделение смешанное (часть включена, часть выключена), кнопка показывает «—».
+
+Покрытие тестами — [scripts/test-decimal-resolution.ts](../scripts/test-decimal-resolution.ts).
+
 ## Известные ограничения
 
 - Cross-block ссылки `@blockId.field` вводятся через picker (кнопка «@связать»), inline autocomplete пока нет — Phase 2 roadmap.
 - При редактировании binding'нутой ячейки (`cell.ref != null`) draft изначально пустой; чтобы получить раздельные value vs binding, нужно сначала «отвязать».
 - Multi-cell selection (range of cells across rows × cols) пока нет — только целые строки или целые колонки. Если нужны блочные range — следующая итерация.
-- Подсветка применяется только через bulk-toolbar; per-row/per-col правый клик с context-menu — Phase 2.
+- Подсветка / переключатель десятичных применяются только через bulk-toolbar; per-row/per-col правый клик с context-menu — Phase 2.

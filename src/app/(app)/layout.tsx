@@ -23,6 +23,7 @@ import { CommandPalette } from '@/components/command-palette';
 import { loadLayout } from '@/lib/blocks/queries';
 import { listPinnedBoards } from '@/lib/boards/queries';
 import { GlobalSyncIndicator } from '@/components/marketplaces/global-sync-indicator';
+import { APP_VERSION } from '@/lib/version';
 
 type NavItem = {
   key: string;
@@ -90,10 +91,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   return (
     <div className="flex min-h-screen bg-muted/30">
-      <aside className="w-56 shrink-0 border-r border-border/60 bg-background px-2 py-3">
+      <aside className="sticky top-0 z-30 flex h-screen w-56 shrink-0 flex-col self-start overflow-y-auto border-r border-border/60 bg-background px-2 py-3">
         <div className="mb-4 px-2">
           <div className="text-sm font-semibold tracking-tight">Open Finance</div>
-          <div className="text-[10px] text-muted-foreground">v0.9.0</div>
+          <div className="text-[10px] text-muted-foreground">v{APP_VERSION}</div>
         </div>
         <nav className="space-y-0.5">
           {mainNav.map(({ key: _k, protected: _p, ...rest }) => (
