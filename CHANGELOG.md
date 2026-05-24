@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.23.2] - 2026-05-24
+
+### Fixed
+
+- **`custom.data` каретка после cell-pick / operator-click** — корневая причина бага «*60=B1 вместо =B1*60»: `setTimeout(0)`-восстановление курсора расходилось с браузерным дефолтным поведением для controlled `<input>` (после programmatic value-change браузер ставит курсор в конец). Решения:
+  - **`useLayoutEffect` + `pendingCaretRef`** — синхронное восстановление каретки после commit и DOM-mutation, до paint. Race condition устранён.
+  - **`insertIntoDraftWithSession` читает каретку из DOM** (`input.selectionStart`), а не из устаревшего React-state `prev.caretPos`. Источник правды — DOM, потому что `setSelectionRange` не всегда триггерит `onSelect`.
+- Тестовый скрипт `scripts/test-formula-pick-mode.ts` расширен сценарием sequential-вставок (печатаем `*60` после клика B1 — ожидаем `=B1*60`, ловим старый баг с caret=0).
+
+### Added
+
+- **`custom.data` подсветка строк и колонок** — `row.highlight` / `column.highlight` хранит ID цвета из палитры (`yellow|green|blue|red|purple|orange`). Применяется как bg-tint на строку/колонку. Палитра доступна через `HighlightPalettePopover` из bulk-toolbar.
+- **`custom.data` множественное выделение** (Excel-style):
+  - Клик по drag-handle строки/колонки = select (заменяет выделение).
+  - Shift+клик = диапазон от последнего выделенного.
+  - Cmd/Ctrl+клик = toggle.
+  - Drag (movement >4px) = реордер (без изменений, dnd-kit activationConstraint).
+- **Bulk-toolbar** появляется когда выделено ≥1 строк/колонок:
+  - «Подсветить» — открывает палитру, применяет цвет ко всем выделенным.
+  - «Удалить» — массовое удаление строк и/или колонок (вместе с cells в удалённых колонках).
+  - «Снять» — сбрасывает выделение.
+- Drag-handle строки/колонки показывает `<CheckSquare />` иконку когда строка/колонка выделена, `<GripVertical />` — иначе.
+
+## [0.23.1] - 2026-05-24
+
+### Fixed
+
+- **`custom.data` cell-pick reset** — клик по другой ячейке в режиме формулы больше не сбрасывает редактор. Корневая причина: `CellTriggerButton` крал focus с активного inline-input → blur коммитил session → `deactivateCell` срабатывал раньше, чем `handleCellClick` успевал вставить cell-ref. Исправления:
+  - `CellTriggerButton` — `onMouseDown={(e) => e.preventDefault()}`, focus остаётся на inline-input, click event при этом всё равно фаерится.
+  - Smart blur handler (`handleInputBlur`) — коммитит session только если focus уходит из блока (`cardRef.contains(relatedTarget) === false`) или binding picker не открыт. Привязан и к inline-input, и к formula bar input.
+  - `activateCell` — коммитит прежнюю session перед переключением на новую ячейку (раньше это была работа blur-handler'а).
+  - X-кнопка в formula bar теперь explicit commit, а не пассивный close (раньше она тоже зависела от blur-commit chain).
+- Тесты в `scripts/test-formula-pick-mode.ts` продолжают проходить (22/22). Pure-логика `insertIntoDraft` не менялась — только UI focus management.
+
 ## [0.23.0] - 2026-05-24
 
 **Major UX**: переработана работа с **периодами на странице** (единая мастер-настройка + lock-badges на блоках) и **формулы в `custom.data`** (sheet-style inline-editor с formula bar и operator toolbar).

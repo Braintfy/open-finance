@@ -11,11 +11,42 @@
 //     в режиме формулы вставляет @-токен, иначе создаёт binding (cell.ref).
 //   - Удалены: Popover с табами Значение/Формула/Связь, CurrencyInput-блокировка,
 //     draggable popover, cellPopoverEnabled setting, hint plate.
+// v0.23.1 fix: cell-pick больше не сбрасывает редактор. Раньше клик по другой
+// ячейке в режиме формулы триггерил blur-commit на inline-input → session
+// уничтожалась раньше, чем срабатывал handleCellClick. Решения:
+//   1. CellTriggerButton — onMouseDown preventDefault (не воровать focus).
+//   2. handleInputBlur — smart-blur через cardRef + pickerCell (commit только
+//      если focus уходит из блока).
+//   3. activateCell — commit прежней session перед переключением (раньше это
+//      делал blur).
+// См. также sheet.tsx (тот же паттерн с sheetRef + relatedTarget check).
+//
+// v0.23.2 fix: каретка после cell-pick / operator-click больше не «прыгает в 0»
+// → следующая печать попадает в правильную позицию. Раньше setTimeout(0) для
+// восстановления курсора расходился с браузерным дефолтом для controlled-input
+// (cursor → end), и пользователь видел *60=B1 вместо =B1*60.
+// Решения:
+//   1. useLayoutEffect + pendingCaretRef — синхронное восстановление курсора
+//      после commit, до paint, без race conditions.
+//   2. insertIntoDraftWithSession читает каретку из DOM `input.selectionStart`,
+//      а не из React-state `prev.caretPos` (state мог отставать).
+//
+// v0.23.2 features:
+//   - Подсветка строк / колонок цветом (`row.highlight`, `column.highlight`).
+//     6 предустановленных цветов, применяется как bg-tint + ring при selection.
+//   - Множественное выделение строк и колонок (Excel-style):
+//       • клик drag-handle (без movement) → select,
+//       • Shift+клик → диапазон,
+//       • Cmd/Ctrl+клик → toggle,
+//       • drag (movement >4px) → реордер.
+//   - Bulk-toolbar появляется когда выделено >0 строк/колонок:
+//       «Подсветить» (палитра), «Удалить», «Снять».
 'use client';
 
 import {
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -37,6 +68,10 @@ import {
   GripVertical,
   FunctionSquare,
   AlertTriangle,
+  Palette,
+  CheckSquare,
+  Square,
+  Ban,
 } from 'lucide-react';
 import { z } from 'zod';
 import {
@@ -71,6 +106,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
 import { useBlockDensity } from '@/components/blocks/block-size';
 import { useFormatSettings, formatRublesWithSettings } from '@/lib/format-settings';
 import {
@@ -95,12 +135,36 @@ import { cn } from '@/lib/utils';
 const ColumnFormatSchema = z.enum(['rubles', 'number', 'percent', 'text']);
 type ColumnFormat = z.infer<typeof ColumnFormatSchema>;
 
+/**
+ * v0.23.2: цветовая подсветка строк / колонок (Excel-style).
+ * Поле `highlight` хранит ID цвета (`yellow|green|blue|red|purple|orange`)
+ * — НЕ raw-цвет, чтобы был контроль над палитрой и темой (dark mode).
+ */
+const HIGHLIGHT_PALETTE = [
+  { id: 'yellow', ring: 'ring-amber-400', bg: 'bg-amber-50/60', dark: 'dark:bg-amber-950/30', label: 'Жёлтый' },
+  { id: 'green', ring: 'ring-emerald-400', bg: 'bg-emerald-50/60', dark: 'dark:bg-emerald-950/30', label: 'Зелёный' },
+  { id: 'blue', ring: 'ring-sky-400', bg: 'bg-sky-50/60', dark: 'dark:bg-sky-950/30', label: 'Синий' },
+  { id: 'red', ring: 'ring-rose-400', bg: 'bg-rose-50/60', dark: 'dark:bg-rose-950/30', label: 'Красный' },
+  { id: 'purple', ring: 'ring-violet-400', bg: 'bg-violet-50/60', dark: 'dark:bg-violet-950/30', label: 'Фиолетовый' },
+  { id: 'orange', ring: 'ring-orange-400', bg: 'bg-orange-50/60', dark: 'dark:bg-orange-950/30', label: 'Оранжевый' },
+] as const;
+type HighlightId = (typeof HIGHLIGHT_PALETTE)[number]['id'];
+
+function isHighlightId(value: unknown): value is HighlightId {
+  return typeof value === 'string' && HIGHLIGHT_PALETTE.some((h) => h.id === value);
+}
+function getHighlight(value: string | null | undefined) {
+  if (!value) return null;
+  return HIGHLIGHT_PALETTE.find((h) => h.id === value) ?? null;
+}
+
 const ColumnSchema = z.object({
   id: z.string(),
   label: z.string(),
   format: ColumnFormatSchema.default('rubles'),
   width: z.number().optional(),
   publish: z.boolean().default(true),
+  highlight: z.string().nullable().optional(),
 });
 type Column = z.infer<typeof ColumnSchema>;
 
@@ -115,6 +179,7 @@ const RowSchema = z.object({
   id: z.string(),
   label: z.string(),
   cells: z.record(z.string(), CellSchema).default({}),
+  highlight: z.string().nullable().optional(),
 });
 type Row = z.infer<typeof RowSchema>;
 
@@ -193,6 +258,7 @@ function parseConfig(raw: unknown): Config {
       publish: c.publish ?? true,
     };
     if (typeof c.width === 'number') out.width = c.width;
+    if (isHighlightId(c.highlight)) out.highlight = c.highlight;
     return out;
   });
   if (columns.length === 0) {
@@ -219,11 +285,14 @@ function parseConfig(raw: unknown): Config {
     ) {
       cells[primaryColumnId] = { v: r.value };
     }
-    return {
+    const out: Row = {
       id: r.id || makeId('row'),
       label: r.label ?? '',
       cells,
     };
+    const rawHighlight = (r as { highlight?: unknown }).highlight;
+    if (isHighlightId(rawHighlight)) out.highlight = rawHighlight;
+    return out;
   });
 
   return {
@@ -877,6 +946,72 @@ export function insertIntoDraft(
 }
 
 // ============================================================================
+// HighlightPalettePopover — выбор цвета для подсветки строки/колонки.
+// Используется как из per-row/per-col кнопки, так и из bulk-toolbar
+// (когда выделено несколько строк/колонок).
+// ============================================================================
+
+function HighlightPalettePopover({
+  current,
+  onPick,
+  align = 'start',
+  children,
+}: {
+  current: string | null | undefined;
+  onPick: (id: HighlightId | null) => void;
+  align?: 'start' | 'center' | 'end';
+  children: React.ReactNode;
+}) {
+  return (
+    <Popover>
+      <PopoverTrigger asChild>{children}</PopoverTrigger>
+      <PopoverContent
+        align={align}
+        className="w-auto p-2"
+        onCloseAutoFocus={(e) => e.preventDefault()}
+      >
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => onPick(null)}
+            title="Снять подсветку"
+            aria-label="Снять подсветку"
+            className={cn(
+              'flex h-7 w-7 items-center justify-center rounded border transition',
+              !current
+                ? 'border-foreground bg-muted'
+                : 'border-border/60 hover:bg-accent',
+            )}
+          >
+            <Ban className="h-3.5 w-3.5 text-muted-foreground" />
+          </button>
+          {HIGHLIGHT_PALETTE.map((h) => {
+            const active = current === h.id;
+            return (
+              <button
+                key={h.id}
+                type="button"
+                onClick={() => onPick(h.id)}
+                title={h.label}
+                aria-label={h.label}
+                className={cn(
+                  'flex h-7 w-7 items-center justify-center rounded ring-2',
+                  h.bg,
+                  h.dark,
+                  active ? h.ring : 'ring-transparent hover:ring-border',
+                )}
+              >
+                {active && <Check className="h-3.5 w-3.5" />}
+              </button>
+            );
+          })}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+// ============================================================================
 // CellTriggerButton — кликабельная ячейка (без popover-обёртки).
 // PopoverAnchor оборачивает её снаружи когда ячейка активна.
 // ============================================================================
@@ -907,6 +1042,12 @@ function CellTriggerButton({
     <button
       type="button"
       onClick={onClick}
+      // preventDefault на mousedown — чтобы клик по ячейке НЕ переносил
+      // focus с активного inline-input на эту кнопку. Без этого blur
+      // на inline-input сработал бы раньше click handler'а, session бы
+      // потерялась, и в режиме формулы cell-pick не работал бы.
+      // Click event при этом всё равно фаерится — onClick отработает.
+      onMouseDown={(e) => e.preventDefault()}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ' || e.key === 'F2') {
           e.preventDefault();
@@ -977,6 +1118,17 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
   // activeCell — ячейка с открытым inline-редактором.
   const [activeCell, setActiveCell] = useState<{ rowId: string; columnId: string } | null>(null);
 
+  // v0.23.2: множественное выделение строк и колонок (Excel-style).
+  // Клик по drag-handle строки (без перетаскивания) → выделение этой строки.
+  // Shift+клик → расширение диапазона от последнего выделенного.
+  // Cmd/Ctrl+клик → toggle.
+  // Drag (mousedown + движение >4px) → реордер (dnd-kit activationConstraint).
+  // Аналогично для колонок (header).
+  const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set());
+  const [selectedCols, setSelectedCols] = useState<Set<string>>(new Set());
+  const lastClickedRowRef = useRef<string | null>(null);
+  const lastClickedColRef = useRef<string | null>(null);
+
   // Shared editing session — единый draft между inline-input и formula bar.
   const [session, setSession] = useState<EditSession | null>(null);
 
@@ -984,6 +1136,20 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
   // указывает куда вернуть focus после cell-pick / operator click.
   const inlineInputRef = useRef<HTMLInputElement | null>(null);
   const formulaBarRef = useRef<HTMLInputElement | null>(null);
+  // Ref на корневую Card — нужен для smart-blur: если focus уходит ВНУТРИ
+  // блока (на другую ячейку, formula bar, кнопку @связать, operator toolbar),
+  // мы НЕ коммитим session, иначе при cell-pick редактор сбрасывается.
+  // См. sheet.tsx: тот же паттерн с sheetRef + relatedTarget check.
+  const cardRef = useRef<HTMLDivElement | null>(null);
+
+  // v0.23.2 caret-fix: вместо setTimeout(0) для восстановления каретки —
+  // useLayoutEffect, который запускается синхронно после commit, до paint.
+  // Раньше setTimeout мог расходиться с браузерным поведением controlled-input
+  // (cursor «прыгал» в конец при value-change), и следующий ввод попадал в
+  // неправильную позицию (например, '*60=B1' вместо '=*60B1').
+  const pendingCaretRef = useRef<{ target: 'inline' | 'bar'; caret: number } | null>(
+    null,
+  );
 
   /**
    * Drag-state для resize колонок. Локальный — обновляется на каждое движение
@@ -1002,6 +1168,29 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  // v0.23.2: восстановление каретки СИНХРОННО после commit. useLayoutEffect
+  // запускается после всех DOM-mutations, но до browser paint — браузерное
+  // дефолтное «cursor → end» поведение для controlled inputs не успеет
+  // повлиять на следующий ввод. Без этого setTimeout(0)-вариант падал в
+  // race condition: следующий печатаемый символ попадал в положение конца,
+  // а не в место, где курсор должен был быть после insert.
+  useLayoutEffect(() => {
+    const pending = pendingCaretRef.current;
+    if (!pending) return;
+    pendingCaretRef.current = null;
+    const input =
+      pending.target === 'bar' ? formulaBarRef.current : inlineInputRef.current;
+    if (!input) return;
+    if (typeof document !== 'undefined' && document.activeElement !== input) {
+      input.focus();
+    }
+    try {
+      input.setSelectionRange(pending.caret, pending.caret);
+    } catch {
+      // ignore
+    }
+  });
 
   // ── Compute all cells + aggregates через единый evaluator ──
   const { cache: cellCache, aggregates } = useMemo(
@@ -1088,6 +1277,116 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
     });
   }
 
+  // ── Selection helpers (v0.23.2) ──
+
+  function selectRow(
+    rowId: string,
+    opts: { extend?: boolean; toggle?: boolean } = {},
+  ) {
+    setSelectedRows((prev) => {
+      if (opts.extend && lastClickedRowRef.current) {
+        const startIdx = config.rows.findIndex(
+          (r) => r.id === lastClickedRowRef.current,
+        );
+        const endIdx = config.rows.findIndex((r) => r.id === rowId);
+        if (startIdx < 0 || endIdx < 0) return prev;
+        const [lo, hi] = startIdx < endIdx ? [startIdx, endIdx] : [endIdx, startIdx];
+        const next = new Set(prev);
+        for (let i = lo; i <= hi; i++) next.add(config.rows[i].id);
+        return next;
+      }
+      if (opts.toggle) {
+        const next = new Set(prev);
+        if (next.has(rowId)) next.delete(rowId);
+        else next.add(rowId);
+        return next;
+      }
+      if (prev.size === 1 && prev.has(rowId)) return new Set();
+      return new Set([rowId]);
+    });
+    lastClickedRowRef.current = rowId;
+    setSelectedCols(new Set());
+  }
+
+  function selectCol(
+    colId: string,
+    opts: { extend?: boolean; toggle?: boolean } = {},
+  ) {
+    setSelectedCols((prev) => {
+      if (opts.extend && lastClickedColRef.current) {
+        const startIdx = config.columns.findIndex(
+          (c) => c.id === lastClickedColRef.current,
+        );
+        const endIdx = config.columns.findIndex((c) => c.id === colId);
+        if (startIdx < 0 || endIdx < 0) return prev;
+        const [lo, hi] = startIdx < endIdx ? [startIdx, endIdx] : [endIdx, startIdx];
+        const next = new Set(prev);
+        for (let i = lo; i <= hi; i++) next.add(config.columns[i].id);
+        return next;
+      }
+      if (opts.toggle) {
+        const next = new Set(prev);
+        if (next.has(colId)) next.delete(colId);
+        else next.add(colId);
+        return next;
+      }
+      if (prev.size === 1 && prev.has(colId)) return new Set();
+      return new Set([colId]);
+    });
+    lastClickedColRef.current = colId;
+    setSelectedRows(new Set());
+  }
+
+  function clearSelection() {
+    setSelectedRows(new Set());
+    setSelectedCols(new Set());
+    lastClickedRowRef.current = null;
+    lastClickedColRef.current = null;
+  }
+
+  /** Применить (или снять) подсветку ко всем выделенным строкам/колонкам. */
+  function applyHighlight(colorId: HighlightId | null) {
+    const next: Partial<Config> = {};
+    if (selectedRows.size > 0) {
+      next.rows = config.rows.map((r) =>
+        selectedRows.has(r.id)
+          ? { ...r, highlight: colorId ?? undefined }
+          : r,
+      );
+    }
+    if (selectedCols.size > 0) {
+      next.columns = config.columns.map((c) =>
+        selectedCols.has(c.id)
+          ? { ...c, highlight: colorId ?? undefined }
+          : c,
+      );
+    }
+    if (next.rows || next.columns) patch(next);
+  }
+
+  function deleteSelected() {
+    const next: Partial<Config> = {};
+    if (selectedRows.size > 0) {
+      next.rows = config.rows.filter((r) => !selectedRows.has(r.id));
+    }
+    if (selectedCols.size > 0) {
+      const keptColIds = config.columns
+        .filter((c) => !selectedCols.has(c.id))
+        .map((c) => c.id);
+      next.columns = config.columns.filter((c) => !selectedCols.has(c.id));
+      // Удаляем cells из удалённых колонок во всех строках.
+      next.rows = (next.rows ?? config.rows).map((r) => {
+        const cells: Record<string, Cell> = {};
+        for (const colId of keptColIds) {
+          if (r.cells[colId] !== undefined) cells[colId] = r.cells[colId];
+        }
+        return { ...r, cells };
+      });
+    }
+    if (next.rows || next.columns) patch(next);
+    clearSelection();
+  }
+
   // ── Editing session helpers ──
 
   function rowAndCell(rowId: string, columnId: string): { row: Row | undefined; cell: Cell | undefined } {
@@ -1096,9 +1395,32 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
   }
 
   function activateCell(rowId: string, columnId: string) {
+    // Если уже редактируем другую ячейку — коммитим её перед переключением.
+    // (Раньше эту работу делал blur-commit на inline input, но мы его убрали,
+    // чтобы cell-pick в режиме формулы не сбрасывал session.)
+    if (session && (session.rowId !== rowId || session.columnId !== columnId)) {
+      commitSession();
+    }
     const { cell } = rowAndCell(rowId, columnId);
     setActiveCell({ rowId, columnId });
     setSession(makeSession(rowId, columnId, cell));
+  }
+
+  /**
+   * Smart-blur: коммитим session ТОЛЬКО если focus уходит из блока полностью
+   * (например, клик вне блока). Если focus остаётся внутри (cell-pick, formula
+   * bar, toolbar, @связать-кнопка, picker-диалог) — session сохраняется.
+   *
+   * Без этого guard'а клик по другой ячейке в режиме формулы триггерил blur →
+   * commit → deactivate, и редактор сбрасывался ещё до того, как handleCellClick
+   * успевал вставить ссылку.
+   */
+  function handleInputBlur(e: React.FocusEvent<HTMLInputElement>) {
+    // Picker-диалог открыт (Radix Portal вне cardRef) — не коммитим.
+    if (pickerCell) return;
+    const related = e.relatedTarget as HTMLElement | null;
+    if (related && cardRef.current?.contains(related)) return;
+    commitSession();
   }
 
   function deactivateCell() {
@@ -1107,41 +1429,37 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
   }
 
   /**
-   * Возвращает фокус активному input'у (inline или formula bar — по lastFocused).
-   * Используется после cell-pick / operator-click, когда фокус мог уйти.
-   */
-  function restoreInputFocus(target: 'inline' | 'bar', caret: number) {
-    setTimeout(() => {
-      const input = target === 'bar' ? formulaBarRef.current : inlineInputRef.current;
-      if (!input) return;
-      input.focus();
-      try {
-        input.setSelectionRange(caret, caret);
-      } catch {
-        // ignore
-      }
-    }, 0);
-  }
-
-  /**
    * Вставляет text в session.draft на позиции каретки. Если forceFormula=true и
    * draft не начинается с '=', добавляется автоматически.
+   *
+   * v0.23.2: каретка читается ИЗ DOM (`input.selectionStart`), а НЕ из React-state
+   * `prev.caretPos`. Причина: после предыдущего setSelectionRange браузер может
+   * не выстрелить onSelect, и `caretPos` в state остаётся устаревшим. Каретку
+   * из DOM мы получаем актуальную (mousedown на cell-button c preventDefault не
+   * сбрасывает её). Восстановление каретки после setSession — через
+   * `pendingCaretRef` + `useLayoutEffect` (см. блок ниже).
    */
   function insertIntoDraftWithSession(text: string, forceFormula = false) {
-    let nextCaret = 0;
-    let nextTarget: 'inline' | 'bar' = 'inline';
     setSession((prev) => {
       if (!prev) return prev;
+      const target = prev.lastFocused;
+      const input =
+        target === 'bar' ? formulaBarRef.current : inlineInputRef.current;
+      const domCaret = input?.selectionStart;
+      const caretPos =
+        typeof domCaret === 'number'
+          ? domCaret
+          : prev.caretPos ?? prev.draft.length;
       const result = insertIntoDraft(
-        { draft: prev.draft, caretPos: prev.caretPos },
+        { draft: prev.draft, caretPos },
         text,
         { forceFormula },
       );
-      nextCaret = result.caretPos;
-      nextTarget = prev.lastFocused;
+      // Ставим в очередь восстановление каретки после commit. useLayoutEffect
+      // ниже подхватит и выполнит синхронно после DOM-mutation.
+      pendingCaretRef.current = { target, caret: result.caretPos };
       return { ...prev, draft: result.draft, caretPos: result.caretPos };
     });
-    restoreInputFocus(nextTarget, nextCaret);
   }
 
   function handleCellClick(rowId: string, columnId: string) {
@@ -1518,6 +1836,8 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
         inPickMode={inPickMode}
         session={session}
         inlineInputRef={inlineInputRef}
+        isSelected={selectedRows.has(row.id)}
+        selectedCols={selectedCols}
         onSessionChange={(draft, caret) =>
           setSession((prev) =>
             prev ? { ...prev, draft, caretPos: caret, lastFocused: 'inline' } : prev,
@@ -1527,8 +1847,9 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
           setSession((prev) => (prev ? { ...prev, lastFocused: 'inline' } : prev))
         }
         onInlineKeyDown={handleInputKeyDown}
-        onInlineBlur={commitSession}
+        onInlineBlur={handleInputBlur}
         onCellClick={(col) => handleCellClick(row.id, col.id)}
+        onSelectRow={(opts) => selectRow(row.id, opts)}
         onLabelChange={(label) => updateRow(row.id, { label })}
         onRemove={() => removeRow(row.id)}
         gridTemplateColumns={gridTemplateColumns}
@@ -1536,8 +1857,19 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
     );
   }
 
+  const hasSelection = selectedRows.size > 0 || selectedCols.size > 0;
+  const currentSelectionHighlight = (() => {
+    const rows = config.rows.filter((r) => selectedRows.has(r.id));
+    const cols = config.columns.filter((c) => selectedCols.has(c.id));
+    const all = [...rows.map((r) => r.highlight), ...cols.map((c) => c.highlight)];
+    if (all.length === 0) return null;
+    const first = all[0];
+    return all.every((h) => h === first) ? first ?? null : null;
+  })();
+
   return (
     <Card
+      ref={cardRef}
       className="flex h-full min-h-0 flex-col"
       onPointerMove={dragState ? onResizeMove : undefined}
       onPointerUp={dragState ? onResizeEnd : undefined}
@@ -1612,6 +1944,7 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
                 )
               }
               onKeyDown={handleInputKeyDown}
+              onBlur={handleInputBlur}
               placeholder={
                 isFormulaSession
                   ? 'Клик по ячейке вставит ссылку (A1, B2…)'
@@ -1663,9 +1996,10 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
             </button>
             <button
               type="button"
-              onClick={deactivateCell}
+              onClick={commitSession}
               className="text-[10px] text-muted-foreground hover:text-foreground"
-              aria-label="Закрыть редактор"
+              aria-label="Сохранить и закрыть редактор"
+              title="Сохранить и закрыть (Enter)"
             >
               <X className="h-3 w-3" />
             </button>
@@ -1701,6 +2035,51 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Selection bulk-action toolbar (v0.23.2) — показывается когда
+          выделена хотя бы одна строка или колонка. */}
+      {hasSelection && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-border/40 bg-primary/5 px-3 py-1.5">
+          <span className="inline-flex h-5 shrink-0 items-center rounded bg-primary/15 px-1.5 text-[10px] font-semibold text-primary">
+            Выделено:{' '}
+            {selectedRows.size > 0 && `${selectedRows.size} строк`}
+            {selectedRows.size > 0 && selectedCols.size > 0 && ' · '}
+            {selectedCols.size > 0 && `${selectedCols.size} колонок`}
+          </span>
+          <HighlightPalettePopover
+            current={currentSelectionHighlight}
+            onPick={applyHighlight}
+            align="start"
+          >
+            <button
+              type="button"
+              className="inline-flex h-6 shrink-0 items-center gap-1 rounded bg-background px-2 text-[11px] font-medium text-foreground ring-1 ring-border/60 transition hover:bg-accent"
+              title="Выбрать цвет подсветки для выделенных строк/колонок"
+            >
+              <Palette className="h-3 w-3" />
+              Подсветить
+            </button>
+          </HighlightPalettePopover>
+          <button
+            type="button"
+            onClick={deleteSelected}
+            className="inline-flex h-6 shrink-0 items-center gap-1 rounded bg-background px-2 text-[11px] font-medium text-rose-700 ring-1 ring-border/60 transition hover:bg-rose-50 dark:text-rose-300 dark:hover:bg-rose-950"
+            title="Удалить выделенные строки/колонки"
+          >
+            <Trash2 className="h-3 w-3" />
+            Удалить
+          </button>
+          <button
+            type="button"
+            onClick={clearSelection}
+            className="ml-auto inline-flex h-6 shrink-0 items-center gap-1 rounded px-2 text-[11px] font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
+            title="Снять выделение"
+          >
+            <X className="h-3 w-3" />
+            Снять
+          </button>
         </div>
       )}
 
@@ -1764,6 +2143,8 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
                         isLast={isLast}
                         startResize={startValueResize}
                         dragState={dragState}
+                        isSelected={selectedCols.has(col.id)}
+                        onSelectCol={(opts) => selectCol(col.id, opts)}
                       />
                     );
                   })}
@@ -1867,14 +2248,19 @@ function SortableColumnHeader({
   isLast,
   startResize,
   dragState,
+  isSelected,
+  onSelectCol,
 }: {
   column: Column;
   isLast: boolean;
   startResize: (e: React.PointerEvent, col: Column) => void;
   dragState: { kind: 'label' | 'value'; columnId?: string } | null;
+  isSelected: boolean;
+  onSelectCol: (opts: { extend?: boolean; toggle?: boolean }) => void;
 }) {
   const sortable = useSortable({ id: column.id });
   const Icon = formatIcon(column.format);
+  const colHighlight = getHighlight(column.highlight);
   // v0.18.26: last column resize fixed — handle теперь рендерится для всех
   // колонок, включая последнюю. Для last handle смещён внутрь (right-0),
   // чтобы не вылезать за пределы Card и не пропадать под скроллом.
@@ -1886,19 +2272,44 @@ function SortableColumnHeader({
         transition: sortable.transition,
       }}
       className={cn(
-        'group/colh relative flex items-center justify-end gap-1 text-[10px] uppercase tracking-wide text-muted-foreground',
+        'group/colh relative flex items-center justify-end gap-1 rounded px-1 text-[10px] uppercase tracking-wide text-muted-foreground transition',
         sortable.isDragging && 'opacity-50',
+        // v0.23.2: column-level подсветка только на header (background).
+        colHighlight && [colHighlight.bg, colHighlight.dark],
+        // v0.23.2: selection ring.
+        isSelected && 'ring-2 ring-primary/60',
       )}
     >
+      {/*
+        v0.23.2: drag-handle колонки также работает как select-trigger.
+        Click без модификаторов = select колонку. Shift / Cmd / Ctrl —
+        как у строк.
+      */}
       <button
         type="button"
         {...sortable.attributes}
         {...sortable.listeners}
-        className="hidden cursor-grab opacity-0 transition group-hover/colh:flex group-hover/colh:opacity-60 hover:opacity-100"
-        title="Перетащить колонку"
+        onClick={(e) => {
+          if (sortable.isDragging) return;
+          onSelectCol({
+            extend: e.shiftKey,
+            toggle: e.metaKey || e.ctrlKey,
+          });
+        }}
+        className={cn(
+          'cursor-grab transition',
+          isSelected
+            ? 'flex text-primary'
+            : 'hidden opacity-0 group-hover/colh:flex group-hover/colh:opacity-60 hover:opacity-100',
+        )}
+        title="Перетащить колонку (клик — выделить, Shift+клик — диапазон)"
         aria-label="Перетащить колонку"
       >
-        <GripVertical className="h-3 w-3" />
+        {isSelected ? (
+          <CheckSquare className="h-3 w-3" />
+        ) : (
+          <GripVertical className="h-3 w-3" />
+        )}
       </button>
       <Icon className="h-2.5 w-2.5" />
       <span className="truncate">{column.label}</span>
@@ -1934,11 +2345,14 @@ function SortableRowGroup({
   inPickMode,
   session,
   inlineInputRef,
+  isSelected,
+  selectedCols,
   onSessionChange,
   onInlineFocus,
   onInlineKeyDown,
   onInlineBlur,
   onCellClick,
+  onSelectRow,
   onLabelChange,
   onRemove,
   gridTemplateColumns,
@@ -1952,16 +2366,20 @@ function SortableRowGroup({
   inPickMode: boolean;
   session: EditSession | null;
   inlineInputRef: React.MutableRefObject<HTMLInputElement | null>;
+  isSelected: boolean;
+  selectedCols: Set<string>;
   onSessionChange: (draft: string, caretPos: number | null) => void;
   onInlineFocus: () => void;
   onInlineKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void;
-  onInlineBlur: () => void;
+  onInlineBlur: (e: React.FocusEvent<HTMLInputElement>) => void;
   onCellClick: (col: Column) => void;
+  onSelectRow: (opts: { extend?: boolean; toggle?: boolean }) => void;
   onLabelChange: (label: string) => void;
   onRemove: () => void;
   gridTemplateColumns: string;
 }) {
   const sortable = useSortable({ id: row.id });
+  const rowHighlight = getHighlight(row.highlight);
   return (
     <div
       ref={sortable.setNodeRef}
@@ -1971,19 +2389,49 @@ function SortableRowGroup({
         gridTemplateColumns,
       }}
       className={cn(
-        'group/row grid items-stretch gap-x-1.5 gap-y-1 py-0.5',
+        'group/row grid items-stretch gap-x-1.5 gap-y-1 rounded-md py-0.5 transition',
         sortable.isDragging && 'z-10 opacity-50',
+        // v0.23.2: row-level подсветка (background tint).
+        rowHighlight && [rowHighlight.bg, rowHighlight.dark],
+        // v0.23.2: selection ring.
+        isSelected && 'ring-2 ring-primary/60 ring-offset-1 ring-offset-background',
       )}
     >
+      {/*
+        v0.23.2: drag-handle ТАКЖЕ работает как select-trigger.
+        — Click без модификаторов: select (заменяет выделение).
+        — Shift+click: extend (диапазон).
+        — Cmd/Ctrl+click: toggle.
+        — Drag (mousedown + move >4px): реордер через dnd-kit.
+        Видимость:
+          • drag handle всегда виден если строка выделена,
+          • иначе появляется на hover.
+      */}
       <button
         type="button"
         {...sortable.attributes}
         {...sortable.listeners}
-        className="flex items-center justify-center text-muted-foreground/40 opacity-0 transition group-hover/row:opacity-100 hover:text-foreground"
-        title="Перетащить строку"
+        onClick={(e) => {
+          if (sortable.isDragging) return;
+          onSelectRow({
+            extend: e.shiftKey,
+            toggle: e.metaKey || e.ctrlKey,
+          });
+        }}
+        className={cn(
+          'flex items-center justify-center transition',
+          isSelected
+            ? 'text-primary'
+            : 'text-muted-foreground/40 opacity-0 group-hover/row:opacity-100 hover:text-foreground',
+        )}
+        title="Перетащить строку (клик — выделить, Shift+клик — диапазон, Cmd/Ctrl+клик — toggle)"
         aria-label="Перетащить строку"
       >
-        <GripVertical className="h-3 w-3" />
+        {isSelected ? (
+          <CheckSquare className="h-3 w-3" />
+        ) : (
+          <GripVertical className="h-3 w-3" />
+        )}
       </button>
       <div className="flex min-w-0 items-center rounded-md border border-border/40 bg-muted/20 px-2 py-1">
         <Input
@@ -2001,12 +2449,17 @@ function SortableRowGroup({
         // Pick-mode visual: подсвечиваем НЕ-активные ячейки как кликабельные
         // источники ссылок (текущая активная — не вставляется в саму себя).
         const cellInPickMode = inPickMode && !isActive;
+        const colHighlight = getHighlight(col.highlight);
+        const colIsSelected = selectedCols.has(col.id);
         return (
           <div
             key={`${row.id}-${col.id}`}
             className={cn(
-              'relative flex items-center rounded-md border bg-muted/20 px-1',
+              'relative flex items-center rounded-md border bg-muted/20 px-1 transition',
               isActive ? 'border-primary ring-1 ring-primary/40' : 'border-border/40',
+              // Подсветка от колонки (накладывается поверх подсветки строки).
+              colHighlight && !isActive && [colHighlight.bg, colHighlight.dark],
+              colIsSelected && !isActive && 'ring-1 ring-primary/40',
             )}
           >
             {isActive && session ? (

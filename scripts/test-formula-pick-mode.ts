@@ -85,6 +85,52 @@ console.log('\n=== insertIntoDraft (forceFormula=false, обычная вста�
   ok('caret = 5', r.caretPos === 5);
 }
 
+// ============================================================================
+// v0.23.2 regression: cell-pick после set/clear не должен сбивать каретку.
+// Раньше после клика по ячейке (insert) браузерное controlled-input
+// поведение могло сбросить cursor → следующий символ улетал в неправильную
+// позицию (например, печатаем '*60' после '=B1' и получаем '*60=B1' вместо
+// '=B1*60'). Pure-логика insertIntoDraft, как видно, работает корректно
+// при правильно переданном caretPos — что и должен обеспечить
+// useLayoutEffect + чтение из DOM (см. custom-data.tsx, v0.23.2).
+
+console.log('\n=== insertIntoDraft (последовательные вставки — симуляция UX) ===');
+{
+  // Сценарий из бага: '=' → клик B1 → ожидаем '=B1', caret=3.
+  // Потом пользователь печатает '*60' → должно стать '=B1*60', caret=6.
+  let state: { draft: string; caretPos: number | null } = { draft: '=', caretPos: 1 };
+  const r1 = insertIntoDraft(state, 'B1', { forceFormula: true });
+  ok('= + B1 → =B1', r1.draft === '=B1');
+  ok('caret после insert = 3', r1.caretPos === 3);
+
+  state = { draft: r1.draft, caretPos: r1.caretPos };
+  // Симулируем «пользователь печатает '*60' начиная с caret=3» —
+  // это эквивалентно insert каждого символа подряд при условии,
+  // что caretPos обновляется корректно.
+  let cumulative = state;
+  for (const ch of '*60') {
+    cumulative = insertIntoDraft(cumulative, ch, {});
+  }
+  ok('=B1 + *60 (последовательно) → =B1*60', cumulative.draft === '=B1*60');
+  ok('финальная caret = 6', cumulative.caretPos === 6);
+}
+
+{
+  // Если caret «прыгнул в 0» (баг до v0.23.2), результат печатания
+  // даёт *60=B1 вместо =B1*60 — это и видел пользователь.
+  let cumulative: { draft: string; caretPos: number | null } = {
+    draft: '=B1',
+    caretPos: 0, // ← баг: cursor скинут в начало
+  };
+  for (const ch of '*60') {
+    cumulative = insertIntoDraft(cumulative, ch, {});
+  }
+  ok(
+    'baseline: caret=0 → *60=B1 (демонстрация старого бага)',
+    cumulative.draft === '*60=B1',
+  );
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);
 

@@ -1,6 +1,6 @@
 # Блок «Данные» (`custom.data`) — sheet-style formula UX
 
-> Версия: v0.22.5 · Файл: [src/lib/blocks/catalog/custom-data.tsx](../src/lib/blocks/catalog/custom-data.tsx) · Engine: [src/lib/blocks/custom-data-formulas.ts](../src/lib/blocks/custom-data-formulas.ts)
+> Версия: v0.23.2 · Файл: [src/lib/blocks/catalog/custom-data.tsx](../src/lib/blocks/catalog/custom-data.tsx) · Engine: [src/lib/blocks/custom-data-formulas.ts](../src/lib/blocks/custom-data-formulas.ts)
 
 ## TL;DR
 
@@ -86,7 +86,7 @@ function handleCellClick(rowId, columnId) {
 Что происходит:
 1. Активная ячейка **не** меняется — formula bar и inline-input остаются на исходной.
 2. Адрес ячейки (`B2`) вставляется в `session.draft` на позиции каретки.
-3. Focus возвращается в input, где была каретка (inline или formula bar) через `setTimeout(0)`.
+3. Focus возвращается в input, где была каретка (inline или formula bar). С **v0.23.2** восстановление каретки — через `useLayoutEffect + pendingCaretRef` (синхронное, после commit, до paint), а **позиция каретки читается из DOM `input.selectionStart`** в момент вставки, а не из устаревшего React-state. Это устраняет баг, когда печать после cell-pick попадала в неправильное место (например, `*60=B1` вместо `=B1*60`).
 4. Курсор-стиль на «других» ячейках — `cursor-cell` (визуальная индикация pick-режима).
 
 Это эталонная UX-механика Excel / Google Sheets: пользователь не должен ловить точную ячейку клавишами — клик мышкой работает в любом порядке.
@@ -171,7 +171,58 @@ pnpm tsx scripts/test-custom-data-formulas.ts
 
 Backward compatibility: старые конфиги с `cellPopoverEnabled: false` парсятся без ошибок (поле игнорируется через z.passthrough).
 
+## Подсветка строк / колонок (v0.23.2)
+
+Каждая строка и колонка может иметь персистентную цветовую подсветку через поле `highlight` — ID цвета из палитры:
+
+```ts
+const HIGHLIGHT_PALETTE = ['yellow', 'green', 'blue', 'red', 'purple', 'orange'] as const;
+type HighlightId = (typeof HIGHLIGHT_PALETTE)[number];
+
+// schema (zod): z.string().nullable().optional()
+type Row = { id; label; cells; highlight?: HighlightId | null };
+type Column = { id; label; format; ... ; highlight?: HighlightId | null };
+```
+
+Применяется как:
+- На строку — `bg-{color}-50/60 dark:bg-{color}-950/30` (full-row tint).
+- На колонку — `bg-{color}-50/60 dark:bg-{color}-950/30` (только на header).
+
+Если строка и колонка обе подсвечены — приоритет визуально у row (полная строка), но cell наследует tint в зоне пересечения через `colHighlight && !isActive`.
+
+UI выбора:
+- Доступен только через **bulk-toolbar** (после выделения 1+ строк / колонок).
+- Кнопка «Подсветить» открывает `HighlightPalettePopover` с 6 цветами + «Снять подсветку» (`Ban` icon).
+- Применяется ко всем выделенным сразу.
+
+Backward-compat: configs без `highlight` парсятся без изменений; `isHighlightId()` strip-фильтрует невалидные значения.
+
+## Multi-select (v0.23.2)
+
+Excel-style выделение строк и колонок:
+
+| Действие | Результат |
+|---|---|
+| Клик по drag-handle строки/колонки (без movement) | Select (заменяет выделение) |
+| Shift+клик | Extend (диапазон от last-clicked) |
+| Cmd / Ctrl + клик | Toggle |
+| Drag (movement >4px) | Реордер (dnd-kit activationConstraint: distance: 4) |
+| Клик по другой строке / в другую секцию | Выделение очищается |
+
+Visual:
+- Selected строка — `ring-2 ring-primary/60 ring-offset-1`.
+- Selected колонка — `ring-2 ring-primary/60` (на header).
+- Drag-handle отображает `<CheckSquare />` когда строка выделена (вместо `<GripVertical />`).
+- Bulk-toolbar появляется под formula-bar когда есть выделение:
+  - `Подсветить` → палитра.
+  - `Удалить` → массовое удаление строк и/или колонок (вместе с cells в удаляемых колонках).
+  - `Снять` → clear selection.
+
+Выделение **строк** и **колонок** взаимоисключающие: выбор одной секции очищает другую.
+
 ## Известные ограничения
 
 - Cross-block ссылки `@blockId.field` вводятся через picker (кнопка «@связать»), inline autocomplete пока нет — Phase 2 roadmap.
 - При редактировании binding'нутой ячейки (`cell.ref != null`) draft изначально пустой; чтобы получить раздельные value vs binding, нужно сначала «отвязать».
+- Multi-cell selection (range of cells across rows × cols) пока нет — только целые строки или целые колонки. Если нужны блочные range — следующая итерация.
+- Подсветка применяется только через bulk-toolbar; per-row/per-col правый клик с context-menu — Phase 2.
