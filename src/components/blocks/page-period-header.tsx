@@ -1,35 +1,22 @@
-// PURPOSE: Sticky header сверху страницы — содержит PagePeriodPicker и
-// (опц.) SourceFilterChips для page-level периода/источника.
-// Блоки страницы автоматически наследуют этот период/source через
-// `useEffectivePeriod` / `useEffectiveSource`, если не имеют per-block override.
+// PURPOSE: Компактный inline-контрол страничного периода и источника.
+// Рендерится прямо в тулбаре BlockGrid (в одну строку с «Связи»/«Настроить»).
+// PeriodPicker — в режиме collapsed (одна кнопка + Popover).
+// SourceFilter — один кнопка + Popover с чипами, если showSourceFilter=true.
+// «N свой» — кнопка сброса локальных override'ов блоков.
 //
-// v0.22.0: добавлены `collapsed` (узкая полоска-summary с chevron'ом для
-// разворачивания) и `onToggleCollapsed`. BlockGrid использует эти пропсы
-// чтобы скрыть/показать панель по умолчанию (auto-detect) или по toggle'у
-// в edit-mode toolbar.
-//
-// v0.23: warning-чип «Мастер-настройка» (dismissable) + кнопка «Сбросить
-// локальные периоды (N)» — массовый mass-reset для блоков, отвязавшихся
-// через `useBlockPeriod` (override).
+// v0.23.10: переработан из sticky-полосы в компактный inline вид.
+// Backward-compat: принимает старые пропы (description, collapsed,
+// onToggleCollapsed) но игнорирует их — layout теперь управляет BlockGrid.
 
 'use client';
 
 import { useEffect, useState, useSyncExternalStore } from 'react';
-import { CalendarRange, ChevronDown, ChevronUp, Info, Unlock, X } from 'lucide-react';
+import { ChevronDown, Info, Layers3, Unlock } from 'lucide-react';
 import { PeriodPicker, type PeriodValue } from '@/components/blocks/period-picker';
 import { usePagePeriod } from '@/lib/blocks/page-period-context';
 import { usePageSource } from '@/lib/blocks/page-source-context';
-import { SourceFilterChips } from '@/components/blocks/source-filter-chips';
-
-const PRESET_LABELS: Record<string, string> = {
-  today: 'Сегодня',
-  yesterday: 'Вчера',
-  '7d': '7 дней',
-  '14d': '14 дней',
-  '30d': '30 дней',
-  mtd: 'Текущий месяц',
-  custom: 'Произвольный',
-};
+import { SourceFilterChips, SOURCE_LABELS } from '@/components/blocks/source-filter-chips';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 
 const WARNING_STORAGE_KEY = 'page-period-header:warning-dismissed:v1';
 
@@ -53,17 +40,17 @@ function writeWarningDismissed(value: boolean): void {
 }
 
 export function PagePeriodHeader({
-  description,
   showSourceFilter = false,
-  collapsed = false,
-  onToggleCollapsed,
+  // Backward-compat — accepted but unused in the new inline layout
+  description: _description,
+  collapsed: _collapsed,
+  onToggleCollapsed: _onToggleCollapsed,
 }: {
   description?: string;
-  /** Показывать чипы выбора источника (transactions.source). */
   showSourceFilter?: boolean;
-  /** Свёрнутое состояние: узкая полоска-summary с chevron'ом. */
+  /** @deprecated Ignored — layout is now always inline. */
   collapsed?: boolean;
-  /** Callback toggle (только если хотим показать chevron-разворачивание). */
+  /** @deprecated Ignored — layout is now always inline. */
   onToggleCollapsed?: (next: boolean) => void;
 }) {
   const {
@@ -74,24 +61,18 @@ export function PagePeriodHeader({
     resetAllOverrides,
   } = usePagePeriod();
   const sourceCtx = usePageSource();
+  const [sourceOpen, setSourceOpen] = useState(false);
 
-  // useSyncExternalStore — реактивный счётчик overridden-блоков. Header
-  // re-render'ится при изменении registry (registerBlock / unregisterBlock).
   const overriddenCount = useSyncExternalStore(
     subscribeRegistry,
     countOverridden,
     () => 0,
   );
 
-  // Warning dismissable. localStorage флаг читается после mount (SSR-safe).
   const [warningHidden, setWarningHidden] = useState(true);
   useEffect(() => {
     setWarningHidden(readWarningDismissed());
   }, []);
-  function dismissWarning() {
-    setWarningHidden(true);
-    writeWarningDismissed(true);
-  }
 
   function onChange(v: PeriodValue) {
     setValue({
@@ -101,98 +82,71 @@ export function PagePeriodHeader({
     });
   }
 
-  if (collapsed) {
-    const presetLabel = PRESET_LABELS[value.preset] ?? value.preset;
-    const sourceLabel =
-      sourceCtx.pageKey && sourceCtx.value
-        ? sourceCtx.value
-        : 'Все источники';
-    return (
-      <button
-        type="button"
-        onClick={() => onToggleCollapsed?.(false)}
-        className="sticky top-0 z-30 -mx-1 mb-1 flex w-[calc(100%+0.5rem)] items-center gap-2 rounded-md border border-border/40 bg-background/80 px-3 py-1 text-left text-[11px] text-muted-foreground backdrop-blur transition hover:bg-background hover:text-foreground"
-        title="Развернуть панель периода и источника"
-      >
-        <CalendarRange className="h-3 w-3 shrink-0" />
-        <span className="truncate">
-          {presetLabel} · {sourceLabel}
-        </span>
-        {overriddenCount > 0 && (
-          <span
-            className="ml-1 inline-flex shrink-0 items-center gap-0.5 rounded-full bg-amber-100 px-1.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950 dark:text-amber-300"
-            title={`${overriddenCount} блоков со своим периодом (не синхронизированы с настройкой страницы)`}
-          >
-            {overriddenCount} свой
-          </span>
-        )}
-        <ChevronDown className="ml-auto h-3 w-3 shrink-0" />
-      </button>
-    );
-  }
+  const currentSourceLabel =
+    sourceCtx.value
+      ? (SOURCE_LABELS[sourceCtx.value]?.label ?? sourceCtx.value)
+      : 'Все источники';
 
   return (
-    <div className="sticky top-0 z-30 -mx-1 mb-1 flex flex-col gap-1.5 rounded-md border border-border/60 bg-background/95 px-3 py-2 backdrop-blur supports-[backdrop-filter]:bg-background/85">
-      {/* Row 1 (nowrap): иконка + описание (truncate) + chevron всегда top-right */}
-      <div className="flex min-w-0 items-center gap-2 text-[12px] text-muted-foreground">
-        <CalendarRange className="h-3.5 w-3.5 shrink-0" />
-        <span className="min-w-0 flex-1 truncate">
-          {description ?? 'Период страницы (наследуется блоками)'}
-        </span>
-        {onToggleCollapsed && (
-          <button
-            type="button"
-            onClick={() => onToggleCollapsed(true)}
-            className="ml-auto shrink-0 rounded p-0.5 text-muted-foreground transition hover:bg-accent hover:text-foreground"
-            title="Свернуть панель"
-            aria-label="Свернуть панель периода"
-          >
-            <ChevronUp className="h-3.5 w-3.5" />
-          </button>
-        )}
-      </div>
-      {/* Row 2 (wrap): source-чипы + period-picker + reset-overrides */}
-      <div className="flex flex-wrap items-center gap-2">
-        {showSourceFilter && sourceCtx.pageKey ? (
-          <SourceFilterChips
-            value={sourceCtx.value}
-            onChange={sourceCtx.setValue}
-            size="xs"
-          />
-        ) : null}
-        <PeriodPicker value={value} onChange={onChange} compact />
-        {overriddenCount > 0 && (
-          <button
-            type="button"
-            onClick={() => resetAllOverrides()}
-            className="inline-flex h-6 items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-2 text-[11px] font-medium text-amber-700 transition hover:bg-amber-100 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300 dark:hover:bg-amber-900/30"
-            title={`Сбросить локальные периоды у ${overriddenCount} ${overriddenCount === 1 ? 'блока' : 'блоков'} → все вернутся к периоду страницы.`}
-          >
-            <Unlock className="h-3 w-3" />
-            Сбросить локальные ({overriddenCount})
-          </button>
-        )}
-      </div>
-      {/* Row 3: warning chip — dismissable */}
+    <div className="flex items-center gap-1.5">
+      {/* Период — collapsed: одна кнопка [📅 30 дней ↓] + Popover */}
+      <PeriodPicker value={value} onChange={onChange} compact collapsed />
+
+      {/* Источник — только для cashflow-страниц */}
+      {showSourceFilter && sourceCtx.pageKey && (
+        <Popover open={sourceOpen} onOpenChange={setSourceOpen}>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border/60 bg-background px-2 text-[11px] font-medium text-foreground hover:bg-accent"
+            >
+              <Layers3 className="h-3 w-3 text-muted-foreground" />
+              <span>{currentSourceLabel}</span>
+              <ChevronDown className="h-3 w-3 text-muted-foreground" />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent align="start" className="w-auto p-2">
+            <div className="mb-1.5 px-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+              Источник
+            </div>
+            <SourceFilterChips
+              value={sourceCtx.value}
+              onChange={(v) => {
+                sourceCtx.setValue(v);
+                setSourceOpen(false);
+              }}
+              size="xs"
+            />
+          </PopoverContent>
+        </Popover>
+      )}
+
+      {/* N-свой: сброс override'ов блоков на страничный период */}
+      {overriddenCount > 0 && (
+        <button
+          type="button"
+          onClick={() => resetAllOverrides()}
+          className="inline-flex h-7 items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-2 text-[11px] font-medium text-amber-700 transition hover:bg-amber-100 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300 dark:hover:bg-amber-900/30"
+          title={`Сбросить локальные периоды у ${overriddenCount} ${overriddenCount === 1 ? 'блока' : 'блоков'} — все вернутся к периоду страницы.`}
+        >
+          <Unlock className="h-3 w-3" />
+          {overriddenCount} свой
+        </button>
+      )}
+
+      {/* Подсказка «Мастер-настройка» — компактная иконка, dismissable */}
       {!warningHidden && (
-        <div className="flex items-start gap-1.5 rounded-md border border-sky-200 bg-sky-50 px-2 py-1 text-[11px] text-sky-800 dark:border-sky-900 dark:bg-sky-950 dark:text-sky-200">
-          <Info className="mt-0.5 h-3 w-3 shrink-0" />
-          <span className="flex-1">
-            <strong className="font-semibold">Мастер-настройка:</strong>{' '}
-            переключает период во всех блоках, которые наследуют его. Блоки со
-            своим периодом (lock-badge) остаются как есть — сбросьте их кнопкой
-            «Сбросить локальные», чтобы все блоки синхронизировались.
-          </span>
-          <button
-            type="button"
-            onClick={dismissWarning}
-            className="shrink-0 rounded p-0.5 text-sky-700 transition hover:bg-sky-100 dark:text-sky-300 dark:hover:bg-sky-900"
-            title="Больше не показывать это уведомление"
-            aria-label="Скрыть подсказку"
-          >
-            <X className="h-3 w-3" />
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={() => {
+            setWarningHidden(true);
+            writeWarningDismissed(true);
+          }}
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-sky-200 bg-sky-50 text-sky-700 transition hover:bg-sky-100 dark:border-sky-900 dark:bg-sky-950 dark:text-sky-300"
+          title="Мастер-настройка: переключает период всех блоков страницы. Нажмите чтобы скрыть эту подсказку."
+        >
+          <Info className="h-3 w-3" />
+        </button>
       )}
     </div>
   );

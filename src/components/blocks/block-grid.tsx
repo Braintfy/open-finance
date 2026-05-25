@@ -3,7 +3,7 @@
 
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Responsive, WidthProvider, type Layout } from 'react-grid-layout';
-import { Plus, Pencil, Check, RotateCcw, Network, Eye, EyeOff } from 'lucide-react';
+import { Plus, Pencil, Check, RotateCcw, Network } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   AlertDialog,
@@ -31,7 +31,6 @@ import {
   PageSourceProvider,
 } from '@/lib/blocks/page-source-context';
 import { PagePeriodHeader } from './page-period-header';
-import { usePagePeriodHeaderVisibility } from '@/lib/blocks/use-page-period-visibility';
 import { VirtualSourcesBridge } from '@/lib/blocks/virtual-sources';
 import { BlockRelationsOverlay } from './block-relations-overlay';
 import { MicroAgentDialog } from '@/components/micro-agent/micro-agent-dialog';
@@ -461,13 +460,10 @@ function BlockGridInner({
     return m;
   }, [blocks]);
 
-  // v0.22.0: visibility панели «Период и источник».
-  //  - 'never' — никогда не показываем (например пустая страница без cashflow)
-  //  - 'always' — рендерим всегда (cashflow)
-  //  - 'auto' — auto-detect по bound-блокам, collapsed dеfault если нет
-  const periodVis = usePagePeriodHeaderVisibility(pageKey, blocks);
+  // showPanel: показывать ли inline-контрол периода в тулбаре.
+  //  - 'never' — скрыт (страницы без page-period)
+  //  - 'always' / 'auto' — виден в тулбаре как компактная кнопка
   const showPanel = periodPanel !== 'never';
-  const panelCollapsed = periodPanel === 'always' ? false : periodVis.collapsed;
   // Bound-блоки → нужны cashflow virtual sources (income/expense/balance KPI).
   const needsVirtualSources = useMemo(() => {
     if (periodPanel === 'never') return false;
@@ -925,18 +921,10 @@ function BlockGridInner({
             </span>
           )}
         </div>
-        <div className="flex gap-1.5">
-          {/* v0.22.0: toggle видимости панели «Период и источник». Только в edit. */}
-          {showPanel && editMode && periodPanel !== 'always' && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => periodVis.toggle(!panelCollapsed)}
-              title={panelCollapsed ? 'Показать панель периода' : 'Скрыть панель периода'}
-              aria-label="Переключить видимость панели периода"
-            >
-              {panelCollapsed ? <Eye /> : <EyeOff />}
-            </Button>
+        <div className="flex items-center gap-1.5">
+          {/* Период + источник — компактный inline прямо в тулбаре */}
+          {showPanel && (
+            <PagePeriodHeader showSourceFilter={showSourceFilter} />
           )}
           {hasRelations && (
             <Button
@@ -978,17 +966,6 @@ function BlockGridInner({
           </Button>
         </div>
       </div>
-
-      {showPanel && (
-        <PagePeriodHeader
-          description={periodPanelDescription}
-          showSourceFilter={showSourceFilter}
-          collapsed={panelCollapsed}
-          onToggleCollapsed={
-            periodPanel === 'always' ? undefined : (next) => periodVis.toggle(next)
-          }
-        />
-      )}
 
       {/* Virtual sources bridge — фетчит cashflow KPI с page-level period/source
           и публикует как `__virtual:cashflow.kpi.*` для cross-block bindings. */}

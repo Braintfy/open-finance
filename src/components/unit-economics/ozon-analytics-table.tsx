@@ -7,6 +7,7 @@
 'use client';
 
 import { useCallback, useId, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   ArrowDown,
   ArrowUp,
@@ -295,8 +296,36 @@ const TONE_BG: Record<DrrTone, string> = {
  * нейтральный плейсхолдер с иконкой. Lazy-loaded, referrerPolicy=no-referrer
  * (некоторые Ozon-CDN блокируют hot-linking без правильного referrer'а).
  */
+const PREVIEW_W = 200;
+
 function ProductThumb({ url, name }: { url: string | null; name: string }) {
   const [errored, setErrored] = useState(false);
+  const [previewStyle, setPreviewStyle] = useState<React.CSSProperties | null>(null);
+
+  function handleMouseEnter(e: React.MouseEvent<HTMLElement>) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const OFFSET = 12;
+    const MAX_H = 220;
+
+    let left = rect.right + OFFSET;
+    // Если не влезает справа — показываем слева
+    if (left + PREVIEW_W > window.innerWidth - 8) {
+      left = rect.left - PREVIEW_W - OFFSET;
+    }
+    // Вертикально: стараемся выровнять по верху иконки, прижимаем к краям viewport
+    let top = rect.top;
+    if (top + MAX_H > window.innerHeight - 8) {
+      top = window.innerHeight - MAX_H - 8;
+    }
+    if (top < 8) top = 8;
+
+    setPreviewStyle({ left, top });
+  }
+
+  function handleMouseLeave() {
+    setPreviewStyle(null);
+  }
+
   if (!url || errored) {
     return (
       <div
@@ -307,18 +336,50 @@ function ProductThumb({ url, name }: { url: string | null; name: string }) {
       </div>
     );
   }
+
   return (
-    /* eslint-disable-next-line @next/next/no-img-element */
-    <img
-      src={url}
-      alt={name}
-      width={28}
-      height={28}
-      loading="lazy"
-      referrerPolicy="no-referrer"
-      onError={() => setErrored(true)}
-      className="h-7 w-7 shrink-0 rounded-md object-cover bg-muted"
-    />
+    <>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <div
+        className="shrink-0"
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={url}
+          alt={name}
+          width={28}
+          height={28}
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          onError={() => setErrored(true)}
+          className="h-7 w-7 cursor-zoom-in rounded-md bg-muted object-cover"
+        />
+      </div>
+      {previewStyle &&
+        createPortal(
+          <div
+            className="pointer-events-none fixed z-[9999] overflow-hidden rounded-xl border border-border/50 bg-card shadow-2xl"
+            style={{ ...previewStyle, width: PREVIEW_W }}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={url}
+              alt={name}
+              referrerPolicy="no-referrer"
+              className="block w-full object-contain"
+              style={{ maxHeight: 180 }}
+            />
+            {name && (
+              <div className="border-t border-border/40 px-2.5 py-1.5 text-[11px] leading-snug text-muted-foreground line-clamp-2">
+                {name}
+              </div>
+            )}
+          </div>,
+          document.body,
+        )}
+    </>
   );
 }
 
