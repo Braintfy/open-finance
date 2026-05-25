@@ -93,12 +93,16 @@ export type BlockInstance = {
   /** Зависимости от других блоков (Excel-style cell references). Только у computed-блоков. */
   dependencies?: BlockDependencies;
   /**
-   * Master-промпт блока для AI-микроагента. Передаётся в `/api/ai/chat` при
-   * любом обращении к AI из контекста этого блока. Имеет приоритет над
-   * legacy `config.blockPrompt` (`ai.micro-agent`). Глобальные дефолты
-   * по типу блока появятся позже (см. PLAN.md → AI Orchestrator).
+   * @deprecated Используй aiPromptSupplement (max 500 chars). Оставлен для
+   * backward-compat: если supplement пуст — читается как fallback.
    */
   aiPrompt?: string;
+  /**
+   * Пользовательское дополнение к master-промпту блока (max 500 символов).
+   * Добавляется к системному skill-промпту типа блока (BLOCK_SKILLS[type]).
+   * Имеет приоритет над устаревшим aiPrompt.
+   */
+  aiPromptSupplement?: string;
 };
 
 /**

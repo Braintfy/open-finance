@@ -1,5 +1,61 @@
 # Changelog
 
+## [0.24.0] - 2026-05-26
+
+AI layer overhaul: 4-уровневая иерархия промптов, RU-провайдеры без VPN, per-user API ключи, кнопка «AI Анализ» в каждом разделе, read-only master skill + 500-char supplement в настройках блока.
+
+### Added
+
+- **`src/lib/ai/prompt-resolver.ts`** — центральный composer `resolvePromptStack(ctx)`. 9 слоёв: global → micro-agent → section-group → per-page → block-skill → supplement → capabilities → snapshot → section-context. Scope: `block | section | pointwise`. Метаданные слоёв в `meta.layers` для аудита.
+- **`src/lib/ai/sections.ts`** — 6 `SECTION_GROUPS` (dashboard/finance/marketplaces/unit-economics/inbox/boards), `resolveSectionGroup(pageKey)`.
+- **`src/lib/ai/prompts/block-skills/`** — 28 skill-промптов по семействам (cashflow, sheet, ozon, unit-economics, generic). Каждый skill = бизнес-контекст для AI «что блок делает + типичный вопрос».
+- **`src/lib/ai/prompts/section-defaults.ts`** — дефолтные промпты для 6 групп разделов + per-page hints.
+- **`src/lib/ai/prompts/pointwise.ts`** — `DEFAULT_POINTWISE_PROMPT` для анализа dependency-tree блоков.
+- **`src/lib/db/schema/user-ai-credentials.ts`** — таблица персональных AI-ключей (per-user-per-tenant-per-provider). Приоритет над admin-ключами если `enabled=true`.
+- **`src/lib/ai/user-keys.ts`** — `getActiveCredentials()`: резолвит user keys → tenant admin keys → Ollama.
+- **`src/lib/ai/providers/yandex-gpt.ts`** — Yandex Foundation Models (`/foundationModels/v1/completionStream`). Auth: `Api-Key + x-folder-id`. Streaming NDJSON.
+- **`src/lib/ai/providers/gigachat.ts`** — GigaChat OAuth2 + SSE streaming. In-memory token cache (30 min TTL).
+- **`src/lib/ai/providers/openai-compat.ts`** — добавлен DeepSeek preset в `PROVIDER_DEFAULTS`. Добавлен `PROVIDER_META[]` с полем `requiresVpn: boolean | null` для UI-ярлыков.
+- **`src/app/api/ai/credentials/route.ts`** — GET/PUT/DELETE/POST (тест) для per-user ключей. Маскирование `abcd••••wxyz` при GET, маска не перезаписывает реальный ключ при PUT.
+- **`src/app/(app)/settings/ai/`** — страница персональных AI-настроек. Карточки провайдеров с badge «Без VPN» / «Через VPN», toggle «использовать мой ключ», тест подключения.
+- **`src/app/api/admin/ai/prompts/sections/route.ts`** — GET/PUT overrides для групп разделов и per-pageKey.
+- **`src/app/api/admin/ai/prompts/blocks/route.ts`** — GET/PUT overrides для skill-промптов блоков.
+- **`src/app/api/admin/ai/prompts/pointwise/route.ts`** — GET/PUT override для pointwise prompt.
+- **`src/components/blocks/section-ai-button.tsx`** — кнопка «AI Анализ» (Sparkles) для page headers.
+- **`src/components/blocks/section-ai-dialog.tsx`** — диалог анализа раздела: scope toggle (все блоки / только связанные), textarea вопроса, streaming response, Stop/Очистить/Обновить.
+- **`src/app/api/ai/analyze-section/route.ts`** — POST `{ pageKey, scope, userQuery?, blockIds? }` → NDJSON stream. Собирает layout блоков, `buildSubgraph()` для scope=subgraph, token budget 20 блоков.
+- **`scripts/test-prompt-resolver.ts`** — 10 smoke-тестов для `resolvePromptStack`: default, override, scope, supplement priority, legacy fallback, pointwise.
+- **`docs/AI_PROMPT_LAYERS.md`** — документация иерархии промптов, scope, section groups, block skills, admin override, user keys.
+
+### Changed
+
+- **`src/lib/db/schema/tenants.ts`** — `TenantSettings` + поле `aiPrompts: { sections, blocks, pointwise }` + `deepseek` в union провайдеров `aiExternal.provider`.
+- **`src/lib/blocks/types.ts`** — `BlockInstance`: добавлено поле `aiPromptSupplement?: string` (max 500, новый user-input). Поле `aiPrompt` помечено `@deprecated`, работает как fallback.
+- **`src/app/api/blocks/layout/[pageKey]/route.ts`** — Zod: `aiPromptSupplement: z.string().max(500).optional()`.
+- **`src/app/api/ai/chat/route.ts`** — `buildMicroAgentSystemPrompt` заменён на `resolvePromptStack()`. Credentials через `getActiveCredentials()` (user keys приоритет). `BlockContextSchema` расширен полями `aiPromptSupplement`, `publishedValue`, `publishedMoney`, `publishedPeriodKey`.
+- **`src/lib/ai/micro-agent/types.ts`** — `BlockContext` расширен: `aiPromptSupplement`, `publishedValue`, `publishedMoney`, `publishedPeriodKey`. `aiPrompt` помечен deprecated.
+- **`src/components/blocks/block-settings-dialog.tsx`** — `AiPromptForm` redesigned: секция 1 — read-only master skill блока (из `BLOCK_SKILLS[type]`, admin override), секция 2 — editable supplement (counter `0/500`, warning при ≥400), секция 3 — legacy migration notice (если есть старый `aiPrompt` без нового supplement).
+- **`src/components/blocks/block-grid.tsx`** — `blockContext` для micro-agent: `aiPromptSupplement` (приоритет), `aiPrompt` (fallback), live values из `BlockValuesContext` (`publishedValue`, `publishedMoney`, `publishedPeriodKey`).
+- **`src/app/(app)/admin/ai/system-prompt/page.tsx`** — расширен до 4 tab'ов: «Глобальный», «Разделы», «Блоки», «Точечные связи».
+- **`src/app/(app)/settings/settings-client.tsx`** — добавлена карточка «AI Настройки» со ссылкой на `/settings/ai`.
+- **`src/app/(app)/dashboard/dashboard-client.tsx`** — добавлен `<SectionAiButton pageKey="dashboard" />`.
+- **`src/app/(app)/cashflow/cashflow-client.tsx`** — добавлен `<SectionAiButton pageKey="cashflow" />`.
+- **`src/app/(app)/inbox/inbox-client.tsx`** — добавлен `<SectionAiButton pageKey="inbox" />`.
+- **`src/app/(app)/marketplaces/ozon/marketplaces-ozon-client.tsx`** — добавлен `<SectionAiButton pageKey="marketplaces-ozon-dashboard" />` рядом с SyncAllButton.
+- **`src/app/(app)/unit-economics/unit-economics-client.tsx`** — добавлен `<SectionAiButton pageKey={activeTab.pageKey} />` рядом с «Новая вкладка».
+- **`src/app/(app)/boards/[boardId]/board-client.tsx`** — добавлен `<SectionAiButton pageKey={boardPageKey(currentBoard.id)} />`.
+- **`.cursor/rules/ai-tools.mdc`** — обновлён раздел streaming, добавлены sections Prompt Hierarchy и Section AI.
+- **`src/lib/db/schema/index.ts`** — экспорт `user-ai-credentials`.
+
+### DB Migrations
+
+Новая таблица `user_ai_credentials` — требует миграции:
+
+```bash
+pnpm db:generate
+pnpm db:push
+```
+
 ## [0.23.15] - 2026-05-25
 
 Block settings UI design system: единый язык примитивов, переработан BlockReferencePicker (UUID → человекочитаемые лейблы), настройки «Таблица» приведены к стандарту.

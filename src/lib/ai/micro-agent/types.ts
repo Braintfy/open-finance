@@ -10,12 +10,21 @@ export type BlockContext = {
   /** Ключ страницы */
   pageKey?: string;
   /**
-   * Master-промпт блока (`BlockInstance.aiPrompt`). Передаётся как
-   * `blockPrompt` в `/api/ai/chat`; имеет приоритет над тем, что
-   * пользователь вводит в раскрывашке "Инструкция для блока" внутри
-   * MicroAgentDialog (которая теперь — fallback).
+   * @deprecated Используй aiPromptSupplement. Оставлен как fallback.
+   * `BlockInstance.aiPrompt` — если supplement пуст, передаётся как blockPrompt.
    */
   aiPrompt?: string;
+  /**
+   * Пользовательское дополнение (max 500 chars) из BlockInstance.aiPromptSupplement.
+   * Приоритет над устаревшим aiPrompt.
+   */
+  aiPromptSupplement?: string;
+  /** Live-значение блока из useBlockValuePublisher (если доступно) */
+  publishedValue?: unknown;
+  /** Флаг money из publishedValue.__money */
+  publishedMoney?: string;
+  /** Активный период блока из publishedValue.__periodKey */
+  publishedPeriodKey?: string;
 };
 
 /** Быстрые действия (табы) */

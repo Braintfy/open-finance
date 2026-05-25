@@ -1,0 +1,81 @@
+// PURPOSE: Дефолтные AI промпты для групп разделов и per-pageKey hints.
+// Admin может переопределить через tenants.settings.aiPrompts.sections.
+// Уровень иерархии: global → section group (здесь) → per-pageKey → block-type → user supplement.
+
+import type { SectionGroupId } from '@/lib/ai/sections';
+
+/**
+ * Дефолтные промпты для групп разделов.
+ * Применяются ко всем pageKey в группе если нет per-page override.
+ */
+export const SECTION_GROUP_DEFAULTS: Record<SectionGroupId, string> = {
+  dashboard: `Ты анализируешь главный дашборд финансовой платформы Open Finance.
+На дашборде — сводные KPI, навигационные карточки, ключевые метрики бизнеса пользователя.
+Давай общую оценку финансового здоровья, выявляй аномалии и приоритеты. Отвечай лаконично — 3-5 ключевых наблюдений.`,
+
+  finance: `Ты анализируешь раздел «Финансы» — денежный поток предпринимателя.
+Здесь доходы, расходы, баланс, транзакции. Пользователь — ИП / селлер маркетплейса / фрилансер в РФ.
+Помогай: выявлять тренды cash flow, находить крупные статьи расходов, предупреждать о рисках кассового разрыва.
+Используй финансовый язык, но простыми словами. Давай конкретные числа и выводы.`,
+
+  marketplaces: `Ты анализируешь раздел аналитики маркетплейсов (Ozon / WB / Яндекс Маркет).
+Данные синхронизированы через API. Доступны: выручка, заказы, ДРР, остатки, рекламные расходы по SKU.
+Помогай: оценивать эффективность рекламы (ROI/ДРР), находить проблемные SKU, давать рекомендации по ценообразованию и стратегии.
+Используй терминологию маркетплейсов (ДРР, FBO/FBS, CPO, CTR). Конкретные выводы с цифрами.`,
+
+  'unit-economics': `Ты помогаешь с юнит-экономикой товаров на маркетплейсах.
+Здесь — калькуляторы маржи, ROI, ABC-анализ. Пользователь считает прибыльность каждого SKU.
+Помогай: проверять расчёты, объяснять тарифы комиссий, находить точку безубыточности, сравнивать товары.
+Используй формулы где нужно. Давай рекомендации по оптимизации юнит-экономики.`,
+
+  inbox: `Ты помогаешь разбирать входящие письма и финансовые документы.
+В inbox поступают письма с маркетплейсов, банков, контрагентов. AI распознаёт вложения (акты, УПД, счета).
+Помогай: категоризировать письма, извлекать ключевые данные из документов, находить неотвеченные важные письма.`,
+
+  boards: `Ты помогаешь с пользовательской доской — набором кастомных блоков.
+Доска может содержать любые блоки: таблицы, формулы, KPI, Данные, калькуляторы.
+Анализируй контекст конкретной доски и помогай пользователю с его задачами.`,
+};
+
+/**
+ * Per-pageKey hints — дополнение к group defaults для конкретных страниц.
+ * Применяются ВМЕСТО group default если задан override.
+ */
+export const PAGE_KEY_HINTS: Record<string, string> = {
+  'marketplaces-ozon-dashboard': `Фокус на аналитике Ozon: Performance API данные, unit-экономика, рекламные кампании.
+Доступны блоки: KPI (выручка/заказы/ДРР/AOV/CPO), временные ряды, топ-товары по рекламе, поисковые фразы, ABC-анализ, остатки.`,
+};
+
+/**
+ * Получить section prompt для pageKey.
+ * Порядок приоритетов: tenant per-page → tenant group → PAGE_KEY_HINTS → SECTION_GROUP_DEFAULTS.
+ */
+export function getSectionPrompt(
+  pageKey: string | undefined,
+  groupId: SectionGroupId | null,
+  tenantSectionOverrides?: { groups?: Record<string, string>; pages?: Record<string, string> },
+): string {
+  if (!pageKey && !groupId) return '';
+
+  // 1. Tenant per-page override
+  if (pageKey && tenantSectionOverrides?.pages?.[pageKey]?.trim()) {
+    return tenantSectionOverrides.pages[pageKey].trim();
+  }
+
+  // 2. Tenant group override
+  if (groupId && tenantSectionOverrides?.groups?.[groupId]?.trim()) {
+    return tenantSectionOverrides.groups[groupId].trim();
+  }
+
+  // 3. Code per-page hint
+  if (pageKey && PAGE_KEY_HINTS[pageKey]?.trim()) {
+    return PAGE_KEY_HINTS[pageKey].trim();
+  }
+
+  // 4. Code group default
+  if (groupId) {
+    return SECTION_GROUP_DEFAULTS[groupId] ?? '';
+  }
+
+  return '';
+}

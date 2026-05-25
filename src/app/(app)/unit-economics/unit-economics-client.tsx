@@ -49,6 +49,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import type { BlockInstance } from '@/lib/blocks/types';
 import { cn } from '@/lib/utils';
+import { SectionAiButton } from '@/components/blocks/section-ai-button';
 
 export type ClientTab = {
   id: string;
@@ -174,9 +175,14 @@ export function UnitEconomicsClient({
             Маржа, P&amp;L и окупаемость товаров на маркетплейсах
           </p>
         </div>
-        <Button size="sm" variant="outline" onClick={() => setShowCreate(true)}>
-          <Plus /> Новая вкладка
-        </Button>
+        <div className="flex items-center gap-1.5">
+          {activeTab && (
+            <SectionAiButton pageKey={activeTab.pageKey} pageLabel="Юнит-экономика" />
+          )}
+          <Button size="sm" variant="outline" onClick={() => setShowCreate(true)}>
+            <Plus /> Новая вкладка
+          </Button>
+        </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-1 border-b border-border/40 pb-0">

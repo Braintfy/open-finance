@@ -7,6 +7,7 @@ import { BarChart3 } from 'lucide-react';
 import { BlockGrid } from '@/components/blocks/block-grid';
 import type { BlockInstance } from '@/lib/blocks/types';
 import { SyncAllButton } from '@/components/marketplaces/sync-all-button';
+import { SectionAiButton } from '@/components/blocks/section-ai-button';
 
 export function MarketplacesOzonClient({
   tenantId,
@@ -30,7 +31,10 @@ export function MarketplacesOzonClient({
             </p>
           </div>
         </div>
-        <SyncAllButton />
+        <div className="flex items-center gap-1.5">
+          <SectionAiButton pageKey="marketplaces-ozon-dashboard" pageLabel="Аналитика Ozon" />
+          <SyncAllButton />
+        </div>
       </div>
       <BlockGrid
         pageKey="marketplaces-ozon-dashboard"

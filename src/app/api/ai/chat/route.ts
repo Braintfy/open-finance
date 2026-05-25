@@ -4,8 +4,8 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { auth } from '@/lib/auth';
-import { getSystemPrompt } from '@/lib/ai/system-prompt';
-import { buildMicroAgentSystemPrompt } from '@/lib/ai/micro-agent/prompt';
+import { resolvePromptStack } from '@/lib/ai/prompt-resolver';
+import { getActiveCredentials } from '@/lib/ai/user-keys';
 import { db } from '@/lib/db/client';
 import { tenants } from '@/lib/db/schema/tenants';
 import { eq } from 'drizzle-orm';
@@ -29,6 +29,12 @@ const BlockContextSchema = z.object({
   blockTitle: z.string().optional(),
   blockData: z.record(z.unknown()).optional(),
   pageKey: z.string().optional(),
+  /** @deprecated используй aiPromptSupplement */
+  aiPrompt: z.string().max(8000).optional(),
+  aiPromptSupplement: z.string().max(500).optional(),
+  publishedValue: z.unknown().optional(),
+  publishedMoney: z.string().optional(),
+  publishedPeriodKey: z.string().optional(),
 }).optional();
 
 const RequestSchema = z.object({
@@ -36,6 +42,7 @@ const RequestSchema = z.object({
   blockContext: BlockContextSchema,
   quickAction: z.enum(['summarize', 'fill_cells', 'calculate', 'extract', 'categorize', 'custom']).optional(),
   model: z.string().optional(),
+  /** @deprecated используй blockContext.aiPromptSupplement */
   blockPrompt: z.string().max(5000).optional(),
 });
 
@@ -290,17 +297,39 @@ export async function POST(req: Request) {
   // Получить tenant settings для system prompt + AI config
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, session.tenantId)).limit(1);
   const tenantSettings = tenant?.settings ?? null;
-  const globalSystemPrompt = getSystemPrompt(tenantSettings);
 
-  // Собрать полный system prompt
-  const systemPrompt = buildMicroAgentSystemPrompt({
-    globalSystemPrompt,
-    blockContext: blockContext ?? undefined,
+  // Резолвим промпт через иерархию (global → section → block-type → supplement)
+  const { systemPrompt } = resolvePromptStack({
+    tenantSettings,
+    pageKey: blockContext?.pageKey,
+    blockType: blockContext?.blockType,
+    blockTitle: blockContext?.blockTitle,
+    blockData: blockContext?.blockData,
+    // Приоритет: blockContext.aiPromptSupplement > legacy blockPrompt > blockContext.aiPrompt
+    aiPromptSupplement: blockContext?.aiPromptSupplement ?? (blockPrompt?.trim() ? blockPrompt : undefined),
+    aiPromptLegacy: blockContext?.aiPrompt,
+    publishedValue: blockContext?.publishedValue,
+    publishedMoney: blockContext?.publishedMoney,
+    publishedPeriodKey: blockContext?.publishedPeriodKey,
+    scope: 'block',
     quickAction: quickAction ?? undefined,
-    blockPrompt: blockPrompt ?? undefined,
   });
 
-  const externalConfig = tenantSettings?.aiExternal;
+  // Резолвим активные credentials (user → tenant → none → Ollama)
+  const activeCreds = session.userId
+    ? await getActiveCredentials(session.userId, session.tenantId, tenantSettings)
+    : null;
+
+  const externalConfig = activeCreds?.source !== 'none' && activeCreds?.enabled
+    ? {
+        enabled: true,
+        provider: activeCreds.provider as 'openai',
+        baseUrl: activeCreds.baseUrl,
+        apiKey: activeCreds.apiKey,
+        defaultModel: activeCreds.defaultModel || 'gpt-4o-mini',
+        useProxy: activeCreds.useProxy,
+      }
+    : tenantSettings?.aiExternal;
   const proxyConfig = tenantSettings?.aiProxy;
   const useExternal =
     tenantSettings?.aiProvider !== 'ollama' &&

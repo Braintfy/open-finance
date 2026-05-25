@@ -36,7 +36,7 @@ export type TenantSettings = {
    */
   aiExternal?: {
     enabled: boolean;
-    provider: 'openai' | 'anthropic' | 'openrouter' | 'vsegpt' | 'custom';
+    provider: 'openai' | 'anthropic' | 'openrouter' | 'vsegpt' | 'deepseek' | 'custom';
     /** Например: https://api.openai.com/v1 — должен заканчиваться на /v1 */
     baseUrl: string;
     /** sk-... — для OpenAI / OpenRouter / VSEGPT / Anthropic / etc */
@@ -59,6 +59,23 @@ export type TenantSettings = {
     username?: string;
     /** Пароль (опционально) */
     password?: string;
+  };
+  /**
+   * Иерархия промптов для AI: разделы, блоки, точечные связи.
+   * Каждый уровень — override поверх code defaults (BLOCK_SKILLS, SECTION_DEFAULTS).
+   * Пустая строка = сброс к дефолту (не сохраняем — DELETE).
+   */
+  aiPrompts?: {
+    sections?: {
+      /** Override текстов для группы разделов (dashboard/finance/marketplaces/unit-economics/inbox/boards) */
+      groups?: Record<string, string>;
+      /** Override для конкретного pageKey (перекрывает group) */
+      pages?: Record<string, string>;
+    };
+    /** Override skill-промпта для типа блока (перекрывает BLOCK_SKILLS[type]) */
+    blocks?: Record<string, string>;
+    /** Override промпта для анализа dependency-tree блока (pointwise анализ связей) */
+    pointwise?: string;
   };
   notifications?: {
     telegram?: boolean;

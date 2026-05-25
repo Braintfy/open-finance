@@ -33,6 +33,7 @@ import { BlockGrid } from '@/components/blocks/block-grid';
 import type { BlockInstance } from '@/lib/blocks/types';
 import type { Board } from '@/lib/db/schema/boards';
 import { boardPageKey } from '@/lib/boards/utils';
+import { SectionAiButton } from '@/components/blocks/section-ai-button';
 
 type Props = {
   tenantId: string;
@@ -167,6 +168,12 @@ export function BoardClient({ tenantId, board, allBoards, initialBlocks }: Props
           <p className="text-xs text-muted-foreground">
             Персональные рабочие пространства с блоками
           </p>
+        </div>
+        <div className="shrink-0">
+          <SectionAiButton
+            pageKey={boardPageKey(currentBoard.id)}
+            pageLabel={currentBoard.name ?? 'Доска'}
+          />
         </div>
       </div>
 

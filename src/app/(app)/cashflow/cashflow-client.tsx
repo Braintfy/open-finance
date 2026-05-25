@@ -5,6 +5,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Plus, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { SectionAiButton } from '@/components/blocks/section-ai-button';
 import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
@@ -65,6 +66,7 @@ export function CashflowClient({
             </p>
           </div>
           <div className="flex shrink-0 gap-1.5">
+            <SectionAiButton pageKey="cashflow" pageLabel="Финансы" />
             <Button variant="outline" size="sm" onClick={() => setShowImport(true)}>
               <Upload /> Импорт
             </Button>

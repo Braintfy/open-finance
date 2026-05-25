@@ -194,9 +194,87 @@ export const PROVIDER_DEFAULTS: Record<
     modelExample: 'openai/gpt-4o-mini',
     signupUrl: 'https://vsegpt.ru/Docs/API',
   },
+  deepseek: {
+    baseUrl: 'https://api.deepseek.com/v1',
+    modelExample: 'deepseek-chat',
+    signupUrl: 'https://platform.deepseek.com/api_keys',
+  },
   custom: {
     baseUrl: '',
     modelExample: '',
     signupUrl: '',
   },
 };
+
+/**
+ * Метаданные провайдера с флагом requiresVpn.
+ * requiresVpn=true — API заблокирован из РФ без VPN.
+ * requiresVpn=false — работает из РФ напрямую.
+ * requiresVpn=null — неизвестно (custom/vsegpt зависит от настройки).
+ */
+export type ProviderMeta = {
+  id: string;
+  label: string;
+  description: string;
+  requiresVpn: boolean | null;
+  category: 'ru' | 'vpn' | 'proxy' | 'custom';
+};
+
+export const PROVIDER_META: ProviderMeta[] = [
+  {
+    id: 'deepseek',
+    label: 'DeepSeek',
+    description: 'DeepSeek-V3/R1. OpenAI-compat API, работает из РФ напрямую.',
+    requiresVpn: false,
+    category: 'ru',
+  },
+  {
+    id: 'yandex',
+    label: 'Yandex GPT',
+    description: 'YandexGPT 5 через Yandex Foundation Models. Российский провайдер.',
+    requiresVpn: false,
+    category: 'ru',
+  },
+  {
+    id: 'gigachat',
+    label: 'GigaChat (Сбер)',
+    description: 'GigaChat Pro/Max от Сбера. OAuth2, работает из РФ.',
+    requiresVpn: false,
+    category: 'ru',
+  },
+  {
+    id: 'vsegpt',
+    label: 'VseGPT',
+    description: 'РФ-проксирование зарубежных моделей. Не требует VPN.',
+    requiresVpn: false,
+    category: 'proxy',
+  },
+  {
+    id: 'openai',
+    label: 'OpenAI (ChatGPT)',
+    description: 'GPT-4o, o1, o3. Требует VPN или прокси из РФ.',
+    requiresVpn: true,
+    category: 'vpn',
+  },
+  {
+    id: 'anthropic',
+    label: 'Anthropic (Claude)',
+    description: 'Claude 3.5/3.7. Требует VPN или прокси из РФ.',
+    requiresVpn: true,
+    category: 'vpn',
+  },
+  {
+    id: 'openrouter',
+    label: 'OpenRouter',
+    description: '300+ моделей через единый API. Требует VPN из РФ.',
+    requiresVpn: true,
+    category: 'vpn',
+  },
+  {
+    id: 'custom',
+    label: 'Свой OpenAI-совместимый API',
+    description: 'Любой OpenAI-compat endpoint (LiteLLM, Ollama remote, LocalAI).',
+    requiresVpn: null,
+    category: 'custom',
+  },
+];

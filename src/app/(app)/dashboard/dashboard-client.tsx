@@ -4,6 +4,7 @@
 import Link from 'next/link';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { BlockGrid } from '@/components/blocks/block-grid';
+import { SectionAiButton } from '@/components/blocks/section-ai-button';
 import {
   CashflowDataProvider,
   type CashflowSummary,
@@ -43,6 +44,9 @@ export function DashboardClient({
               ? 'Сводка за текущий месяц'
               : 'Начните с импорта выписки или добавления первой операции'}
           </p>
+        </div>
+        <div className="shrink-0">
+          <SectionAiButton pageKey="dashboard" pageLabel="Главная" />
         </div>
       </div>
 

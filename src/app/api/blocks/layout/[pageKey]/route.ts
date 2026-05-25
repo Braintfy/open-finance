@@ -41,6 +41,7 @@ const BlockInstanceSchema = z.object({
   appearance: AppearanceSchema,
   dependencies: BlockDependenciesSchema,
   aiPrompt: z.string().max(8000).optional(),
+  aiPromptSupplement: z.string().max(500).optional(),
 });
 
 const PutBody = z.object({

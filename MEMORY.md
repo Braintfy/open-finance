@@ -40,7 +40,7 @@ Context7: `mcp0_resolve-library-id` → `mcp0_query-docs`. Не более 3 в�
 - **Phase 2:** Tauri 2.0 desktop.
 - **Phase 3:** React Native + Expo mobile.
 - **Главная идея:** почти каждая страница = настраиваемый **BlockGrid** (Lego из блоков). Новая фича обычно = новый block type в `src/lib/blocks/catalog/`, а не статичная страница.
-- **Источник правды версии:** `CHANGELOG.md` + `git log` (`package.json` остался на `0.5.0`, не используется). Текущая версия — **v0.23.15** (2026-05-25). UI читает версию через `src/lib/version.ts` (`APP_VERSION`), значение инжектируется в build-time из `CHANGELOG.md` через `next.config.mjs` → `env.NEXT_PUBLIC_APP_VERSION`.
+- **Источник правды версии:** `CHANGELOG.md` + `git log` (`package.json` остался на `0.5.0`, не используется). Текущая версия — **v0.24.0** (2026-05-26). UI читает версию через `src/lib/version.ts` (`APP_VERSION`), значение инжектируется в build-time из `CHANGELOG.md` через `next.config.mjs` → `env.NEXT_PUBLIC_APP_VERSION`.
 
 ## Жёсткие правила
 
@@ -158,10 +158,11 @@ docs/memory-archive/      исторические разделы MEMORY.md (п�
 - **`/admin/ai/{local-models,providers,system-prompt}`** — admin AI.
 - **`/reset-password`** — Suspense + useSearchParams.
 
-## Активные грабли (последние версии v0.21-v0.23)
+## Активные грабли (последние версии v0.21-v0.24)
 
 > Исторические грабли (v0.10-v0.20) — в `docs/memory-archive/`.
 
+- **AI layer (v0.24.0)** — центральный composer `resolvePromptStack()` в `src/lib/ai/prompt-resolver.ts`. 4-уровневая иерархия (global → section → block-skill → user supplement). 28 block skills в `src/lib/ai/prompts/block-skills/`. Per-user ключи в `user_ai_credentials` (таблица, `pnpm db:push`). `getActiveCredentials()` в `src/lib/ai/user-keys.ts` — user > tenant > Ollama. `BlockInstance.aiPromptSupplement` (max 500) — новый user-input; `aiPrompt` deprecated как fallback. AI слой: `/api/ai/chat` использует `resolvePromptStack()` + `getActiveCredentials()`. **Новые провайдеры:** DeepSeek (openai-compat), Yandex GPT (`src/lib/ai/providers/yandex-gpt.ts`), GigaChat OAuth2 (`gigachat.ts`). **Section AI:** `<SectionAiButton>` в headers 6 разделов → `SectionAiDialog` → `POST /api/ai/analyze-section`. `PROVIDER_META[]` содержит `requiresVpn` для UI-ярлыков. Документация: `docs/AI_PROMPT_LAYERS.md`. **Правило: все новые AI-маршруты используют `resolvePromptStack()`, не прямой `buildMicroAgentSystemPrompt()`**.
 - **Block settings UI design system (v0.23.15)** — `src/components/blocks/settings/` содержит shared примитивы (`SettingsToggleRow`, `KopecksRow`, `SettingsSegmented`, `SettingsSliderRow`, `SettingsSection`) и `SourceBlockPicker` (единый пикер с period badge, collapsible cells, lazy loading). Все `SettingsForm` компоненты (computed, sheet, cashflow KPI, stat-custom, chart-cashflow, custom-data) мигрированы. `BlockReferencePicker` перешёл от UUID → labels через `cand.labels[field]`. Одиночный `_sourceBlockPickerCache` вместо двух модульных кэшей. **Правило: в новых SettingsForm — только примитивы из settings/**. README в папке.
 - **Per-cell linking from «Данные» (v0.23.14)** — `custom.data` публикует ячейки как `rowId.colId` поля. `__cellFields` маркер перечисляет ключи. Лимит 200. API route тоже добавляет per-cell поля с `group: 'Ячейки'`. Пикер показывает их в раскрываемой секции «Ячейки». Общий cache `_sourceBlockPickerCache` (из settings/source-block-picker.tsx).
 - **Kopecks convention (v0.23.13)** — Единое правило: все деньги в `useBlockValuePublisher` публикуются в КОПЕЙКАХ (× 100). `formatRublesWithSettings` всегда делит на 100. Нарушители до v0.23.13: `custom-data` (рублёвые колонки), `unit-ozon-kpi` (revenue/ads/aov/cpo), `unit-ozon-campaigns` (expenseRub/ordersRub). Исправлены. `custom-data` дисплей (`formatCustomDataRubles`) принимает рубли без ÷100 — эта цепочка отдельна от publisher-а и остаётся верной. **Правило для новых блоков: если колонка/поле = деньги → × 100 перед публикацией.**
@@ -237,11 +238,21 @@ docs/memory-archive/      исторические разделы MEMORY.md (п�
 
 ## AI Micro-Agent runtime
 
-- `src/app/api/ai/chat/route.ts` — NDJSON streaming, route Ollama vs External, `parseAction()`.
+- `src/app/api/ai/chat/route.ts` — NDJSON streaming, `resolvePromptStack()`, `getActiveCredentials()`, `parseAction()`.
 - `src/components/micro-agent/micro-agent-dialog.tsx` — dialog с streaming, Stop, token counter.
-- `src/lib/ai/providers/{ollama,openai-compat,proxy}.ts` — provider layer.
+- `src/lib/ai/providers/{ollama,openai-compat,proxy,yandex-gpt,gigachat}.ts` — provider layer.
+- `src/lib/ai/prompt-resolver.ts` — `resolvePromptStack()` (все AI-routes).
+- `src/lib/ai/user-keys.ts` — `getActiveCredentials()` (user > tenant > Ollama).
+- `src/lib/ai/sections.ts` — 6 SECTION_GROUPS + `resolveSectionGroup()`.
+- `src/lib/ai/prompts/` — block-skills (28 типов), section-defaults, pointwise.
+- `src/components/blocks/section-ai-button.tsx` + `section-ai-dialog.tsx` — AI Анализ раздела.
+- `src/app/api/ai/analyze-section/route.ts` — section analysis NDJSON stream.
+- `src/app/(app)/settings/ai/` — per-user AI настройки (ключи).
+- `src/app/api/ai/credentials/route.ts` — CRUD per-user ключей.
 - События: `start`, `token`, `done`, `error`, `aborted`.
-- Приоритет: `instance.aiPrompt > legacy config.blockPrompt > inline в диалоге`.
+- Приоритет промптов: `aiPromptSupplement (max 500) > aiPrompt (deprecated) > legacy config.blockPrompt`.
+- Приоритет credentials: `user_ai_credentials (enabled) > tenants.settings.aiExternal > Ollama`.
+- `parseAction()` понимает fenced/unfenced JSON, `update_block`, `create_block`, `text_only`.
 - `parseAction()` понимает fenced/unfenced JSON, `update_block`, `create_block`, `text_only`.
 
 ## Marketplace Integrations (краткая навигация)

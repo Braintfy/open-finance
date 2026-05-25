@@ -204,6 +204,8 @@ export function SettingsClient({
 
       <IntegrationsLink />
 
+      <AiSettingsLink />
+
       <FormatSection />
     </div>
   );
@@ -224,6 +226,29 @@ function IntegrationsLink() {
           <div className="truncate text-sm font-medium">Маркетплейсы (Ozon, …)</div>
           <div className="truncate text-[11px] text-muted-foreground">
             Подключить Seller API для синхронизации цен, остатков и комиссий
+          </div>
+        </div>
+        <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+      </Link>
+    </section>
+  );
+}
+
+function AiSettingsLink() {
+  return (
+    <section>
+      <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+        AI
+      </div>
+      <Link
+        href="/settings/ai"
+        className="flex items-center gap-3 rounded-lg border bg-card px-3 py-3 transition-colors hover:bg-muted/40"
+      >
+        <Sparkles className="h-4 w-4 shrink-0 text-primary" />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-medium">AI Настройки</div>
+          <div className="truncate text-[11px] text-muted-foreground">
+            Подключить свои API ключи (DeepSeek, Yandex GPT, GigaChat и другие)
           </div>
         </div>
         <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />

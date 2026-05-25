@@ -21,7 +21,7 @@ import { BlockChrome } from './block-chrome';
 import { AddBlockDialog, type AddBlockResult } from './add-block-dialog';
 import { BlockSettingsDialog } from './block-settings-dialog';
 import { BlockSizeProvider } from './block-size';
-import { BlockValuesProvider } from '@/lib/blocks/values';
+import { BlockValuesProvider, BlockValuesContext } from '@/lib/blocks/values';
 import {
   PagePeriodContext,
   PagePeriodProvider,
@@ -392,6 +392,7 @@ function BlockGridInner({
   periodPanelDescription,
 }: Props) {
   const [blocks, setBlocks] = useState<BlockInstance[]>(() => sanitizeBlocks(initialBlocks));
+  const blockValuesApi = useContext(BlockValuesContext);
   const [editMode, setEditMode] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
@@ -1013,18 +1014,32 @@ function BlockGridInner({
         blockContext={aiBlockId ? (() => {
           const target = blocks.find((b) => b.id === aiBlockId);
           const def = target ? getBlockDef(target.type) : undefined;
-          // Приоритет master-промпта: instance.aiPrompt > legacy config.blockPrompt (ai.micro-agent)
+          // Приоритет: aiPromptSupplement > legacy aiPrompt > config.blockPrompt (ai.micro-agent)
           const legacyPrompt =
             target?.type === 'ai.micro-agent' && typeof target?.config?.blockPrompt === 'string'
               ? (target.config.blockPrompt as string)
               : undefined;
+          // Live values из BlockValuesStore (если блок публикует значения)
+          const liveOutput = aiBlockId ? (() => {
+            try {
+              // BlockValuesContext доступен через useContext только в хуках —
+              // используем уже подключённый blockValuesApi из хука ниже
+              return blockValuesApi?.get().values.get(aiBlockId);
+            } catch { return undefined; }
+          })() : undefined;
           return {
             blockId: aiBlockId,
             blockType: target?.type,
             blockTitle: target?.appearance?.title ?? def?.displayName,
             blockData: target?.config as Record<string, unknown> | undefined,
             pageKey,
+            aiPromptSupplement: target?.aiPromptSupplement,
             aiPrompt: target?.aiPrompt ?? legacyPrompt,
+            publishedValue: liveOutput ? Object.fromEntries(
+              Object.entries(liveOutput).filter(([k]) => !k.startsWith('__'))
+            ) : undefined,
+            publishedMoney: typeof liveOutput?.__money === 'string' ? liveOutput.__money : undefined,
+            publishedPeriodKey: typeof liveOutput?.__periodKey === 'string' ? liveOutput.__periodKey : undefined,
           } satisfies BlockContext;
         })() : undefined}
         onApply={applyAiAction}

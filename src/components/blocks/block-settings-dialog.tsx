@@ -168,8 +168,12 @@ export function BlockSettingsDialog({
               blockTypeLabel={def.displayName}
               blockType={def.type}
               value={instance.aiPrompt ?? ''}
-              onChange={(aiPrompt) =>
+              supplementValue={instance.aiPromptSupplement ?? ''}
+              onChangeCompat={(aiPrompt) =>
                 onChange({ aiPrompt: aiPrompt.length > 0 ? aiPrompt : undefined })
+              }
+              onChangeSupplement={(supplement) =>
+                onChange({ aiPromptSupplement: supplement.length > 0 ? supplement.slice(0, 500) : undefined })
               }
             />
           )}
@@ -483,56 +487,94 @@ function SizeRow({
 // AI / Master prompt
 // ============================================================================
 
-const PROMPT_TIPS: Record<string, string> = {
-  'custom.data':
-    'AI получит таблицу с label-колонкой и N value-колонок. Подскажи модель, какие данные тут хранятся, и как заполнять/пересчитывать строки.',
-  sheet:
-    'AI получит формулы и значения ячеек. Опиши назначение таблицы и допустимые операции.',
-  'excel.cell':
-    'AI получит формулу ячейки и связанные блоки. Опиши, какое значение должна вычислять ячейка.',
-  'ai.micro-agent':
-    'Базовый промпт ассистента. Описывай тон, фокус и формат ответов AI для этого блока.',
-};
+/** Ленивая загрузка BLOCK_SKILLS — избегаем server/client bundle проблем */
+function useBlockSkill(blockType: string): string {
+  // Синхронно читаем из глобального реестра через динамический import невозможно в sync коде,
+  // поэтому используем встроенную таблицу типов из block-capabilities (уже в client bundle).
+  // Полный BLOCK_SKILLS доступен только на сервере — для UI достаточно подсказки по типу.
+  const SKILL_HINTS: Record<string, string> = {
+    'stat.income': 'Анализирует входящие транзакции, сравнивает периоды, выявляет аномалии.',
+    'stat.expense': 'Анализирует расходы, находит крупные статьи, предлагает оптимизацию.',
+    'stat.balance': 'Анализирует баланс (доходы − расходы), тренды cash flow.',
+    'stat.custom': 'KPI с фильтрами по категории/контрагенту. Сравнивает с бенчмарками.',
+    'cashflow.top-categories': 'Топ категорий расходов/доходов. Выявляет основные статьи.',
+    'cashflow.transactions': 'Список операций. Помогает с категоризацией и поиском.',
+    'chart.cashflow': 'Временные ряды денежного потока. Находит сезонность и тренды.',
+    'kpi.grid': 'Настраиваемая сетка KPI с ячейками и формулами.',
+    'sheet': 'Excel-таблица с ячейками и формулами. Помогает писать =SUM, =AVG и т.д.',
+    'excel.cell': 'Одна ячейка с формулой или значением. Проверяет формульные цепочки.',
+    'custom.data': 'Многоколоночная таблица данных (Notion-style). Формулы и привязки.',
+    'computed.sum': 'Агрегирует данные из других блоков (sum/avg/min/max/formula).',
+    'unit.ozon-kpi': 'KPI Ozon: выручка, заказы, ДРР, AOV, CPO. Сравнивает периоды.',
+    'unit.ozon-analytics': 'Per-SKU аналитика Ozon. Находит лучшие и худшие товары.',
+    'unit.ozon-campaigns': 'Рекламные кампании Ozon. ROI, расходы, эффективность.',
+    'unit.ozon-chart': 'Временные ряды Ozon. Выявляет тренды и аномалии.',
+    'unit.ozon-calculator': 'Калькулятор юнит-экономики SKU. Маржа, ROI, точка безубыточности.',
+    'unit.ozon-abc': 'ABC-анализ SKU по выручке. Приоритизация ассортимента.',
+    'unit.yandex-calculator': 'Юнит-экономика Яндекс Маркет. Сравнивает с Ozon.',
+    'inbox.channel-feed': 'Лента входящих писем. Категоризация и распознавание документов.',
+    'currency.rates': 'Курсы ЦБ. Конвертации, влияние на бизнес-показатели.',
+    'ai.micro-agent': 'AI-ассистент. Описывай тон, фокус и формат ответов для этого блока.',
+  };
+  return SKILL_HINTS[blockType] ?? `Помогает анализировать данные блока типа «${blockType}».`;
+}
 
 function AiPromptForm({
   blockTypeLabel,
   blockType,
   value,
-  onChange,
+  supplementValue,
+  onChangeCompat,
+  onChangeSupplement,
 }: {
   blockTypeLabel: string;
   blockType: string;
+  /** @deprecated legacy aiPrompt */
   value: string;
-  onChange: (next: string) => void;
+  supplementValue: string;
+  /** @deprecated onChange для legacy поля */
+  onChangeCompat: (next: string) => void;
+  onChangeSupplement: (next: string) => void;
 }) {
-  const tip = PROMPT_TIPS[blockType];
-  const len = value.length;
-  const approxTokens = Math.ceil(len / 4);
+  const masterSkill = useBlockSkill(blockType);
+  const len = supplementValue.length;
+  const MAX = 500;
+  const nearLimit = len > MAX * 0.8;
+  const overLimit = len > MAX;
+
+  const hasLegacy = value.trim().length > 0 && supplementValue.trim().length === 0;
 
   return (
-    <div className="space-y-3">
-      <div className="flex items-start gap-2 rounded-md border border-primary/20 bg-primary/5 p-2.5 text-[11px] text-muted-foreground">
-        <Sparkles className="mt-0.5 h-3 w-3 shrink-0 text-primary" />
-        <div className="min-w-0">
-          <div className="text-xs font-medium text-foreground">Master-промпт блока</div>
-          <p className="mt-0.5 text-[11px] leading-snug">
-            Добавляется к каждому AI-запросу из этого блока. Описывай назначение блока, тон,
-            формат ответов. Глобальные дефолты по типу — в будущей итерации.
-          </p>
+    <div className="space-y-4">
+      {/* Секция 1: Master (read-only) */}
+      <div className="rounded-md border border-primary/20 bg-primary/5 p-3">
+        <div className="flex items-start gap-2">
+          <Sparkles className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-xs font-semibold text-foreground">Универсальный навык блока</div>
+              <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground">read-only</span>
+            </div>
+            <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{masterSkill}</p>
+            <p className="mt-1 text-[10px] text-muted-foreground/70">
+              Тип: <code className="rounded bg-muted px-1 font-mono text-[9px]">{blockType}</code>
+              {' · '}Задаётся администратором в AI Настройках
+            </p>
+          </div>
         </div>
       </div>
 
-      <div className="space-y-1">
+      {/* Секция 2: User supplement */}
+      <div className="space-y-1.5">
         <div className="flex items-center justify-between gap-2">
-          <Label htmlFor="block-prompt" className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-            Текст промпта
+          <Label htmlFor="block-supplement" className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            Ваше дополнение
           </Label>
-          {value.length > 0 && (
+          {supplementValue.length > 0 && (
             <button
               type="button"
-              onClick={() => onChange('')}
+              onClick={() => onChangeSupplement('')}
               className="inline-flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground"
-              title="Очистить и использовать шаблон по умолчанию"
             >
               <RotateCcw className="h-3 w-3" />
               Сбросить
@@ -540,29 +582,52 @@ function AiPromptForm({
           )}
         </div>
         <textarea
-          id="block-prompt"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          rows={9}
-          placeholder={
-            tip ??
-            `Доп. инструкция для AI при работе с блоком "${blockTypeLabel}". Что хранится, как считать, в каком тоне отвечать.`
-          }
+          id="block-supplement"
+          value={supplementValue}
+          onChange={(e) => onChangeSupplement(e.target.value)}
+          rows={5}
+          maxLength={MAX + 50}
+          placeholder={`Доп. инструкция для AI при работе с блоком "${blockTypeLabel}". До ${MAX} символов.`}
           className="w-full resize-y rounded-md border border-input bg-background px-3 py-2 font-mono text-[12px] leading-relaxed shadow-sm focus:outline-none focus:ring-1 focus:ring-primary"
         />
         <div className="flex items-center justify-between text-[10px] text-muted-foreground">
-          <span>
-            Тип <code className="rounded bg-muted px-1 font-mono text-[9px]">{blockType}</code>
-          </span>
-          <span className="tabular-nums">
-            {len} симв · ≈{approxTokens} токенов
+          <span>Добавляется поверх навыка блока в каждый AI-запрос</span>
+          <span className={`tabular-nums ${overLimit ? 'text-destructive font-semibold' : nearLimit ? 'text-orange-500' : ''}`}>
+            {len}/{MAX}
           </span>
         </div>
+        {overLimit && (
+          <p className="text-[10px] text-destructive">Превышен лимит {MAX} символов. Текст будет обрезан при сохранении.</p>
+        )}
       </div>
 
-      {tip && (
-        <div className="rounded-md border border-border/50 bg-muted/30 p-2 text-[11px] leading-snug text-muted-foreground">
-          <span className="font-medium text-foreground">Подсказка:</span> {tip}
+      {/* Секция 3: Legacy migration notice */}
+      {hasLegacy && (
+        <div className="rounded-md border border-orange-200 bg-orange-50 p-2.5 text-[11px] dark:border-orange-900 dark:bg-orange-950">
+          <div className="font-medium text-orange-800 dark:text-orange-300">Устаревший промпт</div>
+          <p className="mt-0.5 text-orange-700 dark:text-orange-400">
+            У этого блока есть старый промпт. Он используется как fallback. Перенесите его в поле «Ваше дополнение» выше и очистите старый через сброс ниже.
+          </p>
+          <div className="mt-1.5">
+            <button
+              type="button"
+              onClick={() => {
+                onChangeSupplement(value.slice(0, MAX));
+                onChangeCompat('');
+              }}
+              className="text-[10px] font-medium text-orange-700 underline underline-offset-2 hover:text-orange-900 dark:text-orange-400"
+            >
+              Перенести в дополнение →
+            </button>
+            {' · '}
+            <button
+              type="button"
+              onClick={() => onChangeCompat('')}
+              className="text-[10px] text-orange-600 underline underline-offset-2 hover:text-orange-800 dark:text-orange-500"
+            >
+              Удалить старый
+            </button>
+          </div>
         </div>
       )}
     </div>
