@@ -529,15 +529,14 @@ export function resolveShowKopecks(
 /**
  * Блочный default для showKopecks в custom.data:
  *   `true/false` — явная настройка блока;
- *   `null` / `undefined` — **показывать дробную часть** (Excel-like default).
- * Глобальная настройка `useFormatSettings` на блок не влияет — только KPI/кэшфлоу.
+ *   `null` / `undefined` — наследует глобальную настройку (как KPI/кэшфлоу блоки).
  */
 export function resolveBlockShowKopecks(
   blockShowKopecks: boolean | null | undefined,
-  _globalShowKopecks: boolean,
+  globalShowKopecks: boolean,
 ): boolean {
   if (typeof blockShowKopecks === 'boolean') return blockShowKopecks;
-  return true;
+  return globalShowKopecks;
 }
 
 /**
@@ -1420,9 +1419,15 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
     ...Object.fromEntries(
       config.columns
         .filter((c) => c.publish !== false)
-        .map((c) => [c.id, aggregates[c.id] ?? 0]),
+        // Money values published in KOPECKS (× 100) to match the global convention.
+        // Display formatting uses formatCustomDataRubles (÷100-free) so it is unaffected.
+        .map((c) => [c.id, c.format === 'rubles' ? (aggregates[c.id] ?? 0) * 100 : (aggregates[c.id] ?? 0)]),
     ),
-    value: primaryColumn ? aggregates[primaryColumn.id] ?? 0 : 0,
+    value: primaryColumn
+      ? (primaryColumn.format === 'rubles'
+          ? (aggregates[primaryColumn.id] ?? 0) * 100
+          : (aggregates[primaryColumn.id] ?? 0))
+      : 0,
     count: config.rows.length,
     label: title,
     __money: moneyFlag,

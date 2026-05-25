@@ -176,9 +176,9 @@ function mergeLiveFields(
   return { ...block, fields: Array.from(byName.values()) };
 }
 
-function previewSourceValue(field: SourceField): string {
+function previewSourceValue(field: SourceField, showKopecks: boolean): string {
   if (field.value === null || field.value === undefined) return '—';
-  if (field.format === 'money' && typeof field.value === 'number') return formatKopecksValue(field.value, true);
+  if (field.format === 'money' && typeof field.value === 'number') return formatKopecksValue(field.value, showKopecks);
   return String(field.value).slice(0, 16);
 }
 
@@ -683,7 +683,7 @@ function RenderExcelCell({ instance, onConfigChange }: BlockRenderProps) {
                               </div>
                               <div className="flex flex-wrap gap-1">
                                 {block.fields.filter((f) => f.name !== 'label' && f.name !== 'raw').map((field) => {
-                                  const preview = previewSourceValue(field);
+                                  const preview = previewSourceValue(field, showKopecks);
                                   return (
                                     <button
                                       key={field.name}
@@ -716,6 +716,8 @@ function RenderExcelCell({ instance, onConfigChange }: BlockRenderProps) {
 
 function ExcelCellSettings({ config, onChange }: BlockSettingsFormProps) {
   const parsed = parseConfig(config);
+  const { settings: globalSettings } = useFormatSettings();
+  const showKopecks = parsed.showKopecks ?? globalSettings.showKopecks;
   const availableBlocks = useAvailableBlockSources();
   const liveValues = useAllBlockValues();
   const [linkPickerOpen, setLinkPickerOpen] = useState(false);
@@ -884,7 +886,7 @@ function ExcelCellSettings({ config, onChange }: BlockSettingsFormProps) {
                               </div>
                               <div className="flex flex-wrap gap-1">
                                 {block.fields.filter((f) => f.name !== 'label' && f.name !== 'raw').map((field) => {
-                                  const preview = previewSourceValue(field);
+                                  const preview = previewSourceValue(field, showKopecks);
                                   return (
                                     <button
                                       key={field.name}

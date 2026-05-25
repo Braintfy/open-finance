@@ -237,16 +237,18 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
     prevAds > 0 ? Math.round(((currAds - prevAds) / prevAds) * 1000) / 10 : 0;
 
   useBlockValuePublisher(instance.id, {
-    value: currRevenue,
-    revenue: currRevenue,
+    // Money fields published in KOPECKS (× 100) — global convention.
+    // StatCard displays use rubles directly from data (not from this publisher).
+    value: currRevenue * 100,
+    revenue: currRevenue * 100,
     orders: currOrders,
-    ads: currAds,
+    ads: currAds * 100,
     drr: data?.current.drrPct ?? 0,
-    aov: data?.current.aovRub ?? 0,
-    cpo: data?.current.cpoRub ?? 0,
-    revenuePrev: prevRevenue,
+    aov: (data?.current.aovRub ?? 0) * 100,
+    cpo: (data?.current.cpoRub ?? 0) * 100,
+    revenuePrev: prevRevenue * 100,
     ordersPrev: prevOrders,
-    adsPrev: prevAds,
+    adsPrev: prevAds * 100,
     deltaRevenuePct,
     deltaOrdersPct,
     deltaAdsPct,

@@ -191,10 +191,11 @@ function RenderOzonCampaigns({ instance }: BlockRenderProps) {
     statsAreAccountWide: false,
   };
   useBlockValuePublisher(instance.id, {
-    value: summary.expenseRub,
-    totalExpenseRub: summary.expenseRub,
+    // Money fields published in KOPECKS (× 100) — global convention.
+    value: summary.expenseRub * 100,
+    totalExpenseRub: summary.expenseRub * 100,
     totalOrders: summary.orders,
-    totalOrdersRub: summary.ordersRub,
+    totalOrdersRub: summary.ordersRub * 100,
     avgDrrPct: summary.drrPct,
     campaignsCount: data?.rows.length ?? 0,
     activeCampaignsCount: (data?.rows ?? []).filter((r) => r.state?.includes('RUNNING')).length,
