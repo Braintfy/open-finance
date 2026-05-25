@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { z } from 'zod';
 import { AlertTriangle, Info, LineChart as LineIcon, Lock, SlidersHorizontal } from 'lucide-react';
-import { useBlockValuePublisher } from '@/lib/blocks/values';
+import { useBlockValuePublisher, formatPeriodKey } from '@/lib/blocks/values';
 import { useBlockPeriod } from '@/lib/blocks/use-block-period';
 import { useBlockSize } from '@/components/blocks/block-size';
 import { Card } from '@/components/ui/card';
@@ -440,6 +440,7 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
     __labels:
       'value=Выручка / период,revenue=Выручка / период,ads=Реклама / период,' +
       'orders=Заказы / период,drr=ДРР %',
+    __periodKey: formatPeriodKey(period),
   });
 
   const enabledCount = Object.values(config.visibleSeries).filter(Boolean).length;

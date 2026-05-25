@@ -123,7 +123,17 @@ function RenderComputedSum({ instance }: BlockRenderProps) {
     [instance.dependencies?.sources],
   );
 
-  const { value, sourceValues, missing } = useBlockDependencyResult(instance.dependencies);
+  // Wire config.expression → formulaExpression: SettingsForm writes config.expression,
+  // but useBlockDependencyResult reads deps.formulaExpression — bridge them here.
+  const effectiveDeps = useMemo(() => {
+    if (!instance.dependencies) return undefined;
+    return {
+      ...instance.dependencies,
+      formulaExpression: instance.dependencies.formulaExpression ?? cfg.expression,
+    };
+  }, [instance.dependencies, cfg.expression]);
+
+  const { value, sourceValues, missing } = useBlockDependencyResult(effectiveDeps);
 
   // Format selection
   const effectiveFormat: 'rub' | 'int' | 'percent' =

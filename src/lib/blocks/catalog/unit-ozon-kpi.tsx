@@ -23,7 +23,7 @@ import {
 } from '@/components/blocks/period-picker';
 import { OzonAccountSelector } from '@/components/marketplaces/ozon-account-selector';
 import { OzonSyncSection } from '@/components/unit-economics/ozon-sync-section';
-import { useBlockValuePublisher } from '@/lib/blocks/values';
+import { useBlockValuePublisher, formatPeriodKey } from '@/lib/blocks/values';
 import { useBlockPeriod } from '@/lib/blocks/use-block-period';
 import { Lock } from 'lucide-react';
 import type {
@@ -257,6 +257,7 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
       'adsPrev=Реклама / прошлый период,deltaRevenuePct=Δ Выручка %,' +
       'deltaOrdersPct=Δ Заказы %,deltaAdsPct=Δ Реклама %',
     __money: 'value,revenue,ads,aov,cpo,revenuePrev,adsPrev',
+    __periodKey: formatPeriodKey(period),
   });
 
   return (

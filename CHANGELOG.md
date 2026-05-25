@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.23.12] - 2026-05-25
+
+Block Relations: глобальная реактивность, защита от циклов, теги периода в модалке связей.
+
+### Fixed
+
+- **`excel-cell.tsx`, `sheet.tsx` — критический баг stale-данных в формулах.** При вычислении `@blockId.field` снимок из `config.blockRefs` перекрывал живое значение из reactive store — данные не обновлялись после изменения источника. Фикс: инверсия приоритета (`liveValues[name] ?? val ?? null`); live-значение всегда выигрывает, снимок — только fallback когда блок-источник не смонтирован.
+- **`computed.tsx` — формула не применялась.** `SettingsForm` пишет в `config.expression`, но `useBlockDependencyResult` читал `deps.formulaExpression` (разные поля → формула игнорировалась, блок делал sum). Фикс: `effectiveDeps` с `formulaExpression: deps.formulaExpression ?? cfg.expression`.
+
+### Added
+
+- **`values.tsx` — вторичная защита от рекурсивных цепочек.** `inFlightRef: Set<string>` блокирует повторную публикацию того же блока в рамках одного синхронного вызова (дополнение к первичной `shallowEqual`-защите). Очищается через `queueMicrotask`.
+- **`values.tsx` — `formatPeriodKey(period)` утилита.** Форматирует период в строку `"30d"` / `"7d"` / `"custom:…"` для публикации через `__periodKey` конвенцию.
+- **`values.tsx` — `periodKey` в `useAvailableBlockSources()`.** Хук теперь возвращает `periodKey: string | null` для каждого источника, читая `__periodKey` из опубликованных значений.
+- **Теги периода в 5 блоках.** `unit-ozon-analytics`, `unit-ozon-kpi`, `unit-ozon-campaigns`, `unit-ozon-chart`, `cashflow.transactions`, `cashflow.kpi` публикуют `__periodKey: formatPeriodKey(period)` — период виден в любом консьюмере.
+- **`block-reference-picker.tsx` — тег периода источника.** В списке кандидатов (добавить связь) и в списке выбранных связей рядом с именем источника отображается sky-бейдж с периодом (напр. `30d`), если источник его публикует.
+- **`block-relations-overlay.tsx` — тег периода на стрелке.** SVG-бейдж sky-цвета с периодом отображается на средней точке стрелки связи, если блок-источник публикует `__periodKey`. При наличии label-пилюли сдвигается ниже неё.
+
 ## [0.23.11] - 2026-05-25
 
 PagePeriodHeader: переход от sticky-полосы к компактным inline-кнопкам в тулбаре.

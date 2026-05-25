@@ -26,7 +26,7 @@ import {
 } from '@/components/blocks/period-picker';
 import { OzonAccountSelector } from '@/components/marketplaces/ozon-account-selector';
 import { useMarketplaceAccounts } from '@/lib/marketplaces/use-accounts';
-import { useBlockValuePublisher } from '@/lib/blocks/values';
+import { useBlockValuePublisher, formatPeriodKey } from '@/lib/blocks/values';
 import { useBlockPeriod } from '@/lib/blocks/use-block-period';
 import { autoColumnWidth } from '@/lib/blocks/auto-column-width';
 import type {
@@ -205,6 +205,7 @@ function RenderOzonCampaigns({ instance }: BlockRenderProps) {
       'avgDrrPct=Средний ДРР (%),campaignsCount=Всего кампаний,' +
       'activeCampaignsCount=Активных кампаний',
     __money: 'value,totalExpenseRub,totalOrdersRub',
+    __periodKey: formatPeriodKey(period),
   });
 
   // Фильтр «только активные» + сортировка по выбранной колонке.

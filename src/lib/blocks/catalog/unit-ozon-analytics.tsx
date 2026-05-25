@@ -6,7 +6,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useBlockValuePublisher } from '@/lib/blocks/values';
+import { useBlockValuePublisher, formatPeriodKey } from '@/lib/blocks/values';
 import {
   BarChart3,
   Check,
@@ -283,6 +283,7 @@ function RenderOzonAnalytics({ instance, onConfigChange }: BlockRenderProps) {
       'top1Name=Название топ-1 SKU,top1Drr=ДРР топ-1 SKU %,' +
       'top1Ads=Реклама топ-1 SKU,avgDrr=Средний ДРР по SKU %,' +
       'maxDrr=Максимальный ДРР %,totalStockValueRub=Стоимость остатков',
+    __periodKey: formatPeriodKey(blockPeriod),
   });
 
   const handleExport = useCallback(() => {

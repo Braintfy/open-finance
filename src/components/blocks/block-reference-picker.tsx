@@ -158,6 +158,7 @@ export function BlockReferencePicker({ value, config, selfBlockId, allBlocks, bl
               const label =
                 src.label ?? blockLabels?.[src.blockId] ?? `Блок ${src.blockId.slice(0, 8)}`;
               const field = src.field ?? 'value';
+              const srcPeriodKey = available.find((a) => a.blockId === src.blockId)?.periodKey ?? null;
               return (
                 <div
                   key={`${src.blockId}:${field}`}
@@ -174,6 +175,11 @@ export function BlockReferencePicker({ value, config, selfBlockId, allBlocks, bl
                       <span className="shrink-0 rounded bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
                         {field}
                       </span>
+                      {srcPeriodKey && (
+                        <span className="shrink-0 rounded bg-sky-50 px-1 py-0.5 text-[10px] text-sky-600 dark:bg-sky-950/50 dark:text-sky-400">
+                          {srcPeriodKey}
+                        </span>
+                      )}
                     </div>
                     <div className="mt-0.5 truncate text-[10px] text-muted-foreground">
                       Используется в типе вычисления «{AGGREGATIONS.find((a) => a.value === aggregation)?.label}»
@@ -222,11 +228,16 @@ export function BlockReferencePicker({ value, config, selfBlockId, allBlocks, bl
                     >
                       <div className="mb-1 flex items-center justify-between gap-2 text-xs">
                         <span className="flex items-center gap-1 truncate font-medium">
-                        {(createsCycle || isCyclic) && (
-                          <AlertTriangle className="h-3 w-3 shrink-0 text-amber-500" />
-                        )}
-                        {label}
-                      </span>
+                          {(createsCycle || isCyclic) && (
+                            <AlertTriangle className="h-3 w-3 shrink-0 text-amber-500" />
+                          )}
+                          {label}
+                          {cand.periodKey && (
+                            <span className="shrink-0 rounded bg-sky-50 px-1 py-0.5 text-[10px] font-normal text-sky-600 dark:bg-sky-950/50 dark:text-sky-400">
+                              {cand.periodKey}
+                            </span>
+                          )}
+                        </span>
                         {createsCycle && <span className="shrink-0 text-[10px] text-amber-600">цикл</span>}
                       </div>
                       <div className="flex flex-wrap gap-1">

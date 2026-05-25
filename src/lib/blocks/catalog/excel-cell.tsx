@@ -357,7 +357,8 @@ function RenderExcelCell({ instance, onConfigChange }: BlockRenderProps) {
       });
     });
     Object.entries(config.blockRefs ?? {}).forEach(([name, val]) => {
-      result[name] = val ?? liveValues[name] ?? null;
+      // Live store always wins — snapshot is fallback for when source block isn't mounted yet
+      result[name] = liveValues[name] ?? val ?? null;
     });
     if (overrideEnabled) {
       Object.entries(overrideValues).forEach(([k, v]) => {

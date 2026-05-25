@@ -9,7 +9,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { ExternalLink } from 'lucide-react';
 import type { BlockInstance } from '@/lib/blocks/types';
 import { collectBlockRelationEdges } from '@/lib/blocks/relations';
@@ -18,6 +18,7 @@ import {
   useCrossPageRelations,
   type CrossPageLink,
 } from '@/lib/blocks/use-cross-page-relations';
+import { BlockValuesContext } from '@/lib/blocks/values';
 
 type Props = {
   blocks: BlockInstance[];
@@ -149,8 +150,16 @@ const ANCHOR_R = 4;
 /** Минимальный gap между низом anchor-кружочка и верхом треугольника. */
 const ANCHOR_TRI_GAP = 6;
 
+/** Сокращённое отображение периода для SVG-бейджа на стрелке. */
+function shortenPeriodKey(key: string): string {
+  if (!key.startsWith('custom:')) return key;
+  // "custom:2026-05-01:2026-05-25" → "custom"
+  return 'custom';
+}
+
 export function BlockRelationsOverlay({ blocks, currentPageKey, containerRef, highlighted }: Props) {
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const valuesApi = useContext(BlockValuesContext);
   const [tick, setTick] = useState(0);
   const edgesRef = useRef<PositionedEdge[]>([]);
   const boxesRef = useRef<BlockBox[]>([]);
@@ -312,10 +321,17 @@ export function BlockRelationsOverlay({ blocks, currentPageKey, containerRef, hi
           const isCrossPage =
             !!edge.pageKey && !!currentPageKey && edge.pageKey !== currentPageKey;
           const isDataSource = edge.kind === 'data-source';
-          // Толще для data-source чтобы прочитывалось как «источник», +
-          // пунктир для cross-page (соответствует логике маркеров cross-page).
           const strokeWidth = isDataSource ? 2.5 : 2;
           const dashArray = isCrossPage ? '6 4' : undefined;
+
+          // Period badge: show if source block publishes __periodKey
+          const rawPeriodKey = valuesApi?.get().values.get(edge.fromId)?.__periodKey;
+          const periodDisplay = typeof rawPeriodKey === 'string' && rawPeriodKey
+            ? shortenPeriodKey(rawPeriodKey) : null;
+          const periodBadgeW = periodDisplay ? Math.max(28, periodDisplay.length * 6 + 8) : 0;
+          // Offset: period badge sits below the edge label (if any) or centered at midY
+          const labelOffset = edge.label ? 18 : 0;
+
           return (
             <g key={`e-${edge.fromId}-${edge.toId}-${i}`}>
               <path
@@ -352,6 +368,30 @@ export function BlockRelationsOverlay({ blocks, currentPageKey, containerRef, hi
                     style={{ fontSize: 10, fontWeight: 600 }}
                   >
                     {edge.label}
+                  </text>
+                </g>
+              )}
+              {periodDisplay && (
+                <g>
+                  <rect
+                    x={midX - periodBadgeW / 2}
+                    y={midY - 8 + labelOffset}
+                    width={periodBadgeW}
+                    height="15"
+                    rx="7"
+                    fill="#0ea5e9"
+                    fillOpacity={0.88}
+                    stroke="white"
+                    strokeWidth={0.5}
+                  />
+                  <text
+                    x={midX}
+                    y={midY + 4 + labelOffset}
+                    textAnchor="middle"
+                    fill="white"
+                    style={{ fontSize: 9, fontWeight: 700 }}
+                  >
+                    {periodDisplay}
                   </text>
                 </g>
               )}

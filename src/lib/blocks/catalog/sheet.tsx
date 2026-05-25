@@ -678,7 +678,8 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
     });
     const refs = cfg.blockRefs ?? {};
     Object.entries(refs).forEach(([name, val]) => {
-      result[name] = val ?? liveValues[name] ?? null;
+      // Live store always wins — snapshot is fallback for when source block isn't mounted yet
+      result[name] = liveValues[name] ?? val ?? null;
     });
     return result;
     // eslint-disable-next-line react-hooks/exhaustive-deps

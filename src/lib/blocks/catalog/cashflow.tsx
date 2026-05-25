@@ -45,7 +45,7 @@ import { useCashflowData, type CashflowTx } from './cashflow-data';
 import { TransactionDialog } from './transaction-dialog';
 import { resolveIconWithAnimation } from '../icon-resolver';
 import { useBlockDensity } from '@/components/blocks/block-size';
-import { useBlockValuePublisher } from '../values';
+import { useBlockValuePublisher, formatPeriodKey } from '../values';
 import { useEffectivePeriod } from '../page-period-context';
 import { useBlockPeriod } from '../use-block-period';
 import { useEffectiveSource } from '../page-source-context';
@@ -404,6 +404,7 @@ function StatKpiBlock(props: {
     label: title,
     __money: 'value,valuePrev',
     __labels: `value=Сумма за период,valuePrev=Прошлый период,deltaPct=Изменение %,count=Кол-во операций`,
+    __periodKey: formatPeriodKey(period),
   });
 
   const delta: StatCardDelta | null =
@@ -1545,6 +1546,7 @@ function RenderTransactionsList({ instance }: BlockRenderProps) {
      * Все поля nullable; `null` означает «не фильтровать».
      */
     __txFilters: txFilters,
+    __periodKey: formatPeriodKey(effectivePeriod),
   });
 
   async function deleteOne(id: string) {

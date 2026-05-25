@@ -48,17 +48,25 @@ export const BlockValuesContext = createContext<StoreApi | null>(null);
 export function BlockValuesProvider({ children }: { children: ReactNode }) {
   const storeRef = useRef<Store>({ values: new Map(), version: 0 });
   const listenersRef = useRef<Set<() => void>>(new Set());
+  // Cycle guard: prevents a block from publishing twice in the same synchronous call stack.
+  // Primary protection is shallowEqual (unchanged value → no notification); this is secondary.
+  const inFlightRef = useRef<Set<string>>(new Set());
 
   const api = useMemo<StoreApi>(
     () => ({
       get: () => storeRef.current,
       publish: (blockId, output) => {
+        // Secondary cycle guard — same block can't publish twice in one sync propagation
+        if (inFlightRef.current.has(blockId)) return;
         const prev = storeRef.current.values.get(blockId);
-        // Skip if values unchanged (shallow compare) — избегаем лишних ре-рендеров
+        // Primary protection: skip if values unchanged (shallow compare)
         if (prev && shallowEqual(prev, output)) return;
+        inFlightRef.current.add(blockId);
         storeRef.current.values.set(blockId, output);
         storeRef.current.version += 1;
         listenersRef.current.forEach((l) => l());
+        // Clear guard after current call stack settles (microtask)
+        queueMicrotask(() => inFlightRef.current.delete(blockId));
       },
       unpublish: (blockId) => {
         if (!storeRef.current.values.has(blockId)) return;
@@ -278,6 +286,8 @@ export function useAvailableBlockSources(): Array<{
   fields: string[];
   labels: Record<string, string>;
   moneyFields: Set<string>;
+  /** Период источника, если опубликован через __periodKey (напр. «30d», «7d», «custom:…»). */
+  periodKey: string | null;
 }> {
   const api = useContext(BlockValuesContext);
   const [, setTick] = useState(0);
@@ -293,10 +303,32 @@ export function useAvailableBlockSources(): Array<{
     fields: Object.keys(output).filter((field) => !field.startsWith('__')),
     labels: parseLabelsString(output.__labels),
     moneyFields: parseMoneyString(output.__money),
+    periodKey: typeof output.__periodKey === 'string' && output.__periodKey ? output.__periodKey : null,
   }));
 }
 
 function parseMoneyString(raw: unknown): Set<string> {
   if (typeof raw !== 'string' || raw.length === 0) return new Set();
   return new Set(raw.split(',').map((s) => s.trim()).filter(Boolean));
+}
+
+/**
+ * Форматирует ключ периода для публикации в __periodKey.
+ * Convention: блоки с периодом публикуют __periodKey чтобы модалка связей
+ * показывала тег периода рядом с источником (например «30d», «7d», «custom:…»).
+ *
+ * Использование в блоке:
+ * ```tsx
+ * useBlockValuePublisher(instance.id, { value: ..., __periodKey: formatPeriodKey(period) });
+ * ```
+ */
+export function formatPeriodKey(period: {
+  preset?: string | null;
+  customFrom?: string | null;
+  customTo?: string | null;
+}): string {
+  if (period.preset && period.preset !== 'custom') return period.preset;
+  const from = period.customFrom ?? '';
+  const to = period.customTo ?? '';
+  return `custom:${from}:${to}`;
 }

@@ -40,7 +40,7 @@ Context7: `mcp0_resolve-library-id` → `mcp0_query-docs`. Не более 3 в�
 - **Phase 2:** Tauri 2.0 desktop.
 - **Phase 3:** React Native + Expo mobile.
 - **Главная идея:** почти каждая страница = настраиваемый **BlockGrid** (Lego из блоков). Новая фича обычно = новый block type в `src/lib/blocks/catalog/`, а не статичная страница.
-- **Источник правды версии:** `CHANGELOG.md` + `git log` (`package.json` остался на `0.5.0`, не используется). Текущая версия — **v0.23.6** (2026-05-25). UI читает версию через `src/lib/version.ts` (`APP_VERSION`), значение инжектируется в build-time из `CHANGELOG.md` через `next.config.mjs` → `env.NEXT_PUBLIC_APP_VERSION`.
+- **Источник правды версии:** `CHANGELOG.md` + `git log` (`package.json` остался на `0.5.0`, не используется). Текущая версия — **v0.23.12** (2026-05-25). UI читает версию через `src/lib/version.ts` (`APP_VERSION`), значение инжектируется в build-time из `CHANGELOG.md` через `next.config.mjs` → `env.NEXT_PUBLIC_APP_VERSION`.
 
 ## Жёсткие правила
 
@@ -161,6 +161,11 @@ docs/memory-archive/      исторические разделы MEMORY.md (п�
 ## Активные грабли (последние версии v0.21-v0.23)
 
 > Исторические грабли (v0.10-v0.20) — в `docs/memory-archive/`.
+
+- **Block relations stale data ИСПРАВЛЕНО (v0.23.12)** — В `excel-cell.tsx` и `sheet.tsx` при вычислении `@block.field` ссылок, `config.blockRefs` содержит числовой snapshot сохранённый при связывании. Раньше snapshot перекрывал live значение (`val ?? liveValues[name]`). Фикс: `liveValues[name] ?? val ?? null` — live всегда выигрывает. Snapshot остаётся для fallback когда блок-источник не смонтирован.
+- **computed.tsx formulaExpression ИСПРАВЛЕНО (v0.23.12)** — SettingsForm сохраняет формулу в `config.expression`, но `useBlockDependencyResult` читал `deps.formulaExpression`. Через `effectiveDeps` в `RenderComputedSum` они объединены: `formulaExpression: deps.formulaExpression ?? cfg.expression`. Теперь formula aggregation работает.
+- **`__periodKey` конвенция (v0.23.12)** — Блоки с периодом публикуют `__periodKey: formatPeriodKey(period)` через `useBlockValuePublisher`. `useAvailableBlockSources()` возвращает `periodKey: string | null`. Picker и overlay отображают тег. Добавить в новые period-блоки.
+- **Cycle protection в BlockValuesStore (v0.23.12)** — `inFlightRef: Set<string>` предотвращает повторную publish того же blockId в одном sync-call. Primary — `shallowEqual`. Вместе: A→B→A зацикливание невозможно т.к. значения не меняются → shallowEqual breaks the chain; edge case sync recursion — inFlightRef.
 
 - **Recharts `<YAxis hide>` всё ещё резервирует ширину (v0.23.6)** — `hide=true` НЕ убирает `width` из layout. По умолчанию Recharts резервирует 56px даже для скрытой оси. Если в чарте несколько скрытых осей с одной стороны (`unit.ozon-chart`: `rubRight` + `orders` + `aov`), они в сумме сожрут весь правый gutter и видимая ось (pct) уедет за viewport блока. Фикс — в `src/components/blocks/chart-shell.tsx` width: `ax.hide ? 0 : (ax.width ?? 56)`. **Правило: для любых hide:true осей передавать ширину 0 в layout-движок Recharts.**
 - **`PeriodPicker.collapsed` (v0.23.6)** — для in-block headers использовать `<PeriodPicker collapsed compact>`. Свёрнутый режим — одна кнопка `[Calendar] <preset-label> ↓` с Popover'ом всех пресетов. Без `collapsed` 6 chips + Произвольный (~700px) на узких блоках выдавливают granularity / metrics / KPI-бейджи на вторую строку. SettingsForm — без `collapsed` (горизонтального места там хватает).
