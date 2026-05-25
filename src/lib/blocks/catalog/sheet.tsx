@@ -19,8 +19,6 @@ import {
   Palette,
   Trash2,
   Ban,
-  ChevronDown,
-  ChevronRight,
 } from 'lucide-react';
 import { z } from 'zod';
 import type { BlockDef, BlockRenderProps, BlockSettingsFormProps } from '../types';
@@ -50,9 +48,15 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover';
-import { useBlockValuePublisher, BlockValuesContext, useAvailableBlockSources } from '../values';
+import { useBlockValuePublisher, BlockValuesContext } from '../values';
 import { useBlockDensity } from '@/components/blocks/block-size';
 import { useFormatSettings, formatRublesWithSettings } from '@/lib/format-settings';
+import {
+  SourceBlockPicker,
+  _sourceBlockPickerCache,
+} from '@/components/blocks/settings/source-block-picker';
+import type { SourceField, SourceBlock, SourcePage } from '@/components/blocks/settings/types';
+import { KopecksRow, SettingsToggleRow, SettingsSliderRow } from '@/components/blocks/settings/primitives';
 import FormulaParser, { MAX_ROW, MAX_COLUMN } from 'fast-formula-parser';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
@@ -176,39 +180,13 @@ function getHighlight(value: string | null | undefined) {
 type SheetCfg = z.infer<typeof SheetConfig>;
 type HeaderCell = z.infer<typeof HeaderCellSchema>;
 
-type BlockSourceField = {
-  name: string;
-  label: string;
-  value: number | string | null;
-  format?: 'money' | 'number' | 'text';
-  group?: string;
-};
+/** Legacy aliases — use shared types from settings everywhere else. */
+type BlockSourceField = SourceField;
+type BlockSourceBlock = SourceBlock;
+type BlockSourcePage = SourcePage;
 
-/** Module-level cache for /api/blocks/sources — avoids refetch on every dialog open. */
-const _sheetSourcePagesCache: { data: BlockSourcePage[] | null } = { data: null };
-
-type BlockSourceBlock = {
-  blockId: string;
-  pageKey: string;
-  pageLabel: string;
-  type: string;
-  typeLabel: string;
-  category: string;
-  label: string;
-  fields: BlockSourceField[];
-};
-
-type BlockSourcePage = {
-  pageKey: string;
-  pageLabel: string;
-  blocks: BlockSourceBlock[];
-};
-
-type BlockSourceGroup = {
-  id: string;
-  label: string;
-  count: number;
-};
+/** Shared cache alias */
+const _sheetSourcePagesCache = _sourceBlockPickerCache;
 
 // ============================================================================
 // Helpers
@@ -281,54 +259,6 @@ function formatPlainNumber(value: number): string {
 
 function formatKopecksValue(value: number, showKopecks: boolean): string {
   return formatRublesWithSettings(value, showKopecks).replace(/\s?₽$/, '');
-}
-
-function sourceFieldLabel(field: string): string {
-  if (field === 'value') return 'Значение';
-  if (field === 'count') return 'Количество';
-  if (field === 'sum') return 'Сумма';
-  return field;
-}
-
-function moneyFieldSet(blockId: string, values: Record<string, number | string | null>): Set<string> {
-  const raw = values[`${blockId}.__money`];
-  return new Set(String(raw ?? '').split(',').map((field) => field.trim()).filter(Boolean));
-}
-
-function cellFieldSet(blockId: string, values: Record<string, number | string | null>): Set<string> {
-  const raw = values[`${blockId}.__cellFields`];
-  if (!raw || typeof raw !== 'string') return new Set();
-  return new Set(raw.split(',').map((f) => f.trim()).filter(Boolean));
-}
-
-function mergeLiveFields(
-  block: BlockSourceBlock,
-  liveFields: string[] | undefined,
-  liveValues: Record<string, number | string | null>,
-  liveLabels?: Record<string, string>,
-): BlockSourceBlock {
-  if (!liveFields) return block;
-  const moneyFields = moneyFieldSet(block.blockId, liveValues);
-  const cellFields = cellFieldSet(block.blockId, liveValues);
-  const byName = new Map(block.fields.map((field) => [field.name, field]));
-  liveFields.forEach((name) => {
-    const key = name === 'value' ? block.blockId : `${block.blockId}.${name}`;
-    const current = byName.get(name);
-    byName.set(name, {
-      name,
-      label: liveLabels?.[name] ?? current?.label ?? sourceFieldLabel(name),
-      value: liveValues[key] ?? current?.value ?? null,
-      format: moneyFields.has(name) ? 'money' : current?.format,
-      group: current?.group ?? (cellFields.has(name) ? 'Ячейки' : undefined),
-    });
-  });
-  return { ...block, fields: Array.from(byName.values()) };
-}
-
-function previewSourceValue(field: BlockSourceField, showKopecks: boolean): string {
-  if (field.value === null || field.value === undefined) return '—';
-  if (field.format === 'money' && typeof field.value === 'number') return formatKopecksValue(field.value, showKopecks);
-  return String(field.value).slice(0, 16);
 }
 
 function formatComputedValue(value: number | string, money: boolean, showKopecks: boolean): string {
@@ -623,19 +553,7 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
   const [editingHeaderId, setEditingHeaderId] = useState<string | null>(null);
   /** Inline picker для @block mentions */
   const [blockPickerOpen, setBlockPickerOpen] = useState(false);
-  const [blockSearch, setBlockSearch] = useState('');
-  const [selectedSourceGroup, setSelectedSourceGroup] = useState('all');
   const [sourcePages, setSourcePages] = useState<BlockSourcePage[]>(() => _sheetSourcePagesCache.data ?? []);
-  const [sourceLoading, setSourceLoading] = useState(false);
-  const [expandedBlocks, setExpandedBlocks] = useState<Set<string>>(new Set());
-  const toggleExpandBlock = useCallback((blockId: string) => {
-    setExpandedBlocks((prev) => {
-      const next = new Set(prev);
-      if (next.has(blockId)) next.delete(blockId);
-      else next.add(blockId);
-      return next;
-    });
-  }, []);
   const [colWidths, setColWidths] = useState<number[]>(
     () => cfg.colWidths ?? Array(cfg.cols).fill(DEFAULT_COL_WIDTH)
   );
@@ -685,8 +603,6 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
   const accent = instance.appearance?.accentColor;
 
   // Собираем blockValues: сначала cfg.blockRefs (статические), затем live values из reactive store
-  // Reactive list of available block sources (for @mention picker)
-  const availableBlocks = useAvailableBlockSources();
   const liveValues = useAllBlockValues();
   const blockValues: Record<string, number | string | null> = useMemo(() => {
     const result: Record<string, number | string | null> = { ...liveValues };
@@ -709,6 +625,7 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveValues, cfg.blockRefs, sourcePages]);
 
+  // Fetch cross-page sources into shared cache when picker opens (for formula eval too)
   useEffect(() => {
     if (!blockPickerOpen) return;
     if (_sheetSourcePagesCache.data) {
@@ -716,7 +633,6 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
       return;
     }
     let cancelled = false;
-    setSourceLoading(true);
     fetch('/api/blocks/sources')
       .then((r) => r.json())
       .then((data) => {
@@ -725,86 +641,12 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
           setSourcePages(data.pages as BlockSourcePage[]);
         }
       })
-      .catch(() => {
-        if (!cancelled) setSourcePages([]);
-      })
-      .finally(() => {
-        if (!cancelled) setSourceLoading(false);
-      });
+      .catch(() => {})
+      .finally(() => {});
     return () => {
       cancelled = true;
     };
   }, [blockPickerOpen]);
-
-  const blockSourcePages = useMemo<BlockSourcePage[]>(() => {
-    const liveById = new Map(availableBlocks.map((block) => [block.blockId, block.fields]));
-    const labelsById = new Map(availableBlocks.map((block) => [block.blockId, block.labels]));
-    const liveBlocks: BlockSourceBlock[] = availableBlocks.map((b) => {
-      const cellFields = cellFieldSet(b.blockId, liveValues);
-      const moneyFields = moneyFieldSet(b.blockId, liveValues);
-      return {
-        blockId: b.blockId,
-        pageKey: 'current',
-        pageLabel: 'Текущая страница',
-        type: 'live',
-        typeLabel: 'Live block',
-        category: 'Текущая страница',
-        label: String(liveValues[`${b.blockId}.label`] ?? `Блок ${b.blockId.slice(0, 8)}`),
-        fields: b.fields.map((field) => ({
-          name: field,
-          label: b.labels[field] ?? sourceFieldLabel(field),
-          value: liveValues[field === 'value' ? b.blockId : `${b.blockId}.${field}`] ?? null,
-          format: moneyFields.has(field) ? 'money' as const : undefined,
-          group: cellFields.has(field) ? 'Ячейки' : undefined,
-        })),
-      };
-    });
-    const pages = sourcePages.map((page) => ({
-      ...page,
-      blocks: page.blocks
-        .filter((block) => block.blockId !== instance.id)
-        .map((block) => mergeLiveFields(
-          block,
-          liveById.get(block.blockId),
-          liveValues,
-          labelsById.get(block.blockId),
-        )),
-    }));
-    const hasLivePage = liveBlocks.length > 0;
-    return hasLivePage
-      ? [{ pageKey: 'current', pageLabel: 'Текущая страница', blocks: liveBlocks }, ...pages]
-      : pages;
-  }, [availableBlocks, liveValues, sourcePages, instance.id]);
-
-  const sourceGroups = useMemo<BlockSourceGroup[]>(() => {
-    const total = blockSourcePages.reduce((acc, page) => acc + page.blocks.length, 0);
-    return [
-      { id: 'all', label: 'Все блоки', count: total },
-      ...blockSourcePages
-        .filter((page) => page.blocks.length > 0)
-        .map((page) => ({
-          id: `page:${page.pageKey}`,
-          label: page.pageLabel,
-          count: page.blocks.length,
-        })),
-    ];
-  }, [blockSourcePages]);
-
-  const filteredSourcePages = useMemo(() => {
-    const q = blockSearch.trim().toLowerCase();
-    return blockSourcePages
-      .map((page) => ({
-        ...page,
-        blocks: page.blocks.filter((block) => {
-          if (selectedSourceGroup.startsWith('page:') && selectedSourceGroup.slice(5) !== page.pageKey) return false;
-          if (!q) return true;
-          const blockText = [page.pageLabel, block.category, block.typeLabel, block.label, block.blockId].join(' ').toLowerCase();
-          if (blockText.includes(q)) return true;
-          return block.fields.some((f) => f.label.toLowerCase().includes(q));
-        }),
-      }))
-      .filter((page) => page.blocks.length > 0);
-  }, [blockSearch, blockSourcePages, selectedSourceGroup]);
 
   // Вычисляем все ячейки
   const evaluatedCells = useMemo(() => {
@@ -1192,7 +1034,6 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
     }
 
     setBlockPickerOpen(false);
-    setBlockSearch('');
     openingBlockPickerRef.current = false;
     setTimeout(() => {
       input?.focus();
@@ -1814,139 +1655,12 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
                   Выберите блок, поле или ячейку — ссылка будет добавлена в формулу
                 </DialogDescription>
               </DialogHeader>
-              <div className="grid min-h-[320px] grid-cols-[180px_minmax(0,1fr)]">
-                <aside className="border-r border-border/60 bg-muted/20">
-                  <div className="border-b border-border/40 px-3 py-2">
-                    <Input
-                      placeholder="Поиск..."
-                      value={blockSearch}
-                      onChange={(e) => setBlockSearch(e.target.value)}
-                      className="h-7 text-xs"
-                    />
-                  </div>
-                  <div className="space-y-0.5 p-2">
-                    {sourceGroups.map((group) => (
-                      <button
-                        key={group.id}
-                        type="button"
-                        onClick={() => setSelectedSourceGroup(group.id)}
-                        className={
-                          'flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-xs transition ' +
-                          (selectedSourceGroup === group.id
-                            ? 'bg-background font-medium text-foreground shadow-sm ring-1 ring-border/70'
-                            : 'text-muted-foreground hover:bg-background/60 hover:text-foreground')
-                        }
-                      >
-                        <span className="truncate">{group.label}</span>
-                        <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{group.count}</span>
-                      </button>
-                    ))}
-                  </div>
-                </aside>
-                <div className="max-h-[420px] overflow-y-auto">
-                  {filteredSourcePages.length === 0 ? (
-                    <p className="py-12 text-center text-xs text-muted-foreground">
-                      {sourceLoading ? 'Загружаю источники…' : 'Нет доступных блоков.'}
-                    </p>
-                  ) : (
-                    <div>
-                      {filteredSourcePages.map((page) => (
-                        <section key={page.pageKey}>
-                          <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-border/40 bg-muted/30 px-3 py-1.5">
-                            <span className="text-[11px] font-semibold text-muted-foreground">{page.pageLabel}</span>
-                            {sourceLoading && page.pageKey !== 'current' && (
-                              <span className="text-[10px] text-muted-foreground/60">загрузка…</span>
-                            )}
-                          </div>
-                          {page.blocks.map((block) => {
-                            const periodKey = typeof liveValues[`${block.blockId}.__periodKey`] === 'string'
-                              ? (liveValues[`${block.blockId}.__periodKey`] as string) : null;
-                            const mainFields = block.fields.filter(
-                              (f) => f.name !== 'label' && f.name !== 'raw' && f.group !== 'Ячейки',
-                            );
-                            const cellFields = block.fields.filter((f) => f.group === 'Ячейки');
-                            const hasCells = cellFields.length > 0;
-                            const isExpanded = expandedBlocks.has(block.blockId);
-                            return (
-                              <div
-                                key={`${block.pageKey}:${block.blockId}`}
-                                className="border-b border-border/30 px-3 py-2 last:border-b-0"
-                              >
-                                <div className="mb-1.5 flex items-start gap-1">
-                                  <div className="min-w-0">
-                                    <div className="truncate text-xs font-medium text-foreground">{block.label}</div>
-                                    <div className="flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
-                                      <span className="truncate">{block.typeLabel}</span>
-                                      {periodKey && (
-                                        <span className="shrink-0 rounded bg-sky-50 px-1 py-0.5 font-medium text-sky-600 dark:bg-sky-950/50 dark:text-sky-400">
-                                          {periodKey}
-                                        </span>
-                                      )}
-                                    </div>
-                                  </div>
-                                </div>
-                                {mainFields.length > 0 && (
-                                  <div className="flex flex-wrap gap-1">
-                                    {mainFields.map((field) => {
-                                      const preview = previewSourceValue(field, showKopecks);
-                                      return (
-                                        <button
-                                          key={field.name}
-                                          type="button"
-                                          className="inline-flex max-w-[190px] items-center gap-1 rounded px-1.5 py-0.5 text-[11px] ring-1 ring-border/60 transition hover:bg-primary/10 hover:ring-primary/40"
-                                          onClick={() => insertBlockField(block, field)}
-                                          title={`${field.label} = ${preview}`}
-                                        >
-                                          <span className="shrink-0 font-medium text-primary">{field.label}</span>
-                                          <span className="min-w-0 truncate text-muted-foreground">{preview}</span>
-                                        </button>
-                                      );
-                                    })}
-                                  </div>
-                                )}
-                                {hasCells && (
-                                  <div className="mt-1.5">
-                                    <button
-                                      type="button"
-                                      onClick={() => toggleExpandBlock(block.blockId)}
-                                      className="flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] text-muted-foreground transition hover:bg-muted/60 hover:text-foreground"
-                                    >
-                                      {isExpanded
-                                        ? <ChevronDown className="h-3 w-3 shrink-0" />
-                                        : <ChevronRight className="h-3 w-3 shrink-0" />
-                                      }
-                                      <span>Ячейки ({cellFields.length})</span>
-                                    </button>
-                                    {isExpanded && (
-                                      <div className="mt-1 flex flex-wrap gap-1">
-                                        {cellFields.map((field) => {
-                                          const preview = previewSourceValue(field, showKopecks);
-                                          return (
-                                            <button
-                                              key={field.name}
-                                              type="button"
-                                              className="inline-flex max-w-[200px] items-center gap-1 rounded bg-muted/40 px-1.5 py-0.5 text-[11px] ring-1 ring-border/50 transition hover:bg-primary/10 hover:ring-primary/40"
-                                              onClick={() => insertBlockField(block, field)}
-                                              title={`${field.label} = ${preview}`}
-                                            >
-                                              <span className="shrink-0 font-medium text-primary/80">{field.label}</span>
-                                              <span className="min-w-0 truncate text-muted-foreground">{preview}</span>
-                                            </button>
-                                          );
-                                        })}
-                                      </div>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })}
-                        </section>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
+              <SourceBlockPicker
+                excludeBlockIds={new Set([instance.id])}
+                showKopecks={showKopecks}
+                open={blockPickerOpen}
+                onPick={(block, field) => insertBlockField(block, field)}
+              />
             </DialogContent>
           </Dialog>
           {touchPickMode && (
@@ -2546,104 +2260,36 @@ function SheetSettings({ config, onChange }: BlockSettingsFormProps) {
 
   return (
     <div className="space-y-4">
-      {/* Grid size */}
+      <SettingsSliderRow
+        label="Строк"
+        value={cfg.rows}
+        min={1}
+        max={100}
+        onChange={(v) => set('rows', v)}
+      />
+      <SettingsSliderRow
+        label="Колонок"
+        value={cfg.cols}
+        min={1}
+        max={26}
+        onChange={(v) => set('cols', v)}
+      />
       <div className="space-y-2">
-        <Label>Строк: <span className="tabular-nums">{cfg.rows}</span></Label>
-        <input
-          type="range"
-          min={1}
-          max={100}
-          value={cfg.rows}
-          onChange={(e) => set('rows', Number(e.target.value))}
-          className="w-full accent-primary"
+        <SettingsToggleRow
+          label="Header-строка"
+          description="Ячейки сверху с названием и итогами"
+          checked={cfg.showHeader}
+          onCheckedChange={(v) => set('showHeader', v)}
         />
-      </div>
-      <div className="space-y-2">
-        <Label>Колонок: <span className="tabular-nums">{cfg.cols}</span></Label>
-        <input
-          type="range"
-          min={1}
-          max={26}
-          value={cfg.cols}
-          onChange={(e) => set('cols', Number(e.target.value))}
-          className="w-full accent-primary"
+        <SettingsToggleRow
+          label="Строка формул"
+          description="Показывает формулу активной ячейки"
+          checked={cfg.showFormulaBar}
+          onCheckedChange={(v) => set('showFormulaBar', v)}
         />
+        <KopecksRow value={cfg.showKopecks} onChange={(v) => set('showKopecks', v)} />
       </div>
 
-      {/* Toggles */}
-      <div className="space-y-2">
-        <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
-          <div>
-            <div className="text-xs font-medium">Header-строка</div>
-            <div className="text-[11px] text-muted-foreground">Ячейки сверху с названием и итогами</div>
-          </div>
-          <button
-            type="button"
-            onClick={() => set('showHeader', !cfg.showHeader)}
-            className={
-              'h-5 w-9 rounded-full transition ' +
-              (cfg.showHeader ? 'bg-primary' : 'bg-muted')
-            }
-          >
-            <div
-              className={
-                'h-4 w-4 rounded-full bg-white shadow transition-transform ' +
-                (cfg.showHeader ? 'translate-x-4' : 'translate-x-0.5')
-              }
-            />
-          </button>
-        </div>
-        <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
-          <div>
-            <div className="text-xs font-medium">Строка формул</div>
-            <div className="text-[11px] text-muted-foreground">Показывает формулу активной ячейки</div>
-          </div>
-          <button
-            type="button"
-            onClick={() => set('showFormulaBar', !cfg.showFormulaBar)}
-            className={
-              'h-5 w-9 rounded-full transition ' +
-              (cfg.showFormulaBar ? 'bg-primary' : 'bg-muted')
-            }
-          >
-            <div
-              className={
-                'h-4 w-4 rounded-full bg-white shadow transition-transform ' +
-                (cfg.showFormulaBar ? 'translate-x-4' : 'translate-x-0.5')
-              }
-            />
-          </button>
-        </div>
-        <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
-          <div className="min-w-0">
-            <div className="text-xs font-medium">Показывать копейки</div>
-            <div className="text-[11px] text-muted-foreground">
-              {cfg.showKopecks === null
-                ? 'Используется глобальная настройка'
-                : cfg.showKopecks
-                  ? 'Включено (1 234,56)'
-                  : 'Выключено (1 235)'}
-            </div>
-          </div>
-          <div className="flex items-center gap-1.5">
-            {cfg.showKopecks !== null && (
-              <button
-                type="button"
-                onClick={() => set('showKopecks', null)}
-                className="text-[10px] text-muted-foreground hover:text-foreground"
-              >
-                Сбросить
-              </button>
-            )}
-            <Switch
-              checked={cfg.showKopecks ?? false}
-              onCheckedChange={(v) => set('showKopecks', v)}
-            />
-          </div>
-        </div>
-      </div>
-
-      {/* Info */}
       <div className="rounded-md bg-muted/30 p-2.5 text-[11px] text-muted-foreground space-y-1.5">
         <p className="font-medium text-foreground">Формулы:</p>
         <ul className="space-y-0.5 pl-2">
@@ -2653,9 +2299,7 @@ function SheetSettings({ config, onChange }: BlockSettingsFormProps) {
           <li><code className="rounded bg-muted px-1">=MAX(A:A)</code> — максимум колонки</li>
           <li><code className="rounded bg-muted px-1">=@income</code> — значение из блока</li>
         </ul>
-        <p className="pt-1">
-          Размеры ячеек: перетащите границы колонок/строк в таблице.
-        </p>
+        <p className="pt-1">Размеры ячеек: перетащите границы колонок/строк в таблице.</p>
       </div>
     </div>
   );

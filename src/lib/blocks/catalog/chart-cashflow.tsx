@@ -25,6 +25,7 @@ import type { SourceBinding } from '../types';
 import { Card } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
+import { SettingsSegmented, SettingsToggleRow } from '@/components/blocks/settings/primitives';
 import { ChartShell, type ChartSeries } from '@/components/blocks/chart-shell';
 import {
   PeriodPicker,
@@ -433,44 +434,22 @@ function ChartSettings({ config, onChange }: BlockSettingsFormProps) {
 
       <div className="space-y-1.5">
         <Label>Тип графика</Label>
-        <div className="flex gap-1">
-          {chartTypes.map((t) => (
-            <button
-              key={t.value}
-              type="button"
-              onClick={() => set('chartType', t.value)}
-              className={
-                'inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium transition-colors ' +
-                (cfg.chartType === t.value
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-muted text-muted-foreground hover:bg-accent')
-              }
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
+        <SettingsSegmented
+          value={cfg.chartType}
+          onChange={(v) => set('chartType', v)}
+          options={chartTypes}
+          cols={3}
+        />
       </div>
 
       <div className="space-y-1.5">
         <Label>Группировка</Label>
-        <div className="flex gap-1">
-          {granularityOptions.map((g) => (
-            <button
-              key={g.value}
-              type="button"
-              onClick={() => set('granularity', g.value)}
-              className={
-                'inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium transition-colors ' +
-                (cfg.granularity === g.value
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-muted text-muted-foreground hover:bg-accent')
-              }
-            >
-              {g.label}
-            </button>
-          ))}
-        </div>
+        <SettingsSegmented
+          value={cfg.granularity}
+          onChange={(v) => set('granularity', v)}
+          options={granularityOptions}
+          cols={4}
+        />
         <p className="text-[11px] text-muted-foreground">
           Авто: день для ≤31 дн., неделя ≤120 дн., месяц иначе.
         </p>
@@ -478,79 +457,51 @@ function ChartSettings({ config, onChange }: BlockSettingsFormProps) {
 
       <div className="space-y-1.5">
         <Label>Серии данных</Label>
-        <div className="space-y-1">
+        <div className="space-y-2">
           {(
             [
               { key: 'showIncome' as const, label: 'Доходы', color: INCOME_COLOR },
               { key: 'showExpense' as const, label: 'Расходы', color: EXPENSE_COLOR },
               { key: 'showBalance' as const, label: 'Баланс (накопительный)', color: BALANCE_COLOR },
-            ]
+            ] as const
           ).map((s) => (
-            <label key={s.key} className="flex items-center gap-2 text-xs">
-              <input
-                type="checkbox"
-                checked={cfg[s.key]}
-                onChange={(e) => set(s.key, e.target.checked)}
-                className="accent-primary"
-              />
-              <span
-                className="inline-block h-2 w-2 rounded-full"
-                style={{ backgroundColor: s.color }}
-              />
-              {s.label}
-            </label>
+            <SettingsToggleRow
+              key={s.key}
+              label={s.label}
+              checked={cfg[s.key]}
+              onCheckedChange={(v) => set(s.key, v)}
+            />
           ))}
         </div>
       </div>
 
       <div className="space-y-1.5">
         <Label>Сравнение</Label>
-        <div className="flex gap-1">
-          <button
-            type="button"
-            onClick={() => set('compare', 'none')}
-            className={
-              'inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium transition-colors ' +
-              (cfg.compare === 'none'
-                ? 'bg-primary text-primary-foreground'
-                : 'bg-muted text-muted-foreground hover:bg-accent')
-            }
-          >
-            Нет
-          </button>
-          <button
-            type="button"
-            onClick={() => set('compare', 'prev')}
-            className={
-              'inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium transition-colors ' +
-              (cfg.compare === 'prev'
-                ? 'bg-primary text-primary-foreground'
-                : 'bg-muted text-muted-foreground hover:bg-accent')
-            }
-          >
-            vs прошлый период
-          </button>
-        </div>
+        <SettingsSegmented
+          value={cfg.compare}
+          onChange={(v) => set('compare', v)}
+          options={[
+            { value: 'none' as const, label: 'Нет' },
+            { value: 'prev' as const, label: 'vs прошлый период' },
+          ]}
+          cols={2}
+        />
       </div>
 
       <div className="space-y-1.5">
         <Label>Период</Label>
-        <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
-          <div className="min-w-0">
-            <div className="text-xs font-medium">Использовать период страницы</div>
-            <div className="text-[11px] text-muted-foreground">
-              {cfg.periodOverride === null
-                ? 'Период наследуется от страницы'
-                : `Свой: ${PRESET_LABELS[cfg.periodOverride.preset]}`}
-            </div>
-          </div>
-          <Switch
-            checked={cfg.periodOverride === null}
-            onCheckedChange={(v) =>
-              setOverride(v ? null : { preset: '30d', customFrom: null, customTo: null })
-            }
-          />
-        </div>
+        <SettingsToggleRow
+          label="Использовать период страницы"
+          description={
+            cfg.periodOverride === null
+              ? 'Период наследуется от страницы'
+              : `Свой: ${PRESET_LABELS[cfg.periodOverride.preset]}`
+          }
+          checked={cfg.periodOverride === null}
+          onCheckedChange={(v) =>
+            setOverride(v ? null : { preset: '30d', customFrom: null, customTo: null })
+          }
+        />
         {cfg.periodOverride !== null && (
           <div className="rounded-md border border-border/60 p-2">
             <PeriodPicker

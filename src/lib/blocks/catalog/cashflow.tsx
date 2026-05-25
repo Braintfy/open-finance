@@ -28,6 +28,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
+import { KopecksRow, SettingsToggleRow } from '@/components/blocks/settings/primitives';
 import { Input } from '@/components/ui/input';
 import {
   AlertDialog,
@@ -638,25 +639,18 @@ function KpiSettingsForm({ config, onChange }: BlockSettingsFormProps) {
 
       <div className="space-y-1.5">
         <Label>Период</Label>
-        <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
-          <div className="min-w-0">
-            <div className="text-xs font-medium">Использовать период страницы</div>
-            <div className="text-[11px] text-muted-foreground">
-              {cfg.periodOverride === null
-                ? 'Период наследуется от страницы (Globe)'
-                : `Свой: ${PRESET_LABELS[cfg.periodOverride.preset]}`}
-            </div>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <Globe className="h-3 w-3 text-muted-foreground" />
-            <Switch
-              checked={cfg.periodOverride === null}
-              onCheckedChange={(v) =>
-                setOverride(v ? null : { preset: 'mtd', customFrom: null, customTo: null })
-              }
-            />
-          </div>
-        </div>
+        <SettingsToggleRow
+          label="Использовать период страницы"
+          description={
+            cfg.periodOverride === null
+              ? 'Период наследуется от страницы'
+              : `Свой: ${PRESET_LABELS[cfg.periodOverride.preset]}`
+          }
+          checked={cfg.periodOverride === null}
+          onCheckedChange={(v) =>
+            setOverride(v ? null : { preset: 'mtd', customFrom: null, customTo: null })
+          }
+        />
         {cfg.periodOverride !== null && (
           <div className="rounded-md border border-border/60 p-2">
             <PeriodPicker
@@ -682,36 +676,10 @@ function KpiSettingsForm({ config, onChange }: BlockSettingsFormProps) {
         onChange={(next) => onChange({ ...cfg, sourceOverride: next })}
       />
 
-      <div className="space-y-1.5">
-        <Label>Копейки</Label>
-        <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
-          <div className="min-w-0">
-            <div className="text-xs font-medium">Показывать копейки</div>
-            <div className="text-[11px] text-muted-foreground">
-              {cfg.showKopecks === null
-                ? 'Глобальная настройка'
-                : cfg.showKopecks
-                  ? '1 234,56 ₽'
-                  : '1 235 ₽'}
-            </div>
-          </div>
-          <div className="flex items-center gap-1.5">
-            {cfg.showKopecks !== null && (
-              <button
-                type="button"
-                onClick={() => onChange({ ...cfg, showKopecks: null })}
-                className="text-[10px] text-muted-foreground hover:text-foreground"
-              >
-                Сбросить
-              </button>
-            )}
-            <Switch
-              checked={cfg.showKopecks ?? false}
-              onCheckedChange={(v) => onChange({ ...cfg, showKopecks: v })}
-            />
-          </div>
-        </div>
-      </div>
+      <KopecksRow
+        value={cfg.showKopecks}
+        onChange={(v) => onChange({ ...cfg, showKopecks: v })}
+      />
     </div>
   );
 }

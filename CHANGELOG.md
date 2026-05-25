@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.23.15] - 2026-05-25
+
+Block settings UI design system: единый язык примитивов, переработан BlockReferencePicker (UUID → человекочитаемые лейблы), настройки «Таблица» приведены к стандарту.
+
+### Added
+
+- **`src/components/blocks/settings/`** — новая папка с shared UI примитивами для всех `SettingsForm`:
+  - `primitives.tsx`: `SettingsSection`, `SettingsToggleRow`, `KopecksRow`, `SettingsSegmented`, `SettingsSliderRow`.
+  - `source-field-label.ts`: общие утилиты `sourceFieldLabel`, `previewSourceValue`, `moneyFieldSet`, `cellFieldSet`, `mergeLiveFields`, `sourceFieldIsMoney`.
+  - `source-block-picker.tsx`: `SourceBlockPicker` — единый пикер блоков/полей с боковой панелью, period badge, collapsible «Ячейки», lazy cross-page loading. `useAllBlockValues` хук. Общий `_sourceBlockPickerCache` (кросс-модульный кэш).
+  - `index.ts`: barrel-export всего.
+  - `README.md`: правила использования примитивов для новых блоков.
+
+### Changed
+
+- **`BlockReferencePicker` — UUID → лейблы.** Поля в секции «Добавить связь» теперь показывают `cand.labels[field] ?? sourceFieldLabel(field)` вместо сырых field keys вида `cdf2c4ba-…-23789547.amount`. Переписан на `SourceBlockPicker` (inline mode). `describeFormulaRef` теперь использует live values для человекочитаемых имён блоков. Аггрегации переключаются через shadcn `Button` (единый стиль).
+- **`SheetSettings` — унификация кнопок.** Ручные pill-переключатели `h-5 w-9 rounded-full` → shadcn `SettingsToggleRow` (как в computed/cashflow). Native `<input type="range">` → `SettingsSliderRow`. Копейки → `KopecksRow`.
+- **`excel-cell.tsx` / `sheet.tsx` — пикер @связать.** Большой inline Dialog-picker (~250 строк каждый) заменён на `SourceBlockPicker`. Общий кэш `_sourceBlockPickerCache`, дублирующие хелперы удалены (экономия ~500 строк суммарно).
+- **`ComputedSettingsForm` (Агрегация).** Формат → `SettingsSegmented`, копейки → `KopecksRow`.
+- **`KpiSettingsForm` (Cashflow).** Период-override → `SettingsToggleRow`, копейки → `KopecksRow`.
+- **`StatCustomSettings`.** Метрика → `SettingsSegmented(cols=2)`, источник/период → `SettingsToggleRow`, копейки → `KopecksRow`.
+- **`ChartSettings` (chart-cashflow).** Тип/группировка/сравнение → `SettingsSegmented`, серии данных → `SettingsToggleRow` (вместо native checkboxes).
+- **`CustomDataSettingsForm` (Данные).** Дробная часть → `KopecksRow`.
+
 ## [0.23.14] - 2026-05-25
 
 Picker modal redesign: per-cell linking from «Данные», lazy loading, collapsible cells section, period badge, chip overflow fix.

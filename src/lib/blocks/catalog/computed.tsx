@@ -10,9 +10,9 @@ import { z } from 'zod';
 import type { BlockDef, BlockRenderProps, BlockSettingsFormProps } from '../types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
-import { Switch } from '@/components/ui/switch';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { KopecksRow, SettingsSegmented } from '@/components/blocks/settings/primitives';
 import {
   Popover,
   PopoverContent,
@@ -400,19 +400,17 @@ function ComputedSettingsForm({ config, onChange }: BlockSettingsFormProps) {
 
       <div className="space-y-1.5">
         <Label>Формат вывода</Label>
-        <div className="grid grid-cols-4 gap-1">
-          {(['auto', 'rub', 'int', 'percent'] as const).map((f) => (
-            <Button
-              key={f}
-              type="button"
-              size="sm"
-              variant={cfg.format === f ? 'default' : 'outline'}
-              onClick={() => set('format', f)}
-            >
-              {f === 'auto' ? 'Авто' : f === 'rub' ? '₽' : f === 'int' ? '123' : '%'}
-            </Button>
-          ))}
-        </div>
+        <SettingsSegmented
+          value={cfg.format ?? 'auto'}
+          onChange={(v) => set('format', v)}
+          options={[
+            { value: 'auto' as const, label: 'Авто', hint: 'По типу источников (money/число)' },
+            { value: 'rub' as const, label: '₽' },
+            { value: 'int' as const, label: '123' },
+            { value: 'percent' as const, label: '%' },
+          ]}
+          cols={4}
+        />
         <p className="text-[11px] text-muted-foreground">
           «Авто» — определяется по типу источников (money/число) и aggregation.
         </p>
@@ -432,36 +430,7 @@ function ComputedSettingsForm({ config, onChange }: BlockSettingsFormProps) {
         </p>
       </div>
 
-      <div className="space-y-1.5">
-        <Label>Копейки</Label>
-        <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
-          <div className="min-w-0">
-            <div className="text-xs font-medium">Показывать копейки</div>
-            <div className="text-[11px] text-muted-foreground">
-              {cfg.showKopecks === null
-                ? 'Глобальная настройка'
-                : cfg.showKopecks
-                  ? '1 234,56 ₽'
-                  : '1 235 ₽'}
-            </div>
-          </div>
-          <div className="flex items-center gap-1.5">
-            {cfg.showKopecks !== null && (
-              <button
-                type="button"
-                onClick={() => set('showKopecks', null)}
-                className="text-[10px] text-muted-foreground hover:text-foreground"
-              >
-                Сбросить
-              </button>
-            )}
-            <Switch
-              checked={cfg.showKopecks ?? false}
-              onCheckedChange={(v) => set('showKopecks', v)}
-            />
-          </div>
-        </div>
-      </div>
+      <KopecksRow value={cfg.showKopecks} onChange={(v) => set('showKopecks', v)} />
     </div>
   );
 }

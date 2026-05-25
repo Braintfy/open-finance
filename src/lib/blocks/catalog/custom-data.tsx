@@ -99,6 +99,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
+import { KopecksRow } from '@/components/blocks/settings/primitives';
 import {
   Dialog,
   DialogContent,
@@ -3148,42 +3149,18 @@ function CustomDataSettingsForm({ config, onChange }: BlockSettingsFormProps) {
         </p>
       </div>
 
-      {/* v0.23.3: Дробная часть для всех числовых форматов (рубли/число/процент).
-          Раньше «Копейки (для рублёвых колонок)» — теперь применяется ко всем
-          числовым колонкам. Можно переопределить per-row/per-col через bulk-toolbar. */}
-      <div className="space-y-1.5">
-        <Label>Дробная часть</Label>
-        <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
-          <div className="min-w-0">
-            <div className="text-xs font-medium">Показывать знаки после запятой</div>
-            <div className="text-[11px] text-muted-foreground">
-              {parsed.showKopecks === null || parsed.showKopecks === undefined
-                ? 'По умолчанию (включено)'
-                : parsed.showKopecks
-                  ? 'Включено (1 234,56 ₽ / 12,5%)'
-                  : 'Выключено (1 235 ₽ / 13%)'}
-            </div>
-          </div>
-          <div className="flex items-center gap-1.5">
-            {parsed.showKopecks !== null && parsed.showKopecks !== undefined && (
-              <button
-                type="button"
-                onClick={() => patch({ showKopecks: null })}
-                className="text-[10px] text-muted-foreground hover:text-foreground"
-              >
-                Сбросить
-              </button>
-            )}
-            <Switch
-              checked={parsed.showKopecks ?? true}
-              onCheckedChange={(v) => patch({ showKopecks: v })}
-            />
-          </div>
-        </div>
+      {/* v0.23.3: Дробная часть для всех числовых форматов (рубли/число/процент). */}
+      <div className="space-y-1">
+        <Label className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+          Дробная часть
+        </Label>
+        <KopecksRow
+          value={parsed.showKopecks ?? null}
+          onChange={(v) => patch({ showKopecks: v })}
+        />
         <p className="text-[11px] text-muted-foreground">
-          Применяется ко всем числовым колонкам (рубли / число / процент), а также к числовым
-          результатам формул в text-колонках. Чтобы переопределить для отдельной строки или
-          колонки — выделите её на сетке и используйте кнопку «Десятичные» в верхнем тулбаре.
+          Применяется ко всем числовым колонкам (рубли / число / процент). Переопределить
+          для отдельной строки/колонки — выделите и используйте «Десятичные» в тулбаре.
         </p>
       </div>
 

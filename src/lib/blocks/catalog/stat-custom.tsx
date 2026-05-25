@@ -11,6 +11,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
+import { KopecksRow, SettingsSegmented, SettingsToggleRow } from '@/components/blocks/settings/primitives';
 import { useFormatSettings, formatRublesWithSettings } from '@/lib/format-settings';
 import { useBlockDensity } from '@/components/blocks/block-size';
 import { useBlockValuePublisher } from '../values';
@@ -508,44 +509,33 @@ function StatCustomSettings({ config, onChange }: BlockSettingsFormProps) {
         />
       </div>
 
-      <div className="space-y-2">
+      <div className="space-y-1.5">
         <Label>Что считаем</Label>
-        <div className="grid grid-cols-2 gap-2">
-          {(Object.keys(METRIC_LABELS) as Cfg['metric'][]).map((m) => (
-            <Button
-              key={m}
-              type="button"
-              variant={cfg.metric === m ? 'default' : 'outline'}
-              size="sm"
-              onClick={() => set('metric', m)}
-            >
-              {METRIC_LABELS[m]}
-            </Button>
-          ))}
-        </div>
+        <SettingsSegmented
+          value={cfg.metric}
+          onChange={(v) => set('metric', v)}
+          options={(Object.keys(METRIC_LABELS) as Cfg['metric'][]).map((m) => ({
+            value: m,
+            label: METRIC_LABELS[m],
+          }))}
+          cols={2}
+        />
       </div>
 
       <div className="space-y-1.5">
         <Label>Период</Label>
-        <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
-          <div className="min-w-0">
-            <div className="text-xs font-medium">Использовать период страницы</div>
-            <div className="text-[11px] text-muted-foreground">
-              {cfg.periodOverride === null
-                ? 'Период наследуется от страницы (Globe)'
-                : `Свой: ${PRESET_LABELS[cfg.periodOverride.preset]}`}
-            </div>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <Globe className="h-3 w-3 text-muted-foreground" />
-            <Switch
-              checked={cfg.periodOverride === null}
-              onCheckedChange={(v) =>
-                setOverride(v ? null : { preset: 'mtd', customFrom: null, customTo: null })
-              }
-            />
-          </div>
-        </div>
+        <SettingsToggleRow
+          label="Использовать период страницы"
+          description={
+            cfg.periodOverride === null
+              ? 'Период наследуется от страницы'
+              : `Свой: ${PRESET_LABELS[cfg.periodOverride.preset]}`
+          }
+          checked={cfg.periodOverride === null}
+          onCheckedChange={(v) =>
+            setOverride(v ? null : { preset: 'mtd', customFrom: null, customTo: null })
+          }
+        />
         {cfg.periodOverride !== null && (
           <div className="rounded-md border border-border/60 p-2">
             <PeriodPicker
@@ -597,25 +587,18 @@ function StatCustomSettings({ config, onChange }: BlockSettingsFormProps) {
 
       <div className="space-y-1.5">
         <Label>Источник</Label>
-        <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
-          <div className="min-w-0">
-            <div className="text-xs font-medium">Использовать источник страницы</div>
-            <div className="text-[11px] text-muted-foreground">
-              {cfg.sourceOverride === undefined
-                ? 'Источник наследуется от страницы (Globe)'
-                : cfg.sourceOverride === null
-                  ? 'Свой: все источники'
-                  : `Свой: ${SOURCE_LABELS[cfg.sourceOverride]?.label ?? cfg.sourceOverride}`}
-            </div>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <Globe className="h-3 w-3 text-muted-foreground" />
-            <Switch
-              checked={cfg.sourceOverride === undefined}
-              onCheckedChange={(v) => set('sourceOverride', v ? undefined : null)}
-            />
-          </div>
-        </div>
+        <SettingsToggleRow
+          label="Использовать источник страницы"
+          description={
+            cfg.sourceOverride === undefined
+              ? 'Источник наследуется от страницы'
+              : cfg.sourceOverride === null
+                ? 'Свой: все источники'
+                : `Свой: ${SOURCE_LABELS[cfg.sourceOverride]?.label ?? cfg.sourceOverride}`
+          }
+          checked={cfg.sourceOverride === undefined}
+          onCheckedChange={(v) => set('sourceOverride', v ? undefined : null)}
+        />
         {cfg.sourceOverride !== undefined && (
           <div className="rounded-md border border-border/60 p-2">
             <div className="flex flex-wrap gap-2">
@@ -647,36 +630,7 @@ function StatCustomSettings({ config, onChange }: BlockSettingsFormProps) {
       </div>
 
       {cfg.metric !== 'count' && (
-        <div className="space-y-1.5">
-          <Label>Копейки</Label>
-          <div className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
-            <div className="min-w-0">
-              <div className="text-xs font-medium">Показывать копейки</div>
-              <div className="text-[11px] text-muted-foreground">
-                {cfg.showKopecks === null
-                  ? 'Глобальная настройка'
-                  : cfg.showKopecks
-                    ? '1 234,56 ₽'
-                    : '1 235 ₽'}
-              </div>
-            </div>
-            <div className="flex items-center gap-1.5">
-              {cfg.showKopecks !== null && (
-                <button
-                  type="button"
-                  onClick={() => set('showKopecks', null)}
-                  className="text-[10px] text-muted-foreground hover:text-foreground"
-                >
-                  Сбросить
-                </button>
-              )}
-              <Switch
-                checked={cfg.showKopecks ?? false}
-                onCheckedChange={(v) => set('showKopecks', v)}
-              />
-            </div>
-          </div>
-        </div>
+        <KopecksRow value={cfg.showKopecks} onChange={(v) => set('showKopecks', v)} />
       )}
     </div>
   );
