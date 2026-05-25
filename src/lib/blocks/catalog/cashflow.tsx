@@ -1689,6 +1689,7 @@ function RenderTransactionsList({ instance }: BlockRenderProps) {
               })
             }
             compact
+            collapsed
           />
           {hasActiveFilters && (
             <Button

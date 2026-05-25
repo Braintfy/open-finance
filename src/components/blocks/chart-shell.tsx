@@ -214,7 +214,7 @@ export function ChartShell({
                   fill: ax.colored ? ax.color : 'hsl(var(--muted-foreground))',
                 }}
                 tickFormatter={ax.formatter}
-                width={ax.width ?? 56}
+                width={ax.hide ? 0 : (ax.width ?? 56)}
               />
             ))
           ) : (

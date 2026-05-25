@@ -9,9 +9,10 @@
 'use client';
 
 import { useState } from 'react';
-import { Calendar } from 'lucide-react';
+import { Calendar, ChevronDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 
 export {
   resolvePeriod,
@@ -43,7 +44,22 @@ export type PeriodPickerProps = {
   presets?: PeriodPreset[];
   /** Компактный режим для маленьких блоков. */
   compact?: boolean;
+  /**
+   * Свёрнутый режим: одна кнопка-триггер с label текущего пресета, все
+   * chips и custom-dates рендерятся в Popover. Применяется в in-block
+   * headers (узкие блоки), чтобы 6 chips не выдавливали другие контролы.
+   */
+  collapsed?: boolean;
 };
+
+function describePresetLabel(value: PeriodValue): string {
+  if (value.preset === 'custom') {
+    if (value.customFrom && value.customTo)
+      return `${value.customFrom} → ${value.customTo}`;
+    return 'Произвольный';
+  }
+  return PRESET_LABELS[value.preset];
+}
 
 const DEFAULT_PRESETS: PeriodPreset[] = [
   'today',
@@ -60,8 +76,10 @@ export function PeriodPicker({
   onChange,
   presets = DEFAULT_PRESETS,
   compact = false,
+  collapsed = false,
 }: PeriodPickerProps) {
   const [showCustom, setShowCustom] = useState(value.preset === 'custom');
+  const [popoverOpen, setPopoverOpen] = useState(false);
 
   function selectPreset(preset: PeriodPreset) {
     if (preset === 'custom') {
@@ -71,11 +89,13 @@ export function PeriodPicker({
     }
     setShowCustom(false);
     onChange({ preset });
+    // В collapsed-режиме закрываем popover после выбора пресета.
+    if (collapsed) setPopoverOpen(false);
   }
 
   const size = compact ? 'sm' : 'sm';
 
-  return (
+  const chipsAndCustom = (
     <div className="flex flex-wrap items-center gap-1.5">
       <div className="flex flex-wrap items-center gap-1">
         {presets.map((preset) => {
@@ -143,4 +163,35 @@ export function PeriodPicker({
       )}
     </div>
   );
+
+  if (collapsed) {
+    const triggerLabel = describePresetLabel(value);
+    const triggerTitle =
+      value.preset === 'custom' && value.customFrom && value.customTo
+        ? `Период: ${value.customFrom} → ${value.customTo}`
+        : `Период: ${PRESET_LABELS[value.preset as Exclude<PeriodPreset, 'custom'>] ?? triggerLabel}`;
+    return (
+      <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            title={triggerTitle}
+            className="inline-flex h-7 max-w-[200px] items-center gap-1.5 rounded-md border border-border/60 bg-background px-2 text-[11px] font-medium text-foreground transition-colors hover:bg-accent"
+          >
+            <Calendar className="h-3 w-3 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 flex-1 truncate text-left">{triggerLabel}</span>
+            <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent align="start" sideOffset={6} className="w-[340px] p-2">
+          <div className="mb-1 px-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+            Период
+          </div>
+          {chipsAndCustom}
+        </PopoverContent>
+      </Popover>
+    );
+  }
+
+  return chipsAndCustom;
 }

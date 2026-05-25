@@ -23,6 +23,7 @@ import {
 } from '@/components/blocks/period-picker';
 import { OzonAccountSelector } from '@/components/marketplaces/ozon-account-selector';
 import { OzonSyncSection } from '@/components/unit-economics/ozon-sync-section';
+import { DropdownSelect } from '@/components/unit-economics/dropdown-select';
 import type {
   BlockDef,
   BlockRenderProps,
@@ -41,6 +42,16 @@ const VisibleSeriesSchema = z.object({
   aovRub: z.boolean().default(false),
 });
 
+// Какие оси рисовать видимыми. По умолчанию показываем только выручку (левая)
+// и ДРР% (правая). Остальные — скрыты, но доступны через меню «Метрики».
+const AxisVisibilitySchema = z.object({
+  revenueRub: z.boolean().default(true),
+  adsRub: z.boolean().default(false),
+  orders: z.boolean().default(false),
+  drrPct: z.boolean().default(true),
+  aovRub: z.boolean().default(false),
+});
+
 export const OzonChartBlockConfigSchema = z.object({
   accountId: z.string().nullable().default(null),
   periodPreset: z
@@ -50,6 +61,7 @@ export const OzonChartBlockConfigSchema = z.object({
   customTo: z.string().nullable().default(null),
   granularity: z.enum(['day', 'week', 'month']).default('day'),
   visibleSeries: VisibleSeriesSchema.default({}),
+  axisVisible: AxisVisibilitySchema.default({}),
   chartType: z.enum(['line', 'area', 'bar']).default('line'),
 });
 
@@ -62,12 +74,14 @@ function parseConfig(raw: unknown): OzonChartBlockConfig {
 type SeriesKey = keyof OzonChartBlockConfig['visibleSeries'];
 // Axis IDs:
 //   - rubLeft  : выручка (большой масштаб 100K-1M+)
-//   - rubRight : расход (меньший масштаб 1K-10K) — собственная ось чтобы
-//                линия расхода не сливалась с нулём на фоне выручки
-//   - orders   : заказы (bars в нижней трети, скрытая ось — domain x3)
-//   - pct      : ДРР % (опц. правая, поверх расхода)
-//   - aov      : AOV ₽ (опц. левая, как выручка)
-type AxisId = 'rubLeft' | 'rubRight' | 'orders' | 'pct';
+//   - rubRight : расход (меньший масштаб 1K-10K) — скрытая ось-контейнер
+//                масштаба, чтобы линия расхода не сливалась с нулём.
+//                Цифры читаются в верхнем KPI-badge и tooltip.
+//   - orders   : заказы (bars в нижней трети, скрытая ось — domain x4)
+//   - pct      : ДРР % (опц. правая, видимая)
+//   - aov      : AOV ₽ (опц. скрытая правая ось с независимым domain —
+//                на rubLeft AOV лежит у нуля и не виден).
+type AxisId = 'rubLeft' | 'rubRight' | 'orders' | 'pct' | 'aov';
 
 const SERIES_DEFS: Record<
   SeriesKey,
@@ -83,12 +97,21 @@ const SERIES_DEFS: Record<
   adsRub:     { label: 'Расход ₽',  color: '#ef4444', yAxisId: 'rubRight', isMoney: true, type: 'line' },
   orders:     { label: 'Заказы',    color: '#94a3b8', yAxisId: 'orders',   isMoney: false, type: 'bar' },
   drrPct:     { label: 'ДРР %',     color: '#f59e0b', yAxisId: 'pct',      isMoney: false, type: 'line' },
-  aovRub:     { label: 'Средний чек ₽', color: '#8b5cf6', yAxisId: 'rubLeft', isMoney: true, type: 'line' },
+  aovRub:     { label: 'Средний чек ₽', color: '#8b5cf6', yAxisId: 'aov', isMoney: true, type: 'line' },
 };
 
 function formatRubShort(value: number): string {
   if (Math.abs(value) >= 1_000_000) return (value / 1_000_000).toFixed(1) + 'M';
   if (Math.abs(value) >= 1_000) return (value / 1_000).toFixed(0) + 'K';
+  return Math.round(value).toString();
+}
+
+// Форматтер для AOV-оси: 1 знак после запятой для K-диапазона,
+// иначе 1800/2000/2200 все отображаются одинаково как «2K».
+function formatAovShort(value: number): string {
+  if (Math.abs(value) >= 1_000_000) return (value / 1_000_000).toFixed(1) + 'M';
+  if (Math.abs(value) >= 10_000)    return (value / 1_000).toFixed(0) + 'K';
+  if (Math.abs(value) >= 1_000)     return (value / 1_000).toFixed(1) + 'K';
   return Math.round(value).toString();
 }
 
@@ -226,9 +249,10 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
         type,
         yAxisId: def.yAxisId,
         // adsRub — тонкая линия 2.5px, чтобы выделяться на фоне area.
-        strokeWidth: key === 'adsRub' ? 2.5 : key === 'aovRub' ? 1.5 : 2,
-        // aovRub — пунктир (вторичная метрика).
-        strokeDasharray: key === 'aovRub' ? '4 3' : undefined,
+        strokeWidth: key === 'adsRub' ? 2.5 : 2,
+        // aovRub — пунктир (вторичная метрика): 6px dash / 3px gap — достаточно
+        // длинные штрихи чтобы линия читалась в тонком масштабе.
+        strokeDasharray: key === 'aovRub' ? '6 3' : undefined,
         // Bars для orders — узкие и полупрозрачные, как фон.
         barSize: key === 'orders' ? 6 : undefined,
         fillOpacity: key === 'orders' ? 0.5 : undefined,
@@ -271,6 +295,38 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
     return m;
   }, [visiblePoints]);
 
+  // Domain выручки: оставляем 10% сверху, чтобы area не упиралась в край
+  // и линия AOV (своя ось) визуально не перекрывала верхнюю кромку
+  // выручки.
+  const revenueMax = useMemo(() => {
+    let m = 0;
+    for (const p of visiblePoints) {
+      const v = Number(p.revenueRub ?? 0);
+      if (v > m) m = v;
+    }
+    return m;
+  }, [visiblePoints]);
+
+  // AOV — собственный диапазон, иначе линия лежит у нуля на rubLeft.
+  // Min из ненулевых значений (нули за выходные/праздники сжимают max).
+  const aovRange = useMemo(() => {
+    let min = Number.POSITIVE_INFINITY;
+    let max = 0;
+    for (const p of visiblePoints) {
+      const v = Number(p.aovRub ?? 0);
+      if (v > 0) {
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+    }
+    if (!Number.isFinite(min)) min = 0;
+    if (max === 0) return { min: 0, max: 1 };
+    // 20% padding: гарантирует что тики-крайности (1.8K / 2.4K) не обрежутся
+    // краем оси и линия не прилипает к верхней/нижней границе.
+    const pad = (max - min) * 0.2 || max * 0.15;
+    return { min: Math.max(0, min - pad), max: max + pad };
+  }, [visiblePoints]);
+
   // Y-оси: нейтральные ticks (muted-foreground), без копирования цвета серий.
   // rubLeft (revenue/aov) — main левая ось, rubRight (ads) — собственный
   // масштаб справа (чтобы ads не сливался с нулём), orders — скрытая
@@ -279,61 +335,85 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
     const used = new Set(series.map((s) => s.yAxisId));
     const axes: ChartYAxis[] = [];
     // Адаптивно ужимаем оси на узких блоках:
-    // 52 → 40 (rub) и 40 → 32 (pct), чтобы не съедать пространство чарта.
-    const rubW = tinyAxis ? 40 : 52;
-    const pctW = tinyAxis ? 32 : 40;
+    // 52 → 36 (rub), 40 → 34 (pct) — pct-ось перестаёт уезжать за края.
+    const rubW = tinyAxis ? 36 : 48;
+    const pctW = tinyAxis ? 30 : 34;
     // v0.18.25: цветные оси — каждая ось окрашена в цвет своей основной
-    // серии, что позволяет визуально связать линию с её шкалой без
-    // дополнительных подписей. Подход аналогичен Yoolip Analytics.
+    // серии. Подход аналогичен Yoolip Analytics.
+    // v0.23.5: rubRight (Расход) скрыта — её роль как контейнер
+    // масштаба чтобы линия расхода не сливалась с нулём; цифра расхода
+    // в верхнем KPI-badge и tooltip.
     if (used.has('rubLeft')) {
       axes.push({
         id: 'rubLeft',
         color: SERIES_DEFS.revenueRub.color,
         orientation: 'left',
         colored: true,
-        domain: ['auto', 'dataMax'],
+        domain: [0, revenueMax > 0 ? revenueMax * 1.1 : 'dataMax'],
         formatter: (v) => formatRubShort(v),
         width: rubW,
       });
     }
     if (used.has('rubRight')) {
+      const showAxis = config.axisVisible.adsRub;
       axes.push({
         id: 'rubRight',
         color: SERIES_DEFS.adsRub.color,
         orientation: 'right',
-        colored: true,
+        colored: showAxis,
+        hide: !showAxis,
         domain: ['auto', 'dataMax'],
         formatter: (v) => formatRubShort(v),
-        width: rubW,
+        width: showAxis ? rubW : undefined,
       });
     }
     if (used.has('orders')) {
-      // Скрытая ось — bars видны, но шкала не загромождает чарт.
-      // Чтобы bars занимали только нижнюю ~25% графика, считаем dataMax
-      // по data и умножаем на 4. Recharts не умеет 'dataMax * N' строкой,
-      // поэтому считаем число явно ниже (см. ordersMax).
+      // Ось для bars — если включена, показывает счётчик заказов.
+      // Чтобы bars занимали только нижнюю ~25%, domain = [0, dataMax × 4].
+      const showAxis = config.axisVisible.orders;
+      const ordW = tinyAxis ? 28 : 32;
       axes.push({
         id: 'orders',
         color: SERIES_DEFS.orders.color,
         orientation: 'right',
-        hide: true,
+        colored: showAxis,
+        hide: !showAxis,
         domain: [0, ordersMax > 0 ? ordersMax * 4 : 1],
         formatter: (v) => formatIntShort(v),
+        width: showAxis ? ordW : undefined,
+      });
+    }
+    if (used.has('aov')) {
+      // AOV ~2-5K — независимый масштаб, иначе линия лежит у нуля на rubLeft.
+      // Форматтер с 1 знаком после запятой: 1.8K / 2.0K / 2.2K вместо «2K».
+      const showAxis = config.axisVisible.aovRub;
+      const aovW = tinyAxis ? 34 : 40;
+      axes.push({
+        id: 'aov',
+        color: SERIES_DEFS.aovRub.color,
+        orientation: 'right',
+        colored: showAxis,
+        hide: !showAxis,
+        domain: [aovRange.min, aovRange.max],
+        formatter: (v) => formatAovShort(v),
+        width: showAxis ? aovW : undefined,
       });
     }
     if (used.has('pct')) {
+      const showAxis = config.axisVisible.drrPct;
       axes.push({
         id: 'pct',
         color: SERIES_DEFS.drrPct.color,
         orientation: 'right',
-        colored: true,
+        colored: showAxis,
+        hide: !showAxis,
         domain: [0, 'dataMax'],
         formatter: (v) => `${v.toFixed(0)}%`,
-        width: pctW,
+        width: showAxis ? pctW : undefined,
       });
     }
     return axes;
-  }, [series, ordersMax, tinyAxis]);
+  }, [series, ordersMax, revenueMax, aovRange, tinyAxis, config.axisVisible]);
 
   const totals = useMemo(() => {
     let revenue = 0;
@@ -372,6 +452,13 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
     } as unknown as Record<string, unknown>);
   }
 
+  function patchAxisVisible(key: SeriesKey, on: boolean) {
+    onConfigChange?.({
+      ...config,
+      axisVisible: { ...config.axisVisible, [key]: on },
+    } as unknown as Record<string, unknown>);
+  }
+
   // На очень узких блоках Period+Granularity+Metrics не помещаются в одну
   // строку — оставляем только PeriodPicker и кнопку метрик (granularity
   // переезжает в Settings блока, где она и так управляется).
@@ -390,6 +477,7 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
           value={{ preset: period.preset as PeriodPreset, customFrom: period.customFrom, customTo: period.customTo }}
           onChange={setPeriod}
           compact
+          collapsed
         />
         {isPeriodOverride && (
           <button
@@ -403,17 +491,16 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
           </button>
         )}
         {showGranularitySelect && (
-          <select
+          <DropdownSelect
             value={granularity}
-            onChange={(e) =>
-              setGranularity(e.target.value as OzonChartBlockConfig['granularity'])
-            }
-            className="h-7 rounded-md border border-input bg-background px-2 text-[11px] text-foreground hover:border-primary/40 focus:border-primary focus:outline-none"
-          >
-            <option value="day">по дням</option>
-            <option value="week">по неделям</option>
-            <option value="month">по месяцам</option>
-          </select>
+            onChange={(v) => setGranularity(v as OzonChartBlockConfig['granularity'])}
+            options={[
+              { value: 'day', label: 'по дням' },
+              { value: 'week', label: 'по неделям' },
+              { value: 'month', label: 'по месяцам' },
+            ]}
+            triggerClassName="h-7 min-w-[7rem] max-w-[9rem]"
+          />
         )}
         <div className="relative">
           <button
@@ -445,10 +532,14 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
                 <div className="mb-1 px-1 text-[10px] uppercase tracking-wider text-muted-foreground">
                   Видимые серии
                 </div>
+                <div className="mb-1 mt-2 px-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+                  Серия / шкала
+                </div>
                 <div className="space-y-1">
                   {(Object.keys(SERIES_DEFS) as SeriesKey[]).map((key) => {
                     const def = SERIES_DEFS[key];
                     const on = config.visibleSeries[key];
+                    const axisOn = config.axisVisible[key];
                     return (
                       <label
                         key={key}
@@ -461,10 +552,30 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
                           />
                           {def.label}
                         </span>
-                        <Switch
-                          checked={on}
-                          onCheckedChange={(next) => patchSeries(key, next)}
-                        />
+                        <div className="flex items-center gap-1.5">
+                          {on && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                patchAxisVisible(key, !axisOn);
+                              }}
+                              className={`h-4 rounded px-1.5 text-[9px] font-medium transition-colors ${
+                                axisOn
+                                  ? 'bg-primary/15 text-primary'
+                                  : 'bg-muted/70 text-muted-foreground'
+                              }`}
+                              title={axisOn ? 'Скрыть шкалу' : 'Показать шкалу'}
+                            >
+                              ось
+                            </button>
+                          )}
+                          <Switch
+                            checked={on}
+                            onCheckedChange={(next) => patchSeries(key, next)}
+                          />
+                        </div>
                       </label>
                     );
                   })}
@@ -565,7 +676,7 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
             // (min-h-0 flex-1), без хардкода в 300px. Убирает пустое
             // пространство снизу при больших блоках.
             height="fill"
-            margin={tinyAxis ? { right: 4, top: 4 } : undefined}
+            margin={{ right: 4, top: 4 }}
             variant="rich"
             yAxes={yAxes}
             formatTooltipLabel={(label) => {
@@ -631,57 +742,80 @@ function SettingsForm({ config, onChange }: BlockSettingsFormProps) {
       </div>
       <div className="space-y-1.5">
         <Label className="text-[11px] text-muted-foreground">Гранулярность</Label>
-        <select
+        <DropdownSelect
           value={parsed.granularity}
-          onChange={(e) =>
-            patch({
-              granularity: e.target.value as OzonChartBlockConfig['granularity'],
-            })
+          onChange={(v) =>
+            patch({ granularity: v as OzonChartBlockConfig['granularity'] })
           }
-          className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
-        >
-          <option value="day">По дням</option>
-          <option value="week">По неделям</option>
-          <option value="month">По месяцам</option>
-        </select>
+          options={[
+            { value: 'day', label: 'По дням' },
+            { value: 'week', label: 'По неделям' },
+            { value: 'month', label: 'По месяцам' },
+          ]}
+          triggerClassName="h-8 w-full max-w-none"
+        />
       </div>
       <div className="space-y-1.5">
         <Label className="text-[11px] text-muted-foreground">Тип графика</Label>
-        <select
+        <DropdownSelect
           value={parsed.chartType}
-          onChange={(e) =>
-            patch({ chartType: e.target.value as OzonChartBlockConfig['chartType'] })
+          onChange={(v) =>
+            patch({ chartType: v as OzonChartBlockConfig['chartType'] })
           }
-          className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
-        >
-          <option value="line">Линейный</option>
-          <option value="area">Area</option>
-          <option value="bar">Столбцы</option>
-        </select>
+          options={[
+            { value: 'line', label: 'Линейный' },
+            { value: 'area', label: 'Area' },
+            { value: 'bar', label: 'Столбцы' },
+          ]}
+          triggerClassName="h-8 w-full max-w-none"
+        />
       </div>
       <div className="space-y-1.5">
-        <Label className="text-[11px] text-muted-foreground">Видимые серии</Label>
+        <Label className="text-[11px] text-muted-foreground">Видимые серии и шкалы</Label>
+        <p className="text-[11px] text-muted-foreground">
+          Включи серию, затем кнопкой <strong>ось</strong> — добавь подписи шкалы к графику.
+        </p>
         <div className="grid grid-cols-2 gap-2">
           {(
             Object.keys(SERIES_DEFS) as Array<keyof OzonChartBlockConfig['visibleSeries']>
-          ).map((key) => (
-            <label
-              key={key}
-              className="flex items-center justify-between rounded-md border border-border/60 px-2 py-1.5 text-[12px]"
-            >
-              <span style={{ color: SERIES_DEFS[key].color }} className="font-medium">
-                {SERIES_DEFS[key].label}
-              </span>
-              <Switch
-                checked={parsed.visibleSeries[key]}
-                onCheckedChange={(on) =>
-                  patch({
-                    visibleSeries: { ...parsed.visibleSeries, [key]: on },
-                  })
-                }
-              />
-            </label>
-          ))}
+          ).map((key) => {
+            const seriesOn = parsed.visibleSeries[key];
+            const axisOn = parsed.axisVisible[key];
+            return (
+              <div
+                key={key}
+                className="flex items-center justify-between rounded-md border border-border/60 px-2 py-1.5 text-[12px]"
+              >
+                <span style={{ color: SERIES_DEFS[key].color }} className="font-medium">
+                  {SERIES_DEFS[key].label}
+                </span>
+                <div className="flex items-center gap-1.5">
+                  {seriesOn && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        patch({ axisVisible: { ...parsed.axisVisible, [key]: !axisOn } })
+                      }
+                      className={`h-4 rounded px-1.5 text-[9px] font-medium transition-colors ${
+                        axisOn
+                          ? 'bg-primary/15 text-primary'
+                          : 'bg-muted/70 text-muted-foreground'
+                      }`}
+                      title={axisOn ? 'Скрыть шкалу' : 'Показать шкалу'}
+                    >
+                      ось
+                    </button>
+                  )}
+                  <Switch
+                    checked={seriesOn}
+                    onCheckedChange={(on) =>
+                      patch({ visibleSeries: { ...parsed.visibleSeries, [key]: on } })
+                    }
+                  />
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
       <OzonSyncSection

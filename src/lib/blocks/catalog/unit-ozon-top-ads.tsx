@@ -254,6 +254,7 @@ function RenderOzonTopAds({ instance }: BlockRenderProps) {
           value={{ preset: period.preset as PeriodPreset, customFrom: period.customFrom, customTo: period.customTo }}
           onChange={setPeriod}
           compact
+          collapsed
         />
         {isPeriodOverride && (
           <button

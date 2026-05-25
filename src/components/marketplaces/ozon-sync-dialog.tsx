@@ -395,8 +395,8 @@ export function OzonSyncDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[85vh] max-w-xl flex-col">
+        <DialogHeader className="shrink-0">
           <DialogTitle className="flex items-center gap-2">
             <CloudDownload className="h-4 w-4" />
             Синхронизация Ozon
@@ -408,6 +408,7 @@ export function OzonSyncDialog({
           </DialogDescription>
         </DialogHeader>
 
+        <div className="-mx-1 min-h-0 flex-1 overflow-y-auto px-1">
         {accountsLoading ? (
           <div className="flex items-center gap-2 text-[12px] text-muted-foreground">
             <Loader2 className="h-3 w-3 animate-spin" /> Загрузка магазинов…
@@ -507,7 +508,7 @@ export function OzonSyncDialog({
                 </span>
               </button>
               {stagesOpen && (
-                <div className="space-y-3 border-t border-border/40 px-2 py-2">
+                <div className="max-h-[50vh] space-y-3 overflow-y-auto border-t border-border/40 px-2 py-2">
                   <StageGroup
                     title="Каталог · snapshot (не зависит от даты)"
                     stages={STAGES_CATALOG}
@@ -594,8 +595,9 @@ export function OzonSyncDialog({
             )}
           </div>
         )}
+        </div>
 
-        <DialogFooter>
+        <DialogFooter className="shrink-0">
           <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)} disabled={submitting}>
             {success ? 'Закрыть' : 'Отмена'}
           </Button>

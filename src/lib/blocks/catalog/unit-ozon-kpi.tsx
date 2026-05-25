@@ -200,6 +200,25 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
     [data],
   );
   const sparklineAds = useMemo(() => (data?.byDay ?? []).map((d) => d.adsRub), [data]);
+  // ДРР % считается per-day из тех же byDay — без revenue % смысла нет (0).
+  const sparklineDrr = useMemo(
+    () =>
+      (data?.byDay ?? []).map((d) =>
+        d.revenueRub > 0 ? (d.adsRub / d.revenueRub) * 100 : 0,
+      ),
+    [data],
+  );
+  // Подписи к точкам спарклайна: «15 мая», «16 мая», …
+  const sparklineDates = useMemo(
+    () =>
+      (data?.byDay ?? []).map((d) => {
+        if (!d.date) return '';
+        const dt = new Date(d.date + 'T00:00:00Z');
+        return dt.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
+      }),
+    [data],
+  );
+  const hasSparklineDates = sparklineDates.length > 1;
 
   // Публикуем KPI как источники для cell-binding (модалка «Связать ячейку»).
   // Ключи и лейблы match'атся с /api/blocks/sources fieldsForBlock.
@@ -247,6 +266,7 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
           value={{ preset: period.preset as PeriodPreset, customFrom: period.customFrom, customTo: period.customTo }}
           onChange={setPeriod}
           compact
+          collapsed
         />
         {isPeriodOverride && (
           <button
@@ -381,6 +401,7 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
                 }
               }
               sparkline={sparklineRevenue.length > 1 ? sparklineRevenue : null}
+              sparklineLabels={hasSparklineDates ? sparklineDates : null}
               accent="emerald"
               loading={loading && !data}
             />
@@ -405,6 +426,7 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
                 }
               }
               sparkline={sparklineOrders.length > 1 ? sparklineOrders : null}
+              sparklineLabels={hasSparklineDates ? sparklineDates : null}
               accent="sky"
               loading={loading && !data}
             />
@@ -429,6 +451,7 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
                 }
               }
               sparkline={sparklineAds.length > 1 ? sparklineAds : null}
+              sparklineLabels={hasSparklineDates ? sparklineDates : null}
               hint={
                 data?.current.cpoRub != null
                   ? `Средний CPO: ${Math.round(data.current.cpoRub)} ₽ · CPC + CPO`
@@ -468,6 +491,8 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
                   : null
               }
               hint="Цель: ≤ 20%"
+              sparkline={sparklineDrr.length > 1 ? sparklineDrr : null}
+              sparklineLabels={hasSparklineDates ? sparklineDates : null}
               accent="amber"
               loading={loading && !data}
             />

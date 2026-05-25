@@ -7,7 +7,7 @@
 
 import { useId } from 'react';
 import { TrendingUp, TrendingDown, Minus } from 'lucide-react';
-import { ResponsiveContainer, AreaChart, Area } from 'recharts';
+import { ResponsiveContainer, AreaChart, Area, Tooltip as RechartsTooltip } from 'recharts';
 import { useBlockDensity } from '@/components/blocks/block-size';
 
 export type StatCardFormat = 'rub' | 'pct' | 'int' | 'rub-detailed' | 'days';
@@ -32,6 +32,8 @@ export type StatCardProps = {
   delta?: StatCardDelta | null;
   /** Данные для мини-спарклайна (значения за период). */
   sparkline?: number[] | null;
+  /** Подписи к точкам спарклайна (даты, метки) — отображаются в tooltip. */
+  sparklineLabels?: string[] | null;
   hint?: string;
   tone?: 'default' | 'positive' | 'negative' | 'warning';
   /** Цвет линии спарклайна / акцент. */
@@ -90,6 +92,7 @@ export function StatCard({
   format,
   delta,
   sparkline,
+  sparklineLabels,
   hint,
   tone = 'default',
   accent = 'emerald',
@@ -164,7 +167,7 @@ export function StatCard({
         <div className="mt-1.5 h-8 w-full">
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart
-              data={sparkline.map((v, i) => ({ i, v }))}
+              data={sparkline.map((v, i) => ({ i, v, label: sparklineLabels?.[i] ?? null }))}
               margin={{ top: 1, right: 0, bottom: 1, left: 0 }}
             >
               <defs>
@@ -173,6 +176,29 @@ export function StatCard({
                   <stop offset="100%" stopColor={stroke} stopOpacity={0} />
                 </linearGradient>
               </defs>
+              <RechartsTooltip
+                isAnimationActive={false}
+                cursor={{ stroke: stroke, strokeWidth: 1, strokeDasharray: '3 2', strokeOpacity: 0.5 }}
+                content={({ active, payload }) => {
+                  if (!active || !payload?.length) return null;
+                  const p = payload[0] as {
+                    value: number;
+                    payload: { label: string | null };
+                  };
+                  return (
+                    <div className="pointer-events-none rounded-md border border-border/60 bg-popover px-2 py-1 text-[11px] shadow-md">
+                      {p.payload.label && (
+                        <div className="mb-0.5 text-[10px] text-muted-foreground">
+                          {p.payload.label}
+                        </div>
+                      )}
+                      <div className="font-semibold" style={{ color: stroke }}>
+                        {formatValue(p.value, format)}
+                      </div>
+                    </div>
+                  );
+                }}
+              />
               <Area
                 type="monotone"
                 dataKey="v"
@@ -180,6 +206,8 @@ export function StatCard({
                 fill={`url(#${gradientId})`}
                 strokeWidth={1.5}
                 isAnimationActive={false}
+                dot={false}
+                activeDot={{ r: 3, strokeWidth: 0, fill: stroke }}
               />
             </AreaChart>
           </ResponsiveContainer>

@@ -40,7 +40,7 @@ Context7: `mcp0_resolve-library-id` → `mcp0_query-docs`. Не более 3 в�
 - **Phase 2:** Tauri 2.0 desktop.
 - **Phase 3:** React Native + Expo mobile.
 - **Главная идея:** почти каждая страница = настраиваемый **BlockGrid** (Lego из блоков). Новая фича обычно = новый block type в `src/lib/blocks/catalog/`, а не статичная страница.
-- **Источник правды версии:** `CHANGELOG.md` + `git log` (`package.json` остался на `0.5.0`, не используется). Текущая версия — **v0.23.4** (2026-05-25). UI читает версию через `src/lib/version.ts` (`APP_VERSION`), значение инжектируется в build-time из `CHANGELOG.md` через `next.config.mjs` → `env.NEXT_PUBLIC_APP_VERSION`.
+- **Источник правды версии:** `CHANGELOG.md` + `git log` (`package.json` остался на `0.5.0`, не используется). Текущая версия — **v0.23.6** (2026-05-25). UI читает версию через `src/lib/version.ts` (`APP_VERSION`), значение инжектируется в build-time из `CHANGELOG.md` через `next.config.mjs` → `env.NEXT_PUBLIC_APP_VERSION`.
 
 ## Жёсткие правила
 
@@ -162,6 +162,14 @@ docs/memory-archive/      исторические разделы MEMORY.md (п�
 
 > Исторические грабли (v0.10-v0.20) — в `docs/memory-archive/`.
 
+- **Recharts `<YAxis hide>` всё ещё резервирует ширину (v0.23.6)** — `hide=true` НЕ убирает `width` из layout. По умолчанию Recharts резервирует 56px даже для скрытой оси. Если в чарте несколько скрытых осей с одной стороны (`unit.ozon-chart`: `rubRight` + `orders` + `aov`), они в сумме сожрут весь правый gutter и видимая ось (pct) уедет за viewport блока. Фикс — в `src/components/blocks/chart-shell.tsx` width: `ax.hide ? 0 : (ax.width ?? 56)`. **Правило: для любых hide:true осей передавать ширину 0 в layout-движок Recharts.**
+- **`PeriodPicker.collapsed` (v0.23.6)** — для in-block headers использовать `<PeriodPicker collapsed compact>`. Свёрнутый режим — одна кнопка `[Calendar] <preset-label> ↓` с Popover'ом всех пресетов. Без `collapsed` 6 chips + Произвольный (~700px) на узких блоках выдавливают granularity / metrics / KPI-бейджи на вторую строку. SettingsForm — без `collapsed` (горизонтального места там хватает).
+- **Ozon dashboard UX polish (v0.23.5)** — 4 правки на одной странице `/marketplaces/ozon`:
+  1. **`OzonSyncDialog` sticky header/footer** — `DialogContent` теперь `flex max-h-[85vh] flex-col`, тело — `flex-1 min-h-0 overflow-y-auto`, секция «Стейджи» — `max-h-[50vh] overflow-y-auto`. До этого 15 чекбоксов вытягивали модалку за viewport, кнопки «Отмена/Запустить» уходили за экран.
+  2. **`unit.ozon-chart` native `<select>` → `DropdownSelect`** — повторное проявление грабли из MEMORY (macOS показывает пустую метку при заполненном value). Селектор «по дням / по неделям» в header блока был пустым; теперь через `DropdownSelect` из `unit-economics/dropdown-select`. **Правило: любой `<select>` в header'ах блоков → `DropdownSelect`, даже если на твоей машине работает.** То же применено в SettingsForm для гранулярности и chartType.
+  3. **`unit.ozon-chart` — отдельная скрытая `aov` ось.** AOV ~2-5K на одной шкале с выручкой 100K-1M+ лежал у нуля и был невидим. Расход (`rubRight`) теперь тоже скрытая ось (контейнер масштаба, без визуальной шкалы); цифра в верхнем KPI-badge. `rubW`/`pctW` уменьшены (48/34, tinyAxis 36/30), `chartMargin.right=4` всегда. Domain `rubLeft` — `[0, dataMax * 1.1]` чтобы area не упиралась в край.
+  4. **`unit.ozon-kpi` — sparkline у карточки «ДРР»** через `byDay.map(d => d.revenueRub > 0 ? (d.adsRub / d.revenueRub) * 100 : 0)`. Раньше у ДРР sparkline'а не было, у остальных был.
+  5. **`unit.ozon-campaigns` — sort + onlyActive + period only в шапке.** `SortableHeader` компонент с `ArrowUpDown / ArrowUp / ArrowDown` индикатором, comparator по 7 колонкам (state → ordinal `RUNNING < PAUSED < FINISHED`). Новое `config.onlyActive: boolean` фильтрует rows перед сортировкой; `widths` и empty-state считаются по отфильтрованным. `PeriodPicker` убран из SettingsForm — теперь только в шапке блока (через `useBlockPeriod`, синхронно с глобальным периодом страницы). Поля `periodPreset/customFrom/customTo` оставлены в схеме как fallback для legacy-инстансов.
 - **`custom.data` Excel-like fill-handle (v0.23.4)** — маленький handle (2×2px) в правом-нижнем углу каждой ячейки, видим на hover. Drag вверх/вниз/влево/вправо копирует source-ячейку в промежуточные:
   - Формула — A1-ссылки сдвигаются relative (`=A1*B1` в C2 → `=A2*B2` в C3). Реализация — `shiftFormulaRefs` в `src/lib/blocks/custom-data-fill.ts`. Парсер пропускает `@blockId.field`, `[Row Label].col`, идентификаторы функций (`SUM`/`MIN`), строковые литералы.
   - Binding (`cell.ref`) копируется absolute (binding на другой блок — явная abs-ссылка).

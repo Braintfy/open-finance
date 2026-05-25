@@ -5,8 +5,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { z } from 'zod';
-import { Megaphone, AlertCircle, Info, Lock, RefreshCw } from 'lucide-react';
+import {
+  Megaphone,
+  AlertCircle,
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  Info,
+  Lock,
+  RefreshCw,
+} from 'lucide-react';
 import { Card } from '@/components/ui/card';
+import { Switch } from '@/components/ui/switch';
+import { Label } from '@/components/ui/label';
 import {
   PeriodPicker,
   resolvePeriod,
@@ -32,6 +43,8 @@ export const OzonCampaignsBlockConfigSchema = z.object({
     .default('30d'),
   customFrom: z.string().nullable().default(null),
   customTo: z.string().nullable().default(null),
+  /** Скрыть кампании в статусе PAUSED/FINISHED — оставить только RUNNING. */
+  onlyActive: z.boolean().default(false),
 });
 
 function parseConfig(raw: unknown) {
@@ -57,6 +70,25 @@ function stateBadge(state: string | null): { label: string; cls: string } {
     };
   return { label: state, cls: 'bg-muted text-muted-foreground' };
 }
+
+/** Ordinal для сортировки по статусу — Активные сверху по умолчанию. */
+function stateOrdinal(state: string | null): number {
+  if (!state) return 99;
+  if (state.includes('RUNNING')) return 0;
+  if (state.includes('PAUSED')) return 1;
+  if (state.includes('FINISHED')) return 2;
+  return 3;
+}
+
+type SortKey =
+  | 'campaign'
+  | 'type'
+  | 'state'
+  | 'budget'
+  | 'expense'
+  | 'orders'
+  | 'drr';
+type SortDir = 'asc' | 'desc';
 
 function RenderOzonCampaigns({ instance }: BlockRenderProps) {
   const config = useMemo(() => parseConfig(instance.config), [instance.config]);
@@ -89,12 +121,24 @@ function RenderOzonCampaigns({ instance }: BlockRenderProps) {
   const [data, setData] = useState<OzonCampaignsResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>({
+    key: 'expense',
+    dir: 'desc',
+  });
   const mountedRef = useRef(true);
   const { accounts } = useMarketplaceAccounts({ marketplace: 'ozon' });
   const currentAccount = useMemo(
     () => accounts.find((a) => a.id === config.accountId) ?? null,
     [accounts, config.accountId],
   );
+
+  const toggleSort = useCallback((key: SortKey) => {
+    setSort((prev) =>
+      prev.key === key
+        ? { key, dir: prev.dir === 'desc' ? 'asc' : 'desc' }
+        : { key, dir: key === 'campaign' || key === 'type' ? 'asc' : 'desc' },
+    );
+  }, []);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -163,48 +207,81 @@ function RenderOzonCampaigns({ instance }: BlockRenderProps) {
     __money: 'value,totalExpenseRub,totalOrdersRub',
   });
 
-  // Авторасчёт ширин таблицы.
+  // Фильтр «только активные» + сортировка по выбранной колонке.
   const rows = data?.rows ?? [];
+  const displayRows = useMemo(() => {
+    const filtered = config.onlyActive
+      ? rows.filter((r) => r.state?.includes('RUNNING'))
+      : rows.slice();
+    const dir = sort.dir === 'asc' ? 1 : -1;
+    const cmp = (a: typeof rows[number], b: typeof rows[number]): number => {
+      switch (sort.key) {
+        case 'campaign': {
+          const av = (a.title ?? a.campaignId).toLowerCase();
+          const bv = (b.title ?? b.campaignId).toLowerCase();
+          return av.localeCompare(bv, 'ru') * dir;
+        }
+        case 'type': {
+          const av = `${a.paymentType ?? ''} ${a.advObjectType ?? ''}`.toLowerCase();
+          const bv = `${b.paymentType ?? ''} ${b.advObjectType ?? ''}`.toLowerCase();
+          return av.localeCompare(bv, 'ru') * dir;
+        }
+        case 'state':
+          return (stateOrdinal(a.state) - stateOrdinal(b.state)) * dir;
+        case 'budget':
+          return ((a.dailyBudgetRub ?? -1) - (b.dailyBudgetRub ?? -1)) * dir;
+        case 'expense':
+          return (a.expenseRub - b.expenseRub) * dir;
+        case 'orders':
+          return (a.orders - b.orders) * dir;
+        case 'drr':
+          return ((a.drrPct ?? -1) - (b.drrPct ?? -1)) * dir;
+      }
+    };
+    filtered.sort(cmp);
+    return filtered;
+  }, [rows, config.onlyActive, sort]);
+
   const widths = useMemo(
     () => ({
       campaign: autoColumnWidth(
         'Кампания',
-        rows.map((r) => `${r.title ?? r.campaignId}\n${r.campaignId}`),
+        displayRows.map((r) => `${r.title ?? r.campaignId}\n${r.campaignId}`),
         { min: 160, max: 320 },
       ),
       type: autoColumnWidth(
         'Тип',
-        rows.map((r) => `${r.paymentType ?? ''}${r.advObjectType ? ' · ' + r.advObjectType : ''}`),
+        displayRows.map((r) => `${r.paymentType ?? ''}${r.advObjectType ? ' · ' + r.advObjectType : ''}`),
         { min: 100, max: 180 },
       ),
       state: autoColumnWidth(
         'Статус',
-        rows.map((r) => stateBadge(r.state).label),
+        displayRows.map((r) => stateBadge(r.state).label),
         { min: 80, max: 140 },
       ),
       budget: autoColumnWidth(
         'Бюджет/день',
-        rows.map((r) =>
+        displayRows.map((r) =>
           r.dailyBudgetRub ? Math.round(r.dailyBudgetRub).toLocaleString('ru-RU') + ' ₽' : '—',
         ),
         { min: 100, max: 150 },
       ),
       expense: autoColumnWidth(
         'Расход',
-        rows.map((r) => Math.round(r.expenseRub).toLocaleString('ru-RU') + ' ₽'),
+        displayRows.map((r) => Math.round(r.expenseRub).toLocaleString('ru-RU') + ' ₽'),
         { min: 90, max: 150 },
       ),
-      orders: autoColumnWidth('Заказы', rows.map((r) => String(r.orders)), {
+      orders: autoColumnWidth('Заказы', displayRows.map((r) => String(r.orders)), {
         min: 70,
         max: 110,
       }),
       drr: autoColumnWidth(
         'ДРР',
-        rows.map((r) => (r.drrPct !== null ? r.drrPct.toFixed(1) + '%' : '—')),
+        displayRows.map((r) => (r.drrPct !== null ? r.drrPct.toFixed(1) + '%' : '—')),
         { min: 60, max: 100 },
       ),
     }),
-    [rows],
+    [displayRows],
   );
 
   // Структурированный empty state.
@@ -217,11 +294,11 @@ function RenderOzonCampaigns({ instance }: BlockRenderProps) {
           ? 'no-perf'
           : error
             ? 'error'
-            : data && data.rows.length > 0
+            : data && displayRows.length > 0
               ? null
               : currentAccount.perfStatus === 'error'
                 ? 'perf-error'
-                : data && data.rows.length === 0
+                : data && displayRows.length === 0
                   ? 'no-campaigns'
                   : null;
 
@@ -232,6 +309,7 @@ function RenderOzonCampaigns({ instance }: BlockRenderProps) {
           value={{ preset: period.preset as PeriodPreset, customFrom: period.customFrom, customTo: period.customTo }}
           onChange={setPeriod}
           compact
+          collapsed
         />
         {isPeriodOverride && (
           <button
@@ -288,17 +366,31 @@ function RenderOzonCampaigns({ instance }: BlockRenderProps) {
             </colgroup>
             <thead className="sticky top-0 bg-muted/60 backdrop-blur">
               <tr className="text-left text-muted-foreground">
-                <th className="px-2 py-1.5 font-medium">Кампания</th>
-                <th className="px-2 py-1.5 font-medium">Тип</th>
-                <th className="px-2 py-1.5 font-medium">Статус</th>
-                <th className="px-2 py-1.5 text-right font-medium">Бюджет/день</th>
-                <th className="px-2 py-1.5 text-right font-medium">Расход</th>
-                <th className="px-2 py-1.5 text-right font-medium">Заказы</th>
-                <th className="px-2 py-1.5 text-right font-medium">ДРР</th>
+                <SortableHeader sortKey="campaign" sort={sort} onClick={toggleSort}>
+                  Кампания
+                </SortableHeader>
+                <SortableHeader sortKey="type" sort={sort} onClick={toggleSort}>
+                  Тип
+                </SortableHeader>
+                <SortableHeader sortKey="state" sort={sort} onClick={toggleSort}>
+                  Статус
+                </SortableHeader>
+                <SortableHeader sortKey="budget" sort={sort} onClick={toggleSort} align="right">
+                  Бюджет/день
+                </SortableHeader>
+                <SortableHeader sortKey="expense" sort={sort} onClick={toggleSort} align="right">
+                  Расход
+                </SortableHeader>
+                <SortableHeader sortKey="orders" sort={sort} onClick={toggleSort} align="right">
+                  Заказы
+                </SortableHeader>
+                <SortableHeader sortKey="drr" sort={sort} onClick={toggleSort} align="right">
+                  ДРР
+                </SortableHeader>
               </tr>
             </thead>
             <tbody className="divide-y divide-border/40">
-              {data.rows.map((c) => {
+              {displayRows.map((c) => {
                 const badge = stateBadge(c.state);
                 const hasNoStats =
                   c.expenseRub === 0 && c.orders === 0 && !data.summary?.statsAreAccountWide;
@@ -439,32 +531,85 @@ function CampaignsEmptyState({
   );
 }
 
+function SortableHeader({
+  sortKey,
+  sort,
+  onClick,
+  align,
+  children,
+}: {
+  sortKey: SortKey;
+  sort: { key: SortKey; dir: SortDir };
+  onClick: (key: SortKey) => void;
+  align?: 'left' | 'right';
+  children: React.ReactNode;
+}) {
+  const active = sort.key === sortKey;
+  const Icon = !active ? ArrowUpDown : sort.dir === 'asc' ? ArrowUp : ArrowDown;
+  return (
+    <th
+      className={
+        'group cursor-pointer select-none px-2 py-1.5 font-medium hover:text-foreground ' +
+        (align === 'right' ? 'text-right' : '')
+      }
+      onClick={() => onClick(sortKey)}
+      title={
+        active
+          ? `Сортировка: ${sort.dir === 'asc' ? '↑ по возрастанию' : '↓ по убыванию'}`
+          : 'Кликните для сортировки'
+      }
+    >
+      <span
+        className={
+          'inline-flex items-center gap-1 ' +
+          (align === 'right' ? 'flex-row-reverse' : '')
+        }
+      >
+        <span>{children}</span>
+        <Icon
+          className={
+            'h-3 w-3 ' +
+            (active
+              ? 'text-foreground'
+              : 'text-muted-foreground/40 group-hover:text-muted-foreground')
+          }
+        />
+      </span>
+    </th>
+  );
+}
+
 function SettingsForm({ config, onChange }: BlockSettingsFormProps) {
   const parsed = parseConfig(config);
+  function patch(updates: Partial<typeof parsed>) {
+    onChange({ ...parsed, ...updates } as unknown as Record<string, unknown>);
+  }
   return (
     <div className="space-y-4">
       <OzonAccountSelector
         value={parsed.accountId}
-        onChange={(id) =>
-          onChange({ ...parsed, accountId: id } as unknown as Record<string, unknown>)
-        }
+        onChange={(id) => patch({ accountId: id })}
         showPerfStatus
       />
-      <PeriodPicker
-        value={{
-          preset: parsed.periodPreset as PeriodPreset,
-          customFrom: parsed.customFrom,
-          customTo: parsed.customTo,
-        }}
-        onChange={(v) =>
-          onChange({
-            ...parsed,
-            periodPreset: v.preset,
-            customFrom: v.customFrom ?? null,
-            customTo: v.customTo ?? null,
-          } as unknown as Record<string, unknown>)
-        }
-      />
+      <div className="space-y-1.5">
+        <Label className="text-[11px] text-muted-foreground">Отображение</Label>
+        <label className="flex items-start justify-between gap-3 rounded-md border border-border/60 px-3 py-2 text-[12px]">
+          <span className="flex-1">
+            <span className="font-medium">Показывать только активные кампании</span>
+            <span className="mt-0.5 block text-[10px] text-muted-foreground">
+              Скрыть статусы «Пауза» и «Завершена» — оставить только RUNNING.
+            </span>
+          </span>
+          <Switch
+            checked={parsed.onlyActive}
+            onCheckedChange={(on) => patch({ onlyActive: on })}
+          />
+        </label>
+        <p className="text-[10px] text-muted-foreground">
+          Период настраивается в шапке блока (PeriodPicker) — он синхронизирован
+          с глобальным периодом страницы.
+        </p>
+      </div>
     </div>
   );
 }
