@@ -1,16 +1,41 @@
 // PURPOSE: Sheet block — полноценная Excel-like таблица с формулами, настройкой размеров ячеек,
 // header-строкой с названием/итогами и связями с другими блоками.
 // v0.19.0: + виртуализация при rows>50, DnD reorder, CSV/XLSX import/export.
+// v0.23.5: + Excel-like fill-handle (relative A1-shift), row/col highlight
+//          (палитра 6 цветов), multi-select header'ов через click/Shift/Cmd
+//          + bulk-toolbar (Подсветить / Удалить / Снять).
 'use client';
 
 import { useState, useEffect, useCallback, useRef, useMemo, useContext, type CSSProperties } from 'react';
-import { Table2, FunctionSquare, Check, X as XIcon, Download, Upload, GripVertical, MoreHorizontal } from 'lucide-react';
+import {
+  Table2,
+  FunctionSquare,
+  Check,
+  X as XIcon,
+  Download,
+  Upload,
+  GripVertical,
+  MoreHorizontal,
+  Palette,
+  Trash2,
+  Ban,
+} from 'lucide-react';
 import { z } from 'zod';
 import type { BlockDef, BlockRenderProps, BlockSettingsFormProps } from '../types';
 import { Card, CardContent } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
+import { cn } from '@/lib/utils';
+import {
+  computeFillTargets,
+  isInFillRange,
+  fillSheetCellFromSource,
+  reindexHighlightsOnMove,
+  reindexHighlightsOnRemove,
+  type FillCoord,
+  type FillDirection,
+} from '../sheet-fill';
 import {
   Dialog,
   DialogContent,
@@ -117,7 +142,34 @@ const SheetConfig = z.object({
    * нужно ли форматировать результат как рубли (а не использовать хрупкую эвристику по имени поля).
    */
   moneyRefs: z.record(z.string(), z.boolean()).optional(),
+  /**
+   * v0.23.5: подсветка строк / колонок цветом из HIGHLIGHT_PALETTE.
+   * Ключ — индекс (строка), значение — id цвета (yellow/green/blue/red/purple/orange).
+   * Sparse: только подсвеченные индексы. При DnD-reorder / удалении ключи
+   * переиндексируются через `reindexHighlights*` helpers.
+   */
+  rowHighlights: z.record(z.string(), z.string()).optional(),
+  colHighlights: z.record(z.string(), z.string()).optional(),
 });
+
+// ============================================================================
+// Highlight palette (синхронно с custom.data v0.23.2)
+// ============================================================================
+
+const HIGHLIGHT_PALETTE = [
+  { id: 'yellow', ring: 'ring-amber-400', bg: 'bg-amber-50/60', dark: 'dark:bg-amber-950/30', label: 'Жёлтый' },
+  { id: 'green', ring: 'ring-emerald-400', bg: 'bg-emerald-50/60', dark: 'dark:bg-emerald-950/30', label: 'Зелёный' },
+  { id: 'blue', ring: 'ring-sky-400', bg: 'bg-sky-50/60', dark: 'dark:bg-sky-950/30', label: 'Синий' },
+  { id: 'red', ring: 'ring-rose-400', bg: 'bg-rose-50/60', dark: 'dark:bg-rose-950/30', label: 'Красный' },
+  { id: 'purple', ring: 'ring-violet-400', bg: 'bg-violet-50/60', dark: 'dark:bg-violet-950/30', label: 'Фиолетовый' },
+  { id: 'orange', ring: 'ring-orange-400', bg: 'bg-orange-50/60', dark: 'dark:bg-orange-950/30', label: 'Оранжевый' },
+] as const;
+type HighlightId = (typeof HIGHLIGHT_PALETTE)[number]['id'];
+
+function getHighlight(value: string | null | undefined) {
+  if (!value) return null;
+  return HIGHLIGHT_PALETTE.find((h) => h.id === value) ?? null;
+}
 
 type SheetCfg = z.infer<typeof SheetConfig>;
 type HeaderCell = z.infer<typeof HeaderCellSchema>;
@@ -267,6 +319,70 @@ function previewSourceValue(field: BlockSourceField): string {
 function formatComputedValue(value: number | string, money: boolean, showKopecks: boolean): string {
   if (typeof value !== 'number') return String(value);
   return money ? formatKopecksValue(value, showKopecks) : formatPlainNumber(value);
+}
+
+// ============================================================================
+// HighlightPalettePopover (v0.23.5, синхронно с custom.data)
+// ============================================================================
+
+function HighlightPalettePopover({
+  current,
+  onPick,
+  align = 'start',
+  children,
+}: {
+  current: string | null | undefined;
+  onPick: (id: HighlightId | null) => void;
+  align?: 'start' | 'center' | 'end';
+  children: React.ReactNode;
+}) {
+  return (
+    <Popover>
+      <PopoverTrigger asChild>{children}</PopoverTrigger>
+      <PopoverContent
+        align={align}
+        className="w-auto p-2"
+        onCloseAutoFocus={(e) => e.preventDefault()}
+      >
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => onPick(null)}
+            title="Снять подсветку"
+            aria-label="Снять подсветку"
+            className={cn(
+              'flex h-7 w-7 items-center justify-center rounded border transition',
+              !current
+                ? 'border-foreground bg-muted'
+                : 'border-border/60 hover:bg-accent',
+            )}
+          >
+            <Ban className="h-3.5 w-3.5 text-muted-foreground" />
+          </button>
+          {HIGHLIGHT_PALETTE.map((h) => {
+            const active = current === h.id;
+            return (
+              <button
+                key={h.id}
+                type="button"
+                onClick={() => onPick(h.id)}
+                title={h.label}
+                aria-label={h.label}
+                className={cn(
+                  'flex h-7 w-7 items-center justify-center rounded ring-2',
+                  h.bg,
+                  h.dark,
+                  active ? h.ring : 'ring-transparent hover:ring-border',
+                )}
+              >
+                {active && <Check className="h-3.5 w-3.5" />}
+              </button>
+            );
+          })}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
 }
 
 function refFieldName(ref: string): string {
@@ -520,6 +636,26 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
+  // v0.23.5: highlights (sparse Record { "rowIdx": "yellow", ... }).
+  const [rowHighlights, setRowHighlights] = useState<Record<string, string>>(
+    () => cfg.rowHighlights ?? {},
+  );
+  const [colHighlights, setColHighlights] = useState<Record<string, string>>(
+    () => cfg.colHighlights ?? {},
+  );
+  // v0.23.5: multi-select индексов строк/колонок. Plain click → single,
+  // Shift+click → диапазон, Cmd/Ctrl+click → toggle.
+  const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
+  const [selectedCols, setSelectedCols] = useState<Set<number>>(new Set());
+  const lastClickedRowRef = useRef<number | null>(null);
+  const lastClickedColRef = useRef<number | null>(null);
+  // v0.23.5: fill-handle drag state. `source` — координаты исходной ячейки,
+  // `hover` — координаты под курсором (обновляется через elementFromPoint).
+  const [fillState, setFillState] = useState<{
+    source: FillCoord;
+    hover: FillCoord;
+    direction: FillDirection | null;
+  } | null>(null);
 
   const title = instance.appearance?.title ?? cfg.title;
   const accent = instance.appearance?.accentColor;
@@ -716,6 +852,224 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
       return next;
     });
     // Defer config save to avoid setState-in-setState (block-grid updateBlock bug)
+    queueMicrotask(() => { if (saved) saveConfig({ cells: saved }); });
+  }
+
+  // ── Selection helpers (v0.23.5) ─────────────────────────────────────────
+
+  function selectRow(
+    idx: number,
+    opts: { extend?: boolean; toggle?: boolean } = {},
+  ) {
+    setSelectedRows((prev) => {
+      if (opts.extend && lastClickedRowRef.current != null) {
+        const startIdx = lastClickedRowRef.current;
+        const endIdx = idx;
+        const [lo, hi] = startIdx < endIdx ? [startIdx, endIdx] : [endIdx, startIdx];
+        const next = new Set(prev);
+        for (let i = lo; i <= hi; i++) next.add(i);
+        return next;
+      }
+      if (opts.toggle) {
+        const next = new Set(prev);
+        if (next.has(idx)) next.delete(idx);
+        else next.add(idx);
+        return next;
+      }
+      if (prev.size === 1 && prev.has(idx)) return new Set();
+      return new Set([idx]);
+    });
+    lastClickedRowRef.current = idx;
+    setSelectedCols(new Set());
+  }
+
+  function selectCol(
+    idx: number,
+    opts: { extend?: boolean; toggle?: boolean } = {},
+  ) {
+    setSelectedCols((prev) => {
+      if (opts.extend && lastClickedColRef.current != null) {
+        const startIdx = lastClickedColRef.current;
+        const endIdx = idx;
+        const [lo, hi] = startIdx < endIdx ? [startIdx, endIdx] : [endIdx, startIdx];
+        const next = new Set(prev);
+        for (let i = lo; i <= hi; i++) next.add(i);
+        return next;
+      }
+      if (opts.toggle) {
+        const next = new Set(prev);
+        if (next.has(idx)) next.delete(idx);
+        else next.add(idx);
+        return next;
+      }
+      if (prev.size === 1 && prev.has(idx)) return new Set();
+      return new Set([idx]);
+    });
+    lastClickedColRef.current = idx;
+    setSelectedRows(new Set());
+  }
+
+  function clearSelection() {
+    setSelectedRows(new Set());
+    setSelectedCols(new Set());
+    lastClickedRowRef.current = null;
+    lastClickedColRef.current = null;
+  }
+
+  // ── Highlight helpers (v0.23.5) ─────────────────────────────────────────
+
+  /** Применить (или снять) цвет ко всем выделенным строкам/колонкам. */
+  function applyHighlight(colorId: HighlightId | null) {
+    let nextRow: Record<string, string> | undefined = rowHighlights;
+    let nextCol: Record<string, string> | undefined = colHighlights;
+    let rowChanged = false;
+    let colChanged = false;
+    if (selectedRows.size > 0) {
+      const m: Record<string, string> = { ...rowHighlights };
+      for (const idx of selectedRows) {
+        if (colorId) m[String(idx)] = colorId;
+        else delete m[String(idx)];
+      }
+      nextRow = Object.keys(m).length > 0 ? m : undefined;
+      rowChanged = true;
+    }
+    if (selectedCols.size > 0) {
+      const m: Record<string, string> = { ...colHighlights };
+      for (const idx of selectedCols) {
+        if (colorId) m[String(idx)] = colorId;
+        else delete m[String(idx)];
+      }
+      nextCol = Object.keys(m).length > 0 ? m : undefined;
+      colChanged = true;
+    }
+    if (rowChanged) setRowHighlights(nextRow ?? {});
+    if (colChanged) setColHighlights(nextCol ?? {});
+    const patch: Partial<SheetCfg> = {};
+    if (rowChanged) patch.rowHighlights = nextRow;
+    if (colChanged) patch.colHighlights = nextCol;
+    if (rowChanged || colChanged) saveConfig(patch);
+  }
+
+  /** Удалить выделенные строки и/или колонки (включая cells/widths/heights). */
+  function deleteSelectedHeaders() {
+    const removedRows = Array.from(selectedRows).filter((i) => i >= 0 && i < cfg.rows);
+    const removedCols = Array.from(selectedCols).filter((i) => i >= 0 && i < cfg.cols);
+    if (removedRows.length === 0 && removedCols.length === 0) return;
+
+    const removedRowSet = new Set(removedRows);
+    const removedColSet = new Set(removedCols);
+
+    const nextCells: string[][] = [];
+    for (let r = 0; r < cfg.rows; r++) {
+      if (removedRowSet.has(r)) continue;
+      const row: string[] = [];
+      for (let c = 0; c < cfg.cols; c++) {
+        if (removedColSet.has(c)) continue;
+        row.push(cells[r]?.[c] ?? '');
+      }
+      nextCells.push(row);
+    }
+    const newRows = cfg.rows - removedRows.length;
+    const newCols = cfg.cols - removedCols.length;
+
+    const nextColWidths = colWidths.filter((_, i) => !removedColSet.has(i));
+    const nextRowHeights = rowHeights.filter((_, i) => !removedRowSet.has(i));
+
+    const nextRowHighlights = reindexHighlightsOnRemove(rowHighlights, removedRows, cfg.rows);
+    const nextColHighlights = reindexHighlightsOnRemove(colHighlights, removedCols, cfg.cols);
+
+    setCells(nextCells);
+    setColWidths(nextColWidths);
+    setRowHeights(nextRowHeights);
+    setRowHighlights(nextRowHighlights ?? {});
+    setColHighlights(nextColHighlights ?? {});
+    clearSelection();
+    saveConfig({
+      cells: nextCells,
+      rows: Math.max(1, newRows),
+      cols: Math.max(1, newCols),
+      colWidths: nextColWidths,
+      rowHeights: nextRowHeights,
+      rowHighlights: nextRowHighlights,
+      colHighlights: nextColHighlights,
+    });
+  }
+
+  // ── Fill-handle (v0.23.5) ───────────────────────────────────────────────
+
+  function startFill(r: number, c: number, e: React.PointerEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    // Коммитим текущее редактирование, если оно есть.
+    if (activeCell && editing) commitEdit();
+    const source: FillCoord = { rowIdx: r, colIdx: c };
+    setFillState({ source, hover: source, direction: null });
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
+  }
+
+  function onFillMove(e: React.PointerEvent) {
+    if (!fillState) return;
+    let el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+    while (el && !el.hasAttribute('data-cell-coord') && el !== tableScrollRef.current) {
+      el = el.parentElement;
+    }
+    if (!el || !el.hasAttribute('data-cell-coord')) return;
+    const coord = el.getAttribute('data-cell-coord');
+    if (!coord) return;
+    const [rStr, cStr] = coord.split(',');
+    const rIdx = Number.parseInt(rStr, 10);
+    const cIdx = Number.parseInt(cStr, 10);
+    if (!Number.isFinite(rIdx) || !Number.isFinite(cIdx)) return;
+    if (rIdx === fillState.hover.rowIdx && cIdx === fillState.hover.colIdx) return;
+    const dR = Math.abs(rIdx - fillState.source.rowIdx);
+    const dC = Math.abs(cIdx - fillState.source.colIdx);
+    const direction: FillDirection | null =
+      dR === 0 && dC === 0 ? null : dR >= dC ? 'vertical' : 'horizontal';
+    setFillState({ ...fillState, hover: { rowIdx: rIdx, colIdx: cIdx }, direction });
+  }
+
+  function onFillEnd(e: React.PointerEvent) {
+    if (!fillState) return;
+    try {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
+    applyFill(fillState);
+    setFillState(null);
+  }
+
+  function onFillCancel() {
+    setFillState(null);
+  }
+
+  function applyFill(state: NonNullable<typeof fillState>) {
+    const sourceRaw = cells[state.source.rowIdx]?.[state.source.colIdx] ?? '';
+    const { targets } = computeFillTargets(state.source, state.hover);
+    if (targets.length === 0) return;
+
+    let saved: string[][] | null = null;
+    setCells((prev) => {
+      const next = prev.map((row) => [...row]);
+      for (const t of targets) {
+        const dRow = t.rowIdx - state.source.rowIdx;
+        const dCol = t.colIdx - state.source.colIdx;
+        if (!next[t.rowIdx]) continue;
+        next[t.rowIdx][t.colIdx] = fillSheetCellFromSource(
+          sourceRaw,
+          dRow,
+          dCol,
+          cfg.rows,
+          cfg.cols,
+        );
+      }
+      saved = next;
+      return next;
+    });
     queueMicrotask(() => { if (saved) saveConfig({ cells: saved }); });
   }
 
@@ -1050,18 +1404,30 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
     if (fromIdx === toIdx) return;
     const newCells = cells.map((row) => arrayMove(row, fromIdx, toIdx));
     const newColWidths = arrayMove(colWidths, fromIdx, toIdx);
+    const newColHighlights = reindexHighlightsOnMove(colHighlights, fromIdx, toIdx, cfg.cols);
     setCells(newCells);
     setColWidths(newColWidths);
-    saveConfig({ cells: newCells, colWidths: newColWidths });
+    setColHighlights(newColHighlights ?? {});
+    saveConfig({
+      cells: newCells,
+      colWidths: newColWidths,
+      colHighlights: newColHighlights,
+    });
   }
 
   function reorderRows(fromIdx: number, toIdx: number) {
     if (fromIdx === toIdx) return;
     const newCells = arrayMove(cells, fromIdx, toIdx);
     const newRowHeights = arrayMove(rowHeights, fromIdx, toIdx);
+    const newRowHighlights = reindexHighlightsOnMove(rowHighlights, fromIdx, toIdx, cfg.rows);
     setCells(newCells);
     setRowHeights(newRowHeights);
-    saveConfig({ cells: newCells, rowHeights: newRowHeights });
+    setRowHighlights(newRowHighlights ?? {});
+    saveConfig({
+      cells: newCells,
+      rowHeights: newRowHeights,
+      rowHighlights: newRowHighlights,
+    });
   }
 
   function handleColDragEnd(e: DragEndEvent) {
@@ -1495,6 +1861,60 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
         </div>
       )}
 
+      {/* Selection bulk-action toolbar (v0.23.5) — появляется при ≥1 выделенной строке/колонке. */}
+      {(selectedRows.size > 0 || selectedCols.size > 0) && (() => {
+        const rowIdxArr = Array.from(selectedRows);
+        const colIdxArr = Array.from(selectedCols);
+        const all = [
+          ...rowIdxArr.map((i) => rowHighlights[String(i)] ?? null),
+          ...colIdxArr.map((i) => colHighlights[String(i)] ?? null),
+        ];
+        const first = all[0] ?? null;
+        const currentHighlight = all.every((h) => h === first) ? first : null;
+        return (
+          <div className="flex shrink-0 items-center gap-2 border-b border-border/40 bg-primary/5 px-3 py-1.5">
+            <span className="inline-flex h-5 shrink-0 items-center rounded bg-primary/15 px-1.5 text-[10px] font-semibold text-primary">
+              Выделено:{' '}
+              {selectedRows.size > 0 && `${selectedRows.size} строк`}
+              {selectedRows.size > 0 && selectedCols.size > 0 && ' · '}
+              {selectedCols.size > 0 && `${selectedCols.size} колонок`}
+            </span>
+            <HighlightPalettePopover
+              current={currentHighlight}
+              onPick={applyHighlight}
+              align="start"
+            >
+              <button
+                type="button"
+                className="inline-flex h-6 shrink-0 items-center gap-1 rounded bg-background px-2 text-[11px] font-medium text-foreground ring-1 ring-border/60 transition hover:bg-accent"
+                title="Выбрать цвет подсветки для выделенных строк/колонок"
+              >
+                <Palette className="h-3 w-3" />
+                Подсветить
+              </button>
+            </HighlightPalettePopover>
+            <button
+              type="button"
+              onClick={deleteSelectedHeaders}
+              className="inline-flex h-6 shrink-0 items-center gap-1 rounded bg-background px-2 text-[11px] font-medium text-rose-700 ring-1 ring-border/60 transition hover:bg-rose-50 dark:text-rose-300 dark:hover:bg-rose-950"
+              title="Удалить выделенные строки/колонки"
+            >
+              <Trash2 className="h-3 w-3" />
+              Удалить
+            </button>
+            <button
+              type="button"
+              onClick={clearSelection}
+              className="ml-auto inline-flex h-6 shrink-0 items-center gap-1 rounded px-2 text-[11px] font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
+              title="Снять выделение"
+            >
+              <XIcon className="h-3 w-3" />
+              Снять
+            </button>
+          </div>
+        );
+      })()}
+
       {/* Spreadsheet grid */}
       {/*
         v0.20.1: DndContext / SortableContext оба вынесены ИЗ <table>, чтобы не
@@ -1534,15 +1954,22 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
                   <thead>
                     <tr>
                       <th className="sticky left-0 top-0 z-20 border border-border/40" style={thStyle}></th>
-                      {Array.from({ length: cfg.cols }, (_, c) => (
-                        <SortableColHeader
-                          key={c}
-                          colId={`col-${c}`}
-                          label={colLabel(c)}
-                          thStyle={thStyle}
-                          onResizeStart={(e) => startColResize(c, e)}
-                        />
-                      ))}
+                      {Array.from({ length: cfg.cols }, (_, c) => {
+                        const hl = getHighlight(colHighlights[String(c)]);
+                        return (
+                          <SortableColHeader
+                            key={c}
+                            colId={`col-${c}`}
+                            colIndex={c}
+                            label={colLabel(c)}
+                            thStyle={thStyle}
+                            onResizeStart={(e) => startColResize(c, e)}
+                            isSelected={selectedCols.has(c)}
+                            highlight={hl}
+                            onSelect={(opts) => selectCol(c, opts)}
+                          />
+                        );
+                      })}
                     </tr>
                   </thead>
                   {enableVirtualization ? (
@@ -1576,6 +2003,16 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
                             handleEditSelect={handleEditSelect}
                             handleKeyDown={handleKeyDown}
                             startRowResize={startRowResize}
+                            rowHighlight={getHighlight(rowHighlights[String(r)])}
+                            colHighlights={colHighlights}
+                            isRowSelected={selectedRows.has(r)}
+                            selectedCols={selectedCols}
+                            onSelectRow={(opts) => selectRow(r, opts)}
+                            fillState={fillState}
+                            onFillStart={startFill}
+                            onFillMove={onFillMove}
+                            onFillEnd={onFillEnd}
+                            onFillCancel={onFillCancel}
                             virtualizedStyle={{
                               position: 'absolute',
                               top: 0,
@@ -1617,6 +2054,16 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
                           handleEditSelect={handleEditSelect}
                           handleKeyDown={handleKeyDown}
                           startRowResize={startRowResize}
+                          rowHighlight={getHighlight(rowHighlights[String(r)])}
+                          colHighlights={colHighlights}
+                          isRowSelected={selectedRows.has(r)}
+                          selectedCols={selectedCols}
+                          onSelectRow={(opts) => selectRow(r, opts)}
+                          fillState={fillState}
+                          onFillStart={startFill}
+                          onFillMove={onFillMove}
+                          onFillEnd={onFillEnd}
+                          onFillCancel={onFillCancel}
                         />
                       ))}
                     </tbody>
@@ -1670,20 +2117,32 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
 
 function SortableColHeader({
   colId,
+  colIndex,
   label,
   thStyle,
   onResizeStart,
+  isSelected,
+  highlight,
+  onSelect,
 }: {
   colId: string;
+  colIndex: number;
   label: string;
   thStyle: CSSProperties;
   onResizeStart: (e: React.MouseEvent) => void;
+  isSelected: boolean;
+  highlight: { bg: string; dark: string; ring: string } | null;
+  onSelect: (opts: { extend?: boolean; toggle?: boolean }) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: colId });
   return (
     <th
       ref={setNodeRef}
-      className="sticky top-0 z-10 border border-border/40 px-1 py-0.5 text-left"
+      className={cn(
+        'sticky top-0 z-10 border px-1 py-0.5 text-left transition',
+        isSelected ? 'border-primary/60 ring-1 ring-primary/40' : 'border-border/40',
+        highlight && [highlight.bg, highlight.dark],
+      )}
       style={{
         ...thStyle,
         position: 'relative',
@@ -1702,7 +2161,28 @@ function SortableColHeader({
         >
           <GripVertical className="h-2.5 w-2.5 text-muted-foreground/40" />
         </button>
-        <span className="truncate text-[10px]">{label}</span>
+        <button
+          type="button"
+          className={cn(
+            'min-w-0 flex-1 truncate text-center text-[10px] transition',
+            isSelected
+              ? 'font-semibold text-primary'
+              : 'text-muted-foreground hover:text-foreground',
+          )}
+          onClick={(e) => {
+            e.stopPropagation();
+            onSelect({
+              extend: e.shiftKey,
+              toggle: e.metaKey || e.ctrlKey,
+            });
+          }}
+          title={`Колонка ${label} (клик — выделить, Shift — диапазон, Cmd/Ctrl — добавить)`}
+          aria-label={`Выделить колонку ${label}`}
+          aria-pressed={isSelected}
+          data-col-index={colIndex}
+        >
+          {label}
+        </button>
         <span />
       </div>
       <div
@@ -1716,6 +2196,8 @@ function SortableColHeader({
 // ============================================================================
 // SheetRow (sortable, supports virtualization)
 // ============================================================================
+
+type HighlightStyle = { bg: string; dark: string; ring: string } | null;
 
 type SheetRowProps = {
   rowId: string;
@@ -1741,6 +2223,21 @@ type SheetRowProps = {
   handleEditSelect: (e: React.SyntheticEvent<HTMLInputElement>) => void;
   handleKeyDown: (e: React.KeyboardEvent) => void;
   startRowResize: (r: number, e: React.MouseEvent) => void;
+  /** v0.23.5: подсветка/выделение/fill-handle. */
+  rowHighlight: HighlightStyle;
+  colHighlights: Record<string, string>;
+  isRowSelected: boolean;
+  selectedCols: Set<number>;
+  onSelectRow: (opts: { extend?: boolean; toggle?: boolean }) => void;
+  fillState: {
+    source: FillCoord;
+    hover: FillCoord;
+    direction: FillDirection | null;
+  } | null;
+  onFillStart: (r: number, c: number, e: React.PointerEvent) => void;
+  onFillMove: (e: React.PointerEvent) => void;
+  onFillEnd: (e: React.PointerEvent) => void;
+  onFillCancel: () => void;
   virtualizedStyle?: CSSProperties;
 };
 
@@ -1768,6 +2265,16 @@ function SheetRow(props: SheetRowProps) {
     handleEditSelect,
     handleKeyDown,
     startRowResize,
+    rowHighlight,
+    colHighlights,
+    isRowSelected,
+    selectedCols,
+    onSelectRow,
+    fillState,
+    onFillStart,
+    onFillMove,
+    onFillEnd,
+    onFillCancel,
     virtualizedStyle,
   } = props;
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: rowId });
@@ -1782,7 +2289,10 @@ function SheetRow(props: SheetRowProps) {
   return (
     <tr ref={setNodeRef} style={rowStyle}>
       <td
-        className="sticky left-0 z-10 border border-border/40 text-center"
+        className={cn(
+          'sticky left-0 z-10 border text-center transition',
+          isRowSelected ? 'border-primary/60 ring-1 ring-primary/40' : 'border-border/40',
+        )}
         style={{ ...thStyle, position: 'relative' }}
       >
         <div className="flex items-center justify-center gap-0.5">
@@ -1795,7 +2305,27 @@ function SheetRow(props: SheetRowProps) {
           >
             <GripVertical className="h-2.5 w-2.5 text-muted-foreground/40" />
           </button>
-          <span>{r + 1}</span>
+          <button
+            type="button"
+            className={cn(
+              'min-w-[16px] rounded px-0.5 text-center text-[10px] transition',
+              isRowSelected
+                ? 'font-semibold text-primary'
+                : 'text-foreground/80 hover:text-foreground',
+            )}
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelectRow({
+                extend: e.shiftKey,
+                toggle: e.metaKey || e.ctrlKey,
+              });
+            }}
+            title={`Строка ${r + 1} (клик — выделить, Shift — диапазон, Cmd/Ctrl — добавить)`}
+            aria-label={`Выделить строку ${r + 1}`}
+            aria-pressed={isRowSelected}
+          >
+            {r + 1}
+          </button>
         </div>
         <div
           className="absolute bottom-0 left-0 h-1 w-full cursor-row-resize hover:bg-primary/30"
@@ -1806,13 +2336,40 @@ function SheetRow(props: SheetRowProps) {
         const isActive = activeCell?.r === r && activeCell?.c === c;
         const rawValue = cells[r]?.[c] ?? '';
         const isFormula = rawValue.startsWith('=');
+        const colHl = colHighlights[String(c)]
+          ? HIGHLIGHT_PALETTE.find((h) => h.id === colHighlights[String(c)])
+          : null;
+        const colSelected = selectedCols.has(c);
+        // Cell-level highlight: row-highlight приоритетнее col-highlight.
+        const cellHl = rowHighlight ?? colHl ?? null;
+        // v0.23.5: визуализация fill-range.
+        const isFillSource =
+          fillState?.source.rowIdx === r && fillState?.source.colIdx === c;
+        const isInFill = fillState
+          ? isInFillRange(fillState.source, fillState.hover, r, c)
+          : false;
+        // Handle прячем когда:
+        //  - ячейка в редактировании,
+        //  - формула-pick-mode (клик вставляет ссылку, не fill),
+        //  - drag активен и эта ячейка НЕ source (handle только у source).
+        const showFillHandle =
+          !isActive &&
+          !(formulaMode || touchPickMode) &&
+          (!fillState || isFillSource);
         return (
           <td
             key={c}
-            className={
-              'border border-border/40 p-0 ' +
-              (isActive ? 'ring-2 ring-inset ring-primary/60' : 'hover:bg-accent/30')
-            }
+            data-cell-coord={`${r},${c}`}
+            className={cn(
+              'group/cell relative border p-0 transition',
+              isActive
+                ? 'border-primary/60 ring-2 ring-inset ring-primary/60'
+                : 'border-border/40 hover:bg-accent/30',
+              cellHl && !isActive && [cellHl.bg, cellHl.dark],
+              colSelected && !isActive && 'ring-1 ring-inset ring-primary/30',
+              isFillSource && 'ring-2 ring-inset ring-primary/70',
+              isInFill && !isFillSource && 'bg-primary/10 ring-1 ring-inset ring-primary/40',
+            )}
             tabIndex={-1}
             onClick={() => handleCellClick(r, c)}
             style={{ height: rowHeight }}
@@ -1850,6 +2407,30 @@ function SheetRow(props: SheetRowProps) {
               >
                 {displayValue}
               </div>
+            )}
+            {/*
+              v0.23.5: Excel-like fill-handle (правый-нижний угол).
+              Видим на :hover ячейки; всегда видим на source во время drag.
+              Drag → pointer capture → elementFromPoint → applyFill при отпускании.
+            */}
+            {showFillHandle && (
+              <button
+                type="button"
+                aria-label="Растянуть формулу/значение"
+                title="Перетащите вверх/вниз/влево/вправо — скопировать формулу или значение"
+                data-fill-handle
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => onFillStart(r, c, e)}
+                onPointerMove={fillState ? onFillMove : undefined}
+                onPointerUp={fillState ? onFillEnd : undefined}
+                onPointerCancel={fillState ? onFillCancel : undefined}
+                className={cn(
+                  'absolute -bottom-[3px] -right-[3px] z-30 h-2 w-2 cursor-crosshair rounded-[1px] bg-primary ring-1 ring-background transition',
+                  isFillSource
+                    ? 'opacity-100 scale-110'
+                    : 'opacity-0 group-hover/cell:opacity-100 hover:scale-125',
+                )}
+              />
             )}
           </td>
         );
