@@ -40,7 +40,7 @@ Context7: `mcp0_resolve-library-id` → `mcp0_query-docs`. Не более 3 в�
 - **Phase 2:** Tauri 2.0 desktop.
 - **Phase 3:** React Native + Expo mobile.
 - **Главная идея:** почти каждая страница = настраиваемый **BlockGrid** (Lego из блоков). Новая фича обычно = новый block type в `src/lib/blocks/catalog/`, а не статичная страница.
-- **Источник правды версии:** `CHANGELOG.md` + `git log` (`package.json` остался на `0.5.0`, не используется). Текущая версия — **v0.23.13** (2026-05-25). UI читает версию через `src/lib/version.ts` (`APP_VERSION`), значение инжектируется в build-time из `CHANGELOG.md` через `next.config.mjs` → `env.NEXT_PUBLIC_APP_VERSION`.
+- **Источник правды версии:** `CHANGELOG.md` + `git log` (`package.json` остался на `0.5.0`, не используется). Текущая версия — **v0.23.14** (2026-05-25). UI читает версию через `src/lib/version.ts` (`APP_VERSION`), значение инжектируется в build-time из `CHANGELOG.md` через `next.config.mjs` → `env.NEXT_PUBLIC_APP_VERSION`.
 
 ## Жёсткие правила
 
@@ -162,6 +162,7 @@ docs/memory-archive/      исторические разделы MEMORY.md (п�
 
 > Исторические грабли (v0.10-v0.20) — в `docs/memory-archive/`.
 
+- **Per-cell linking from «Данные» (v0.23.14)** — `custom.data` публикует ячейки как `rowId.colId` поля. `__cellFields` маркер перечисляет ключи. Лимит 200. API route тоже добавляет per-cell поля с `group: 'Ячейки'`. Пикер показывает их в раскрываемой секции «Ячейки». Module-level cache (`_sourcePagesCache`, `_sheetSourcePagesCache`) — пикер показывает live-блоки мгновенно.
 - **Kopecks convention (v0.23.13)** — Единое правило: все деньги в `useBlockValuePublisher` публикуются в КОПЕЙКАХ (× 100). `formatRublesWithSettings` всегда делит на 100. Нарушители до v0.23.13: `custom-data` (рублёвые колонки), `unit-ozon-kpi` (revenue/ads/aov/cpo), `unit-ozon-campaigns` (expenseRub/ordersRub). Исправлены. `custom-data` дисплей (`formatCustomDataRubles`) принимает рубли без ÷100 — эта цепочка отдельна от publisher-а и остаётся верной. **Правило для новых блоков: если колонка/поле = деньги → × 100 перед публикацией.**
 - **Block relations stale data ИСПРАВЛЕНО (v0.23.12)** — В `excel-cell.tsx` и `sheet.tsx` при вычислении `@block.field` ссылок, `config.blockRefs` содержит числовой snapshot сохранённый при связывании. Раньше snapshot перекрывал live значение (`val ?? liveValues[name]`). Фикс: `liveValues[name] ?? val ?? null` — live всегда выигрывает. Snapshot остаётся для fallback когда блок-источник не смонтирован.
 - **computed.tsx formulaExpression ИСПРАВЛЕНО (v0.23.12)** — SettingsForm сохраняет формулу в `config.expression`, но `useBlockDependencyResult` читал `deps.formulaExpression`. Через `effectiveDeps` в `RenderComputedSum` они объединены: `formulaExpression: deps.formulaExpression ?? cfg.expression`. Теперь formula aggregation работает.

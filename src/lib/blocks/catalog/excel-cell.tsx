@@ -1,8 +1,8 @@
 // PURPOSE: Excel Cell block — минимальный single-cell Excel-like блок с формулами и @refs.
 'use client';
 
-import { useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { Calculator, FunctionSquare, Wallet } from 'lucide-react';
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { Calculator, ChevronDown, ChevronRight, FunctionSquare, Wallet } from 'lucide-react';
 import { z } from 'zod';
 import type { BlockDef, BlockRenderProps, BlockSettingsFormProps } from '../types';
 import { Card } from '@/components/ui/card';
@@ -29,6 +29,8 @@ type SourceField = {
   label: string;
   value: number | string | null;
   format?: 'money' | 'number' | 'text';
+  /** 'Ячейки' for per-cell fields from custom.data, or Ozon group label */
+  group?: string;
 };
 
 type SourceBlock = {
@@ -46,6 +48,9 @@ type SourcePage = {
   pageLabel: string;
   blocks: SourceBlock[];
 };
+
+/** Module-level cache for /api/blocks/sources — avoids refetch on every dialog open. */
+const _sourcePagesCache: { data: SourcePage[] | null } = { data: null };
 
 const PeriodPresetSchema = z.enum([
   'today',
@@ -155,22 +160,32 @@ function moneyFieldSet(blockId: string, values: Record<string, number | string |
   return new Set(String(raw ?? '').split(',').map((field) => field.trim()).filter(Boolean));
 }
 
+/** Reads __cellFields marker to identify per-cell (rowId.colId) published fields. */
+function cellFieldSet(blockId: string, values: Record<string, number | string | null>): Set<string> {
+  const raw = values[`${blockId}.__cellFields`];
+  if (!raw || typeof raw !== 'string') return new Set();
+  return new Set(raw.split(',').map((f) => f.trim()).filter(Boolean));
+}
+
 function mergeLiveFields(
   block: SourceBlock,
   liveFields: string[] | undefined,
   liveValues: Record<string, number | string | null>,
+  liveLabels?: Record<string, string>,
 ): SourceBlock {
   if (!liveFields) return block;
   const moneyFields = moneyFieldSet(block.blockId, liveValues);
+  const cellFields = cellFieldSet(block.blockId, liveValues);
   const byName = new Map(block.fields.map((field) => [field.name, field]));
   liveFields.forEach((name) => {
     const key = name === 'value' ? block.blockId : `${block.blockId}.${name}`;
     const current = byName.get(name);
     byName.set(name, {
       name,
-      label: current?.label ?? sourceFieldLabel(name),
+      label: liveLabels?.[name] ?? current?.label ?? sourceFieldLabel(name),
       value: liveValues[key] ?? current?.value ?? null,
       format: moneyFields.has(name) ? 'money' : current?.format,
+      group: current?.group ?? (cellFields.has(name) ? 'Ячейки' : undefined),
     });
   });
   return { ...block, fields: Array.from(byName.values()) };
@@ -337,10 +352,20 @@ function RenderExcelCell({ instance, onConfigChange }: BlockRenderProps) {
   const [blockPickerOpen, setBlockPickerOpen] = useState(false);
   const [blockSearch, setBlockSearch] = useState('');
   const [selectedSourceGroup, setSelectedSourceGroup] = useState('all');
-  const [sourcePages, setSourcePages] = useState<SourcePage[]>([]);
+  const [sourcePages, setSourcePages] = useState<SourcePage[]>(() => _sourcePagesCache.data ?? []);
   const [sourceLoading, setSourceLoading] = useState(false);
+  const [expandedBlocks, setExpandedBlocks] = useState<Set<string>>(new Set());
   const inputRef = useRef<HTMLInputElement>(null);
   const openingBlockPickerRef = useRef(false);
+
+  const toggleExpandBlock = useCallback((blockId: string) => {
+    setExpandedBlocks((prev) => {
+      const next = new Set(prev);
+      if (next.has(blockId)) next.delete(blockId);
+      else next.add(blockId);
+      return next;
+    });
+  }, []);
   const accent = instance.appearance?.accentColor;
   const title = config.title;
 
@@ -403,12 +428,21 @@ function RenderExcelCell({ instance, onConfigChange }: BlockRenderProps) {
 
   useEffect(() => {
     if (!blockPickerOpen) return;
+    // If cache is warm: apply immediately (no loading indicator)
+    if (_sourcePagesCache.data) {
+      setSourcePages(_sourcePagesCache.data);
+      return;
+    }
+    // Background fetch — live blocks on current page already show immediately
     let cancelled = false;
     setSourceLoading(true);
     fetch('/api/blocks/sources')
       .then((r) => r.json())
       .then((data) => {
-        if (!cancelled && data.ok && Array.isArray(data.pages)) setSourcePages(data.pages);
+        if (!cancelled && data.ok && Array.isArray(data.pages)) {
+          _sourcePagesCache.data = data.pages as SourcePage[];
+          setSourcePages(data.pages as SourcePage[]);
+        }
       })
       .catch(() => {
         if (!cancelled) setSourcePages([]);
@@ -423,27 +457,38 @@ function RenderExcelCell({ instance, onConfigChange }: BlockRenderProps) {
 
   const blockSourcePages = useMemo<SourcePage[]>(() => {
     const liveById = new Map(availableBlocks.map((block) => [block.blockId, block.fields]));
+    const labelsById = new Map(availableBlocks.map((block) => [block.blockId, block.labels]));
     const liveBlocks: SourceBlock[] = availableBlocks
       .filter((b) => b.blockId !== instance.id)
-      .map((b) => ({
-        blockId: b.blockId,
-        pageKey: 'current',
-        pageLabel: 'Текущая страница',
-        typeLabel: 'Live block',
-        category: 'Текущая страница',
-        label: String(liveValues[`${b.blockId}.label`] ?? `Блок ${b.blockId.slice(0, 8)}`),
-        fields: b.fields.map((field) => ({
-          name: field,
-          label: sourceFieldLabel(field),
-          value: liveValues[field === 'value' ? b.blockId : `${b.blockId}.${field}`] ?? null,
-          format: moneyFieldSet(b.blockId, liveValues).has(field) ? 'money' as const : undefined,
-        })),
-      }));
+      .map((b) => {
+        const cellFields = cellFieldSet(b.blockId, liveValues);
+        const moneyFields = moneyFieldSet(b.blockId, liveValues);
+        return {
+          blockId: b.blockId,
+          pageKey: 'current',
+          pageLabel: 'Текущая страница',
+          typeLabel: 'Live block',
+          category: 'Текущая страница',
+          label: String(liveValues[`${b.blockId}.label`] ?? `Блок ${b.blockId.slice(0, 8)}`),
+          fields: b.fields.map((field) => ({
+            name: field,
+            label: b.labels[field] ?? sourceFieldLabel(field),
+            value: liveValues[field === 'value' ? b.blockId : `${b.blockId}.${field}`] ?? null,
+            format: moneyFields.has(field) ? 'money' as const : undefined,
+            group: cellFields.has(field) ? 'Ячейки' : undefined,
+          })),
+        };
+      });
     const pages = sourcePages.map((page) => ({
       ...page,
       blocks: page.blocks
         .filter((block) => block.blockId !== instance.id)
-        .map((block) => mergeLiveFields(block, liveById.get(block.blockId), liveValues)),
+        .map((block) => mergeLiveFields(
+          block,
+          liveById.get(block.blockId),
+          liveValues,
+          labelsById.get(block.blockId),
+        )),
     }));
     return liveBlocks.length > 0
       ? [{ pageKey: 'current', pageLabel: 'Текущая страница', blocks: liveBlocks }, ...pages]
@@ -470,7 +515,10 @@ function RenderExcelCell({ instance, onConfigChange }: BlockRenderProps) {
         blocks: page.blocks.filter((block) => {
           if (selectedSourceGroup.startsWith('page:') && selectedSourceGroup.slice(5) !== page.pageKey) return false;
           if (!q) return true;
-          return [page.pageLabel, block.category, block.typeLabel, block.label, block.blockId].join(' ').toLowerCase().includes(q);
+          const blockText = [page.pageLabel, block.category, block.typeLabel, block.label, block.blockId].join(' ').toLowerCase();
+          if (blockText.includes(q)) return true;
+          // Also search through field labels (including cell labels like "Row · Column")
+          return block.fields.some((f) => f.label.toLowerCase().includes(q));
         }),
       }))
       .filter((page) => page.blocks.length > 0);
@@ -664,43 +712,102 @@ function RenderExcelCell({ instance, onConfigChange }: BlockRenderProps) {
                   </div>
                 </aside>
                 <div className="max-h-[420px] overflow-y-auto">
-                  {sourceLoading ? (
-                    <p className="py-12 text-center text-xs text-muted-foreground">Загружаю блоки…</p>
-                  ) : filteredSourcePages.length === 0 ? (
-                    <p className="py-12 text-center text-xs text-muted-foreground">Нет доступных блоков.</p>
+                  {filteredSourcePages.length === 0 ? (
+                    <p className="py-12 text-center text-xs text-muted-foreground">
+                      {sourceLoading ? 'Загружаю источники…' : 'Нет доступных блоков.'}
+                    </p>
                   ) : (
                     filteredSourcePages.map((page) => (
                       <section key={page.pageKey}>
-                        <div className="sticky top-0 z-10 border-b border-border/40 bg-muted/30 px-3 py-1.5">
+                        <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-border/40 bg-muted/30 px-3 py-1.5">
                           <span className="text-[11px] font-semibold text-muted-foreground">{page.pageLabel}</span>
+                          {sourceLoading && page.pageKey !== 'current' && (
+                            <span className="text-[10px] text-muted-foreground/60">загрузка…</span>
+                          )}
                         </div>
-                        {page.blocks.map((block) => (
-                          <div key={`${block.pageKey}:${block.blockId}`} className="border-b border-border/30 px-3 py-2 transition last:border-b-0 hover:bg-accent/30">
-                            <div className="space-y-1.5">
-                              <div className="min-w-0">
-                                <div className="truncate text-xs font-medium text-foreground">{block.label}</div>
-                                <div className="text-[10px] text-muted-foreground">{block.category} · {block.typeLabel}</div>
+                        {page.blocks.map((block) => {
+                          const periodKey = typeof liveValues[`${block.blockId}.__periodKey`] === 'string'
+                            ? (liveValues[`${block.blockId}.__periodKey`] as string) : null;
+                          const mainFields = block.fields.filter(
+                            (f) => f.name !== 'label' && f.name !== 'raw' && f.group !== 'Ячейки',
+                          );
+                          const cellFields = block.fields.filter((f) => f.group === 'Ячейки');
+                          const hasCells = cellFields.length > 0;
+                          const isExpanded = expandedBlocks.has(block.blockId);
+                          return (
+                            <div key={`${block.pageKey}:${block.blockId}`} className="border-b border-border/30 px-3 py-2 last:border-b-0">
+                              {/* Block header */}
+                              <div className="mb-1.5 flex items-start justify-between gap-1">
+                                <div className="min-w-0">
+                                  <div className="truncate text-xs font-medium text-foreground">{block.label}</div>
+                                  <div className="flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
+                                    <span className="truncate">{block.typeLabel}</span>
+                                    {periodKey && (
+                                      <span className="shrink-0 rounded bg-sky-50 px-1 py-0.5 font-medium text-sky-600 dark:bg-sky-950/50 dark:text-sky-400">
+                                        {periodKey}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
                               </div>
-                              <div className="flex flex-wrap gap-1">
-                                {block.fields.filter((f) => f.name !== 'label' && f.name !== 'raw').map((field) => {
-                                  const preview = previewSourceValue(field, showKopecks);
-                                  return (
-                                    <button
-                                      key={field.name}
-                                      type="button"
-                                      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] ring-1 ring-border/60 transition hover:bg-primary/10 hover:ring-primary/40"
-                                      onClick={() => insertBlockField(block, field)}
-                                      title={`${field.label} = ${preview}`}
-                                    >
-                                      <span className="font-medium text-primary">{field.label}</span>
-                                      <span className="text-muted-foreground">{preview}</span>
-                                    </button>
-                                  );
-                                })}
-                              </div>
+                              {/* Main fields */}
+                              {mainFields.length > 0 && (
+                                <div className="flex flex-wrap gap-1">
+                                  {mainFields.map((field) => {
+                                    const preview = previewSourceValue(field, showKopecks);
+                                    return (
+                                      <button
+                                        key={field.name}
+                                        type="button"
+                                        className="inline-flex max-w-[190px] items-center gap-1 rounded px-1.5 py-0.5 text-[11px] ring-1 ring-border/60 transition hover:bg-primary/10 hover:ring-primary/40"
+                                        onClick={() => insertBlockField(block, field)}
+                                        title={`${field.label} = ${preview}`}
+                                      >
+                                        <span className="shrink-0 font-medium text-primary">{field.label}</span>
+                                        <span className="min-w-0 truncate text-muted-foreground">{preview}</span>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                              {/* Cells section (collapsible) */}
+                              {hasCells && (
+                                <div className="mt-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleExpandBlock(block.blockId)}
+                                    className="flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] text-muted-foreground transition hover:bg-muted/60 hover:text-foreground"
+                                  >
+                                    {isExpanded
+                                      ? <ChevronDown className="h-3 w-3 shrink-0" />
+                                      : <ChevronRight className="h-3 w-3 shrink-0" />
+                                    }
+                                    <span>Ячейки ({cellFields.length})</span>
+                                  </button>
+                                  {isExpanded && (
+                                    <div className="mt-1 flex flex-wrap gap-1">
+                                      {cellFields.map((field) => {
+                                        const preview = previewSourceValue(field, showKopecks);
+                                        return (
+                                          <button
+                                            key={field.name}
+                                            type="button"
+                                            className="inline-flex max-w-[200px] items-center gap-1 rounded bg-muted/40 px-1.5 py-0.5 text-[11px] ring-1 ring-border/50 transition hover:bg-primary/10 hover:ring-primary/40"
+                                            onClick={() => insertBlockField(block, field)}
+                                            title={`${field.label} = ${preview}`}
+                                          >
+                                            <span className="shrink-0 font-medium text-primary/80">{field.label}</span>
+                                            <span className="min-w-0 truncate text-muted-foreground">{preview}</span>
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </section>
                     ))
                   )}
@@ -721,10 +828,20 @@ function ExcelCellSettings({ config, onChange }: BlockSettingsFormProps) {
   const availableBlocks = useAvailableBlockSources();
   const liveValues = useAllBlockValues();
   const [linkPickerOpen, setLinkPickerOpen] = useState(false);
-  const [sourcePages, setSourcePages] = useState<SourcePage[]>([]);
+  const [sourcePages, setSourcePages] = useState<SourcePage[]>(() => _sourcePagesCache.data ?? []);
   const [sourceLoading, setSourceLoading] = useState(false);
   const [blockSearch, setBlockSearch] = useState('');
   const [selectedSourceGroup, setSelectedSourceGroup] = useState('all');
+  const [expandedBlocksSett, setExpandedBlocksSett] = useState<Set<string>>(new Set());
+
+  const toggleExpandBlockSett = useCallback((blockId: string) => {
+    setExpandedBlocksSett((prev) => {
+      const next = new Set(prev);
+      if (next.has(blockId)) next.delete(blockId);
+      else next.add(blockId);
+      return next;
+    });
+  }, []);
 
   function set<K extends keyof Config>(key: K, value: Config[K]) {
     onChange({ ...parsed, [key]: value } as unknown as Record<string, unknown>);
@@ -732,12 +849,19 @@ function ExcelCellSettings({ config, onChange }: BlockSettingsFormProps) {
 
   useEffect(() => {
     if (!linkPickerOpen) return;
+    if (_sourcePagesCache.data) {
+      setSourcePages(_sourcePagesCache.data);
+      return;
+    }
     let cancelled = false;
     setSourceLoading(true);
     fetch('/api/blocks/sources')
       .then((r) => r.json())
       .then((data) => {
-        if (!cancelled && data.ok && Array.isArray(data.pages)) setSourcePages(data.pages);
+        if (!cancelled && data.ok && Array.isArray(data.pages)) {
+          _sourcePagesCache.data = data.pages as SourcePage[];
+          setSourcePages(data.pages as SourcePage[]);
+        }
       })
       .catch(() => {
         if (!cancelled) setSourcePages([]);
@@ -752,23 +876,34 @@ function ExcelCellSettings({ config, onChange }: BlockSettingsFormProps) {
 
   const blockSourcePages = useMemo<SourcePage[]>(() => {
     const liveById = new Map(availableBlocks.map((block) => [block.blockId, block.fields]));
-    const liveBlocks: SourceBlock[] = availableBlocks.map((b) => ({
-      blockId: b.blockId,
-      pageKey: 'current',
-      pageLabel: 'Текущая страница',
-      typeLabel: 'Live block',
-      category: 'Текущая страница',
-      label: String(liveValues[`${b.blockId}.label`] ?? `Блок ${b.blockId.slice(0, 8)}`),
-      fields: b.fields.map((field) => ({
-        name: field,
-        label: sourceFieldLabel(field),
-        value: liveValues[field === 'value' ? b.blockId : `${b.blockId}.${field}`] ?? null,
-        format: moneyFieldSet(b.blockId, liveValues).has(field) ? 'money' as const : undefined,
-      })),
-    }));
+    const labelsById = new Map(availableBlocks.map((block) => [block.blockId, block.labels]));
+    const liveBlocks: SourceBlock[] = availableBlocks.map((b) => {
+      const cellFields = cellFieldSet(b.blockId, liveValues);
+      const moneyFields = moneyFieldSet(b.blockId, liveValues);
+      return {
+        blockId: b.blockId,
+        pageKey: 'current',
+        pageLabel: 'Текущая страница',
+        typeLabel: 'Live block',
+        category: 'Текущая страница',
+        label: String(liveValues[`${b.blockId}.label`] ?? `Блок ${b.blockId.slice(0, 8)}`),
+        fields: b.fields.map((field) => ({
+          name: field,
+          label: b.labels[field] ?? sourceFieldLabel(field),
+          value: liveValues[field === 'value' ? b.blockId : `${b.blockId}.${field}`] ?? null,
+          format: moneyFields.has(field) ? 'money' as const : undefined,
+          group: cellFields.has(field) ? 'Ячейки' : undefined,
+        })),
+      };
+    });
     const pages = sourcePages.map((page) => ({
       ...page,
-      blocks: page.blocks.map((block) => mergeLiveFields(block, liveById.get(block.blockId), liveValues)),
+      blocks: page.blocks.map((block) => mergeLiveFields(
+        block,
+        liveById.get(block.blockId),
+        liveValues,
+        labelsById.get(block.blockId),
+      )),
     }));
     return liveBlocks.length > 0
       ? [{ pageKey: 'current', pageLabel: 'Текущая страница', blocks: liveBlocks }, ...pages]
@@ -795,7 +930,9 @@ function ExcelCellSettings({ config, onChange }: BlockSettingsFormProps) {
         blocks: page.blocks.filter((block) => {
           if (selectedSourceGroup.startsWith('page:') && selectedSourceGroup.slice(5) !== page.pageKey) return false;
           if (!q) return true;
-          return [page.pageLabel, block.category, block.typeLabel, block.label, block.blockId, ...block.fields.map((f) => f.name)].join(' ').toLowerCase().includes(q);
+          const blockText = [page.pageLabel, block.category, block.typeLabel, block.label, block.blockId].join(' ').toLowerCase();
+          if (blockText.includes(q)) return true;
+          return block.fields.some((f) => f.label.toLowerCase().includes(q));
         }),
       }))
       .filter((page) => page.blocks.length > 0);
@@ -867,43 +1004,99 @@ function ExcelCellSettings({ config, onChange }: BlockSettingsFormProps) {
                   </div>
                 </aside>
                 <div className="max-h-[420px] overflow-y-auto">
-                  {sourceLoading ? (
-                    <p className="py-12 text-center text-xs text-muted-foreground">Загружаю блоки…</p>
-                  ) : filteredSourcePages.length === 0 ? (
-                    <p className="py-12 text-center text-xs text-muted-foreground">Нет доступных источников.</p>
+                  {filteredSourcePages.length === 0 ? (
+                    <p className="py-12 text-center text-xs text-muted-foreground">
+                      {sourceLoading ? 'Загружаю источники…' : 'Нет доступных источников.'}
+                    </p>
                   ) : (
                     filteredSourcePages.map((page) => (
                       <section key={page.pageKey}>
-                        <div className="sticky top-0 z-10 border-b border-border/40 bg-muted/30 px-3 py-1.5">
+                        <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-border/40 bg-muted/30 px-3 py-1.5">
                           <span className="text-[11px] font-semibold text-muted-foreground">{page.pageLabel}</span>
+                          {sourceLoading && page.pageKey !== 'current' && (
+                            <span className="text-[10px] text-muted-foreground/60">загрузка…</span>
+                          )}
                         </div>
-                        {page.blocks.map((block) => (
-                          <div key={`${block.pageKey}:${block.blockId}`} className="border-b border-border/30 px-3 py-2 transition last:border-b-0 hover:bg-accent/30">
-                            <div className="space-y-1.5">
-                              <div className="min-w-0">
-                                <div className="truncate text-xs font-medium text-foreground">{block.label}</div>
-                                <div className="text-[10px] text-muted-foreground">{block.category} · {block.typeLabel}</div>
+                        {page.blocks.map((block) => {
+                          const periodKey = typeof liveValues[`${block.blockId}.__periodKey`] === 'string'
+                            ? (liveValues[`${block.blockId}.__periodKey`] as string) : null;
+                          const mainFields = block.fields.filter(
+                            (f) => f.name !== 'label' && f.name !== 'raw' && f.group !== 'Ячейки',
+                          );
+                          const cellFields = block.fields.filter((f) => f.group === 'Ячейки');
+                          const hasCells = cellFields.length > 0;
+                          const isExpanded = expandedBlocksSett.has(block.blockId);
+                          return (
+                            <div key={`${block.pageKey}:${block.blockId}`} className="border-b border-border/30 px-3 py-2 last:border-b-0">
+                              <div className="mb-1.5 flex items-start gap-1">
+                                <div className="min-w-0">
+                                  <div className="truncate text-xs font-medium text-foreground">{block.label}</div>
+                                  <div className="flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
+                                    <span className="truncate">{block.typeLabel}</span>
+                                    {periodKey && (
+                                      <span className="shrink-0 rounded bg-sky-50 px-1 py-0.5 font-medium text-sky-600 dark:bg-sky-950/50 dark:text-sky-400">
+                                        {periodKey}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
                               </div>
-                              <div className="flex flex-wrap gap-1">
-                                {block.fields.filter((f) => f.name !== 'label' && f.name !== 'raw').map((field) => {
-                                  const preview = previewSourceValue(field, showKopecks);
-                                  return (
-                                    <button
-                                      key={field.name}
-                                      type="button"
-                                      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] ring-1 ring-border/60 transition hover:bg-primary/10 hover:ring-primary/40"
-                                      onClick={() => insertLinkedField(block, field)}
-                                      title={`${field.label} = ${preview}`}
-                                    >
-                                      <span className="font-medium text-primary">{field.label}</span>
-                                      <span className="text-muted-foreground">{preview}</span>
-                                    </button>
-                                  );
-                                })}
-                              </div>
+                              {mainFields.length > 0 && (
+                                <div className="flex flex-wrap gap-1">
+                                  {mainFields.map((field) => {
+                                    const preview = previewSourceValue(field, showKopecks);
+                                    return (
+                                      <button
+                                        key={field.name}
+                                        type="button"
+                                        className="inline-flex max-w-[190px] items-center gap-1 rounded px-1.5 py-0.5 text-[11px] ring-1 ring-border/60 transition hover:bg-primary/10 hover:ring-primary/40"
+                                        onClick={() => insertLinkedField(block, field)}
+                                        title={`${field.label} = ${preview}`}
+                                      >
+                                        <span className="shrink-0 font-medium text-primary">{field.label}</span>
+                                        <span className="min-w-0 truncate text-muted-foreground">{preview}</span>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                              {hasCells && (
+                                <div className="mt-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleExpandBlockSett(block.blockId)}
+                                    className="flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] text-muted-foreground transition hover:bg-muted/60 hover:text-foreground"
+                                  >
+                                    {isExpanded
+                                      ? <ChevronDown className="h-3 w-3 shrink-0" />
+                                      : <ChevronRight className="h-3 w-3 shrink-0" />
+                                    }
+                                    <span>Ячейки ({cellFields.length})</span>
+                                  </button>
+                                  {isExpanded && (
+                                    <div className="mt-1 flex flex-wrap gap-1">
+                                      {cellFields.map((field) => {
+                                        const preview = previewSourceValue(field, showKopecks);
+                                        return (
+                                          <button
+                                            key={field.name}
+                                            type="button"
+                                            className="inline-flex max-w-[200px] items-center gap-1 rounded bg-muted/40 px-1.5 py-0.5 text-[11px] ring-1 ring-border/50 transition hover:bg-primary/10 hover:ring-primary/40"
+                                            onClick={() => insertLinkedField(block, field)}
+                                            title={`${field.label} = ${preview}`}
+                                          >
+                                            <span className="shrink-0 font-medium text-primary/80">{field.label}</span>
+                                            <span className="min-w-0 truncate text-muted-foreground">{preview}</span>
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </section>
                     ))
                   )}

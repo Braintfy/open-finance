@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.23.14] - 2026-05-25
+
+Picker modal redesign: per-cell linking from «Данные», lazy loading, collapsible cells section, period badge, chip overflow fix.
+
+### Added
+
+- **`custom-data.tsx` — per-cell publishing.** Блок «Данные» теперь публикует каждую ячейку как отдельное поле `rowId.colId` через `useBlockValuePublisher` + маркер `__cellFields`. Лимит: ≤200 ячеек (rows × published_cols). Поля соблюдают копеечную конвенцию (рублёвые × 100). Полная ссылка: `@blockId.rowId.colId`.
+- **`/api/blocks/sources` — per-cell поля для `custom.data`.** `computeCustomDataFields` теперь возвращает per-cell поля с `group: 'Ячейки'` — доступны при кросс-страничном связывании. Лейбл: `Row Label · Col Label`.
+- **Picker «Связать ячейку» — раскрываемая секция «Ячейки».** Блоки типа `custom.data` с ячеечными полями показывают кнопку `▶ Ячейки (N)` внизу карточки блока (по умолчанию свёрнута). Одинаково реализовано в `excel-cell.tsx` и `sheet.tsx`.
+- **Period badge в пикере.** Рядом с типом блока отображается тег периода источника (напр. `30d`), если блок публикует `__periodKey`. Sky-цвет как в overlay связей.
+
+### Changed
+
+- **Picker «Связать ячейку» — ленивая загрузка.** Текущая страница (live блоки) показывается **мгновенно** без ожидания API. Данные других страниц подгружаются в фоне. Повторное открытие пикера в той же сессии = 0ms (module-level cache).
+- **Picker — исправление переполнения чипов.** `shrink-0` на label и `min-w-0 truncate` на preview — длинный текст больше не накладывается и не выдавливает за границу.
+- **Picker — поиск по меткам ячеек.** Строка поиска теперь проверяет `field.label` (включая «Строка 1 · Сумма»), а не только название блока.
+- **`mergeLiveFields` и `blockSourcePages`** — используют `b.labels` (из `__labels` конвенции) вместо `sourceFieldLabel(field)`. Корректные человекочитаемые лейблы для cell fields в пикере.
+
 ## [0.23.13] - 2026-05-25
 
 Kopecks convention fix: устранён глобальный баг с неверным отображением денежных значений в пикерах связей и блоке «Данные».

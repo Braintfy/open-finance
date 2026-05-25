@@ -1401,12 +1401,11 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
     config.columns[0];
 
   // ── Publish ──
-  const moneyFields = config.columns
-    .filter((c) => c.publish !== false && c.format === 'rubles')
+  const publishedCols = config.columns.filter((c) => c.publish !== false);
+  const moneyFields = publishedCols
+    .filter((c) => c.format === 'rubles')
     .map((c) => c.id);
-  const labelPairs = config.columns
-    .filter((c) => c.publish !== false)
-    .map((c) => `${c.id}=${c.label}`);
+  const labelPairs = publishedCols.map((c) => `${c.id}=${c.label}`);
   const moneyFlag =
     moneyFields.length > 0
       ? [
@@ -1415,14 +1414,41 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
         ].join(',')
       : '';
 
+  // Per-cell publishing: expose each row×column value as rowId.colId field.
+  // Only when the table is small enough (≤200 cells) to keep the store lightweight.
+  const cellPublished: Record<string, number | string | null> = {};
+  const cellLabelPairs: string[] = [];
+  const cellMoneyKeys: string[] = [];
+  const totalCells = config.rows.length * publishedCols.length;
+  if (totalCells > 0 && totalCells <= 200) {
+    config.rows.forEach((row, rIdx) => {
+      publishedCols.forEach((col, cIdx) => {
+        const result = cellCache.get(cellAddress(rIdx, cIdx));
+        if (result === undefined || result === null) return;
+        const n = resultAsNumber(result);
+        const key = `${row.id}.${col.id}`;
+        const isRubles = col.format === 'rubles';
+        cellPublished[key] = n !== null
+          ? (isRubles ? n * 100 : n)  // копейки-конвенция для рублёвых ячеек
+          : (typeof result === 'string' ? result : null);
+        cellLabelPairs.push(`${key}=${row.label} · ${col.label}`);
+        if (isRubles) cellMoneyKeys.push(key);
+      });
+    });
+  }
+
+  const allMoneyFlag = [...(moneyFlag ? [moneyFlag] : []), ...cellMoneyKeys].join(',');
+  const allLabels = [...labelPairs, ...cellLabelPairs].join(',');
+  const cellFieldsMarker = Object.keys(cellPublished).join(',');
+
   useBlockValuePublisher(instance.id, {
     ...Object.fromEntries(
-      config.columns
-        .filter((c) => c.publish !== false)
+      publishedCols
         // Money values published in KOPECKS (× 100) to match the global convention.
         // Display formatting uses formatCustomDataRubles (÷100-free) so it is unaffected.
         .map((c) => [c.id, c.format === 'rubles' ? (aggregates[c.id] ?? 0) * 100 : (aggregates[c.id] ?? 0)]),
     ),
+    ...cellPublished,
     value: primaryColumn
       ? (primaryColumn.format === 'rubles'
           ? (aggregates[primaryColumn.id] ?? 0) * 100
@@ -1430,8 +1456,10 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
       : 0,
     count: config.rows.length,
     label: title,
-    __money: moneyFlag,
-    __labels: labelPairs.join(','),
+    __money: allMoneyFlag,
+    __labels: allLabels,
+    // Marker listing all per-cell field keys — used by picker to render collapsible section.
+    __cellFields: cellFieldsMarker,
   });
 
   // ── Editing helpers ──

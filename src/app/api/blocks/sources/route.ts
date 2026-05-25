@@ -617,6 +617,7 @@ function computeCustomDataFields(block: BlockInstance): SourceField[] {
     },
     { name: 'count', label: 'Количество строк', value: rows.length, format: 'number' },
   ];
+  const publishedCols: Array<{ col: (typeof columns)[0]; cIdx: number }> = [];
   for (let cIdx = 0; cIdx < columns.length; cIdx++) {
     const col = columns[cIdx];
     if (!col.publish) continue;
@@ -627,7 +628,29 @@ function computeCustomDataFields(block: BlockInstance): SourceField[] {
       value: v,
       format: col.format === 'rubles' ? 'money' : col.format === 'text' ? 'text' : 'number',
     });
+    publishedCols.push({ col, cIdx });
   }
+
+  // Per-cell fields exposed with group: 'Ячейки' for collapsible section in picker.
+  // Only for tables with <= 200 cells to avoid heavy payloads.
+  const totalCells = rows.length * publishedCols.length;
+  if (totalCells > 0 && totalCells <= 200) {
+    for (let rIdx = 0; rIdx < rows.length; rIdx++) {
+      const row = rows[rIdx];
+      for (const { col, cIdx } of publishedCols) {
+        const result = cache.get(customDataCellAddress(rIdx, cIdx));
+        const n = result !== undefined ? customDataResultAsNumber(result) : null;
+        fields.push({
+          name: `${row.id}.${col.id}`,
+          label: `${row.label} · ${col.label || col.id}`,
+          value: n,
+          format: col.format === 'rubles' ? 'money' : col.format === 'text' ? 'text' : 'number',
+          group: 'Ячейки',
+        });
+      }
+    }
+  }
+
   return fields;
 }
 
