@@ -92,14 +92,34 @@ export function cellAddress(rowIdx: number, colIdx: number): string {
 // Parsing helpers
 // ============================================================================
 
-function parseNumberLoose(value: string): number | null {
-  const cleaned = value
-    .trim()
-    .replace(/\s/g, '')
-    .replace(/[₽рруб.]/gi, '')
-    .replace(',', '.');
-  if (!cleaned) return null;
-  const parsed = Number.parseFloat(cleaned);
+/**
+ * Парсит число из пользовательского ввода / формульного результата.
+ * Поддерживает ru (1 234,56) и en (16.666) — точка НЕ удаляется слепо
+ * (старый баг: `16.666…` превращался в `16666…`).
+ */
+export function parseNumberLoose(value: string): number | null {
+  let s = value.trim().replace(/\s/g, '').replace(/[₽рруб]/gi, '');
+  if (!s) return null;
+
+  const hasComma = s.includes(',');
+  const hasDot = s.includes('.');
+
+  if (hasComma && !hasDot) {
+    s = s.replace(',', '.');
+  } else if (hasDot && !hasComma) {
+    const dotCount = (s.match(/\./g) ?? []).length;
+    if (dotCount > 1) s = s.replace(/\./g, '');
+  } else if (hasComma && hasDot) {
+    const lastComma = s.lastIndexOf(',');
+    const lastDot = s.lastIndexOf('.');
+    if (lastComma > lastDot) {
+      s = s.replace(/\./g, '').replace(',', '.');
+    } else {
+      s = s.replace(/,/g, '');
+    }
+  }
+
+  const parsed = Number.parseFloat(s);
   return Number.isFinite(parsed) ? parsed : null;
 }
 

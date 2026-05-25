@@ -120,12 +120,20 @@ import {
 } from '../values';
 import {
   evaluateAllCells,
+  parseNumberLoose,
   resultAsNumber,
   cellAddress,
   type FormulaCell,
   type FormulaResult,
   type FormulaEvalContext,
 } from '../custom-data-formulas';
+import {
+  computeFillTargets,
+  fillCellFromSource,
+  isInFillRange,
+  type FillCoord,
+  type FillDirection,
+} from '../custom-data-fill';
 import { cn } from '@/lib/utils';
 
 // ============================================================================
@@ -399,15 +407,47 @@ function resolveCellValue(
 function toNumeric(value: number | string | null): number | null {
   if (value === null || value === undefined) return null;
   if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (typeof value === 'string') {
-    const cleaned = value
-      .replace(/\s/g, '')
-      .replace(/[₽рруб.]/gi, '')
-      .replace(',', '.');
-    const parsed = Number.parseFloat(cleaned);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
+  if (typeof value === 'string') return parseNumberLoose(value);
   return null;
+}
+
+/** Excel General-like: целые без дробной части; дробные — умная точность (MDN Intl). */
+function formatPlainNumber(value: number, showDecimals: boolean): string {
+  if (!Number.isFinite(value)) return String(value);
+  const intlInt = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 });
+  if (!showDecimals) return intlInt.format(value);
+
+  const rounded = Math.round(value);
+  if (Math.abs(value - rounded) < 1e-9) return intlInt.format(rounded);
+
+  const abs = Math.abs(value);
+  // |n| ≥ 1 → до 2 знаков; 0 < |n| < 1 → столько знаков, сколько нужно (0,01), max 6
+  const maxFractionDigits =
+    abs >= 1
+      ? 2
+      : Math.min(6, Math.max(2, Math.ceil(-Math.log10(abs)) + 1));
+
+  return new Intl.NumberFormat('ru-RU', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: maxFractionDigits,
+  }).format(value);
+}
+
+/** ₽-колонка custom.data: значения в рублях (не копейках), Intl currency ru-RU. */
+function formatCustomDataRubles(value: number, showDecimals: boolean): string {
+  return new Intl.NumberFormat('ru-RU', {
+    style: 'currency',
+    currency: 'RUB',
+    minimumFractionDigits: showDecimals ? 2 : 0,
+    maximumFractionDigits: showDecimals ? 2 : 0,
+  }).format(value);
+}
+
+/** Строка выглядит как число (не произвольный текст в text-колонке). */
+function stringLooksNumeric(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  return parseNumberLoose(trimmed) !== null;
 }
 
 function aggregateByMode(
@@ -431,7 +471,7 @@ function aggregateByMode(
  * v0.23.3: единая семантика для всех числовых форматов.
  *   `showKopecks=true`  → дробная часть отображается:
  *     • rubles: `formatRublesWithSettings` (1 234,56 ₽).
- *     • number: integer→0, else→max 2 (унаследованная эвристика).
+ *     • number: Excel General-like (`formatPlainNumber`).
  *     • percent: max 2 + `%`.
  *   `showKopecks=false` → дробная часть скрыта (округление до integer):
  *     • rubles: `formatRublesWithSettings(false)` (1 235 ₽).
@@ -440,24 +480,32 @@ function aggregateByMode(
  * Это позволяет одним переключателем (block/column/row) скрывать дробную часть
  * во всех числовых форматах, а не только в рублёвых.
  */
-function formatColumnValue(
+export function formatColumnValue(
   value: number | string | null,
   format: ColumnFormat,
   showKopecks: boolean,
 ): string {
   if (value === null || value === undefined || value === '') return '—';
-  if (format === 'text') return String(value);
+  // Text-колонка: произвольный текст as-is; числа (в т.ч. формулы) — с правилами дробной части.
+  if (format === 'text') {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return formatPlainNumber(value, showKopecks);
+    }
+    if (typeof value === 'string' && stringLooksNumeric(value)) {
+      const numeric = toNumeric(value);
+      if (numeric !== null) return formatPlainNumber(numeric, showKopecks);
+    }
+    return String(value);
+  }
   const numeric = toNumeric(value);
   if (numeric === null) return String(value);
-  if (format === 'rubles') return formatRublesWithSettings(numeric, showKopecks);
+  if (format === 'rubles') return formatCustomDataRubles(numeric, showKopecks);
   if (format === 'percent') {
     return `${numeric.toLocaleString('ru-RU', {
       maximumFractionDigits: showKopecks ? 2 : 0,
     })}%`;
   }
-  return numeric.toLocaleString('ru-RU', {
-    maximumFractionDigits: showKopecks ? (Number.isInteger(numeric) ? 0 : 2) : 0,
-  });
+  return formatPlainNumber(numeric, showKopecks);
 }
 
 /**
@@ -476,6 +524,20 @@ export function resolveShowKopecks(
   if (row && typeof row.showKopecks === 'boolean') return row.showKopecks;
   if (col && typeof col.showKopecks === 'boolean') return col.showKopecks;
   return blockDefault;
+}
+
+/**
+ * Блочный default для showKopecks в custom.data:
+ *   `true/false` — явная настройка блока;
+ *   `null` / `undefined` — **показывать дробную часть** (Excel-like default).
+ * Глобальная настройка `useFormatSettings` на блок не влияет — только KPI/кэшфлоу.
+ */
+export function resolveBlockShowKopecks(
+  blockShowKopecks: boolean | null | undefined,
+  _globalShowKopecks: boolean,
+): boolean {
+  if (typeof blockShowKopecks === 'boolean') return blockShowKopecks;
+  return true;
 }
 
 /**
@@ -1224,7 +1286,7 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
   const config = parseConfig(instance.config);
   const density = useBlockDensity();
   const { settings: globalSettings } = useFormatSettings();
-  const showKopecks = config.showKopecks ?? globalSettings.showKopecks;
+  const showKopecks = resolveBlockShowKopecks(config.showKopecks, globalSettings.showKopecks);
   const accent = instance.appearance?.accentColor;
   const title = instance.appearance?.title ?? 'Данные';
   const liveValues = useAllBlockValues();
@@ -1282,6 +1344,21 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
     startWidth: number;
     currentWidth: number;
   } | null>(null);
+
+  /**
+   * v0.23.4: Fill-handle (Excel-style autofill). Пользователь захватывает
+   * правый-нижний угол ячейки и тащит вверх/вниз/влево/вправо. На pointerUp
+   * source-ячейка копируется в каждую промежуточную с относительной
+   * корректировкой A1-ссылок в формуле (см. `shiftFormulaRefs`).
+   */
+  const [fillState, setFillState] = useState<{
+    source: FillCoord;
+    hover: FillCoord;
+    direction: FillDirection | null;
+  } | null>(null);
+  // Ref на корневой scroll-контейнер таблицы. Использую для elementFromPoint
+  // во время drag, чтобы определить какая ячейка под курсором.
+  const tableBodyRef = useRef<HTMLDivElement | null>(null);
 
   // v0.20.1: SSR-safe mounted-gate для canvas measureText (см. registry.ts grабли).
   const [mounted, setMounted] = useState(false);
@@ -1505,6 +1582,114 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
       );
     }
     if (next.rows || next.columns) patch(next);
+  }
+
+  /**
+   * v0.23.4: запуск Excel-like fill drag из ячейки (rowId, colId).
+   * Использует pointer capture: pointermove/up на handle гарантированно
+   * приходят даже если курсор покинул ячейку.
+   */
+  function startFill(rowId: string, colId: string, e: React.PointerEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    const rIdx = config.rows.findIndex((r) => r.id === rowId);
+    const cIdx = config.columns.findIndex((c) => c.id === colId);
+    if (rIdx < 0 || cIdx < 0) return;
+    // Если в этой ячейке идёт редактирование — коммитим draft перед fill.
+    if (session && session.rowId === rowId && session.columnId === colId) {
+      commitSession();
+    }
+    const source: FillCoord = { rowIdx: rIdx, colIdx: cIdx };
+    setFillState({ source, hover: source, direction: null });
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
+  }
+
+  /**
+   * Обработчик pointermove во время fill drag. Берём elementFromPoint и
+   * поднимаемся вверх по DOM в поисках `[data-cell-coord]` атрибута,
+   * который мы навешиваем на каждую ячейку (см. render).
+   */
+  function onFillMove(e: React.PointerEvent) {
+    if (!fillState) return;
+    let el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+    while (el && !el.hasAttribute('data-cell-coord') && el !== tableBodyRef.current) {
+      el = el.parentElement;
+    }
+    if (!el || !el.hasAttribute('data-cell-coord')) return;
+    const coord = el.getAttribute('data-cell-coord');
+    if (!coord) return;
+    const [rStr, cStr] = coord.split(',');
+    const rIdx = Number.parseInt(rStr, 10);
+    const cIdx = Number.parseInt(cStr, 10);
+    if (!Number.isFinite(rIdx) || !Number.isFinite(cIdx)) return;
+    if (rIdx === fillState.hover.rowIdx && cIdx === fillState.hover.colIdx) return;
+    const dR = Math.abs(rIdx - fillState.source.rowIdx);
+    const dC = Math.abs(cIdx - fillState.source.colIdx);
+    const direction: FillDirection | null =
+      dR === 0 && dC === 0 ? null : dR >= dC ? 'vertical' : 'horizontal';
+    setFillState({ ...fillState, hover: { rowIdx: rIdx, colIdx: cIdx }, direction });
+  }
+
+  function onFillEnd(e: React.PointerEvent) {
+    if (!fillState) return;
+    try {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
+    applyFill(fillState);
+    setFillState(null);
+  }
+
+  function onFillCancel() {
+    setFillState(null);
+  }
+
+  /**
+   * Распространение source-ячейки на target-диапазон. Формулы получают
+   * относительный сдвиг A1-ссылок; binding/литералы копируются как есть.
+   */
+  function applyFill(state: NonNullable<typeof fillState>) {
+    const sourceRow = config.rows[state.source.rowIdx];
+    const sourceCol = config.columns[state.source.colIdx];
+    if (!sourceRow || !sourceCol) return;
+    const sourceCell = sourceRow.cells[sourceCol.id];
+    if (!sourceCell) return;
+
+    const { targets } = computeFillTargets(state.source, state.hover);
+    if (targets.length === 0) return;
+
+    const maxRows = config.rows.length;
+    const maxCols = config.columns.length;
+
+    // Группируем targets по rowIdx, чтобы не пересоздавать rows-объект на каждой
+    // ячейке. Карта rIdx → Map<colId, newCell>.
+    const updatesByRow = new Map<number, Map<string, Cell>>();
+    for (const t of targets) {
+      const dRow = t.rowIdx - state.source.rowIdx;
+      const dCol = t.colIdx - state.source.colIdx;
+      const targetCol = config.columns[t.colIdx];
+      if (!targetCol) continue;
+      const newCell = fillCellFromSource(sourceCell, dRow, dCol, maxRows, maxCols);
+      if (!updatesByRow.has(t.rowIdx)) updatesByRow.set(t.rowIdx, new Map());
+      updatesByRow.get(t.rowIdx)!.set(targetCol.id, newCell);
+    }
+
+    const newRows = config.rows.map((row, rIdx) => {
+      const rowUpdates = updatesByRow.get(rIdx);
+      if (!rowUpdates) return row;
+      const newCells = { ...row.cells };
+      for (const [colId, cell] of rowUpdates) {
+        newCells[colId] = cell;
+      }
+      return { ...row, cells: newCells };
+    });
+
+    patch({ rows: newRows });
   }
 
   function deleteSelected() {
@@ -1985,6 +2170,7 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
         inlineInputRef={inlineInputRef}
         isSelected={selectedRows.has(row.id)}
         selectedCols={selectedCols}
+        fillState={fillState}
         onSessionChange={(draft, caret) =>
           setSession((prev) =>
             prev ? { ...prev, draft, caretPos: caret, lastFocused: 'inline' } : prev,
@@ -1999,6 +2185,10 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
         onSelectRow={(opts) => selectRow(row.id, opts)}
         onLabelChange={(label) => updateRow(row.id, { label })}
         onRemove={() => removeRow(row.id)}
+        onFillStart={startFill}
+        onFillMove={onFillMove}
+        onFillEnd={onFillEnd}
+        onFillCancel={onFillCancel}
         gridTemplateColumns={gridTemplateColumns}
       />
     );
@@ -2269,7 +2459,10 @@ function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
       )}
 
       <div
-        ref={scrollContainerRef}
+        ref={(el) => {
+          scrollContainerRef.current = el;
+          tableBodyRef.current = el;
+        }}
         className="flex min-h-0 min-w-0 flex-1 flex-col overflow-auto px-3 pb-3"
       >
         {config.rows.length === 0 ? (
@@ -2532,6 +2725,7 @@ function SortableRowGroup({
   inlineInputRef,
   isSelected,
   selectedCols,
+  fillState,
   onSessionChange,
   onInlineFocus,
   onInlineKeyDown,
@@ -2540,6 +2734,10 @@ function SortableRowGroup({
   onSelectRow,
   onLabelChange,
   onRemove,
+  onFillStart,
+  onFillMove,
+  onFillEnd,
+  onFillCancel,
   gridTemplateColumns,
 }: {
   row: Row;
@@ -2553,6 +2751,7 @@ function SortableRowGroup({
   inlineInputRef: React.MutableRefObject<HTMLInputElement | null>;
   isSelected: boolean;
   selectedCols: Set<string>;
+  fillState: { source: FillCoord; hover: FillCoord; direction: FillDirection | null } | null;
   onSessionChange: (draft: string, caretPos: number | null) => void;
   onInlineFocus: () => void;
   onInlineKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void;
@@ -2561,6 +2760,10 @@ function SortableRowGroup({
   onSelectRow: (opts: { extend?: boolean; toggle?: boolean }) => void;
   onLabelChange: (label: string) => void;
   onRemove: () => void;
+  onFillStart: (rowId: string, colId: string, e: React.PointerEvent) => void;
+  onFillMove: (e: React.PointerEvent) => void;
+  onFillEnd: (e: React.PointerEvent) => void;
+  onFillCancel: () => void;
   gridTemplateColumns: string;
 }) {
   const sortable = useSortable({ id: row.id });
@@ -2639,15 +2842,27 @@ function SortableRowGroup({
         // v0.23.3: разрешение showKopecks с приоритетом row → col → blockDefault.
         // `showKopecks` (prop) уже — резолвнутое block-default значение.
         const cellShowKopecks = resolveShowKopecks(row, col, showKopecks);
+        // v0.23.4: fill-handle visual.
+        const isFillSource =
+          fillState?.source.rowIdx === rIdx && fillState?.source.colIdx === cIdx;
+        const isInFill = fillState
+          ? isInFillRange(fillState.source, fillState.hover, rIdx, cIdx)
+          : false;
+        // Handle показываем в правом-нижнем углу last cell диапазона при drag,
+        // а в idle-состоянии — на каждой ячейке при hover (Excel-стиль).
         return (
           <div
             key={`${row.id}-${col.id}`}
+            data-cell-coord={`${rIdx},${cIdx}`}
             className={cn(
-              'relative flex items-center rounded-md border bg-muted/20 px-1 transition',
+              'group/cell relative flex items-center rounded-md border bg-muted/20 px-1 transition',
               isActive ? 'border-primary ring-1 ring-primary/40' : 'border-border/40',
               // Подсветка от колонки (накладывается поверх подсветки строки).
               colHighlight && !isActive && [colHighlight.bg, colHighlight.dark],
               colIsSelected && !isActive && 'ring-1 ring-primary/40',
+              // v0.23.4: визуализация fill-range.
+              isFillSource && 'ring-2 ring-primary/70',
+              isInFill && !isFillSource && 'bg-primary/10 ring-1 ring-primary/40',
             )}
           >
             {isActive && session ? (
@@ -2681,6 +2896,40 @@ function SortableRowGroup({
                 result={result}
                 pickModeActive={cellInPickMode}
                 onClick={() => onCellClick(col)}
+              />
+            )}
+            {/*
+              v0.23.4: Excel-like fill-handle (правый-нижний угол).
+              Видим:
+                • на hover ячейки (Excel-стиль — любую ячейку можно использовать как источник),
+                • всегда видим на source-ячейке во время drag.
+              Drag-сценарий:
+                • pointerDown на handle → setPointerCapture + setFillState.
+                • pointerMove → elementFromPoint находит ячейку под курсором,
+                  обновляет hover; visual feedback через isInFill.
+                • pointerUp → applyFill (копирование source с relative-shift).
+              Скрыт когда:
+                • ячейка в режиме редактирования (isActive + session),
+                • cell-pick-mode (формула: клик по ячейке вставляет ссылку — не fill),
+                • drag-state активен и эта ячейка НЕ источник (handle только у source).
+            */}
+            {!isActive && !cellInPickMode && (!fillState || isFillSource) && (
+              <button
+                type="button"
+                aria-label="Растянуть формулу/значение"
+                title="Перетащите вверх/вниз — скопировать формулу или значение"
+                data-fill-handle
+                onPointerDown={(e) => onFillStart(row.id, col.id, e)}
+                onPointerMove={fillState ? onFillMove : undefined}
+                onPointerUp={fillState ? onFillEnd : undefined}
+                onPointerCancel={fillState ? onFillCancel : undefined}
+                className={cn(
+                  'absolute -bottom-[3px] -right-[3px] z-30 h-2 w-2 cursor-crosshair rounded-[1px] bg-primary ring-1 ring-background transition',
+                  // Visible: source во время drag — всегда; иначе — только при hover.
+                  isFillSource
+                    ? 'opacity-100 scale-110'
+                    : 'opacity-0 group-hover/cell:opacity-100 hover:scale-125',
+                )}
               />
             )}
           </div>
@@ -2875,15 +3124,15 @@ function CustomDataSettingsForm({ config, onChange }: BlockSettingsFormProps) {
           <div className="min-w-0">
             <div className="text-xs font-medium">Показывать знаки после запятой</div>
             <div className="text-[11px] text-muted-foreground">
-              {parsed.showKopecks === null
-                ? 'Используется глобальная настройка'
+              {parsed.showKopecks === null || parsed.showKopecks === undefined
+                ? 'По умолчанию (включено)'
                 : parsed.showKopecks
                   ? 'Включено (1 234,56 ₽ / 12,5%)'
                   : 'Выключено (1 235 ₽ / 13%)'}
             </div>
           </div>
           <div className="flex items-center gap-1.5">
-            {parsed.showKopecks !== null && (
+            {parsed.showKopecks !== null && parsed.showKopecks !== undefined && (
               <button
                 type="button"
                 onClick={() => patch({ showKopecks: null })}
@@ -2893,15 +3142,15 @@ function CustomDataSettingsForm({ config, onChange }: BlockSettingsFormProps) {
               </button>
             )}
             <Switch
-              checked={parsed.showKopecks ?? false}
+              checked={parsed.showKopecks ?? true}
               onCheckedChange={(v) => patch({ showKopecks: v })}
             />
           </div>
         </div>
         <p className="text-[11px] text-muted-foreground">
-          Применяется ко всем числовым колонкам (рубли / число / процент). Чтобы переопределить
-          для отдельной строки или колонки — выделите её на сетке и используйте кнопку «Десятичные»
-          в верхнем тулбаре.
+          Применяется ко всем числовым колонкам (рубли / число / процент), а также к числовым
+          результатам формул в text-колонках. Чтобы переопределить для отдельной строки или
+          колонки — выделите её на сетке и используйте кнопку «Десятичные» в верхнем тулбаре.
         </p>
       </div>
 
@@ -2935,7 +3184,7 @@ export const CustomDataBlock: BlockDef = {
     columns: defaultColumns(),
     rows: [],
     publishMode: 'sum',
-    showKopecks: null,
+    showKopecks: true,
   }),
   supportsDependencies: false,
   SettingsForm: CustomDataSettingsForm,

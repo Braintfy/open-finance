@@ -40,7 +40,7 @@ Context7: `mcp0_resolve-library-id` → `mcp0_query-docs`. Не более 3 в�
 - **Phase 2:** Tauri 2.0 desktop.
 - **Phase 3:** React Native + Expo mobile.
 - **Главная идея:** почти каждая страница = настраиваемый **BlockGrid** (Lego из блоков). Новая фича обычно = новый block type в `src/lib/blocks/catalog/`, а не статичная страница.
-- **Источник правды версии:** `CHANGELOG.md` + `git log` (`package.json` остался на `0.5.0`, не используется). Текущая версия — **v0.23.3** (2026-05-24). UI читает версию через `src/lib/version.ts` (`APP_VERSION`), значение инжектируется в build-time из `CHANGELOG.md` через `next.config.mjs` → `env.NEXT_PUBLIC_APP_VERSION`.
+- **Источник правды версии:** `CHANGELOG.md` + `git log` (`package.json` остался на `0.5.0`, не используется). Текущая версия — **v0.23.4** (2026-05-25). UI читает версию через `src/lib/version.ts` (`APP_VERSION`), значение инжектируется в build-time из `CHANGELOG.md` через `next.config.mjs` → `env.NEXT_PUBLIC_APP_VERSION`.
 
 ## Жёсткие правила
 
@@ -162,8 +162,17 @@ docs/memory-archive/      исторические разделы MEMORY.md (п�
 
 > Исторические грабли (v0.10-v0.20) — в `docs/memory-archive/`.
 
+- **`custom.data` Excel-like fill-handle (v0.23.4)** — маленький handle (2×2px) в правом-нижнем углу каждой ячейки, видим на hover. Drag вверх/вниз/влево/вправо копирует source-ячейку в промежуточные:
+  - Формула — A1-ссылки сдвигаются relative (`=A1*B1` в C2 → `=A2*B2` в C3). Реализация — `shiftFormulaRefs` в `src/lib/blocks/custom-data-fill.ts`. Парсер пропускает `@blockId.field`, `[Row Label].col`, идентификаторы функций (`SUM`/`MIN`), строковые литералы.
+  - Binding (`cell.ref`) копируется absolute (binding на другой блок — явная abs-ссылка).
+  - Литерал копируется как есть.
+  - Out-of-bounds A1 → `#REF!`.
+  - Pointer capture + `elementFromPoint` (нативный API, без либ). Каждая ячейка получает `data-cell-coord="rIdx,cIdx"` для hit-test. Источник UX — Handsontable `fillHandle`, семантика relative-refs — HyperFormula copy-paste.
+  - Visual: source — `ring-2 ring-primary/70`, промежуточные — `bg-primary/10 ring-1 ring-primary/40`.
+  - Skip-условия рендера handle: ячейка в режиме edit (`isActive`), pick-mode формулы, drag активен и эта не source.
+  - Тесты — `scripts/test-fill-handle.ts` (35 кейсов: shift, `#REF!`, SUM-range, @-tokens, [Row].col, направления, binding/литерал).
 - **UI polish (v0.23.3)** — 4 правки:
-  1. **`custom.data` showKopecks теперь работает для всех числовых форматов** (раньше — только rubles). `formatColumnValue` обновлён: `number/percent` теряют дробную часть при `showKopecks=false`. Per-column / per-row override через `Column.showKopecks?: boolean | null` и `Row.showKopecks?: boolean | null` (3-state). Резолвер — `resolveShowKopecks(row, col, blockDefault)`, приоритет row → col → block. UI — bulk-toolbar: «Десятичные» popover (Show/Hide/Inherit) когда выделены строки/колонки.
+  1. **`custom.data` showKopecks теперь работает для всех числовых форматов** (раньше — только rubles). `formatColumnValue` обновлён: `number/percent` теряют дробную часть при `showKopecks=false`. **v0.23.3 fix:** text-колонки с формульными числами тоже форматируются (раньше `String(16.666…)` с точкой). Per-column / per-row override через `Column.showKopecks?: boolean | null` и `Row.showKopecks?: boolean | null` (3-state). Резолвер — `resolveShowKopecks(row, col, blockDefault)`, block-level — `resolveBlockShowKopecks` (default `true`, `null` → global). UI — bulk-toolbar: «Десятичные» popover (Show/Hide/Inherit) когда выделены строки/колонки.
   2. **Sticky-сайдбар** в `src/app/(app)/layout.tsx` (`<aside>` → `sticky top-0 self-start h-screen overflow-y-auto`). Document скроллится, нав остаётся видна.
   3. **Автоверсия из CHANGELOG.md** — `next.config.mjs` парсит `^##\s*\[?(x.y.z)` и инжектит `NEXT_PUBLIC_APP_VERSION`. UI читает через `src/lib/version.ts` (`APP_VERSION`). Сайдбар и лендинг (`src/app/page.tsx`) обновлены — хардкод убран.
   4. **AI/Settings hotzone-reveal** — `block-chrome.tsx` toolbar (AI/Settings/Delete) переведён с JS `showControls`-стейта на CSS-pattern (зеркало resize-hotzone): `data-toolbar-hotzone` в правом верхнем углу + правило `:has([data-toolbar-hotzone]:hover) .block-toolbar { opacity: 1 }` в `block-grid.css`. Drag-handle остался на JS-hover.

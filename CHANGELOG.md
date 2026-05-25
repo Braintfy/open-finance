@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.23.4] - 2026-05-25
+
+### Added
+
+- **`custom.data` Excel-like fill-handle** — маленький квадратик в правом-нижнем углу каждой ячейки (виден на hover, всегда виден на source-ячейке во время drag). Захватите и тащите вверх/вниз или влево/вправо — формула / значение копируется в промежуточные ячейки с **относительным сдвигом A1-ссылок** (как в Excel: `=A1*B1` в C2 при drag вниз становится `=A2*B2` в C3).
+  - Поведение по типу ячейки: формула — relative-shift; binding (`cell.ref`) — копируется absolute; литерал — копируется как есть. Out-of-bounds ссылки заменяются на `#REF!`.
+  - `@blockId.field`, `[Row Label].col`, идентификаторы функций (`SUM`, `MIN`) и строковые литералы пропускаются (не сдвигаются).
+  - Направление определяется автоматически по большей дельте `|dRow|` vs `|dCol|` (Handsontable-стиль).
+  - Visual feedback: source-ячейка с двойным ring, промежуточные — с лёгким primary-фоном.
+  - Реализовано через pointer capture + `elementFromPoint` (нативный API, без сторонних библиотек). Pointer-events направляются на handle даже если курсор выходит за пределы исходной ячейки.
+- **`src/lib/blocks/custom-data-fill.ts`** — pure-helpers: `shiftFormulaRefs`, `fillCellFromSource`, `computeFillTargets`, `isInFillRange`.
+- **`scripts/test-fill-handle.ts`** — 35 unit-тестов (A1-сдвиг, #REF!, SUM/range, пропуск @-токенов / `[Row].col` / функций, vertical/horizontal/up/down, binding/литерал).
+
+### References
+
+- Дизайн UX скопирован с Handsontable fillHandle: <https://handsontable.com/docs/javascript-data-grid/autofill-values/>.
+- Семантика relative-references — HyperFormula: copy-paste sdвигает refs, cut-paste и by-name остаются абсолютными.
+
 ## [0.23.3] - 2026-05-24
 
 UI polish session: универсальный «скрыть дробную часть» в блоке Данные на 3 уровнях (block / column / row), sticky-сайдбар, автосинхронизация версии с `CHANGELOG.md`, hotzone-reveal AI/Settings во всех блоках.
@@ -29,6 +47,11 @@ UI polish session: универсальный «скрыть дробную ча
 ### Fixed
 
 - Дробная часть в `number` и `percent` колонках теперь действительно скрывается, когда пользователь отключает `showKopecks`. Раньше переключатель влиял только на рубли — пользователь видел дробные значения в процентных колонках даже при выключенных копейках.
+- **`custom.data` text-колонки с формулами** — числовые результаты (`16.666…`) больше не показываются как сырой JS-float с точкой. `formatColumnValue` для `text` применяет те же правила дробной части, что и для `# Число`; per-row/per-col `showKopecks` теперь работает и для T-колонок.
+- **`parseNumberLoose`** — исправлен парсинг en-десятичной точки (`16.666` раньше превращался в `16666…` из-за слепого удаления `.`).
+- **Block default `showKopecks`** — `null`/`undefined` в custom.data теперь означает **показывать дробные** (Excel default), а не наследовать глобальную настройку (`false`). Исправляет `0.01` → `0` в колонках вроде «Дозировка».
+- **`formatPlainNumber`** — Excel General-like через `Intl.NumberFormat`: малые дроби (`0,01`) видны; большие числа — max 2 знака; float-noise (`16.666…`) → `16,67`.
+- **`formatCustomDataRubles`** — ₽-колонки форматируют значения в **рублях** (Intl `currency: RUB`), а не через `formatRublesWithSettings` (копейки).
 
 ## [0.23.2] - 2026-05-24
 

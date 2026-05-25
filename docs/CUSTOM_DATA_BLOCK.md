@@ -236,7 +236,7 @@ type Config = { ...; showKopecks: boolean | null }; // блочный урове
 //   null  → наследовать
 ```
 
-Приоритет резолва: **row → column → blockDefault** (`blockDefault = block.showKopecks ?? globalSettings.showKopecks`). Pure-функция `resolveShowKopecks(row, col, blockDefault)` экспортируется для тестов.
+Приоритет резолва: **row → column → blockDefault** (`blockDefault = resolveBlockShowKopecks(block.showKopecks)` — `null`/`undefined` → **true**, Excel-like). Pure-функции `resolveShowKopecks` / `resolveBlockShowKopecks` экспортируются для тестов.
 
 UI:
 - **Уровень блока** — настройки блока (правая панель) → секция «Дробная часть» (Switch + «Сбросить»).
@@ -248,6 +248,50 @@ UI:
 Если выделение смешанное (часть включена, часть выключена), кнопка показывает «—».
 
 Покрытие тестами — [scripts/test-decimal-resolution.ts](../scripts/test-decimal-resolution.ts).
+
+## Fill-handle (v0.23.4)
+
+Excel/Handsontable-style autofill через маленький квадратик в правом-нижнем углу каждой ячейки. Drag вверх/вниз/влево/вправо копирует source-ячейку в промежуточные с относительной корректировкой формул.
+
+```
+┌─────┐
+│  V  │ ← source-ячейка
+│     │■← fill-handle (2×2px, hover)
+└─────┘
+   │
+   ▼ drag
+┌─────┐
+│ V'  │ ← target (формула получает dRow/dCol сдвиг)
+└─────┘
+```
+
+### Семантика копирования
+
+| Тип ячейки | Поведение |
+|---|---|
+| Формула (`=A1*B1`) | A1-refs **сдвигаются** на `(dRow, dCol)` (HyperFormula copy-paste-стиль). `=A1*B1` в C2 при drag вниз становится `=A2*B2` в C3. |
+| Binding (`cell.ref` есть) | Копируется **absolute** — `ref` сохраняется, потому что binding — явная ссылка на блок. |
+| Литерал (число/текст) | Копируется как есть. |
+
+### Что НЕ сдвигается (absolute by design)
+
+- `@blockId.field` — cross-block @-токены (другой блок, не наша сетка).
+- `[Row Label].col` — именованные refs (label → idx по `normalizeLabel`, при сдвиге становится невалидным).
+- Идентификаторы функций (`SUM`, `MIN`, `AVG`, …) — у них нет цифр сразу после букв.
+- Строковые литералы (`"text"`, `'text'`).
+
+### Out-of-bounds → `#REF!`
+
+Если сдвинутая A1-ссылка выходит за `(maxRows × maxCols)` — заменяется на `#REF!`. Pattern matches Excel/Google Sheets.
+
+### Implementation
+
+- Pure-helpers: `src/lib/blocks/custom-data-fill.ts` (`shiftFormulaRefs`, `fillCellFromSource`, `computeFillTargets`, `isInFillRange`).
+- UI: state `fillState` в `RenderCustomData` + handle-кнопка на каждой ячейке (`data-fill-handle`).
+- Hit-test во время drag: pointer capture на handle + `document.elementFromPoint` ищет ячейку под курсором по `data-cell-coord="rIdx,cIdx"`.
+- Direction (vertical/horizontal) определяется автоматически по `|dRow| vs |dCol|`.
+
+Тесты — [scripts/test-fill-handle.ts](../scripts/test-fill-handle.ts) (35 кейсов).
 
 ## Известные ограничения
 

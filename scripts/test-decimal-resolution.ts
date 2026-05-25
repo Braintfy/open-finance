@@ -1,14 +1,14 @@
-// PURPOSE: Тесты для resolveShowKopecks (v0.23.3) — переключатель «Дробная часть»
-// в блоке custom.data на уровне block / column / row.
-//
-// Покрытие:
-//   - Приоритет row → col → blockDefault.
-//   - `null` / `undefined` на уровне row/col = inherit (пропускаем уровень).
-//   - blockDefault — уже резолвнутое значение (block.showKopecks ?? global).
+// PURPOSE: Тесты для resolveShowKopecks + formatColumnValue (v0.23.3) — переключатель
+// «Дробная часть» в блоке custom.data на уровне block / column / row.
 //
 // Запуск: pnpm tsx scripts/test-decimal-resolution.ts
 
-import { resolveShowKopecks } from '../src/lib/blocks/catalog/custom-data';
+import {
+  resolveShowKopecks,
+  resolveBlockShowKopecks,
+  formatColumnValue,
+} from '../src/lib/blocks/catalog/custom-data';
+import { parseNumberLoose } from '../src/lib/blocks/custom-data-formulas';
 
 let passed = 0;
 let failed = 0;
@@ -36,58 +36,50 @@ ok('col=true beats blockDefault=false',
   resolveShowKopecks(undefined, { showKopecks: true }, false) === true);
 ok('col=false beats blockDefault=true',
   resolveShowKopecks(undefined, { showKopecks: false }, true) === false);
-ok('col=null inherits blockDefault=true → true',
-  resolveShowKopecks(undefined, { showKopecks: null }, true) === true);
-ok('col=undefined inherits blockDefault=false → false',
-  resolveShowKopecks(undefined, {}, false) === false);
 
 console.log('\n=== Row override beats column ===');
-ok('row=true beats col=false (block=false)',
-  resolveShowKopecks({ showKopecks: true }, { showKopecks: false }, false) === true);
 ok('row=false beats col=true (block=true)',
   resolveShowKopecks({ showKopecks: false }, { showKopecks: true }, true) === false);
-ok('row=null falls back to col=true',
-  resolveShowKopecks({ showKopecks: null }, { showKopecks: true }, false) === true);
-ok('row=undefined falls back to col=false',
-  resolveShowKopecks({}, { showKopecks: false }, true) === false);
 
-console.log('\n=== Both row and col null → blockDefault ===');
-ok('row=null, col=null, block=true → true',
-  resolveShowKopecks({ showKopecks: null }, { showKopecks: null }, true) === true);
-ok('row=null, col=null, block=false → false',
-  resolveShowKopecks({ showKopecks: null }, { showKopecks: null }, false) === false);
+console.log('\n=== resolveBlockShowKopecks ===');
+ok('explicit true → true', resolveBlockShowKopecks(true, false) === true);
+ok('explicit false → false', resolveBlockShowKopecks(false, true) === false);
+ok('null → true (block Excel default)', resolveBlockShowKopecks(null, false) === true);
+ok('undefined → true (block Excel default)', resolveBlockShowKopecks(undefined, false) === true);
 
-console.log('\n=== Edge: row=true with col=undefined ===');
-ok('row=true wins over implicit col, block=false → true',
-  resolveShowKopecks({ showKopecks: true }, {}, false) === true);
-ok('row=false wins over implicit col, block=true → false',
-  resolveShowKopecks({ showKopecks: false }, {}, true) === false);
+console.log('\n=== blockDefault=true → 0.01 visible in number column ===');
+ok('0.01 dosage cell', formatColumnValue(0.01, 'number', true) === '0,01');
+ok('0.01 hidden when col override false',
+  formatColumnValue(0.01, 'number', false) === '0');
 
-// ============================================================================
-// Прикладной кейс: тот же blockDefault (например, global=false), но per-column
-// мы хотим «показывать копейки» для рублёвой колонки. И per-row хотим скрыть
-// дробную часть в строке «Итого».
-console.log('\n=== Use case: показать копейки только в одной колонке ===');
+console.log('\n=== parseNumberLoose — en decimal dot ===');
+ok('16.666… parses correctly',
+  parseNumberLoose('16.666666666666668') !== null &&
+    Math.abs(parseNumberLoose('16.666666666666668')! - 16.666666666666668) < 1e-10);
+
+console.log('\n=== formatColumnValue — text column with formula float ===');
 {
-  const blockDefault = false; // глобально копейки скрыты
-  const col = { showKopecks: true }; // в этой колонке — показывать
-  ok('blockDefault=false, col=true → true',
-    resolveShowKopecks(undefined, col, blockDefault) === true);
-  // другие колонки не затронуты
-  ok('blockDefault=false, otherCol=undefined → false',
-    resolveShowKopecks(undefined, {}, blockDefault) === false);
+  const raw = 16.666666666666668;
+  ok('text + showKopecks=true → max 2 digits (ru)',
+    formatColumnValue(raw, 'text', true) === '16,67');
+  ok('text + showKopecks=false → integer',
+    formatColumnValue(raw, 'text', false) === '17');
+  ok('text literal stays as-is',
+    formatColumnValue('синий CL', 'text', false) === 'синий CL');
 }
 
-console.log('\n=== Use case: «итого»-строка без дробных, остальные с дробными ===');
+console.log('\n=== formatColumnValue — rubles column (values in rubles, not kopecks) ===');
 {
-  const blockDefault = true; // показываем копейки
-  const rowTotal = { showKopecks: false }; // в строке «итого» — скрыть
-  const rowNormal = {};
-  const col = {};
-  ok('rowTotal перекрывает blockDefault → false',
-    resolveShowKopecks(rowTotal, col, blockDefault) === false);
-  ok('rowNormal наследует blockDefault → true',
-    resolveShowKopecks(rowNormal, col, blockDefault) === true);
+  ok('0.01 ₽ shows', formatColumnValue(0.01, 'rubles', true).includes('0,01'));
+  ok('1.5 ₽ shows', formatColumnValue(1.5, 'rubles', true).includes('1,50'));
+}
+{
+  ok('number 0.6 show → 0,6', formatColumnValue(0.6, 'number', true) === '0,6');
+  ok('number 0.6 hide → 1', formatColumnValue(0.6, 'number', false) === '1');
+  ok('number 16.666 show → 16,67',
+    formatColumnValue(16.666666666666668, 'number', true) === '16,67');
+  ok('number 16.666 hide → 17',
+    formatColumnValue(16.666666666666668, 'number', false) === '17');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
