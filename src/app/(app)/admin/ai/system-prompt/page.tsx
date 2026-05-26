@@ -189,7 +189,7 @@ function SectionsTab() {
       setGroups(data.groups);
       setPageOverrides(data.pageOverrides ?? {});
       const init: Record<string, string> = {};
-      for (const g of data.groups) init[g.id] = g.custom || '';
+      for (const g of data.groups) init[g.id] = g.custom || g.default || '';
       setDrafts(init);
     }
   }, []);
@@ -242,7 +242,7 @@ function SectionsTab() {
                   <div>
                     <div className="flex items-center gap-2 text-sm font-medium">
                       {g.label}
-                      {draft.trim() ? (
+                      {draft.trim() && draft.trim() !== g.default.trim() ? (
                         <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">кастомный</span>
                       ) : null}
                     </div>
@@ -258,7 +258,7 @@ function SectionsTab() {
                       defaultText={g.default}
                       value={draft}
                       onChange={(v) => setDrafts(prev => ({ ...prev, [g.id]: v }))}
-                      onReset={() => setDrafts(prev => ({ ...prev, [g.id]: '' }))}
+                      onReset={() => setDrafts(prev => ({ ...prev, [g.id]: g.default }))}
                       rows={8}
                     />
                   </div>
@@ -298,7 +298,7 @@ function BlocksTab() {
     if (data.ok) {
       setBlocks(data.blocks);
       const init: Record<string, string> = {};
-      for (const b of data.blocks) init[b.type] = b.custom || '';
+      for (const b of data.blocks) init[b.type] = b.custom || b.default || '';
       setDrafts(init);
     }
   }, []);
@@ -349,11 +349,11 @@ function BlocksTab() {
         <div className="flex justify-center py-8"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>
       ) : (
         <div className="space-y-2">
-          {filtered.map((b) => {
+          {filtered.map((b, index) => {
             const isOpen = expanded.has(b.type);
             const draft = drafts[b.type] ?? '';
             return (
-              <div key={b.type} className="rounded-lg border bg-card">
+              <div key={b.type || `block-${index}`} className="rounded-lg border bg-card">
                 <button
                   type="button"
                   className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left"
@@ -366,7 +366,7 @@ function BlocksTab() {
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 text-xs font-medium">
                       <span className="truncate">{b.displayName}</span>
-                      {draft.trim() ? (
+                      {draft.trim() && draft.trim() !== b.default.trim() ? (
                         <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">кастомный</span>
                       ) : null}
                     </div>
@@ -379,9 +379,9 @@ function BlocksTab() {
                     <PromptEditor
                       label={b.displayName}
                       defaultText={b.default || '(нет дефолтного промпта)'}
-                      value={draft || b.default}
+                      value={draft}
                       onChange={(v) => setDrafts(prev => ({ ...prev, [b.type]: v }))}
-                      onReset={() => setDrafts(prev => ({ ...prev, [b.type]: '' }))}
+                      onReset={() => setDrafts(prev => ({ ...prev, [b.type]: b.default }))}
                       rows={6}
                     />
                   </div>

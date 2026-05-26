@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.24.1] - 2026-05-26
+
+Доработка блока «Мой магазин · таблица» (`unit.my-store-table`) по образцу `unit.ozon-analytics`: DnD-переупорядочивание динамических колонок, drag-resize ширины по правому краю заголовка, сортировка кликом по заголовку с циклом `null → desc → asc → null`, sticky-pinned динамические колонки, однострочный заголовок и per-row publishing значений ячеек через `useBlockValuePublisher`.
+
+### Added
+
+- **`src/lib/blocks/catalog/unit-my-store-table.tsx`** — `ConfigSchema.pinnedColumns: z.array(z.string()).default([])` — id динамических колонок, закреплённых слева (sticky), не участвуют в DnD.
+- **`MyStoreSortableHeaderCell`** — новый sortable+resizable+pinnable заголовок: drag handle (`GripVertical`), кнопка пина (`Pin`/`PinOff`), кнопка настроек (`Settings2`), arrow-индикатор сортировки, resize-handle 5px на правом крае. Все hover-only кроме лейбла и единицы.
+- **`StickyTitleHeaderCell`** — заголовок sticky-колонок `#`/Артикул/Название с поддержкой sort-cycle (article/name).
+- **Per-row publishing** — `useBlockValuePublisher` теперь публикует top-50 строк по выручке: ключи `r_<slug>_<colId>`, `r_<slug>_article`, `r_<slug>_name`. Money-колонки в копейках, перечислены в `__money`. Лейблы в формате `<rowLabel> · <colLabel>` в `__labels`. Slug из article (или `idx{N}` для пустых), коллизии разрешаются суффиксом `_idx`. Другие блоки (KPI, Chart, custom-data) могут биндиться к конкретной строке через стандартный picker.
+- **Чекбокс «Закрепить слева»** в `ColumnEditDialog` (дублирует кнопку пина в заголовке).
+
+### Changed
+
+- **Sort state** — локальный `useState<{ key: string; dir: 'asc' | 'desc' } | null>(null)` (НЕ персистится). Применяется к `computedRows` ПОСЛЕ расчёта формул; totals считаются по исходному порядку. `'#CYCLE'/'#ERR'` и non-finite значения уходят в конец независимо от направления. article/name — `localeCompare(..., 'ru')`.
+- **Drag-resize** — во время drag обновляется только локальный `widthOverrides` (overlay), `persist({ columns })` вызывается ОДИН раз по `mouseup` (без шторма записей в config). Минимум 40px.
+- **DnD** — `DndContext`+`SortableContext` оборачивают все динамические заголовки. `useId()` для стабильного DndContext id (SSR-safe). Pinned колонки исключены из `reorderableIds` — drag над/из них не двигает массив.
+- **HEADER_H** уменьшен с 42 до 32 — заголовок однострочный (`inline-flex` с label · unit/fx · sort arrow · grip · pin · settings).
+- **Sticky pinned** — `stickyOffsets` cumulative от `STICKY_GROUP_W` для подряд идущих pinned колонок в начале `visibleColumns`. `boxShadow: '2px 0 4px -2px rgba(0,0,0,0.08)'` (`PIN_SHADOW`) на правой границе последней pinned. Применяется в header, body и totals rows.
+
+### Compatibility
+
+- Старые конфиги без `pinnedColumns` парсятся через `.default([])` без миграции.
+- Per-row publishing additive — старые подписки на агрегаты (`totalRevenue`, `totalProfit`, `avgMargin`, `stockTotal`, `rowsCount`) сохранены.
+
 ## [0.24.0] - 2026-05-26
 
 AI layer overhaul: 4-уровневая иерархия промптов, RU-провайдеры без VPN, per-user API ключи, кнопка «AI Анализ» в каждом разделе, read-only master skill + 500-char supplement в настройках блока.

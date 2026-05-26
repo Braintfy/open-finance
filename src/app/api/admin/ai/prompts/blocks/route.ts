@@ -5,8 +5,7 @@ import { eq } from 'drizzle-orm';
 import { auth } from '@/lib/auth';
 import { db } from '@/lib/db/client';
 import { tenants } from '@/lib/db/schema/tenants';
-import { BLOCK_SKILLS } from '@/lib/ai/prompts/block-skills/index';
-import { listAllBlocks } from '@/lib/blocks/registry';
+import { BLOCK_SKILLS, BLOCK_TYPE_META } from '@/lib/ai/prompts/block-skills/index';
 
 export const runtime = 'nodejs';
 
@@ -30,10 +29,9 @@ export async function GET() {
 
     const overrides = row?.settings?.aiPrompts?.blocks ?? {};
 
-    // Собрать список всех зарегистрированных типов блоков
-    const allBlocks = listAllBlocks();
-
-    const blockList = allBlocks.map((b) => ({
+    // Используем серверно-безопасный BLOCK_TYPE_META вместо listAllBlocks()
+    // (listAllBlocks() импортирует 'use client' catalog файлы → пустые объекты на сервере)
+    const blockList = BLOCK_TYPE_META.map((b) => ({
       type: b.type,
       displayName: b.displayName,
       default: BLOCK_SKILLS[b.type] ?? '',

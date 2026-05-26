@@ -4,7 +4,7 @@
 // Базируется на структуре unit.ozon-multi-table (sticky шапка/колонки/итоги).
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   Plus,
   Trash2,
@@ -15,8 +15,29 @@ import {
   Eye,
   EyeOff,
   Download,
+  GripVertical,
+  ArrowUp,
+  ArrowDown,
+  ArrowDownUp,
+  Pin,
+  PinOff,
 } from 'lucide-react';
 import { z } from 'zod';
+import {
+  DndContext,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  closestCenter,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  horizontalListSortingStrategy,
+  arrayMove,
+  useSortable,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import type { BlockDef, BlockRenderProps } from '../types';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -146,6 +167,11 @@ const ConfigSchema = z.object({
   columns: z.array(ColumnSchema).default([]),
   rows: z.array(RowSchema).default([]),
   importSource: ImportSourceSchema.optional(),
+  /**
+   * id динамических колонок, закреплённых слева (sticky) — отображаются
+   * сразу за фиксированными #/Артикул/Название и не участвуют в DnD-сортировке.
+   */
+  pinnedColumns: z.array(z.string()).default([]),
 });
 
 type Config = z.infer<typeof ConfigSchema>;
@@ -185,8 +211,29 @@ const ACTIONS_W = 80;
 const STICKY_ARTICLE_LEFT = STICKY_INDEX_W;
 const STICKY_NAME_LEFT = STICKY_INDEX_W + STICKY_ARTICLE_W;
 const STICKY_GROUP_W = STICKY_INDEX_W + STICKY_ARTICLE_W + STICKY_NAME_W;
-const HEADER_H = 42;
+const HEADER_H = 32;
 const ROW_H = 30;
+const PIN_SHADOW = '2px 0 4px -2px rgba(0,0,0,0.08)';
+
+/** Sticky-сортируемый ключ: `null` (без сортировки) → `desc` → `asc` → `null`. */
+type SortDir = 'asc' | 'desc';
+type SortState = { key: string; dir: SortDir } | null;
+
+function nextSortState(prev: SortState, key: string): SortState {
+  if (!prev || prev.key !== key) return { key, dir: 'desc' };
+  if (prev.dir === 'desc') return { key, dir: 'asc' };
+  return null;
+}
+
+/** Стабильный slug из article для per-row publish-ключей. */
+function articleSlug(article: string, fallbackIdx: number): string {
+  const cleaned = article
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_а-яё]+/gi, '_')
+    .replace(/^_+|_+$/g, '');
+  return cleaned || `idx${fallbackIdx}`;
+}
 
 function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
   const config = parseConfig(instance.config);
@@ -199,6 +246,21 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
   const [importInProgress, setImportInProgress] = useState(false);
   const [importNotice, setImportNotice] = useState<string | null>(null);
   const lastSyncRef = useRef<number>(0);
+  /** Локальный transient sort state — НЕ персистится в config. */
+  const [sort, setSort] = useState<SortState>(null);
+  /**
+   * Локальный overlay ширин на время drag-resize. Базовый источник —
+   * `Column.width` из config. После mouseup overrides записываются обратно
+   * в config (один batched `persist`), а локальный state очищается.
+   */
+  const [widthOverrides, setWidthOverrides] = useState<Record<string, number>>({});
+  const resizingRef = useRef<{ key: string; startX: number; startW: number; minW: number } | null>(null);
+  // Стабильный id для DndContext — `useId()` SSR-safe, предотвращает
+  // hydration mismatch на ARIA-описании (DndDescribedBy-N).
+  const dndId = useId();
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+  );
 
   const persist = useCallback(
     (patch: Partial<Config>) => {
@@ -476,10 +538,137 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
     [config.rows, persist],
   );
 
-  const visibleColumns = useMemo(
-    () => config.columns.filter((c) => !c.hidden),
-    [config.columns],
+  /**
+   * Видимые колонки в финальном порядке: сначала pinned (sticky-слева,
+   * в порядке `pinnedColumns`), потом остальные в порядке `config.columns`.
+   * pinned-id, которых нет в visibleColumns (скрыты / удалены), игнорируются.
+   */
+  const toggleSort = useCallback((key: string) => {
+    setSort((prev) => nextSortState(prev, key));
+  }, []);
+
+  const togglePin = useCallback(
+    (colId: string) => {
+      const exists = config.pinnedColumns.includes(colId);
+      const next = exists
+        ? config.pinnedColumns.filter((id) => id !== colId)
+        : [...config.pinnedColumns, colId];
+      persist({ pinnedColumns: next });
+    },
+    [config.pinnedColumns, persist],
   );
+
+  const handleHeaderDragEnd = useCallback(
+    (e: DragEndEvent) => {
+      const { active, over } = e;
+      if (!over || active.id === over.id) return;
+      const activeId = String(active.id);
+      const overId = String(over.id);
+      // Pinned колонки не двигаются и не принимают drop.
+      if (config.pinnedColumns.includes(activeId) || config.pinnedColumns.includes(overId)) return;
+      const oldIdx = config.columns.findIndex((c) => c.id === activeId);
+      const newIdx = config.columns.findIndex((c) => c.id === overId);
+      if (oldIdx < 0 || newIdx < 0) return;
+      persist({ columns: arrayMove(config.columns, oldIdx, newIdx) });
+    },
+    [config.columns, config.pinnedColumns, persist],
+  );
+
+  /**
+   * Drag-resize колонки. Во время drag обновляется только локальный
+   * `widthOverrides` (без `persist`) — без этого был бы шторм записей
+   * в config на каждое движение мыши. По `mouseup` один раз обновляем
+   * `Column.width` в config и сбрасываем overlay.
+   */
+  const handleResizeStart = useCallback(
+    (e: React.MouseEvent, colId: string) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const col = config.columns.find((c) => c.id === colId);
+      if (!col) return;
+      resizingRef.current = {
+        key: colId,
+        startX: e.clientX,
+        startW: col.width ?? 96,
+        minW: 40,
+      };
+      const onMove = (ev: MouseEvent) => {
+        if (!resizingRef.current) return;
+        const delta = ev.clientX - resizingRef.current.startX;
+        const newW = Math.max(resizingRef.current.minW, resizingRef.current.startW + delta);
+        setWidthOverrides((prev) => ({ ...prev, [resizingRef.current!.key]: newW }));
+      };
+      const onUp = () => {
+        const ref = resizingRef.current;
+        resizingRef.current = null;
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        if (ref) {
+          setWidthOverrides((prev) => {
+            const next = { ...prev };
+            const finalW = next[ref.key];
+            delete next[ref.key];
+            if (typeof finalW === 'number' && finalW !== ref.startW) {
+              persist({
+                columns: config.columns.map((c) =>
+                  c.id === ref.key ? { ...c, width: finalW } : c,
+                ),
+              });
+            }
+            return next;
+          });
+        }
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+    },
+    [config.columns, persist],
+  );
+
+  const visibleColumns = useMemo(() => {
+    const visibleAll = config.columns.filter((c) => !c.hidden);
+    const byId = new Map(visibleAll.map((c) => [c.id, c]));
+    const pins = config.pinnedColumns
+      .map((id) => byId.get(id))
+      .filter((c): c is Column => Boolean(c));
+    const pinIds = new Set(pins.map((c) => c.id));
+    const rest = visibleAll.filter((c) => !pinIds.has(c.id));
+    return [...pins, ...rest];
+  }, [config.columns, config.pinnedColumns]);
+
+  const pinnedSet = useMemo(() => new Set(config.pinnedColumns), [config.pinnedColumns]);
+
+  /** id колонок, доступных для DnD (всё кроме pinned). */
+  const reorderableIds = useMemo(
+    () => visibleColumns.filter((c) => !pinnedSet.has(c.id)).map((c) => c.id),
+    [visibleColumns, pinnedSet],
+  );
+
+  /** Ширина с учётом локального drag-overlay (для плавного resize). */
+  const widthOf = useCallback(
+    (col: Column): number => widthOverrides[col.id] ?? col.width ?? 96,
+    [widthOverrides],
+  );
+
+  /**
+   * Cumulative left-offset для подряд идущих pinned колонок, начиная от
+   * правого края sticky-блока `#/Артикул/Название` (`STICKY_GROUP_W`).
+   * Только колонки, идущие подряд в начале `visibleColumns`, остаются sticky.
+   */
+  const stickyOffsets = useMemo(() => {
+    const map = new Map<string, number>();
+    let acc = STICKY_GROUP_W;
+    for (const col of visibleColumns) {
+      if (!pinnedSet.has(col.id)) break;
+      map.set(col.id, acc);
+      acc += widthOf(col);
+    }
+    return map;
+  }, [visibleColumns, pinnedSet, widthOf]);
 
   const formulasMap = useMemo(() => {
     const m: Record<string, string | undefined> = {};
@@ -520,6 +709,62 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
     });
   }, [config.rows, config.columns, config.global.vatPct, config.global.taxRatePct, liveValues, formulasMap]);
 
+  /**
+   * Сортированные строки. Если `sort=null` — отдаём `computedRows` в исходном
+   * порядке. Сортировка применяется ПОСЛЕ расчёта формул и НЕ зависит от
+   * totals (агрегаты считаются по `computedRows`).
+   *
+   * - `article`/`name` — `localeCompare` (ru).
+   * - Остальные — числовое сравнение по `values[col.id]`. `'#CYCLE'/'#ERR'`
+   *   и пустые/non-finite значения уходят в конец независимо от направления.
+   */
+  const sortedComputedRows = useMemo(() => {
+    if (!sort) return computedRows;
+    const colsById = new Map(config.columns.map((c) => [c.id, c]));
+    const isTextSort = sort.key === 'article' || sort.key === 'name' || colsById.get(sort.key)?.type === 'text';
+    const next = [...computedRows];
+    next.sort((a, b) => {
+      let av: string | number = 0;
+      let bv: string | number = 0;
+      if (sort.key === 'article') {
+        av = a.row.article;
+        bv = b.row.article;
+      } else if (sort.key === 'name') {
+        av = a.row.name;
+        bv = b.row.name;
+      } else {
+        av = a.values[sort.key];
+        bv = b.values[sort.key];
+      }
+      const aBad =
+        av === undefined ||
+        av === null ||
+        av === '' ||
+        av === '#CYCLE' ||
+        av === '#ERR' ||
+        (typeof av === 'number' && !Number.isFinite(av));
+      const bBad =
+        bv === undefined ||
+        bv === null ||
+        bv === '' ||
+        bv === '#CYCLE' ||
+        bv === '#ERR' ||
+        (typeof bv === 'number' && !Number.isFinite(bv));
+      if (aBad && bBad) return 0;
+      if (aBad) return 1;
+      if (bBad) return -1;
+      if (isTextSort) {
+        const as = String(av);
+        const bs = String(bv);
+        return sort.dir === 'asc' ? as.localeCompare(bs, 'ru') : bs.localeCompare(as, 'ru');
+      }
+      const na = Number(av);
+      const nb = Number(bv);
+      return sort.dir === 'asc' ? na - nb : nb - na;
+    });
+    return next;
+  }, [computedRows, sort, config.columns]);
+
   const totals = useMemo(() => {
     let totalRevenue = 0;
     let totalProfit = 0;
@@ -548,23 +793,110 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
     };
   }, [computedRows]);
 
-  useBlockValuePublisher(instance.id, {
-    rowsCount: totals.rowsCount,
-    totalRevenue: rublesToKopecks(totals.totalRevenue),
-    totalProfit: rublesToKopecks(totals.totalProfit),
-    avgMargin: totals.avgMargin,
-    stockTotal: totals.stockTotal,
-    label: instance.appearance?.title ?? config.title,
-    __money: 'totalRevenue,totalProfit',
-    __labels:
-      'rowsCount=Товаров,totalRevenue=Выручка / мес,totalProfit=Прибыль / мес,' +
-      'avgMargin=Средняя маржа,stockTotal=Сумма остатков',
-  });
+  /**
+   * Output для `useBlockValuePublisher`:
+   *  - Агрегаты блока (rowsCount, totalRevenue, totalProfit, avgMargin, stockTotal).
+   *  - Per-row значения каждой видимой строки: `r_<slug>_<colId>`,
+   *    плюс служебные `r_<slug>_article` / `r_<slug>_name`. Это позволяет
+   *    другим блокам (KPI, Chart, custom-data formulas) биндиться к
+   *    конкретной строке через стандартный picker (он читает `__labels`).
+   *  - Money-колонки публикуются в копейках и перечисляются в `__money`.
+   *  - Лимит — top-50 строк по `revenueMonth` DESC (защита от взрыва
+   *    keys-пространства при тысячах товаров). Slug формируется из
+   *    article (или `idx{N}` для пустых article); коллизии разрешаются
+   *    суффиксом `_idx`.
+   */
+  const publisherOutput = useMemo(() => {
+    const out: Record<string, number | string | null> = {
+      rowsCount: totals.rowsCount,
+      totalRevenue: rublesToKopecks(totals.totalRevenue),
+      totalProfit: rublesToKopecks(totals.totalProfit),
+      avgMargin: totals.avgMargin,
+      stockTotal: totals.stockTotal,
+      label: instance.appearance?.title ?? config.title,
+    };
+    const moneyFields: string[] = ['totalRevenue', 'totalProfit'];
+    const labelFields: string[] = [
+      'rowsCount=Товаров',
+      'totalRevenue=Выручка / мес',
+      'totalProfit=Прибыль / мес',
+      'avgMargin=Средняя маржа',
+      'stockTotal=Сумма остатков',
+    ];
+
+    // Top-50 строк по revenueMonth DESC.
+    const ranked = computedRows
+      .map((entry, idx) => ({
+        entry,
+        idx,
+        revenue: Number(entry.values['revenueMonth'] ?? 0),
+      }))
+      .sort((a, b) => {
+        const aOk = Number.isFinite(a.revenue);
+        const bOk = Number.isFinite(b.revenue);
+        if (!aOk && !bOk) return 0;
+        if (!aOk) return 1;
+        if (!bOk) return -1;
+        return b.revenue - a.revenue;
+      })
+      .slice(0, 50);
+
+    const seenSlugs = new Set<string>();
+    for (const { entry, idx } of ranked) {
+      const { row, values } = entry;
+      let slug = articleSlug(row.article, idx);
+      if (seenSlugs.has(slug)) slug = `${slug}_${idx}`;
+      seenSlugs.add(slug);
+      const rowLabel = row.article || row.name || `#${idx + 1}`;
+
+      out[`r_${slug}_article`] = row.article || '';
+      out[`r_${slug}_name`] = row.name || '';
+      labelFields.push(`r_${slug}_article=${rowLabel} · Артикул`);
+      labelFields.push(`r_${slug}_name=${rowLabel} · Название`);
+
+      for (const col of visibleColumns) {
+        const key = `r_${slug}_${col.id}`;
+        const raw = values[col.id];
+        if (raw === '#CYCLE' || raw === '#ERR') {
+          out[key] = null;
+        } else if (col.type === 'text') {
+          out[key] = typeof raw === 'string' ? raw : String(raw ?? '');
+        } else {
+          const num = Number(raw);
+          if (!Number.isFinite(num)) {
+            out[key] = null;
+          } else if (isMoneyCol(col)) {
+            out[key] = rublesToKopecks(num);
+            moneyFields.push(key);
+          } else {
+            out[key] = num;
+          }
+        }
+        labelFields.push(`${key}=${rowLabel} · ${col.label}`);
+      }
+    }
+
+    out.__money = moneyFields.join(',');
+    out.__labels = labelFields.join(',');
+    return out;
+  }, [
+    totals.rowsCount,
+    totals.totalRevenue,
+    totals.totalProfit,
+    totals.avgMargin,
+    totals.stockTotal,
+    computedRows,
+    visibleColumns,
+    instance.appearance?.title,
+    config.title,
+  ]);
+
+  useBlockValuePublisher(instance.id, publisherOutput);
 
   const editingColumn = editingCol ? config.columns.find((c) => c.id === editingCol) ?? null : null;
 
   const totalRowWidth =
-    STICKY_GROUP_W + visibleColumns.reduce((acc, c) => acc + (c.width ?? 96), 0) + ACTIONS_W;
+    STICKY_GROUP_W + visibleColumns.reduce((acc, c) => acc + widthOf(c), 0) + ACTIONS_W;
 
   return (
     <Card className="flex h-full flex-col overflow-hidden">
@@ -679,45 +1011,78 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
           </div>
         ) : (
           <div className="min-w-full text-[11px]" style={{ minWidth: `${totalRowWidth}px` }}>
-            {/* Header row */}
+            {/* Header row.
+                DndContext оборачивает ВСЕ динамические заголовки; pinned-колонки
+                добавляются в SortableContext с `disabled` через `useSortable` →
+                handleHeaderDragEnd игнорирует drop на/из pinned. */}
             <div className="sticky top-0 z-40 flex border-b border-border/70 bg-card">
-              <HeaderCell width={STICKY_INDEX_W} sticky stickyLeft={0} className="text-center font-semibold text-muted-foreground">
+              <StickyTitleHeaderCell
+                width={STICKY_INDEX_W}
+                stickyLeft={0}
+                className="text-center font-semibold text-muted-foreground"
+                sortable={false}
+              >
                 #
-              </HeaderCell>
-              <HeaderCell width={STICKY_ARTICLE_W} sticky stickyLeft={STICKY_ARTICLE_LEFT} className="font-semibold">
+              </StickyTitleHeaderCell>
+              <StickyTitleHeaderCell
+                width={STICKY_ARTICLE_W}
+                stickyLeft={STICKY_ARTICLE_LEFT}
+                className="font-semibold"
+                sortable
+                sortState={sort?.key === 'article' ? sort.dir : null}
+                onSort={() => toggleSort('article')}
+              >
                 Артикул
-              </HeaderCell>
-              <HeaderCell width={STICKY_NAME_W} sticky stickyLeft={STICKY_NAME_LEFT} stickyEdge className="font-semibold">
+              </StickyTitleHeaderCell>
+              <StickyTitleHeaderCell
+                width={STICKY_NAME_W}
+                stickyLeft={STICKY_NAME_LEFT}
+                stickyEdge
+                className="font-semibold"
+                sortable
+                sortState={sort?.key === 'name' ? sort.dir : null}
+                onSort={() => toggleSort('name')}
+              >
                 Название товара
-              </HeaderCell>
-              {visibleColumns.map((col) => (
-                <HeaderCell key={col.id} width={col.width ?? 96} className="font-semibold text-foreground">
-                  <div className="flex items-center justify-between gap-1">
-                    <span className="block truncate" title={col.label}>
-                      {col.label}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setEditingCol(col.id)}
-                      className="opacity-0 transition-opacity group-hover/header:opacity-100 hover:text-primary"
-                      title="Настроить колонку"
-                    >
-                      <Settings2 className="h-3 w-3" />
-                    </button>
-                  </div>
-                  {(col.unit || col.type === 'formula') && (
-                    <span className="block text-[9px] font-normal text-muted-foreground">
-                      {col.type === 'formula' ? 'fx' : col.unit}
-                    </span>
-                  )}
-                </HeaderCell>
-              ))}
+              </StickyTitleHeaderCell>
+              <DndContext
+                id={dndId}
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragEnd={handleHeaderDragEnd}
+              >
+                <SortableContext items={reorderableIds} strategy={horizontalListSortingStrategy}>
+                  {visibleColumns.map((col) => {
+                    const w = widthOf(col);
+                    const stickyLeft = stickyOffsets.get(col.id);
+                    const isPinned = stickyLeft !== undefined;
+                    const nextCol = visibleColumns[visibleColumns.indexOf(col) + 1];
+                    const isLastPinned = isPinned && (!nextCol || !stickyOffsets.has(nextCol.id));
+                    return (
+                      <MyStoreSortableHeaderCell
+                        key={col.id}
+                        col={col}
+                        width={w}
+                        draggable={!isPinned}
+                        stickyLeft={stickyLeft}
+                        isLastPinned={isLastPinned}
+                        isPinned={isPinned}
+                        sortState={sort?.key === col.id ? sort.dir : null}
+                        onSort={() => toggleSort(col.id)}
+                        onResizeStart={(e) => handleResizeStart(e, col.id)}
+                        onOpenSettings={() => setEditingCol(col.id)}
+                        onTogglePin={() => togglePin(col.id)}
+                      />
+                    );
+                  })}
+                </SortableContext>
+              </DndContext>
               <HeaderCell width={ACTIONS_W} className="text-center font-semibold text-muted-foreground">
                 Действия
               </HeaderCell>
             </div>
 
-            {computedRows.map(({ row, values }, idx) => (
+            {sortedComputedRows.map(({ row, values }, idx) => (
               <div
                 key={row.id}
                 className="group flex border-b border-border/40 transition-colors hover:bg-accent/5"
@@ -744,6 +1109,14 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
                   />
                 </BodyCell>
                 {visibleColumns.map((col) => {
+                  const w = widthOf(col);
+                  const stickyLeft = stickyOffsets.get(col.id);
+                  const isPinned = stickyLeft !== undefined;
+                  const nextCol = visibleColumns[visibleColumns.indexOf(col) + 1];
+                  const isLastPinned = isPinned && (!nextCol || !stickyOffsets.has(nextCol.id));
+                  const stickyProps = isPinned
+                    ? { sticky: true, stickyLeft, stickyEdge: isLastPinned }
+                    : {};
                   const raw = values[col.id];
                   if (col.type === 'formula') {
                     const isErr = raw === '#CYCLE' || raw === '#ERR';
@@ -753,7 +1126,8 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
                     return (
                       <BodyCell
                         key={col.id}
-                        width={col.width ?? 96}
+                        width={w}
+                        {...stickyProps}
                         className="justify-end px-1.5 tabular-nums"
                       >
                         {isErr ? (
@@ -779,7 +1153,7 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
                   if (col.type === 'text') {
                     const text = typeof raw === 'string' ? raw : String(raw ?? '');
                     return (
-                      <BodyCell key={col.id} width={col.width ?? 96} className="p-0">
+                      <BodyCell key={col.id} width={w} {...stickyProps} className="p-0">
                         <input
                           type="text"
                           value={text}
@@ -793,7 +1167,7 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
                   const num = Number(raw);
                   const binding = row.bindings[col.id] as UnitCellBinding | undefined;
                   return (
-                    <BodyCell key={col.id} width={col.width ?? 96} className="p-0.5">
+                    <BodyCell key={col.id} width={w} {...stickyProps} className="p-0.5">
                       <LinkableNumberCell
                         selfBlockId={instance.id}
                         fieldLabel={col.label}
@@ -836,35 +1210,43 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
                 Итого по {totals.rowsCount} товарам
               </BodyCell>
               {visibleColumns.map((col) => {
+                const w = widthOf(col);
+                const stickyLeft = stickyOffsets.get(col.id);
+                const isPinned = stickyLeft !== undefined;
+                const nextCol = visibleColumns[visibleColumns.indexOf(col) + 1];
+                const isLastPinned = isPinned && (!nextCol || !stickyOffsets.has(nextCol.id));
+                const stickyProps = isPinned
+                  ? { sticky: true, stickyLeft, stickyEdge: isLastPinned, zIndex: 36 }
+                  : {};
                 if (col.id === 'revenueMonth') {
                   return (
-                    <BodyCell key={col.id} width={col.width ?? 96} className="justify-end px-1.5 tabular-nums text-foreground">
+                    <BodyCell key={col.id} width={w} {...stickyProps} className="justify-end px-1.5 tabular-nums text-foreground">
                       {formatNumber(totals.totalRevenue, col, showKopecks)}
                     </BodyCell>
                   );
                 }
                 if (col.id === 'profitMonth') {
                   return (
-                    <BodyCell key={col.id} width={col.width ?? 96} className="justify-end px-1.5 tabular-nums text-emerald-700 dark:text-emerald-400">
+                    <BodyCell key={col.id} width={w} {...stickyProps} className="justify-end px-1.5 tabular-nums text-emerald-700 dark:text-emerald-400">
                       {formatNumber(totals.totalProfit, col, showKopecks)}
                     </BodyCell>
                   );
                 }
                 if (col.id === 'stock') {
                   return (
-                    <BodyCell key={col.id} width={col.width ?? 96} className="justify-end px-1.5 tabular-nums text-muted-foreground">
+                    <BodyCell key={col.id} width={w} {...stickyProps} className="justify-end px-1.5 tabular-nums text-muted-foreground">
                       {new Intl.NumberFormat('ru-RU').format(totals.stockTotal)}
                     </BodyCell>
                   );
                 }
                 if (col.id === 'marginRetail') {
                   return (
-                    <BodyCell key={col.id} width={col.width ?? 96} className="justify-end px-1.5 tabular-nums text-muted-foreground">
+                    <BodyCell key={col.id} width={w} {...stickyProps} className="justify-end px-1.5 tabular-nums text-muted-foreground">
                       {formatNumber(totals.avgMargin, col, showKopecks)}
                     </BodyCell>
                   );
                 }
-                return <BodyCell key={col.id} width={col.width ?? 96} className="px-1.5" />;
+                return <BodyCell key={col.id} width={w} {...stickyProps} className="px-1.5" />;
               })}
               <BodyCell width={ACTIONS_W} className="px-1.5" />
             </div>
@@ -875,6 +1257,7 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
       {editingColumn && (
         <ColumnEditDialog
           column={editingColumn}
+          pinned={config.pinnedColumns.includes(editingColumn.id)}
           onClose={() => setEditingCol(null)}
           onSave={(patch) => updateColumn(editingColumn.id, patch)}
           onDelete={() => {
@@ -882,6 +1265,7 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
             setEditingCol(null);
           }}
           onToggleHidden={() => updateColumn(editingColumn.id, { hidden: !editingColumn.hidden })}
+          onTogglePin={() => togglePin(editingColumn.id)}
           onBulkFill={(value) => bulkFillColumn(editingColumn.id, value)}
         />
       )}
@@ -991,19 +1375,221 @@ function BodyCell({
   );
 }
 
+/**
+ * Заголовок sticky-колонки (#/Артикул/Название). Поддерживает sort-cycle:
+ * клик по заголовку — `null → desc → asc → null`. Drag и resize не нужны:
+ * эти три колонки фиксированы по ширине и порядку.
+ */
+function StickyTitleHeaderCell({
+  width,
+  stickyLeft,
+  stickyEdge,
+  sortable,
+  sortState,
+  onSort,
+  className,
+  children,
+}: {
+  width: number;
+  stickyLeft: number;
+  stickyEdge?: boolean;
+  sortable: boolean;
+  sortState?: 'asc' | 'desc' | null;
+  onSort?: () => void;
+  className?: string;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div
+      data-sticky=""
+      onClick={sortable ? onSort : undefined}
+      className={
+        'group/h relative isolate flex shrink-0 items-center overflow-hidden border-r border-border/40 bg-card ' +
+        (sortable ? 'cursor-pointer hover:bg-accent/30 ' : '') +
+        (className ?? '')
+      }
+      style={{
+        width,
+        minWidth: width,
+        maxWidth: width,
+        height: HEADER_H,
+        boxSizing: 'border-box',
+        position: 'sticky',
+        left: stickyLeft,
+        zIndex: 45,
+        boxShadow: stickyEdge ? PIN_SHADOW : undefined,
+      }}
+    >
+      <span className="inline-flex w-full items-center gap-1 px-1.5 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+        <span className="block flex-1 truncate">{children}</span>
+        {sortable && (
+          <span className="shrink-0">
+            {sortState === 'asc' ? (
+              <ArrowUp className="h-2.5 w-2.5 text-primary" />
+            ) : sortState === 'desc' ? (
+              <ArrowDown className="h-2.5 w-2.5 text-primary" />
+            ) : (
+              <ArrowDownUp className="h-2.5 w-2.5 opacity-0 group-hover/h:opacity-40" />
+            )}
+          </span>
+        )}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Sortable + resizable + sticky-pinnable заголовок динамической колонки.
+ * Drag handle (GripVertical) виден на hover; resize-handle на правом крае;
+ * click по заголовку (вне кнопок) — sort-cycle. Когда `isPinned=true`,
+ * колонка получает `position: sticky` с указанным `stickyLeft`.
+ */
+function MyStoreSortableHeaderCell({
+  col,
+  width,
+  draggable,
+  stickyLeft,
+  isLastPinned,
+  isPinned,
+  sortState,
+  onSort,
+  onResizeStart,
+  onOpenSettings,
+  onTogglePin,
+}: {
+  col: Column;
+  width: number;
+  draggable: boolean;
+  stickyLeft?: number;
+  isLastPinned?: boolean;
+  isPinned: boolean;
+  sortState?: 'asc' | 'desc' | null;
+  onSort: () => void;
+  onResizeStart: (e: React.MouseEvent) => void;
+  onOpenSettings: () => void;
+  onTogglePin: () => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: col.id,
+    disabled: !draggable,
+  });
+  const style: React.CSSProperties = {
+    width,
+    minWidth: width,
+    maxWidth: width,
+    height: HEADER_H,
+    boxSizing: 'border-box',
+    transform: CSS.Translate.toString(transform),
+    transition,
+    zIndex: isDragging ? 50 : isPinned ? 46 : 45,
+    opacity: isDragging ? 0.85 : undefined,
+    ...(isPinned
+      ? {
+          position: 'sticky',
+          left: stickyLeft,
+          backgroundColor: 'hsl(var(--card))',
+          boxShadow: isLastPinned ? PIN_SHADOW : undefined,
+        }
+      : {}),
+  };
+  const unitBadge = col.type === 'formula' ? 'fx' : col.unit;
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      onClick={onSort}
+      title={col.label}
+      className={
+        'group/h relative isolate flex shrink-0 items-center overflow-hidden border-r border-border/40 ' +
+        'cursor-pointer hover:bg-accent/30 ' +
+        (isPinned ? 'bg-card ' : '')
+      }
+    >
+      <span className="inline-flex w-full items-center gap-1 px-1.5 py-1 text-[10px] uppercase tracking-wider">
+        {draggable && (
+          <button
+            type="button"
+            {...attributes}
+            {...listeners}
+            className="shrink-0 cursor-grab opacity-0 transition-opacity group-hover/h:opacity-60 hover:opacity-100 active:cursor-grabbing"
+            title="Перетащите, чтобы изменить порядок"
+            aria-label="Перетащить колонку"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <GripVertical className="h-3 w-3" />
+          </button>
+        )}
+        <span className="block flex-1 truncate font-semibold text-foreground" title={col.label}>
+          {col.label}
+        </span>
+        {unitBadge && (
+          <span className="shrink-0 text-[9px] font-normal text-muted-foreground/70">
+            {unitBadge}
+          </span>
+        )}
+        <span className="shrink-0 text-muted-foreground">
+          {sortState === 'asc' ? (
+            <ArrowUp className="h-2.5 w-2.5 text-primary" />
+          ) : sortState === 'desc' ? (
+            <ArrowDown className="h-2.5 w-2.5 text-primary" />
+          ) : (
+            <ArrowDownUp className="h-2.5 w-2.5 opacity-0 group-hover/h:opacity-40" />
+          )}
+        </span>
+        <span className="ml-0.5 inline-flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover/h:opacity-100">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onTogglePin();
+            }}
+            className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-primary"
+            title={isPinned ? 'Открепить колонку' : 'Закрепить слева'}
+            aria-label={isPinned ? 'Открепить' : 'Закрепить'}
+          >
+            {isPinned ? <PinOff className="h-3 w-3" /> : <Pin className="h-3 w-3" />}
+          </button>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenSettings();
+            }}
+            className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-primary"
+            title="Настроить колонку"
+            aria-label="Настроить"
+          >
+            <Settings2 className="h-3 w-3" />
+          </button>
+        </span>
+      </span>
+      <span
+        onMouseDown={onResizeStart}
+        onClick={(e) => e.stopPropagation()}
+        className="absolute right-0 top-0 bottom-0 w-[5px] cursor-col-resize hover:bg-primary/20"
+        aria-hidden
+      />
+    </div>
+  );
+}
+
 function ColumnEditDialog({
   column,
+  pinned,
   onClose,
   onSave,
   onDelete,
   onToggleHidden,
+  onTogglePin,
   onBulkFill,
 }: {
   column: Column;
+  pinned: boolean;
   onClose: () => void;
   onSave: (patch: Partial<Column>) => void;
   onDelete: () => void;
   onToggleHidden: () => void;
+  onTogglePin: () => void;
   onBulkFill: (value: number | string) => { applied: number; skipped: number };
 }) {
   const [draft, setDraft] = useState<Column>({ ...column });
@@ -1095,6 +1681,10 @@ function ColumnEditDialog({
               onChange={(e) => setDraft({ ...draft, positive: e.target.checked })}
             />
             Подсвечивать +/−
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={pinned} onChange={() => onTogglePin()} />
+            Закрепить слева (sticky)
           </label>
 
           <div className="rounded border border-dashed border-border/60 bg-muted/20 p-3">

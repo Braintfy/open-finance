@@ -36,3 +36,49 @@ export function getBlockSkill(blockType: string | undefined, override?: string):
   if (override?.trim()) return override.trim();
   return BLOCK_SKILLS[blockType] ?? '';
 }
+
+/**
+ * Серверно-безопасный список всех типов блоков с человекочитаемыми названиями.
+ * НЕ импортирует client-only catalog файлы — используется в API routes.
+ * При добавлении нового блока: добавить запись сюда + в BLOCK_SKILLS.
+ */
+export const BLOCK_TYPE_META: Array<{ type: string; displayName: string }> = [
+  // Cashflow / KPI
+  { type: 'stat.income',              displayName: 'Доходы (KPI)' },
+  { type: 'stat.expense',             displayName: 'Расходы (KPI)' },
+  { type: 'stat.balance',             displayName: 'Баланс (KPI)' },
+  { type: 'stat.custom',              displayName: 'KPI (настраиваемый)' },
+  { type: 'cashflow.top-categories',  displayName: 'Топ категорий' },
+  { type: 'cashflow.transactions',    displayName: 'Транзакции' },
+  { type: 'chart.cashflow',           displayName: 'График денежного потока' },
+  { type: 'kpi.grid',                 displayName: 'Сетка KPI' },
+  // Spreadsheet
+  { type: 'sheet',                    displayName: 'Таблица (Excel-style)' },
+  { type: 'excel.cell',               displayName: 'Ячейка (Excel-style)' },
+  { type: 'custom.data',              displayName: 'Данные (универсальный)' },
+  // Generic
+  { type: 'computed.sum',             displayName: 'Агрегация' },
+  { type: 'navigate.card',            displayName: 'Навигационная карточка' },
+  { type: 'ai.micro-agent',           displayName: 'AI Микроагент' },
+  { type: 'currency.rates',           displayName: 'Курсы валют' },
+  // Inbox
+  { type: 'inbox.channel-feed',       displayName: 'Входящие (канал)' },
+  { type: 'inbox.dashboard',          displayName: 'Входящие (сводка)' },
+  // Ozon Analytics
+  { type: 'unit.ozon-kpi',            displayName: 'Ozon KPI' },
+  { type: 'unit.ozon-chart',          displayName: 'Ozon График' },
+  { type: 'unit.ozon-analytics',      displayName: 'Ozon Аналитика (SKU)' },
+  { type: 'unit.ozon-top-ads',        displayName: 'Ozon Топ рекламы' },
+  { type: 'unit.ozon-campaigns',      displayName: 'Ozon Кампании' },
+  { type: 'unit.ozon-stock-clusters', displayName: 'Ozon Остатки FBO/FBS' },
+  { type: 'unit.ozon-warehouse-clusters', displayName: 'Ozon Кластеры складов' },
+  { type: 'unit.ozon-search-phrases', displayName: 'Ozon Поисковые фразы' },
+  { type: 'unit.ozon-abc',            displayName: 'Ozon ABC-анализ' },
+  { type: 'unit.ozon-data-health',    displayName: 'Ozon Диагностика данных' },
+  { type: 'unit.ozon-ai-insights',    displayName: 'Ozon AI Инсайты' },
+  // Unit Economics
+  { type: 'unit.ozon-calculator',     displayName: 'Юнит-экономика Ozon' },
+  { type: 'unit.ozon-multi-table',    displayName: 'Ozon Мульти-таблица' },
+  { type: 'unit.yandex-calculator',   displayName: 'Юнит-экономика Яндекс' },
+  { type: 'unit.my-store-table',      displayName: 'Мой магазин' },
+];
