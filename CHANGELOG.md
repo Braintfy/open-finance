@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.24.5] - 2026-05-27
+
+Hot-fix hydration mismatch на `/unit-economics`, появившийся после фикса tab-persistence в v0.24.4.
+
+### Fixed
+
+- **Hydration mismatch на `/unit-economics`** — после v0.24.4 при reload страницы с `?tab=my-store` (или любым non-default `?tab=`) React выдавал «Hydration failed because the server rendered HTML didn't match the client». Корень: инициализатор `useState(() => ...)` в `unit-economics-client.tsx` пытался прочитать `window.location.search`, но `window` на SSR не существует → сервер возвращал дефолтный `ozon-multi`, клиент сразу `my-store`. Каскадный эффект: разные `font-semibold/font-medium` на табах + разные блоки внутри `BlockGrid` (Network → Pencil иконки) → React при гидрации всё пересоздавал. Фикс: SSR-safe дефолт в `useState`, чтение `?tab=` перенесено в `useEffect` после mount (тот же паттерн что в `admin/ai/local-models/page.tsx`). Возможен короткий «flash» дефолтной вкладки перед переключением, но это лучше чем hydration error + полная regenerate всего поддерева.
+
 ## [0.24.4] - 2026-05-26
 
 Полишинг UX: 4 точечных фикса (sticky-bleed в «Мой магазин», разнородное форматирование «Выручка Ozon», сохранение активной вкладки `/unit-economics`) + overhaul парсера почты (mailparser, sanitized HTML-рендер, lazy images, body_html в DB).

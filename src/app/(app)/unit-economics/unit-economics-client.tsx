@@ -4,7 +4,7 @@
 // Мой магазин) seed'ятся при первом визите. Custom — любой набор блоков.
 'use client';
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Calculator,
   Table as TableIcon,
@@ -111,20 +111,30 @@ export function UnitEconomicsClient({
   initialTabs: ClientTab[];
 }) {
   const [tabs, setTabs] = useState<ClientTab[]>(initialTabs);
-  const [active, setActive] = useState<string>(() => {
-    if (typeof window !== 'undefined') {
-      const fromUrl = resolveTab(
-        initialTabs,
-        new URLSearchParams(window.location.search).get('tab'),
-      );
-      if (fromUrl) return fromUrl;
-    }
-    return (
-      initialTabs.find((t) => t.defaultKey === 'ozon-multi')?.id ??
-      initialTabs[0]?.id ??
-      ''
+  // SSR-safe initial: тот же дефолт что и на сервере. URL читаем
+  // в useEffect ниже, чтобы избежать hydration mismatch (v0.24.5).
+  // initialTabs стабилен между SSR/CSR (приходит пропом).
+  const ssrDefaultId =
+    initialTabs.find((t) => t.defaultKey === 'ozon-multi')?.id ??
+    initialTabs[0]?.id ??
+    '';
+  const [active, setActive] = useState<string>(ssrDefaultId);
+
+  // Восстанавливаем выбранную вкладку из `?tab=` на клиенте после mount.
+  // НЕ в useState-инициализаторе — иначе SSR (без window) и CSR (c window)
+  // разойдутся и React пожалуется на hydration mismatch (см. MEMORY.md).
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const fromUrl = resolveTab(
+      initialTabs,
+      new URLSearchParams(window.location.search).get('tab'),
     );
-  });
+    if (fromUrl && fromUrl !== ssrDefaultId) {
+      setActive(fromUrl);
+    }
+    // initialTabs приходит из RSC и стабилен в рамках одной страницы;
+    // ssrDefaultId детерминирован от initialTabs — зависимостей хватает.
+  }, [initialTabs, ssrDefaultId]);
 
   /**
    * Wrapper над `setActive` который дополнительно синкает выбор в URL,
