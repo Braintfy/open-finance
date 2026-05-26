@@ -1,5 +1,52 @@
 # Changelog
 
+## [0.24.3] - 2026-05-26
+
+Оптимизация UX заголовков таблицы «Мой магазин»: исправлен сломанный DnD, переработан визуал ячейки, сортировка перенесена в меню, добавлена защита формул при удалении колонок.
+
+### Fixed
+
+- **DnD в заголовках** — корень: `PopoverTrigger asChild` добавлял Radix `onPointerDown` раньше @dnd-kit/PointerSensor → drag никогда не начинался. Исправлено переходом на `PopoverAnchor asChild` (только позиционирует popover, не перехватывает события). Дополнительно: `isDragging → closeNow()` через `useEffect` — меню принудительно закрывается в момент начала перетаскивания.
+- **Overlap текста в idle заголовке** — unit badge и grip теперь в одном relative-слоте: unit скрывается при hover (`group-hover/h:opacity-0`), grip появляется поверх (`opacity-0 group-hover/h:opacity-100`), layout не прыгает.
+
+### Changed
+
+- **Визуал ячейки заголовка (v0.24.3)** — idle: `[↑?] [label........] [unit]`, hover: `[↑?] [label........] [grip icon]`. Убран idle `ArrowDownUp` (серая стрелка). Активный индикатор сортировки (цветная стрелка) появляется только при активной сортировке — слева от метки. Метка — `flex-1 truncate`, занимает всё место.
+- **Сортировка в меню** — стрелки сортировки убраны из inline-заголовка. В `HeaderActionsMenu` добавлены пункты «По убыванию» / «По возрастанию» / «Сбросить сортировку» с разделителем перед остальными действиями. Активный пункт подсвечивается.
+- **`MenuItem` — проп `active`** — подсветка текущего активного пункта (цвет primary, bold).
+
+### Added
+
+- **`getFormulaUsages(columns)`** — pure функция анализа зависимостей формул. Парсит выражения `=colA + colB * vatPct` и строит `Map<colId, [{id,label}]>` — список формульных колонок, которые ссылаются на каждую.
+- **`DEFAULT_COL_IDS`** — множество id встроенных колонок (cost, priceRetail, marginRetail и т.д.).
+- **`handleDeleteColumn`** в `RenderMyStoreTable` — безопасное удаление: встроенная referenced колонка → `onDelete=null` (кнопка недоступна); пользовательская referenced → `deleteWarnCol` state → confirmation dialog; без зависимостей → `removeColumn` напрямую.
+- **`deleteWarnCol` dialog** — диалог предупреждения перед удалением пользовательской колонки, задействованной в формулах. Показывает список формул, которые затронет удаление. Кнопки «Отмена» и «Удалить всё равно».
+- **`setExplicitSort(key, dir)`** — новый callback рядом с `toggleSort`: устанавливает конкретное направление (из пунктов меню), не циклически.
+
+## [0.24.2] - 2026-05-26
+
+Доработка UX заголовков таблицы «Мой магазин · таблица» (`unit.my-store-table`): идле-заголовок чистый (только метка + индикатор сортировки), на hover появляется одна drag/menu-кнопка, на hover/click которой открывается Popover с действиями (закреп, скрыть, настройки, удалить). Артикул/Название превращены в полноценные `identity`-колонки с тем же меню и возможностью открепа/скрытия/изменения ширины. Исправлен баг наложения текста между sticky-колонками.
+
+### Added
+
+- **`'identity'` type** в `ColumnTypeEnum` (`unit-my-store-table.tsx`). Артикул и Название теперь полноценные колонки в `config.columns` с зарезервированными id `'article'`/`'name'`. По умолчанию закреплены слева (default `pinnedColumns: ['article', 'name']`).
+- **`HeaderActionsMenu`** — Popover-меню для каждой колонки. Открывается тремя способами: click по drag-кнопке, hover с задержкой 400ms, или Esc/click outside для закрытия (200ms delay). Trigger-кнопка несёт drag-listeners @dnd-kit (mousedown + 5px → reorder).
+- **`MenuItem`** — компонент пункта меню (sm icon + label, опциональный destructive вариант).
+- **Migration в `parseConfig`** — старые конфиги без identity-колонок получают `article`/`name` в начале `config.columns` + дефолтный пин. Идемпотентно (уже мигрированные конфиги пропускаются).
+
+### Changed
+
+- **`MyStoreSortableHeaderCell`** — в idle только метка + единица + sort-arrow (если активна). Все управляющие кнопки (pin, settings, delete) переехали в `HeaderActionsMenu`. Внутренний layout `flex w-full min-w-0` (вместо `inline-flex`) + `min-w-0 truncate` на метке — теперь truncate работает корректно в flex-контексте.
+- **Sticky rendering** — `#` (счётчик) единственная hardcoded sticky-cell, identity-колонки идут через единый цикл `visibleColumns.map(...)`. Body-cells для identity рендерятся как `<input>` бинд на `row.article`/`row.name`. Totals-cells для identity — пустые, лейбл «Итого по N товарам» автоматически уходит в первую видимую identity-колонку.
+- **`stickyOffsets`** стартует с `STICKY_INDEX_W` (32px), а не `STICKY_GROUP_W`. Constants `STICKY_ARTICLE_W/NAME_W/LEFT/GROUP_W` удалены — все ширины теперь через `Column.width` + `widthOf(col)`.
+- **`PIN_SHADOW`** теперь ставится ТОЛЬКО на ПОСЛЕДНЕЙ pinned колонке (вычисляется в `lastPinnedId` через `useMemo`). Раньше тень дублировалась на Названии и на последней dynamic-pinned, и фон следующей sticky-cell перекрывал её — отсюда визуальное наложение текста между sticky-блоками.
+- **`ColumnEditDialog`** — для identity-колонок скрыты: select типа, поле единицы, чекбокс «+/−», bulk-fill секция, кнопка «Удалить». Оставлены: название, ширина, чекбокс «Закрепить слева», кнопка «Скрыть».
+- **Publisher** — `r_<slug>_article/name` теперь идут через общий цикл `visibleColumns` с веткой `if (col.type === 'identity')` (берёт из `row.article`/`row.name`). Удалена дублирующая публикация ДО цикла. Ключи остались те же — биндинги других блоков не ломаются.
+
+### Fixed
+
+- **Overlap-баг** — текст метки последней fixed-sticky колонки (Название) визуально сливался с первой dynamic-pinned (Себестоимость) при горизонтальном скролле. Причина: тень между ними дублировалась и взаимно перекрывалась, плюс `inline-flex` без `min-w-0` ломал `truncate`. Исправлено вычислением `lastPinnedId` и сменой layout на `flex + min-w-0`.
+
 ## [0.24.1] - 2026-05-26
 
 Доработка блока «Мой магазин · таблица» (`unit.my-store-table`) по образцу `unit.ozon-analytics`: DnD-переупорядочивание динамических колонок, drag-resize ширины по правому краю заголовка, сортировка кликом по заголовку с циклом `null → desc → asc → null`, sticky-pinned динамические колонки, однострочный заголовок и per-row publishing значений ячеек через `useBlockValuePublisher`.

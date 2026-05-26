@@ -22,6 +22,8 @@ import {
   Pin,
   PinOff,
 } from 'lucide-react';
+import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover';
+import { cn } from '@/lib/utils';
 import { z } from 'zod';
 import {
   DndContext,
@@ -69,8 +71,24 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 
-const ColumnTypeEnum = z.enum(['number', 'percent', 'money', 'text', 'formula']);
+const ColumnTypeEnum = z.enum(['number', 'percent', 'money', 'text', 'formula', 'identity']);
 type ColumnType = z.infer<typeof ColumnTypeEnum>;
+
+/**
+ * id зарезервированных «identity»-колонок (Артикул и Название). Хранятся
+ * в `config.columns` наравне с пользовательскими, но рендерятся специально
+ * (input на `row.article`/`row.name`, без LinkableNumberCell и без формул).
+ */
+const IDENTITY_ARTICLE_ID = 'article';
+const IDENTITY_NAME_ID = 'name';
+const DEFAULT_IDENTITY_COLUMNS = [
+  { id: IDENTITY_ARTICLE_ID, label: 'Артикул', type: 'identity' as const, width: 110 },
+  { id: IDENTITY_NAME_ID, label: 'Название товара', type: 'identity' as const, width: 220 },
+];
+
+function isIdentityCol(col: Column): boolean {
+  return col.type === 'identity';
+}
 
 const ColumnSchema = z.object({
   id: z.string(),
@@ -104,6 +122,7 @@ type GlobalParams = z.infer<typeof GlobalSchema>;
 
 function defaultColumns(): Column[] {
   return [
+    ...DEFAULT_IDENTITY_COLUMNS,
     { id: 'cost', label: 'Себестоимость', type: 'money', unit: '₽', width: 110 },
     { id: 'packaging', label: 'Упаковка', type: 'money', unit: '₽', width: 90 },
     { id: 'delivery', label: 'Доставка', type: 'money', unit: '₽', width: 90 },
@@ -168,10 +187,11 @@ const ConfigSchema = z.object({
   rows: z.array(RowSchema).default([]),
   importSource: ImportSourceSchema.optional(),
   /**
-   * id динамических колонок, закреплённых слева (sticky) — отображаются
-   * сразу за фиксированными #/Артикул/Название и не участвуют в DnD-сортировке.
+   * id колонок, закреплённых слева (sticky), включая identity-колонки
+   * (`'article'`, `'name'`). Pinned-колонки не участвуют в DnD-сортировке.
+   * По умолчанию закреплены `article` и `name` — самые важные для идентификации.
    */
-  pinnedColumns: z.array(z.string()).default([]),
+  pinnedColumns: z.array(z.string()).default([IDENTITY_ARTICLE_ID, IDENTITY_NAME_ID]),
 });
 
 type Config = z.infer<typeof ConfigSchema>;
@@ -190,6 +210,24 @@ function parseConfig(raw: unknown): Config {
   const parsed = ConfigSchema.safeParse(raw ?? {});
   const cfg = parsed.success ? parsed.data : ConfigSchema.parse({});
   if (cfg.columns.length === 0) cfg.columns = defaultColumns();
+
+  // Migration (v0.24.2): article/name стали полноценными identity-колонками
+  // в `config.columns`. Старые конфиги их не содержат — prepend и pin
+  // по умолчанию. Уже мигрированные конфиги (с identity внутри columns)
+  // пропускаем — уважаем пользовательские настройки pin/hide/width.
+  const hasArticleCol = cfg.columns.some((c) => c.id === IDENTITY_ARTICLE_ID);
+  const hasNameCol = cfg.columns.some((c) => c.id === IDENTITY_NAME_ID);
+  if (!hasArticleCol || !hasNameCol) {
+    const prepend: Column[] = [];
+    if (!hasArticleCol) prepend.push(DEFAULT_IDENTITY_COLUMNS[0]);
+    if (!hasNameCol) prepend.push(DEFAULT_IDENTITY_COLUMNS[1]);
+    cfg.columns = [...prepend, ...cfg.columns];
+    // Pin identity-колонок по дефолту, сохраняя порядок: article, name, ...existing.
+    const pinned = [...cfg.pinnedColumns];
+    if (!hasNameCol && !pinned.includes(IDENTITY_NAME_ID)) pinned.unshift(IDENTITY_NAME_ID);
+    if (!hasArticleCol && !pinned.includes(IDENTITY_ARTICLE_ID)) pinned.unshift(IDENTITY_ARTICLE_ID);
+    cfg.pinnedColumns = pinned;
+  }
   return cfg;
 }
 
@@ -205,12 +243,7 @@ function formatNumber(value: number, col: Column, showKopecks: boolean): string 
 }
 
 const STICKY_INDEX_W = 32;
-const STICKY_ARTICLE_W = 110;
-const STICKY_NAME_W = 220;
 const ACTIONS_W = 80;
-const STICKY_ARTICLE_LEFT = STICKY_INDEX_W;
-const STICKY_NAME_LEFT = STICKY_INDEX_W + STICKY_ARTICLE_W;
-const STICKY_GROUP_W = STICKY_INDEX_W + STICKY_ARTICLE_W + STICKY_NAME_W;
 const HEADER_H = 32;
 const ROW_H = 30;
 const PIN_SHADOW = '2px 0 4px -2px rgba(0,0,0,0.08)';
@@ -235,6 +268,39 @@ function articleSlug(article: string, fallbackIdx: number): string {
   return cleaned || `idx${fallbackIdx}`;
 }
 
+/**
+ * Анализирует зависимости формул.
+ * Возвращает Map: colId → список {id, label} формульных колонок, которые его используют.
+ * Используется для защиты от удаления колонок, задействованных в расчётах.
+ */
+function getFormulaUsages(columns: Column[]): Map<string, { id: string; label: string }[]> {
+  const usages = new Map<string, { id: string; label: string }[]>();
+  const colIdSet = new Set(columns.map((c) => c.id));
+  const globalVars = new Set(['vatPct', 'taxRatePct']);
+  for (const col of columns) {
+    if (col.type !== 'formula' || !col.formula) continue;
+    const tokens = col.formula.match(/[a-zA-Z_][a-zA-Z0-9_]*/g) ?? [];
+    for (const token of tokens) {
+      if (globalVars.has(token) || !colIdSet.has(token)) continue;
+      if (!usages.has(token)) usages.set(token, []);
+      usages.get(token)!.push({ id: col.id, label: col.label });
+    }
+  }
+  return usages;
+}
+
+/**
+ * id «встроенных» дефолтных колонок. Если такая колонка используется в формулах —
+ * кнопка «Удалить» для неё полностью недоступна (onDelete=null в меню).
+ * Пользовательские (не в этом множестве) колонки с зависимостями дают предупреждение,
+ * но удаление возможно.
+ */
+const DEFAULT_COL_IDS = new Set([
+  'cost', 'packaging', 'delivery', 'priceRetail', 'priceWholesale',
+  'marginRetail', 'marginWholesale', 'salesPerMonth', 'stock',
+  'revenueMonth', 'profitMonth',
+]);
+
 function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
   const config = parseConfig(instance.config);
   const liveValues = useAllBlockValuesFlat();
@@ -248,6 +314,8 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
   const lastSyncRef = useRef<number>(0);
   /** Локальный transient sort state — НЕ персистится в config. */
   const [sort, setSort] = useState<SortState>(null);
+  /** Колонка, ожидающая подтверждения удаления (задействована в формулах). */
+  const [deleteWarnCol, setDeleteWarnCol] = useState<Column | null>(null);
   /**
    * Локальный overlay ширин на время drag-resize. Базовый источник —
    * `Column.width` из config. После mouseup overrides записываются обратно
@@ -437,6 +505,31 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
     [config.columns, persist],
   );
 
+  /**
+   * Зависимости формул — какие формулы ссылаются на каждую колонку.
+   * Пересчитывается при изменении `config.columns`.
+   */
+  const formulaUsages = useMemo(() => getFormulaUsages(config.columns), [config.columns]);
+
+  /**
+   * Безопасное удаление колонки с проверкой формул:
+   * - identity-колонки: недоступны (защищено снаружи через onDelete=null)
+   * - встроенные (DEFAULT_COL_IDS) с зависимостями: полный запрет (onDelete=null)
+   * - пользовательские с зависимостями: предупреждение перед удалением
+   * - без зависимостей: удаление сразу
+   */
+  const handleDeleteColumn = useCallback((colId: string) => {
+    const col = config.columns.find((c) => c.id === colId);
+    if (!col || isIdentityCol(col)) return;
+    const usages = formulaUsages.get(colId);
+    if (usages && usages.length > 0) {
+      if (DEFAULT_COL_IDS.has(colId)) return; // не должно сюда попадать, onDelete=null
+      setDeleteWarnCol(col);
+      return;
+    }
+    removeColumn(colId);
+  }, [config.columns, formulaUsages, removeColumn]);
+
   const addColumn = useCallback(() => {
     const id = makeId('c');
     const next: Column = {
@@ -545,6 +638,11 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
    */
   const toggleSort = useCallback((key: string) => {
     setSort((prev) => nextSortState(prev, key));
+  }, []);
+
+  /** Явная установка направления сортировки (для пунктов меню). */
+  const setExplicitSort = useCallback((key: string, dir: 'asc' | 'desc' | null) => {
+    setSort(dir === null ? null : { key, dir });
   }, []);
 
   const togglePin = useCallback(
@@ -656,12 +754,13 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
 
   /**
    * Cumulative left-offset для подряд идущих pinned колонок, начиная от
-   * правого края sticky-блока `#/Артикул/Название` (`STICKY_GROUP_W`).
-   * Только колонки, идущие подряд в начале `visibleColumns`, остаются sticky.
+   * правого края единственной hardcoded sticky-колонки `#` (`STICKY_INDEX_W`).
+   * Identity-колонки (article/name) и dynamic pinned идут вперемешку в
+   * `pinnedColumns` — sticky только пока в начале `visibleColumns` все pinned.
    */
   const stickyOffsets = useMemo(() => {
     const map = new Map<string, number>();
-    let acc = STICKY_GROUP_W;
+    let acc = STICKY_INDEX_W;
     for (const col of visibleColumns) {
       if (!pinnedSet.has(col.id)) break;
       map.set(col.id, acc);
@@ -669,6 +768,21 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
     }
     return map;
   }, [visibleColumns, pinnedSet, widthOf]);
+
+  /**
+   * id ПОСЛЕДНЕЙ pinned колонки (если такие есть). Только она получает
+   * PIN_SHADOW справа — иначе тень предыдущей sticky-cell перекрывается
+   * фоном следующей и визуально пропадает (был баг до этой переработки).
+   * `null` если pinned-колонок нет.
+   */
+  const lastPinnedId = useMemo(() => {
+    let last: string | null = null;
+    for (const col of visibleColumns) {
+      if (!pinnedSet.has(col.id)) break;
+      last = col.id;
+    }
+    return last;
+  }, [visibleColumns, pinnedSet]);
 
   const formulasMap = useMemo(() => {
     const m: Record<string, string | undefined> = {};
@@ -684,6 +798,9 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
       };
       for (const col of config.columns) {
         if (col.type === 'formula') continue;
+        // Identity-колонки берутся напрямую из row.article/row.name при рендере
+        // и публикации; в `manual` (вход для формул) они не нужны.
+        if (col.type === 'identity') continue;
         const binding = row.bindings[col.id] as UnitCellBinding | undefined;
         if (binding && binding.mode === 'block_ref') {
           const resolved = resolveBindingValue(binding, liveValues);
@@ -849,13 +966,16 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
       seenSlugs.add(slug);
       const rowLabel = row.article || row.name || `#${idx + 1}`;
 
-      out[`r_${slug}_article`] = row.article || '';
-      out[`r_${slug}_name`] = row.name || '';
-      labelFields.push(`r_${slug}_article=${rowLabel} · Артикул`);
-      labelFields.push(`r_${slug}_name=${rowLabel} · Название`);
-
       for (const col of visibleColumns) {
         const key = `r_${slug}_${col.id}`;
+        // Identity-колонки: значение приходит напрямую из row.article/row.name,
+        // а не из computedRows.values (там их нет). Раньше публиковались
+        // отдельной веткой ДО цикла — теперь через единый проход.
+        if (col.type === 'identity') {
+          out[key] = col.id === IDENTITY_ARTICLE_ID ? row.article || '' : row.name || '';
+          labelFields.push(`${key}=${rowLabel} · ${col.label}`);
+          continue;
+        }
         const raw = values[col.id];
         if (raw === '#CYCLE' || raw === '#ERR') {
           out[key] = null;
@@ -896,7 +1016,7 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
   const editingColumn = editingCol ? config.columns.find((c) => c.id === editingCol) ?? null : null;
 
   const totalRowWidth =
-    STICKY_GROUP_W + visibleColumns.reduce((acc, c) => acc + widthOf(c), 0) + ACTIONS_W;
+    STICKY_INDEX_W + visibleColumns.reduce((acc, c) => acc + widthOf(c), 0) + ACTIONS_W;
 
   return (
     <Card className="flex h-full flex-col overflow-hidden">
@@ -1012,39 +1132,20 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
         ) : (
           <div className="min-w-full text-[11px]" style={{ minWidth: `${totalRowWidth}px` }}>
             {/* Header row.
-                DndContext оборачивает ВСЕ динамические заголовки; pinned-колонки
-                добавляются в SortableContext с `disabled` через `useSortable` →
-                handleHeaderDragEnd игнорирует drop на/из pinned. */}
+                Единственная hardcoded sticky-cell — `#` (счётчик строки), без
+                меню. Identity (Артикул, Название) и dynamic-колонки идут через
+                единый цикл visibleColumns с DnD-контекстом. Pinned-колонки
+                имеют disabled={true} в useSortable → не двигаются, но не
+                ломают drop-зоны для unpinned. */}
             <div className="sticky top-0 z-40 flex border-b border-border/70 bg-card">
-              <StickyTitleHeaderCell
+              <HeaderCell
                 width={STICKY_INDEX_W}
+                sticky
                 stickyLeft={0}
                 className="text-center font-semibold text-muted-foreground"
-                sortable={false}
               >
                 #
-              </StickyTitleHeaderCell>
-              <StickyTitleHeaderCell
-                width={STICKY_ARTICLE_W}
-                stickyLeft={STICKY_ARTICLE_LEFT}
-                className="font-semibold"
-                sortable
-                sortState={sort?.key === 'article' ? sort.dir : null}
-                onSort={() => toggleSort('article')}
-              >
-                Артикул
-              </StickyTitleHeaderCell>
-              <StickyTitleHeaderCell
-                width={STICKY_NAME_W}
-                stickyLeft={STICKY_NAME_LEFT}
-                stickyEdge
-                className="font-semibold"
-                sortable
-                sortState={sort?.key === 'name' ? sort.dir : null}
-                onSort={() => toggleSort('name')}
-              >
-                Название товара
-              </StickyTitleHeaderCell>
+              </HeaderCell>
               <DndContext
                 id={dndId}
                 sensors={sensors}
@@ -1056,8 +1157,14 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
                     const w = widthOf(col);
                     const stickyLeft = stickyOffsets.get(col.id);
                     const isPinned = stickyLeft !== undefined;
-                    const nextCol = visibleColumns[visibleColumns.indexOf(col) + 1];
-                    const isLastPinned = isPinned && (!nextCol || !stickyOffsets.has(nextCol.id));
+                    const isLastPinned = isPinned && col.id === lastPinnedId;
+                    // Встроенные колонки, задействованные в формулах — без удаления.
+                    // Пользовательские с зависимостями — с предупреждением (через handleDeleteColumn).
+                    const colUsages = formulaUsages.get(col.id) ?? [];
+                    const canDelete =
+                      !isIdentityCol(col) &&
+                      !(DEFAULT_COL_IDS.has(col.id) && colUsages.length > 0);
+                    const colSortState = sort?.key === col.id ? sort.dir : null;
                     return (
                       <MyStoreSortableHeaderCell
                         key={col.id}
@@ -1067,11 +1174,16 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
                         stickyLeft={stickyLeft}
                         isLastPinned={isLastPinned}
                         isPinned={isPinned}
-                        sortState={sort?.key === col.id ? sort.dir : null}
+                        sortState={colSortState}
                         onSort={() => toggleSort(col.id)}
+                        onSetSort={(dir) => setExplicitSort(col.id, dir)}
                         onResizeStart={(e) => handleResizeStart(e, col.id)}
                         onOpenSettings={() => setEditingCol(col.id)}
                         onTogglePin={() => togglePin(col.id)}
+                        onToggleHidden={() =>
+                          updateColumn(col.id, { hidden: !col.hidden })
+                        }
+                        onDelete={canDelete ? () => handleDeleteColumn(col.id) : null}
                       />
                     );
                   })}
@@ -1090,33 +1202,35 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
                 <BodyCell width={STICKY_INDEX_W} sticky stickyLeft={0} className="justify-center text-center text-muted-foreground tabular-nums">
                   {idx + 1}
                 </BodyCell>
-                <BodyCell width={STICKY_ARTICLE_W} sticky stickyLeft={STICKY_ARTICLE_LEFT}>
-                  <input
-                    type="text"
-                    value={row.article}
-                    onChange={(e) => updateRow(row.id, { article: e.target.value })}
-                    placeholder="Артикул"
-                    className="h-full w-full min-w-0 truncate border-0 bg-transparent px-1.5 text-[11px] outline-none placeholder:text-muted-foreground/60"
-                  />
-                </BodyCell>
-                <BodyCell width={STICKY_NAME_W} sticky stickyLeft={STICKY_NAME_LEFT} stickyEdge>
-                  <input
-                    type="text"
-                    value={row.name}
-                    onChange={(e) => updateRow(row.id, { name: e.target.value })}
-                    placeholder="Название товара"
-                    className="h-full w-full min-w-0 truncate border-0 bg-transparent px-1.5 text-[11px] outline-none placeholder:text-muted-foreground/60"
-                  />
-                </BodyCell>
                 {visibleColumns.map((col) => {
                   const w = widthOf(col);
                   const stickyLeft = stickyOffsets.get(col.id);
                   const isPinned = stickyLeft !== undefined;
-                  const nextCol = visibleColumns[visibleColumns.indexOf(col) + 1];
-                  const isLastPinned = isPinned && (!nextCol || !stickyOffsets.has(nextCol.id));
+                  const isLastPinned = isPinned && col.id === lastPinnedId;
                   const stickyProps = isPinned
                     ? { sticky: true, stickyLeft, stickyEdge: isLastPinned }
                     : {};
+                  // Identity-колонки рендерим как editable input на row.article/name.
+                  if (col.type === 'identity') {
+                    const isArticle = col.id === IDENTITY_ARTICLE_ID;
+                    const value = isArticle ? row.article : row.name;
+                    return (
+                      <BodyCell key={col.id} width={w} {...stickyProps} className="p-0">
+                        <input
+                          type="text"
+                          value={value}
+                          onChange={(e) =>
+                            updateRow(
+                              row.id,
+                              isArticle ? { article: e.target.value } : { name: e.target.value },
+                            )
+                          }
+                          placeholder={col.label}
+                          className="h-full w-full min-w-0 truncate border-0 bg-transparent px-1.5 text-[11px] outline-none placeholder:text-muted-foreground/60"
+                        />
+                      </BodyCell>
+                    );
+                  }
                   const raw = values[col.id];
                   if (col.type === 'formula') {
                     const isErr = raw === '#CYCLE' || raw === '#ERR';
@@ -1204,52 +1318,77 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
               </div>
             ))}
 
-            {/* Totals */}
-            <div className="sticky bottom-0 z-[35] flex border-t border-border/70 bg-card text-[11px] font-semibold">
-              <BodyCell width={STICKY_GROUP_W} sticky stickyLeft={0} stickyEdge zIndex={36} className="justify-end px-3 text-muted-foreground">
-                Итого по {totals.rowsCount} товарам
-              </BodyCell>
-              {visibleColumns.map((col) => {
-                const w = widthOf(col);
-                const stickyLeft = stickyOffsets.get(col.id);
-                const isPinned = stickyLeft !== undefined;
-                const nextCol = visibleColumns[visibleColumns.indexOf(col) + 1];
-                const isLastPinned = isPinned && (!nextCol || !stickyOffsets.has(nextCol.id));
-                const stickyProps = isPinned
-                  ? { sticky: true, stickyLeft, stickyEdge: isLastPinned, zIndex: 36 }
-                  : {};
-                if (col.id === 'revenueMonth') {
-                  return (
-                    <BodyCell key={col.id} width={w} {...stickyProps} className="justify-end px-1.5 tabular-nums text-foreground">
-                      {formatNumber(totals.totalRevenue, col, showKopecks)}
-                    </BodyCell>
-                  );
-                }
-                if (col.id === 'profitMonth') {
-                  return (
-                    <BodyCell key={col.id} width={w} {...stickyProps} className="justify-end px-1.5 tabular-nums text-emerald-700 dark:text-emerald-400">
-                      {formatNumber(totals.totalProfit, col, showKopecks)}
-                    </BodyCell>
-                  );
-                }
-                if (col.id === 'stock') {
-                  return (
-                    <BodyCell key={col.id} width={w} {...stickyProps} className="justify-end px-1.5 tabular-nums text-muted-foreground">
-                      {new Intl.NumberFormat('ru-RU').format(totals.stockTotal)}
-                    </BodyCell>
-                  );
-                }
-                if (col.id === 'marginRetail') {
-                  return (
-                    <BodyCell key={col.id} width={w} {...stickyProps} className="justify-end px-1.5 tabular-nums text-muted-foreground">
-                      {formatNumber(totals.avgMargin, col, showKopecks)}
-                    </BodyCell>
-                  );
-                }
-                return <BodyCell key={col.id} width={w} {...stickyProps} className="px-1.5" />;
-              })}
-              <BodyCell width={ACTIONS_W} className="px-1.5" />
-            </div>
+            {/* Totals row.
+                Лейбл «Итого по N товарам» рендерится в первой видимой identity-
+                колонке (если есть) — обычно это Артикул или Название. Если
+                identity-колонок нет (пользователь скрыл обе), лейбл уходит в
+                ячейку `#`. Остальные identity-cells в totals — пустые. */}
+            {(() => {
+              const firstIdentity = visibleColumns.find((c) => c.type === 'identity');
+              const totalsLabel = `Итого по ${totals.rowsCount} товарам`;
+              return (
+                <div className="sticky bottom-0 z-[35] flex border-t border-border/70 bg-card text-[11px] font-semibold">
+                  <BodyCell
+                    width={STICKY_INDEX_W}
+                    sticky
+                    stickyLeft={0}
+                    zIndex={36}
+                    className="justify-center text-center text-muted-foreground tabular-nums"
+                  >
+                    {firstIdentity ? totals.rowsCount : ''}
+                  </BodyCell>
+                  {visibleColumns.map((col) => {
+                    const w = widthOf(col);
+                    const stickyLeft = stickyOffsets.get(col.id);
+                    const isPinned = stickyLeft !== undefined;
+                    const isLastPinned = isPinned && col.id === lastPinnedId;
+                    const stickyProps = isPinned
+                      ? { sticky: true, stickyLeft, stickyEdge: isLastPinned, zIndex: 36 }
+                      : {};
+                    if (col.type === 'identity') {
+                      if (col.id === firstIdentity?.id) {
+                        return (
+                          <BodyCell key={col.id} width={w} {...stickyProps} className="justify-end px-3 text-muted-foreground">
+                            {totalsLabel}
+                          </BodyCell>
+                        );
+                      }
+                      return <BodyCell key={col.id} width={w} {...stickyProps} className="px-1.5" />;
+                    }
+                    if (col.id === 'revenueMonth') {
+                      return (
+                        <BodyCell key={col.id} width={w} {...stickyProps} className="justify-end px-1.5 tabular-nums text-foreground">
+                          {formatNumber(totals.totalRevenue, col, showKopecks)}
+                        </BodyCell>
+                      );
+                    }
+                    if (col.id === 'profitMonth') {
+                      return (
+                        <BodyCell key={col.id} width={w} {...stickyProps} className="justify-end px-1.5 tabular-nums text-emerald-700 dark:text-emerald-400">
+                          {formatNumber(totals.totalProfit, col, showKopecks)}
+                        </BodyCell>
+                      );
+                    }
+                    if (col.id === 'stock') {
+                      return (
+                        <BodyCell key={col.id} width={w} {...stickyProps} className="justify-end px-1.5 tabular-nums text-muted-foreground">
+                          {new Intl.NumberFormat('ru-RU').format(totals.stockTotal)}
+                        </BodyCell>
+                      );
+                    }
+                    if (col.id === 'marginRetail') {
+                      return (
+                        <BodyCell key={col.id} width={w} {...stickyProps} className="justify-end px-1.5 tabular-nums text-muted-foreground">
+                          {formatNumber(totals.avgMargin, col, showKopecks)}
+                        </BodyCell>
+                      );
+                    }
+                    return <BodyCell key={col.id} width={w} {...stickyProps} className="px-1.5" />;
+                  })}
+                  <BodyCell width={ACTIONS_W} className="px-1.5" />
+                </div>
+              );
+            })()}
           </div>
         )}
       </div>
@@ -1268,6 +1407,44 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
           onTogglePin={() => togglePin(editingColumn.id)}
           onBulkFill={(value) => bulkFillColumn(editingColumn.id, value)}
         />
+      )}
+
+      {/* Предупреждение при удалении колонки с формульными зависимостями */}
+      {deleteWarnCol && (
+        <Dialog open onOpenChange={(o) => !o && setDeleteWarnCol(null)}>
+          <DialogContent className="sm:max-w-sm">
+            <DialogHeader>
+              <DialogTitle>Удалить колонку «{deleteWarnCol.label}»?</DialogTitle>
+              <DialogDescription>
+                Эта колонка используется в формулах. Удаление нарушит расчёты:
+              </DialogDescription>
+            </DialogHeader>
+            <ul className="space-y-1 pl-1 text-sm">
+              {(formulaUsages.get(deleteWarnCol.id) ?? []).map((u) => (
+                <li key={u.id} className="text-amber-700 dark:text-amber-300">
+                  •{' '}
+                  <strong>{u.label}</strong>{' '}
+                  <code className="text-[11px] text-muted-foreground">({u.id})</code>
+                </li>
+              ))}
+            </ul>
+            <DialogFooter>
+              <Button variant="outline" size="sm" onClick={() => setDeleteWarnCol(null)}>
+                Отмена
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => {
+                  removeColumn(deleteWarnCol.id);
+                  setDeleteWarnCol(null);
+                }}
+              >
+                Удалить всё равно
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
 
       <OzonImportFromAnalyticsDialog
@@ -1376,73 +1553,233 @@ function BodyCell({
 }
 
 /**
- * Заголовок sticky-колонки (#/Артикул/Название). Поддерживает sort-cycle:
- * клик по заголовку — `null → desc → asc → null`. Drag и resize не нужны:
- * эти три колонки фиксированы по ширине и порядку.
+ * Меню действий с колонкой. Открывается кликом или ховером (400ms) на иконку
+ * GripVertical, которая появляется в правой части ячейки при hover.
+ *
+ * DnD FIX (v0.24.3): Используется `PopoverAnchor asChild` вместо
+ * `PopoverTrigger asChild`. `PopoverTrigger` добавлял свой `onPointerDown`
+ * через Radix, который перехватывал события раньше @dnd-kit/PointerSensor →
+ * drag не начинался. `PopoverAnchor` только позиционирует Popover
+ * относительно якорного элемента, НЕ добавляя обработчики событий.
+ *
+ * Когда dnd-kit начинает drag (`isDragging=true`), меню принудительно
+ * закрывается через `useEffect`.
  */
-function StickyTitleHeaderCell({
-  width,
-  stickyLeft,
-  stickyEdge,
-  sortable,
+function HeaderActionsMenu({
+  col,
+  isPinned,
+  isDragging,
   sortState,
-  onSort,
-  className,
-  children,
+  dragAttributes,
+  dragListeners,
+  onSetSort,
+  onTogglePin,
+  onToggleHidden,
+  onOpenSettings,
+  onDelete,
 }: {
-  width: number;
-  stickyLeft: number;
-  stickyEdge?: boolean;
-  sortable: boolean;
-  sortState?: 'asc' | 'desc' | null;
-  onSort?: () => void;
-  className?: string;
-  children?: React.ReactNode;
+  col: Column;
+  isPinned: boolean;
+  /** Когда drag активен — меню принудительно закрывается. */
+  isDragging: boolean;
+  sortState: 'asc' | 'desc' | null | undefined;
+  dragAttributes: React.HTMLAttributes<HTMLButtonElement> | undefined;
+  dragListeners: Record<string, (e: unknown) => void> | undefined;
+  onSetSort: (dir: 'asc' | 'desc' | null) => void;
+  onTogglePin: () => void;
+  onToggleHidden: () => void;
+  onOpenSettings: () => void;
+  /** null — удаление недоступно (identity или built-in referenced). */
+  onDelete: (() => void) | null;
+}) {
+  const [open, setOpen] = useState(false);
+  const openTimerRef = useRef<number | null>(null);
+  const closeTimerRef = useRef<number | null>(null);
+
+  const clearOpenTimer = useCallback(() => {
+    if (openTimerRef.current !== null) {
+      window.clearTimeout(openTimerRef.current);
+      openTimerRef.current = null;
+    }
+  }, []);
+  const clearCloseTimer = useCallback(() => {
+    if (closeTimerRef.current !== null) {
+      window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleOpen = useCallback(() => {
+    clearCloseTimer();
+    if (open) return;
+    clearOpenTimer();
+    openTimerRef.current = window.setTimeout(() => setOpen(true), 400);
+  }, [open, clearCloseTimer, clearOpenTimer]);
+
+  const scheduleClose = useCallback(() => {
+    clearOpenTimer();
+    clearCloseTimer();
+    closeTimerRef.current = window.setTimeout(() => setOpen(false), 200);
+  }, [clearOpenTimer, clearCloseTimer]);
+
+  // Закрыть меню, когда dnd-kit начинает drag.
+  const closeNow = useCallback(() => {
+    clearOpenTimer();
+    clearCloseTimer();
+    setOpen(false);
+  }, [clearOpenTimer, clearCloseTimer]);
+
+  useEffect(() => {
+    if (isDragging) closeNow();
+  }, [isDragging, closeNow]);
+
+  // Cleanup на unmount.
+  useEffect(() => {
+    return () => {
+      clearOpenTimer();
+      clearCloseTimer();
+    };
+  }, [clearOpenTimer, clearCloseTimer]);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      {/*
+        PopoverAnchor asChild — Radix позиционирует Popover относительно
+        этого элемента, но НЕ добавляет onPointerDown/onClick.
+        Это даёт dnd-kit полный контроль над pointer-событиями.
+      */}
+      <PopoverAnchor asChild>
+        <button
+          type="button"
+          {...(dragAttributes ?? {})}
+          {...(dragListeners ?? {})}
+          onClick={(e) => {
+            e.stopPropagation();
+            clearOpenTimer();
+            clearCloseTimer();
+            setOpen((v) => !v);
+          }}
+          onMouseEnter={scheduleOpen}
+          onMouseLeave={scheduleClose}
+          // pointerDown отменяет hover-open — при реальном drag меню не появится.
+          onPointerDown={(e) => {
+            clearOpenTimer();
+            // Пробрасываем dragListeners.onPointerDown если есть.
+            (dragListeners as Record<string, (e: React.PointerEvent<HTMLButtonElement>) => void> | undefined)?.onPointerDown?.(e);
+          }}
+          className="inline-flex h-5 w-5 cursor-grab items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/h:opacity-100 active:cursor-grabbing"
+          title="Перетащите для смены порядка · кликните для меню"
+          aria-label="Меню колонки"
+        >
+          <GripVertical className="h-3.5 w-3.5" />
+        </button>
+      </PopoverAnchor>
+      <PopoverContent
+        side="bottom"
+        align="end"
+        sideOffset={4}
+        className="w-52 p-1"
+        onMouseEnter={clearCloseTimer}
+        onMouseLeave={scheduleClose}
+      >
+        {/* Сортировка */}
+        <MenuItem
+          icon={ArrowDown}
+          active={sortState === 'desc'}
+          onClick={() => { onSetSort('desc'); closeNow(); }}
+        >
+          По убыванию
+        </MenuItem>
+        <MenuItem
+          icon={ArrowUp}
+          active={sortState === 'asc'}
+          onClick={() => { onSetSort('asc'); closeNow(); }}
+        >
+          По возрастанию
+        </MenuItem>
+        {sortState && (
+          <MenuItem
+            icon={ArrowDownUp}
+            onClick={() => { onSetSort(null); closeNow(); }}
+          >
+            Сбросить сортировку
+          </MenuItem>
+        )}
+        {/* Разделитель */}
+        <div className="my-1 h-px bg-border/50" />
+        {/* Управление колонкой */}
+        <MenuItem
+          icon={isPinned ? PinOff : Pin}
+          onClick={() => { onTogglePin(); closeNow(); }}
+        >
+          {isPinned ? 'Открепить' : 'Закрепить слева'}
+        </MenuItem>
+        <MenuItem
+          icon={col.hidden ? Eye : EyeOff}
+          onClick={() => { onToggleHidden(); closeNow(); }}
+        >
+          {col.hidden ? 'Показать' : 'Скрыть'}
+        </MenuItem>
+        <MenuItem
+          icon={Settings2}
+          onClick={() => { onOpenSettings(); closeNow(); }}
+        >
+          Настройки…
+        </MenuItem>
+        {onDelete && (
+          <MenuItem
+            icon={Trash2}
+            destructive
+            onClick={() => { onDelete(); closeNow(); }}
+          >
+            Удалить колонку
+          </MenuItem>
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function MenuItem({
+  icon: Icon,
+  children,
+  onClick,
+  active,
+  destructive,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  children: React.ReactNode;
+  onClick: () => void;
+  /** Подсветка активного пункта (напр. текущее направление сортировки). */
+  active?: boolean;
+  destructive?: boolean;
 }) {
   return (
-    <div
-      data-sticky=""
-      onClick={sortable ? onSort : undefined}
-      className={
-        'group/h relative isolate flex shrink-0 items-center overflow-hidden border-r border-border/40 bg-card ' +
-        (sortable ? 'cursor-pointer hover:bg-accent/30 ' : '') +
-        (className ?? '')
-      }
-      style={{
-        width,
-        minWidth: width,
-        maxWidth: width,
-        height: HEADER_H,
-        boxSizing: 'border-box',
-        position: 'sticky',
-        left: stickyLeft,
-        zIndex: 45,
-        boxShadow: stickyEdge ? PIN_SHADOW : undefined,
-      }}
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] text-foreground hover:bg-accent',
+        active && 'bg-accent/60 font-medium text-primary',
+        destructive && 'text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30',
+      )}
     >
-      <span className="inline-flex w-full items-center gap-1 px-1.5 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">
-        <span className="block flex-1 truncate">{children}</span>
-        {sortable && (
-          <span className="shrink-0">
-            {sortState === 'asc' ? (
-              <ArrowUp className="h-2.5 w-2.5 text-primary" />
-            ) : sortState === 'desc' ? (
-              <ArrowDown className="h-2.5 w-2.5 text-primary" />
-            ) : (
-              <ArrowDownUp className="h-2.5 w-2.5 opacity-0 group-hover/h:opacity-40" />
-            )}
-          </span>
-        )}
-      </span>
-    </div>
+      <Icon className={cn('h-3.5 w-3.5 shrink-0', active && 'text-primary')} />
+      <span className="truncate">{children}</span>
+    </button>
   );
 }
 
 /**
- * Sortable + resizable + sticky-pinnable заголовок динамической колонки.
- * Drag handle (GripVertical) виден на hover; resize-handle на правом крае;
- * click по заголовку (вне кнопок) — sort-cycle. Когда `isPinned=true`,
- * колонка получает `position: sticky` с указанным `stickyLeft`.
+ * Sortable + resizable + sticky-pinnable заголовок колонки.
+ *
+ * Визуальный дизайн (v0.24.3):
+ * - Idle: [sort-indicator?] [label................] [unit]
+ * - Hover: [sort-indicator?] [label...............] [GripVertical → меню]
+ *
+ * Единица (unit/fx) и иконка grip занимают один слот — единица скрывается
+ * при hover с CSS transition, grip появляется в том же пространстве.
+ * Resize-handle 5px на правом крае. Клик по ячейке (вне grip) — sort-cycle.
  */
 function MyStoreSortableHeaderCell({
   col,
@@ -1453,9 +1790,12 @@ function MyStoreSortableHeaderCell({
   isPinned,
   sortState,
   onSort,
+  onSetSort,
   onResizeStart,
   onOpenSettings,
   onTogglePin,
+  onToggleHidden,
+  onDelete,
 }: {
   col: Column;
   width: number;
@@ -1465,9 +1805,12 @@ function MyStoreSortableHeaderCell({
   isPinned: boolean;
   sortState?: 'asc' | 'desc' | null;
   onSort: () => void;
+  onSetSort: (dir: 'asc' | 'desc' | null) => void;
   onResizeStart: (e: React.MouseEvent) => void;
   onOpenSettings: () => void;
   onTogglePin: () => void;
+  onToggleHidden: () => void;
+  onDelete: (() => void) | null;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: col.id,
@@ -1492,7 +1835,7 @@ function MyStoreSortableHeaderCell({
         }
       : {}),
   };
-  const unitBadge = col.type === 'formula' ? 'fx' : col.unit;
+  const unitBadge = col.type === 'formula' ? 'fx' : (col.unit ?? '');
   return (
     <div
       ref={setNodeRef}
@@ -1505,64 +1848,63 @@ function MyStoreSortableHeaderCell({
         (isPinned ? 'bg-card ' : '')
       }
     >
-      <span className="inline-flex w-full items-center gap-1 px-1.5 py-1 text-[10px] uppercase tracking-wider">
-        {draggable && (
-          <button
-            type="button"
-            {...attributes}
-            {...listeners}
-            className="shrink-0 cursor-grab opacity-0 transition-opacity group-hover/h:opacity-60 hover:opacity-100 active:cursor-grabbing"
-            title="Перетащите, чтобы изменить порядок"
-            aria-label="Перетащить колонку"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <GripVertical className="h-3 w-3" />
-          </button>
-        )}
-        <span className="block flex-1 truncate font-semibold text-foreground" title={col.label}>
-          {col.label}
-        </span>
-        {unitBadge && (
-          <span className="shrink-0 text-[9px] font-normal text-muted-foreground/70">
-            {unitBadge}
+      {/*
+        `flex w-full min-w-0`: обязательно для truncate в flex-контексте.
+        pr-1: отступ от resize-handle (5px справа).
+      */}
+      <span className="flex w-full min-w-0 items-center gap-0.5 px-1.5 pr-1 py-1 text-[10px] uppercase tracking-wider">
+        {/* Активный индикатор сортировки — только когда sort активна. */}
+        {sortState && (
+          <span className="shrink-0 text-primary">
+            {sortState === 'asc' ? (
+              <ArrowUp className="h-2.5 w-2.5" />
+            ) : (
+              <ArrowDown className="h-2.5 w-2.5" />
+            )}
           </span>
         )}
-        <span className="shrink-0 text-muted-foreground">
-          {sortState === 'asc' ? (
-            <ArrowUp className="h-2.5 w-2.5 text-primary" />
-          ) : sortState === 'desc' ? (
-            <ArrowDown className="h-2.5 w-2.5 text-primary" />
-          ) : (
-            <ArrowDownUp className="h-2.5 w-2.5 opacity-0 group-hover/h:opacity-40" />
-          )}
+        {/* Метка — занимает всё оставшееся место. */}
+        <span
+          className="block min-w-0 flex-1 truncate font-semibold text-foreground"
+          title={col.label}
+        >
+          {col.label}
         </span>
-        <span className="ml-0.5 inline-flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover/h:opacity-100">
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onTogglePin();
-            }}
-            className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-primary"
-            title={isPinned ? 'Открепить колонку' : 'Закрепить слева'}
-            aria-label={isPinned ? 'Открепить' : 'Закрепить'}
-          >
-            {isPinned ? <PinOff className="h-3 w-3" /> : <Pin className="h-3 w-3" />}
-          </button>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onOpenSettings();
-            }}
-            className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-primary"
-            title="Настроить колонку"
-            aria-label="Настроить"
-          >
-            <Settings2 className="h-3 w-3" />
-          </button>
+        {/*
+          Unit/grip слот: оба занимают одно место в правом краю.
+          Unit виден в idle (group-hover/h:opacity-0),
+          Grip появляется на hover (opacity-0 group-hover/h:opacity-100).
+          Используем relative-обёртку чтобы не менять размер flex-контейнера.
+        */}
+        <span className="relative ml-0.5 inline-flex h-4 shrink-0 items-center justify-center">
+          {/* Unit badge — скрывается при hover */}
+          {unitBadge && (
+            <span className="text-[9px] font-normal text-muted-foreground/70 transition-opacity duration-150 group-hover/h:opacity-0">
+              {unitBadge}
+            </span>
+          )}
+          {/* Grip / menu button — появляется при hover поверх unit badge */}
+          <span className={cn(
+            'absolute inset-0 flex items-center justify-center transition-opacity duration-150',
+            'opacity-0 group-hover/h:opacity-100',
+          )}>
+            <HeaderActionsMenu
+              col={col}
+              isPinned={isPinned}
+              isDragging={isDragging}
+              sortState={sortState}
+              dragAttributes={draggable ? (attributes as unknown as React.HTMLAttributes<HTMLButtonElement>) : undefined}
+              dragListeners={draggable ? (listeners as unknown as Record<string, (e: unknown) => void>) : undefined}
+              onSetSort={onSetSort}
+              onTogglePin={onTogglePin}
+              onToggleHidden={onToggleHidden}
+              onOpenSettings={onOpenSettings}
+              onDelete={onDelete}
+            />
+          </span>
         </span>
       </span>
+      {/* Resize handle — правый край, 5px. Не мешает grip: grip позиционируется левее. */}
       <span
         onMouseDown={onResizeStart}
         onClick={(e) => e.stopPropagation()}
@@ -1597,6 +1939,7 @@ function ColumnEditDialog({
   const [bulkFeedback, setBulkFeedback] = useState<string | null>(null);
   const isFormula = column.type === 'formula';
   const isText = column.type === 'text';
+  const isIdentity = column.type === 'identity';
 
   function handleBulkApply() {
     if (isFormula) return;
@@ -1634,26 +1977,30 @@ function ColumnEditDialog({
           <Field label="Название">
             <Input value={draft.label} onChange={(e) => setDraft({ ...draft, label: e.target.value })} />
           </Field>
-          <Field label="Тип">
-            <select
-              value={draft.type}
-              onChange={(e) => setDraft({ ...draft, type: e.target.value as ColumnType })}
-              className="h-9 w-full rounded border border-border/60 bg-background px-2 text-sm"
-            >
-              <option value="number">Число</option>
-              <option value="percent">Процент</option>
-              <option value="money">Деньги</option>
-              <option value="text">Текст</option>
-              <option value="formula">Формула</option>
-            </select>
-          </Field>
-          <Field label="Единица (опц.)">
-            <Input
-              value={draft.unit ?? ''}
-              onChange={(e) => setDraft({ ...draft, unit: e.target.value || undefined })}
-              placeholder="₽, %, шт."
-            />
-          </Field>
+          {!isIdentity && (
+            <Field label="Тип">
+              <select
+                value={draft.type}
+                onChange={(e) => setDraft({ ...draft, type: e.target.value as ColumnType })}
+                className="h-9 w-full rounded border border-border/60 bg-background px-2 text-sm"
+              >
+                <option value="number">Число</option>
+                <option value="percent">Процент</option>
+                <option value="money">Деньги</option>
+                <option value="text">Текст</option>
+                <option value="formula">Формула</option>
+              </select>
+            </Field>
+          )}
+          {!isIdentity && (
+            <Field label="Единица (опц.)">
+              <Input
+                value={draft.unit ?? ''}
+                onChange={(e) => setDraft({ ...draft, unit: e.target.value || undefined })}
+                placeholder="₽, %, шт."
+              />
+            </Field>
+          )}
           {draft.type === 'formula' && (
             <Field label="Формула">
               <Input
@@ -1674,19 +2021,22 @@ function ColumnEditDialog({
               onChange={(e) => setDraft({ ...draft, width: Math.max(40, Number(e.target.value) || 96) })}
             />
           </Field>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={!!draft.positive}
-              onChange={(e) => setDraft({ ...draft, positive: e.target.checked })}
-            />
-            Подсвечивать +/−
-          </label>
+          {!isIdentity && (
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={!!draft.positive}
+                onChange={(e) => setDraft({ ...draft, positive: e.target.checked })}
+              />
+              Подсвечивать +/−
+            </label>
+          )}
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={pinned} onChange={() => onTogglePin()} />
             Закрепить слева (sticky)
           </label>
 
+          {!isIdentity && (
           <div className="rounded border border-dashed border-border/60 bg-muted/20 p-3">
             <div className="mb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
               Массовое заполнение
@@ -1735,6 +2085,7 @@ function ColumnEditDialog({
               </>
             )}
           </div>
+          )}
         </div>
         <DialogFooter className="flex items-center justify-between gap-2 sm:justify-between">
           <div className="flex items-center gap-2">
@@ -1742,9 +2093,11 @@ function ColumnEditDialog({
               {column.hidden ? <Eye /> : <EyeOff />}
               {column.hidden ? 'Показать' : 'Скрыть'}
             </Button>
-            <Button variant="ghost" size="sm" className="text-red-600 hover:text-red-700" onClick={onDelete}>
-              <Trash2 /> Удалить
-            </Button>
+            {!isIdentity && (
+              <Button variant="ghost" size="sm" className="text-red-600 hover:text-red-700" onClick={onDelete}>
+                <Trash2 /> Удалить
+              </Button>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={onClose}>
