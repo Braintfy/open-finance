@@ -73,6 +73,36 @@ function iconFor(name: string | null): React.ComponentType<{ className?: string 
   return (name && ICON_MAP[name]) || Store;
 }
 
+/**
+ * Резолвит `?tab=<slug>` в id вкладки. Slug может быть `defaultKey`
+ * (для built-in) или `pageKey` (для custom). Возвращает undefined,
+ * если параметр пустой / нет совпадений.
+ */
+function resolveTab(tabs: ClientTab[], param: string | null): string | undefined {
+  if (!param) return undefined;
+  return (
+    tabs.find((t) => t.defaultKey === param)?.id ??
+    tabs.find((t) => t.pageKey === param)?.id
+  );
+}
+
+function tabParamFor(tab: ClientTab): string {
+  return tab.defaultKey ?? tab.pageKey;
+}
+
+/**
+ * Пишет `?tab=...` в URL через `history.replaceState` (без full navigation).
+ * Не использует `useSearchParams`/router.push — иначе нужен Suspense
+ * (см. `MEMORY.md` L220). Тот же паттерн в `admin/ai/local-models/page.tsx`.
+ */
+function syncTabToUrl(tab: ClientTab | undefined) {
+  if (typeof window === 'undefined') return;
+  const url = new URL(window.location.href);
+  if (tab) url.searchParams.set('tab', tabParamFor(tab));
+  else url.searchParams.delete('tab');
+  window.history.replaceState(null, '', url);
+}
+
 export function UnitEconomicsClient({
   tenantId,
   initialTabs,
@@ -81,8 +111,31 @@ export function UnitEconomicsClient({
   initialTabs: ClientTab[];
 }) {
   const [tabs, setTabs] = useState<ClientTab[]>(initialTabs);
-  const [active, setActive] = useState<string>(
-    initialTabs.find((t) => t.defaultKey === 'ozon-multi')?.id ?? initialTabs[0]?.id ?? '',
+  const [active, setActive] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      const fromUrl = resolveTab(
+        initialTabs,
+        new URLSearchParams(window.location.search).get('tab'),
+      );
+      if (fromUrl) return fromUrl;
+    }
+    return (
+      initialTabs.find((t) => t.defaultKey === 'ozon-multi')?.id ??
+      initialTabs[0]?.id ??
+      ''
+    );
+  });
+
+  /**
+   * Wrapper над `setActive` который дополнительно синкает выбор в URL,
+   * чтобы reload страницы оставался на выбранной вкладке.
+   */
+  const selectTab = useCallback(
+    (id: string) => {
+      setActive(id);
+      syncTabToUrl(tabs.find((t) => t.id === id));
+    },
+    [tabs],
   );
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingValue, setEditingValue] = useState('');
@@ -138,6 +191,7 @@ export function UnitEconomicsClient({
       };
       setTabs((cur) => [...cur, newTab].sort((a, b) => a.order - b.order));
       setActive(newTab.id);
+      syncTabToUrl(newTab);
       setShowCreate(false);
     },
     [],
@@ -152,7 +206,12 @@ export function UnitEconomicsClient({
     setTabs((cur) => cur.filter((t) => t.id !== id));
     if (active === id) {
       const fallback = tabs.find((t) => t.id !== id);
-      if (fallback) setActive(fallback.id);
+      if (fallback) {
+        setActive(fallback.id);
+        syncTabToUrl(fallback);
+      } else {
+        syncTabToUrl(undefined);
+      }
     }
     setDeleteConfirmFor(null);
   }, [tabs, active]);
@@ -202,7 +261,7 @@ export function UnitEconomicsClient({
             >
               <button
                 type="button"
-                onClick={() => !isEditing && setActive(tab.id)}
+                onClick={() => !isEditing && selectTab(tab.id)}
                 onDoubleClick={() => startRename(tab)}
                 className="flex items-center gap-2 text-[13px]"
                 title="Двойной клик — переименовать"

@@ -246,7 +246,7 @@ const STICKY_INDEX_W = 32;
 const ACTIONS_W = 80;
 const HEADER_H = 32;
 const ROW_H = 30;
-const PIN_SHADOW = '2px 0 4px -2px rgba(0,0,0,0.08)';
+const PIN_SHADOW = '1px 0 0 0 var(--border)';
 
 /** Sticky-сортируемый ключ: `null` (без сортировки) → `desc` → `asc` → `null`. */
 type SortDir = 'asc' | 'desc';
@@ -1824,7 +1824,7 @@ function MyStoreSortableHeaderCell({
     boxSizing: 'border-box',
     transform: CSS.Translate.toString(transform),
     transition,
-    zIndex: isDragging ? 50 : isPinned ? 46 : 45,
+    zIndex: isDragging ? 50 : isPinned ? 46 : undefined,
     opacity: isDragging ? 0.85 : undefined,
     ...(isPinned
       ? {
@@ -1844,8 +1844,8 @@ function MyStoreSortableHeaderCell({
       title={col.label}
       className={
         'group/h relative isolate flex shrink-0 items-center overflow-hidden border-r border-border/40 ' +
-        'cursor-pointer hover:bg-accent/30 ' +
-        (isPinned ? 'bg-card ' : '')
+        'cursor-pointer bg-card ' +
+        (isPinned ? '' : 'hover:bg-accent/30 ')
       }
     >
       {/*

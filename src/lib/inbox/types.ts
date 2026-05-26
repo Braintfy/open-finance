@@ -42,6 +42,8 @@ export type InboxMessageDto = {
   subject: string | null;
   preview: string | null;
   body: string | null;
+  /** Санитизированный HTML; null если у письма не было HTML-part. */
+  bodyHtml: string | null;
   receivedAt: string;
   metadata: Record<string, unknown>;
 };
@@ -53,6 +55,8 @@ export type ParsedInboxMessage = {
   subject?: string | null;
   preview?: string | null;
   body?: string | null;
+  /** HTML-тел письма (если был), без санитизации — она в санитизаторе при рендере. */
+  bodyHtml?: string | null;
   receivedAt: Date;
   metadata?: Record<string, unknown>;
 };

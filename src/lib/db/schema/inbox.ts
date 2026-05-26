@@ -74,6 +74,13 @@ export const inboxMessages = pgTable(
     subject: varchar('subject', { length: 500 }),
     preview: varchar('preview', { length: 500 }),
     body: text('body'),
+    /**
+     * Санитизированный HTML-тел письма (опционально).
+     * Заполняется при sync через mailparser, если у письма был HTML-part.
+     * Рендерится через DOMPurify + lazy images placeholder (см. inbox/sanitize-html.ts).
+     * При отсутствии — рендерится `body` plain-text.
+     */
+    bodyHtml: text('body_html'),
     receivedAt: timestamp('received_at').notNull(),
     metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
     /** AI vision результат — извлечённые данные о vendor/amount/items. */

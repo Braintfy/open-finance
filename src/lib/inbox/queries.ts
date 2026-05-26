@@ -168,6 +168,7 @@ export async function listInboxMessages(query: InboxMessageQuery): Promise<Inbox
     subject: row.subject,
     preview: row.preview,
     body: row.body,
+    bodyHtml: row.bodyHtml,
     receivedAt: row.receivedAt.toISOString(),
     metadata: row.metadata,
   }));
@@ -207,6 +208,7 @@ async function insertInboxMessages(args: {
       subject: message.subject ?? null,
       preview: message.preview ?? null,
       body: message.body ?? null,
+      bodyHtml: message.bodyHtml ?? null,
       receivedAt: message.receivedAt,
       metadata: message.metadata ?? {},
     };

@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.24.4] - 2026-05-26
+
+Полишинг UX: 4 точечных фикса (sticky-bleed в «Мой магазин», разнородное форматирование «Выручка Ozon», сохранение активной вкладки `/unit-economics`) + overhaul парсера почты (mailparser, sanitized HTML-рендер, lazy images, body_html в DB).
+
+### Fixed
+
+- **Sticky-bleed в `unit.my-store-table`** — после v0.24.2 при горизонтальном скролле текст скроллируемых колонок «просвечивал» под sticky `Артикул`/`Название`. Корень: `MyStoreSortableHeaderCell` навешивал `bg-card` только на `isPinned`, не-pinned заголовки оставались прозрачными; плюс `hover:bg-accent/30` на pinned-колонке делал её полупрозрачной при ховере. Фикс: безусловный `bg-card` на всех заголовках, `hover:bg-accent/30` только на не-pinned, `zIndex: 45` убран с не-sticky (он без `position` всё равно не работает), `PIN_SHADOW` приведён к project invariant `'1px 0 0 0 var(--border)'`.
+- **Разнородное форматирование «Выручка Ozon ₽»** — в `LinkableNumberCell.formatValue()` целые числа возвращались как `String(v)` (без разделителей), а float — через `Intl.NumberFormat` (с разделителями и копейками). Импортированные `ozonRevenueRub` приходят и целыми, и дробными → визуально каша. Фикс: всегда `Intl.NumberFormat`. Когда проп `money={true}` — `formatRublesWithSettings(rublesToKopecks(v), showKopecks)` с обрезкой суффикса ` ₽` (unit-badge уже в шапке колонки). Подключён `useFormatSettings()` — теперь ячейка респектирует глобальный showKopecks.
+- **Сохранение активной вкладки `/unit-economics`** — на reload страница всегда возвращалась к «Ozon мульти-артикул». Фикс: `?tab=<slug>` URL-параметр через `window.location.search` + `history.replaceState` (тот же паттерн что в `admin/ai/local-models`, без `useSearchParams`/Suspense). Slug = `defaultKey` для built-in вкладок (`ozon`, `ozon-multi`, `yandex`, `my-store`) или `pageKey` для custom (`unit-economics-custom-<nanoid8>`).
+- **Inbox — кодировка писем** — у многих писем (особенно marketing/transactional) в DB сохранялся сырой MIME-блок с QP (`=D0=9D=...`) и видимыми границами (`------=_Part_...`) вместо декодированного текста. Корень: кастомный `mime.ts` не умел вложенный multipart (типичный `multipart/alternative` внутри `multipart/mixed`). Фикс: переход на `mailparser.simpleParser` (battle-tested парсер с поддержкой nested multipart, charset, encoded-words, all transfer encodings).
+
+### Added
+
+- **`@tailwindcss/typography`** plugin — для рендера email HTML через `prose` классы (наследует шрифты приложения, light/dark тема).
+- **`mailparser` + `dompurify` + `@types/mailparser`** в dependencies. Изначально планировали `isomorphic-dompurify`, но он тащит `jsdom`, который Next.js webpack не умеет корректно бандлить (mangles `__dirname` → `ENOENT browser/default-stylesheet.css`). Перешли на чистый `dompurify` (browser-only) с SSR-guard в `sanitizeEmailHtml`.
+- **`src/lib/inbox/sanitize-html.ts`** — `sanitizeEmailHtml(html)` через DOMPurify со строгим allow-list тегов/атрибутов + замена `<img src="...">` на `<img data-src="..." src="placeholder" data-blocked="1">`. Возвращает `{ html, hasImages }`. Линки `<a>` авто-получают `target="_blank" rel="noopener noreferrer"`. SSR-safe: при отсутствии `window` возвращает no-op; реальная санитизация на client через `useMemo`.
+- **`bodyHtml` колонка** в `inbox_messages` (`text`) — sanitized HTML, опциональный. Заполняется при sync через `simpleParser(...).html`. Картинки в DB **не хранятся** — оригинальные URL остаются в `data-src` и грузятся on-demand с внешних серверов.
+- **`EmailHtmlBody`** компонент в `inbox-channel-feed.tsx` — рендерит `bodyHtml` через `dangerouslySetInnerHTML` (sanitized) с `prose prose-sm dark:prose-invert` контейнером. Если `hasImages` — баннер «Картинки заблокированы… [Загрузить]» сверху. По клику обходит `[data-blocked="1"]` и восстанавливает `src` из `dataset.src`.
+- **`InboxChannelSettings` — кнопка «Синхронизировать (200)»** — раньше 50 писем за раз. Теперь до 200 (lim сервера clamp 1..500 через `?limit=N`). Existing letters перезаписываются через upsert по `external_id` → один клик после v0.24.4 чинит уже сохранённые письма без отдельного backfill-скрипта. Tooltip объясняет это.
+
+### Changed
+
+- **API `POST /api/inbox/channels/[id]/sync`** — дефолтный лимит 50 → 200, добавлен `?limit=N` параметр (clamp 1..500).
+- **`mime.ts`** оставлен в кодовой базе для legacy / fallback, но больше не используется в основном sync-пути. Возможно удалится в следующих версиях.
+
 ## [0.24.3] - 2026-05-26
 
 Оптимизация UX заголовков таблицы «Мой магазин»: исправлен сломанный DnD, переработан визуал ячейки, сортировка перенесена в меню, добавлена защита формул при удалении колонок.

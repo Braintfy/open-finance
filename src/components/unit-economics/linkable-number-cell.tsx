@@ -8,8 +8,10 @@ import { Link2, Link2Off } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { UnitCellBindingDialog } from './unit-cell-binding-dialog';
 import type { UnitCellBinding } from '@/lib/unit-economics/types';
+import { rublesToKopecks } from '@/lib/unit-economics/types';
 import { isBindingActive, resolveBindingValue } from '@/lib/unit-economics/bindings';
 import { useAllBlockValuesFlat } from '@/lib/unit-economics/use-live-block-values';
+import { useFormatSettings, formatRublesWithSettings } from '@/lib/format-settings';
 
 type Props = {
   selfBlockId: string;
@@ -31,12 +33,6 @@ type Props = {
   max?: number;
   align?: 'left' | 'right';
 };
-
-function formatValue(v: number): string {
-  if (!Number.isFinite(v)) return '';
-  if (Number.isInteger(v)) return String(v);
-  return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(v);
-}
 
 function parseInput(text: string): number {
   const normalized = text.replace(/\s/g, '').replace(',', '.');
@@ -62,6 +58,22 @@ export function LinkableNumberCell({
 }: Props) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const liveValues = useAllBlockValuesFlat();
+  const { settings } = useFormatSettings();
+
+  /**
+   * Унифицированное форматирование. Раньше для целых чисел возвращался `String(v)`
+   * (без разделителей), для float — `Intl.NumberFormat` (с разделителями) →
+   * каша в колонках типа «Выручка Ozon» где одни значения целые, другие дробные.
+   * Теперь всегда `Intl.NumberFormat`. Для money — `formatRublesWithSettings`
+   * (учитывает глобальный `showKopecks`), суффикс ` ₽` срезаем — unit-badge уже в шапке.
+   */
+  const formatValue = (v: number): string => {
+    if (!Number.isFinite(v)) return '';
+    if (money) {
+      return formatRublesWithSettings(rublesToKopecks(v), settings.showKopecks).replace(/\s?₽$/, '').trim();
+    }
+    return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(v);
+  };
 
   const isLinked = isBindingActive(binding);
   const linkedValue = isLinked ? resolveBindingValue(binding, liveValues) : null;

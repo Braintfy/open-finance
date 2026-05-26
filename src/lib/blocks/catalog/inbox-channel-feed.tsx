@@ -1,7 +1,7 @@
 // PURPOSE: Inbox channel feed block — unified read-only intake view for email/Telegram messages.
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ComponentType, ReactNode } from 'react';
 import {
   Inbox,
@@ -18,6 +18,8 @@ import {
   CheckCircle,
   XCircle,
   Upload as UploadIcon,
+  Image as ImageIcon,
+  Eye,
 } from 'lucide-react';
 import { z } from 'zod';
 import { Button } from '@/components/ui/button';
@@ -35,6 +37,7 @@ import { Label } from '@/components/ui/label';
 import { cn, formatDate } from '@/lib/utils';
 import { useBlockDensity } from '@/components/blocks/block-size';
 import { useBlockValuePublisher } from '@/lib/blocks/values';
+import { sanitizeEmailHtml } from '@/lib/inbox/sanitize-html';
 import type { BlockDef, BlockRenderProps, BlockSettingsFormProps } from '../types';
 import type { InboxChannelDto, InboxMessageDto } from '@/lib/inbox/types';
 
@@ -211,9 +214,13 @@ function RenderInboxChannelFeed({ instance }: BlockRenderProps) {
                     <Mail className="h-4 w-4 shrink-0 text-muted-foreground" />
                   </div>
                 </div>
-                <div className="whitespace-pre-wrap break-words rounded-md bg-muted/35 p-3 text-sm leading-6 text-foreground/85">
-                  {selected.body || selected.preview || 'Тело сообщения пустое.'}
-                </div>
+                {selected.bodyHtml ? (
+                  <EmailHtmlBody html={selected.bodyHtml} />
+                ) : (
+                  <div className="whitespace-pre-wrap break-words rounded-md bg-muted/35 p-3 text-sm leading-6 text-foreground/85">
+                    {selected.body || selected.preview || 'Тело сообщения пустое.'}
+                  </div>
+                )}
                 <AiRecognizePanel messageId={selected.id} />
               </div>
             )}
@@ -221,6 +228,69 @@ function RenderInboxChannelFeed({ instance }: BlockRenderProps) {
         </div>
       )}
     </Card>
+  );
+}
+
+// ============================================================================
+// EmailHtmlBody — рендер sanitized HTML с lazy-load картинок
+// ============================================================================
+
+/**
+ * Рендерит HTML-тел письма. Перед монтом прогоняет через `sanitizeEmailHtml`
+ * (DOMPurify + замена `<img src>` → `data-src` + плейсхолдер). Если есть
+ * заблокированные картинки — показывает баннер «Загрузить картинки». При
+ * клике обходит `[data-blocked="1"]` и восстанавливает src из dataset.
+ *
+ * Используем inline div с `prose` (без iframe) — легче по DOM, наследует
+ * шрифты приложения, плюс совместимо с light/dark темой. Картинки в DB
+ * НЕ хранятся, грузятся on-demand с внешних URL по нажатию пользователя.
+ */
+function EmailHtmlBody({ html }: { html: string }) {
+  const { html: safeHtml, hasImages } = useMemo(() => sanitizeEmailHtml(html), [html]);
+  const [imagesLoaded, setImagesLoaded] = useState(false);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  const loadImages = useCallback(() => {
+    const root = containerRef.current;
+    if (!root) return;
+    const blocked = root.querySelectorAll<HTMLImageElement>('img[data-blocked="1"]');
+    blocked.forEach((img) => {
+      const src = img.dataset.src;
+      if (src) {
+        img.src = src;
+        img.removeAttribute('data-blocked');
+        img.removeAttribute('data-src');
+      }
+    });
+    setImagesLoaded(true);
+  }, []);
+
+  return (
+    <div className="space-y-2">
+      {hasImages && !imagesLoaded && (
+        <div className="flex items-center justify-between gap-3 rounded-md border border-amber-200 bg-amber-50/60 px-3 py-1.5 text-xs text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-200">
+          <span className="inline-flex items-center gap-1.5">
+            <ImageIcon className="h-3.5 w-3.5" />
+            Картинки заблокированы для приватности и экономии трафика.
+          </span>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={loadImages}
+            className="h-6 gap-1 px-2 text-[11px]"
+          >
+            <Eye className="h-3 w-3" />
+            Загрузить
+          </Button>
+        </div>
+      )}
+      <div
+        ref={containerRef}
+        className="prose prose-sm max-w-none rounded-md bg-muted/35 p-3 text-sm leading-6 dark:prose-invert prose-a:break-words prose-img:my-2 prose-img:max-w-full prose-img:rounded"
+        dangerouslySetInnerHTML={{ __html: safeHtml }}
+      />
+    </div>
   );
 }
 
@@ -730,9 +800,15 @@ function InboxChannelSettings({ config, onChange, instance }: BlockSettingsFormP
             </Button>
             {emailChannel && (
               <>
-                <Button size="sm" variant="outline" onClick={() => syncChannel(emailChannel.id)} disabled={syncingId === emailChannel.id}>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => syncChannel(emailChannel.id)}
+                  disabled={syncingId === emailChannel.id}
+                  title="Подтянет до 200 последних писем. Уже сохранённые обновятся через upsert по external_id — после фикса парсера v0.24.4 это починит старые письма с кодировкой."
+                >
                   <RefreshCcw className={syncingId === emailChannel.id ? 'animate-spin' : ''} />
-                  {syncingId === emailChannel.id ? 'Синхронизация…' : 'Синхронизировать'}
+                  {syncingId === emailChannel.id ? 'Синхронизация…' : 'Синхронизировать (200)'}
                 </Button>
                 <Button size="sm" variant="ghost" onClick={() => deleteChannel(emailChannel.id)}>
                   <Trash2 /> Удалить

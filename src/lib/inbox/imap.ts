@@ -1,7 +1,7 @@
 // PURPOSE: Minimal IMAP connector for testing and syncing email into Inbox.
 import net from 'net';
 import tls from 'tls';
-import { parseEmail } from './mime';
+import { simpleParser, type AddressObject } from 'mailparser';
 import type { InboxEmailSettings, ParsedInboxMessage } from './types';
 
 type SocketLike = net.Socket | tls.TLSSocket;
@@ -29,25 +29,40 @@ export async function syncRecentEmailMessages(settings: InboxEmailSettings, limi
     const latest = uids.sort((a, b) => a - b).slice(-limit);
     if (latest.length === 0) return { messages: [] };
     const rawMessages = await client.fetchMessages(latest);
-    const messages = rawMessages.map((item) => {
-      const parsed = parseEmail(item.raw);
-      const externalId = parsed.messageId || `uid:${settings.mailbox || 'INBOX'}:${item.uid}`;
-      const body = parsed.text;
-      return {
-        externalId,
-        senderName: parsed.fromName,
-        senderAddress: parsed.fromAddress,
-        subject: parsed.subject,
-        preview: makePreview(body),
-        body,
-        receivedAt: parsed.date ?? new Date(),
-        metadata: {
-          uid: item.uid,
-          mailbox: settings.mailbox || 'INBOX',
-          messageId: parsed.messageId ?? null,
-        },
-      };
-    });
+    /**
+     * v0.24.4: переход с кастомного `mime.ts` на `mailparser.simpleParser`.
+     * Прежний парсер не умел nested multipart → в DB сохранялся сырой MIME
+     * с QP-кодировкой (`=D0=9D=...`) и видимыми `Content-Type: ...` /
+     * `------=_Part_...` границами. simpleParser корректно обрабатывает
+     * вложенные multipart/alternative/related/mixed, декодирует QP/base64,
+     * учитывает charset из MIME headers и encoded-word'ы.
+     */
+    const messages = await Promise.all(
+      rawMessages.map(async (item) => {
+        const parsed = await simpleParser(item.raw);
+        const messageId = parsed.messageId ?? null;
+        const externalId = messageId || `uid:${settings.mailbox || 'INBOX'}:${item.uid}`;
+        const from = parsed.from as AddressObject | undefined;
+        const fromAddr = from?.value?.[0];
+        const body = (parsed.text ?? '').trim();
+        const bodyHtml = typeof parsed.html === 'string' && parsed.html.length > 0 ? parsed.html : null;
+        return {
+          externalId,
+          senderName: fromAddr?.name?.trim() || null,
+          senderAddress: fromAddr?.address?.trim() || null,
+          subject: parsed.subject ?? null,
+          preview: makePreview(body),
+          body,
+          bodyHtml,
+          receivedAt: parsed.date ?? new Date(),
+          metadata: {
+            uid: item.uid,
+            mailbox: settings.mailbox || 'INBOX',
+            messageId,
+          },
+        } satisfies ParsedInboxMessage;
+      }),
+    );
     return { messages };
   } finally {
     await client.logout().catch(() => undefined);
