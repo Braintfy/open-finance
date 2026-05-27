@@ -15,6 +15,11 @@ import { kpiGridAdapter } from '../src/lib/blocks/import-export/adapters/kpi-gri
 import { myStoreTableAdapter } from '../src/lib/blocks/import-export/adapters/my-store-table';
 import { getImportExportAdapter, supportsXlsx } from '../src/lib/blocks/import-export/registry';
 import { BLOCK_EXPORT_SCHEMA } from '../src/lib/blocks/import-export/types';
+import {
+  containsAtRef,
+  shiftA1Addresses,
+  substituteAtRefs,
+} from '../src/lib/blocks/import-export/formula-utils';
 
 let passed = 0;
 let failed = 0;
@@ -391,6 +396,240 @@ console.log('\n=== My Store Table XLSX adapter ===');
     ok('row article', rows[0].article === 'SKU-1');
     ok('row name', rows[0].name === 'Чай');
   }
+}
+
+// ============================================================================
+console.log('\n=== formula-utils ===');
+// ============================================================================
+
+{
+  // shiftA1Addresses — базовое смещение
+  ok('shiftA1 zero noop', shiftA1Addresses('A1+B2', 0, 0) === 'A1+B2');
+  ok('shiftA1 +1 +1', shiftA1Addresses('A1+B2', 1, 1) === 'B2+C3');
+  ok('shiftA1 -1 -1 roundtrip', shiftA1Addresses('B2+C3', -1, -1) === 'A1+B2');
+  ok('shiftA1 ranges', shiftA1Addresses('SUM(A1:B5)', 1, 1) === 'SUM(B2:C6)');
+  ok(
+    'shiftA1 mixed expr',
+    shiftA1Addresses('IF(A1>0,B2*60,C3+10)', 1, 1) === 'IF(B2>0,C3*60,D4+10)',
+  );
+
+  // shiftA1 — отрицательная координата → #REF!
+  ok('shiftA1 underflow col → #REF!', shiftA1Addresses('A1', -1, 0).includes('#REF!'));
+  ok('shiftA1 underflow row → #REF!', shiftA1Addresses('A1', 0, -1).includes('#REF!'));
+
+  // shiftA1 — не трогает строковые литералы
+  ok('shiftA1 ignores string', shiftA1Addresses('CONCAT("A1",B2)', 1, 1) === 'CONCAT("A1",C3)');
+
+  // substituteAtRefs
+  const live = {
+    'blk1.totalRub': 12345,
+    'blk2': 99,
+    'page1:blk3.x': 7,
+  };
+  {
+    const r = substituteAtRefs('@blk1.totalRub+10', live);
+    ok('substitute simple', r.result === '12345+10');
+    ok('substituted count', r.substituted === 1);
+    ok('unresolved 0', r.unresolved === 0);
+  }
+  {
+    const r = substituteAtRefs('@unknown.field*2', live);
+    ok('substitute unresolved → 0', r.result === '0*2');
+    ok('unresolved count', r.unresolved === 1);
+  }
+  {
+    const r = substituteAtRefs('@blk1.totalRub+@blk2*0.1', live);
+    ok('substitute multiple', r.result === '12345+99*0.1');
+    ok('substituted x2', r.substituted === 2);
+  }
+  {
+    const r = substituteAtRefs('@page1:blk3.x', live);
+    ok('substitute scoped ref', r.result === '7');
+  }
+
+  // containsAtRef
+  ok('containsAtRef positive', containsAtRef('@blk.x+10'));
+  ok('containsAtRef negative', !containsAtRef('A1+B2'));
+}
+
+// ============================================================================
+console.log('\n=== Custom-data XLSX A1-shift roundtrip ===');
+// ============================================================================
+
+{
+  const def = makeDef('custom.data');
+  // Формула =A1*60 в block-A1 (A=первая user-колонка, row 1=первая data-строка).
+  const instance = makeInstance('custom.data', {
+    columns: [
+      { id: 'price', label: 'Цена', format: 'rubles', publish: true },
+      { id: 'qty', label: 'Кол-во', format: 'number', publish: true },
+    ],
+    rows: [
+      { id: 'r1', label: 'Товар', cells: { price: { v: '=A1*60' }, qty: { v: 5 } } },
+    ],
+  });
+
+  const bytes = customDataAdapter.exportXlsx!(instance, def, { liveValues: {} });
+  // Прочитать XLSX и проверить что A1*60 → B2*60 (в Excel-A1)
+  const wb = (require('xlsx') as typeof import('xlsx')).read(bytes.slice().buffer, {
+    type: 'array',
+    cellFormula: true,
+  });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  // Расположение: row1=header, row2=data, col A=label, col B=price (формула), col C=qty
+  const b2 = ws['B2'] as import('xlsx').CellObject | undefined;
+  ok('custom-data B2 has formula', Boolean(b2?.f));
+  ok('custom-data shifted A1→B2 in formula', b2?.f === 'B2*60');
+
+  // Roundtrip import
+  const preview = customDataAdapter.importXlsx!(
+    bytes.slice().buffer as ArrayBuffer,
+    makeInstance('custom.data', {}),
+  );
+  ok('roundtrip import ok', preview.ok);
+  if (preview.ok) {
+    const newRows = (preview.patch.config as Record<string, unknown>).rows as Array<{
+      cells: Record<string, { v: number | string }>;
+    }>;
+    const newCols = (preview.patch.config as Record<string, unknown>).columns as Array<{
+      id: string;
+      label: string;
+    }>;
+    const priceCol = newCols.find((c) => c.label === 'Цена');
+    ok('price col restored', Boolean(priceCol));
+    const priceCell = priceCol ? newRows[0]?.cells[priceCol.id] : undefined;
+    ok(
+      'formula roundtrip restored to A1',
+      priceCell !== undefined && String(priceCell.v) === '=A1*60',
+    );
+  }
+}
+
+// ============================================================================
+console.log('\n=== Custom-data @-ref substitution ===');
+// ============================================================================
+
+{
+  const def = makeDef('custom.data');
+  const instance = makeInstance('custom.data', {
+    columns: [
+      { id: 'rev', label: 'Выручка', format: 'rubles', publish: true },
+    ],
+    rows: [
+      { id: 'r1', label: 'Янв', cells: { rev: { v: '=@external.totalRub*2' } } },
+    ],
+  });
+
+  // Без liveValues — @-ref становится 0
+  const bytesNoLive = customDataAdapter.exportXlsx!(instance, def);
+  const wb1 = (require('xlsx') as typeof import('xlsx')).read(bytesNoLive.slice().buffer, {
+    type: 'array',
+    cellFormula: true,
+  });
+  const b2 = wb1.Sheets['Data']?.['B2'] as import('xlsx').CellObject | undefined ?? (wb1.Sheets[wb1.SheetNames[0]] as Record<string, import('xlsx').CellObject>)['B2'];
+  ok('no liveValues → @-ref = 0', b2?.f === '0*2');
+
+  // С liveValues — @-ref подставляется
+  const bytesWithLive = customDataAdapter.exportXlsx!(instance, def, {
+    liveValues: { 'external.totalRub': 5000 },
+  });
+  const wb2 = (require('xlsx') as typeof import('xlsx')).read(bytesWithLive.slice().buffer, {
+    type: 'array',
+    cellFormula: true,
+  });
+  const b2live = (wb2.Sheets[wb2.SheetNames[0]] as Record<string, import('xlsx').CellObject>)['B2'];
+  ok('with liveValues → @-ref substituted', b2live?.f === '5000*2');
+}
+
+// ============================================================================
+console.log('\n=== Sheet @-ref substitution ===');
+// ============================================================================
+
+{
+  const def = makeDef('sheet');
+  const instance = makeInstance('sheet', {
+    title: 'Test',
+    cells: [
+      ['1', '2', '=A1+@external.x'],
+    ],
+    blockRefs: { 'external.x': 100 },
+  });
+
+  // Snapshot из cfg.blockRefs работает даже без liveValues
+  const bytes = sheetAdapter.exportXlsx!(instance, def);
+  const wb = (require('xlsx') as typeof import('xlsx')).read(bytes.slice().buffer, {
+    type: 'array',
+    cellFormula: true,
+  });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const c1 = ws['C1'] as import('xlsx').CellObject | undefined;
+  ok('sheet @-ref from snapshot', c1?.f === 'A1+100');
+
+  // liveValues перекрывает snapshot
+  const bytes2 = sheetAdapter.exportXlsx!(instance, def, {
+    liveValues: { 'external.x': 999 },
+  });
+  const wb2 = (require('xlsx') as typeof import('xlsx')).read(bytes2.slice().buffer, {
+    type: 'array',
+    cellFormula: true,
+  });
+  const c1b = wb2.Sheets[wb2.SheetNames[0]]['C1'] as import('xlsx').CellObject | undefined;
+  ok('sheet @-ref live overrides snapshot', c1b?.f === 'A1+999');
+}
+
+// ============================================================================
+console.log('\n=== My-store-table binding resolution ===');
+// ============================================================================
+
+{
+  const def = makeDef('unit.my-store-table');
+  const instance = makeInstance('unit.my-store-table', {
+    title: 'Магазин',
+    global: { vatPct: 20 },
+    columns: [
+      { id: 'article', label: 'Артикул', type: 'identity' },
+      { id: 'name', label: 'Название товара', type: 'identity' },
+      { id: 'expense', label: 'Расход', type: 'money' },
+    ],
+    rows: [
+      {
+        id: 'r1',
+        article: 'SKU-1',
+        name: 'Товар',
+        values: {},
+        bindings: {
+          expense: {
+            mode: 'block_ref',
+            ref: { blockId: 'mp-ozon-campaigns', field: 'totalExpenseRub' },
+          },
+        },
+      },
+    ],
+    pinnedColumns: ['article', 'name'],
+  });
+
+  // Без liveValues — binding не резолвится → пустая ячейка
+  const bytesNoLive = myStoreTableAdapter.exportXlsx!(instance, def);
+  const wb1 = (require('xlsx') as typeof import('xlsx')).read(
+    bytesNoLive.slice().buffer,
+    { type: 'array', cellFormula: true },
+  );
+  const ws1 = wb1.Sheets[wb1.SheetNames[0]];
+  // Row 2 (data), col C (expense)
+  const c2NoLive = ws1['C2'] as import('xlsx').CellObject | undefined;
+  ok('no liveValues → binding cell empty', c2NoLive === undefined || c2NoLive.v === undefined || c2NoLive.v === '');
+
+  // С liveValues — binding резолвится в число
+  const bytesLive = myStoreTableAdapter.exportXlsx!(instance, def, {
+    liveValues: { 'mp-ozon-campaigns.totalExpenseRub': 89901.02 },
+  });
+  const wb2 = (require('xlsx') as typeof import('xlsx')).read(
+    bytesLive.slice().buffer,
+    { type: 'array', cellFormula: true },
+  );
+  const c2Live = wb2.Sheets[wb2.SheetNames[0]]['C2'] as import('xlsx').CellObject | undefined;
+  ok('binding resolved to number', c2Live?.t === 'n' && c2Live?.v === 89901.02);
+  ok('no @-ref in cell.f', !c2Live?.f || !String(c2Live.f).includes('@'));
 }
 
 // ============================================================================

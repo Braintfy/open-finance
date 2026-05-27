@@ -6,19 +6,35 @@ import type { BlockDef, BlockInstance } from '../../types';
 import { buildWorkbook, metaFromSheet, metaToSheet, readWorkbook } from '../xlsx-utils';
 import { buildJsonPayload, buildJsonPreview } from '../json-adapter';
 import { blockHasUserData, scrubCrossRefs } from '../refs-scrubber';
-import type { BlockImportExportAdapter, ImportPreview } from '../types';
+import { containsAtRef, substituteAtRefs } from '../formula-utils';
+import type {
+  BlockImportExportAdapter,
+  ExportXlsxOptions,
+  ImportPreview,
+} from '../types';
 
 function readCfg(instance: BlockInstance): Record<string, unknown> {
   return (instance.config ?? {}) as Record<string, unknown>;
 }
 
-function exportXlsx(instance: BlockInstance, _def: BlockDef): Uint8Array {
+function exportXlsx(
+  instance: BlockInstance,
+  _def: BlockDef,
+  opts?: ExportXlsxOptions,
+): Uint8Array {
   const cfg = readCfg(instance);
   const value = typeof cfg.value === 'string' ? cfg.value : '';
 
   const ws: XLSX.WorkSheet = {};
   if (value.startsWith('=')) {
-    ws['A1'] = { t: 'n', f: value.slice(1), v: 0 } as XLSX.CellObject;
+    // Подставляем @-refs из snapshot (cfg.blockRefs) + live values.
+    const snapshot = (cfg.blockRefs ?? {}) as Record<string, number | string | null>;
+    const merged = { ...snapshot, ...(opts?.liveValues ?? {}) };
+    const body = value.slice(1);
+    const formula = containsAtRef(body)
+      ? substituteAtRefs(body, merged).result
+      : body;
+    ws['A1'] = { t: 'n', f: formula, v: 0 } as XLSX.CellObject;
   } else if (value.trim() !== '') {
     const num = Number(value);
     if (Number.isFinite(num)) {

@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.25.1] - 2026-05-27
+
+### Fixed
+
+- **`custom.data` XLSX export — A1-смещение формул** — формулы в `custom.data` использовали block-A1 (A=первая user-колонка, row 1=первая data-строка), но XLSX-лист имеет дополнительную колонку «Строка» (row label) и header-row → все A1-адреса в формулах ссылались не туда. Теперь при экспорте все A1 сдвигаются `(+1 col, +1 row)`, при импорте — `(-1, -1)`. Поддерживаются ranges (`SUM(A1:B5)`), строковые литералы (`CONCAT("A1",B2)` не трогается), отрицательная координата → `#REF!`.
+- **`@-references` в формулах ломали Excel** — `=@blockId.field` трактуется Excel как ошибка `#ИМЯ?` (или structured reference, что искажает формулу). При экспорте все `@-refs` теперь подставляются numeric value из live store (передаётся через `opts.liveValues` из `BlockValuesContext`). Без значения → `0`. Применяется во всех адаптерах: `sheet` (snapshot из `cfg.blockRefs` + live), `custom.data`, `excel.cell`, `unit.my-store-table`.
+- **`unit.my-store-table` — bindings скидывались как @-text** — ячейки с `row.bindings[colId]` (binding на другой блок) экспортировались как сырая @-формула. Теперь резолвятся через `liveValues` в число (или пустую ячейку, если значение неизвестно).
+
+### Added
+
+- **`src/lib/blocks/import-export/formula-utils.ts`** — портативные helpers:
+  - `shiftA1Addresses(formula, colShift, rowShift)` — сдвигает A1-адреса (и ranges) внутри формулы; пропускает строковые литералы; underflow → `#REF!`.
+  - `substituteAtRefs(formula, liveValues)` — подставляет `@blockId.field` numeric value; возвращает `{ result, substituted, unresolved }`.
+  - `containsAtRef(formula)`, `isFormulaString(value)` — predicates.
+- **`ExportXlsxOptions { liveValues? }`** — новый опциональный параметр в `BlockImportExportAdapter.exportXlsx`. `ImportExportTab` подписывается на `BlockValuesContext` через `useLiveValuesSnapshot()` и пробрасывает снапшот.
+- **30 новых тестов** в `scripts/test-block-import-export.ts` (formula-utils, custom-data A1-shift roundtrip, custom-data @-substitution, sheet @-substitution, my-store-table binding resolution). Всего 100/100.
+
 ## [0.25.0] - 2026-05-27
 
 Универсальная вкладка «Импорт / Экспорт» во всех настройках блоков. Два формата: JSON (полная копия блока для переноса в другой проект) и XLSX (данные + формулы для редактирования в Excel/Numbers/Google Sheets и обратного импорта). Preview-режим с предупреждением о перезаписи и автоматической зачисткой cross-block ссылок.

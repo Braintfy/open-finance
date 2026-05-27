@@ -14,10 +14,52 @@ import {
 } from '../xlsx-utils';
 import { buildJsonPayload, buildJsonPreview } from '../json-adapter';
 import { blockHasUserData, scrubCrossRefs } from '../refs-scrubber';
-import type { BlockImportExportAdapter, ImportPreview } from '../types';
+import { containsAtRef, substituteAtRefs } from '../formula-utils';
+import type {
+  BlockImportExportAdapter,
+  ExportXlsxOptions,
+  ImportPreview,
+} from '../types';
 
 const IDENTITY_ARTICLE_ID = 'article';
 const IDENTITY_NAME_ID = 'name';
+
+/**
+ * Резолвит значение `UnitCellBinding`-подобной структуры через `liveValues`.
+ * Возвращает `number | null`. Не используем `resolveBindingValue` из
+ * `@/lib/unit-economics/bindings` чтобы не тащить runtime-зависимость в
+ * import-export модуль (адаптер должен быть портативным).
+ */
+function resolveBinding(
+  binding: unknown,
+  liveValues: Record<string, number | string | null> | undefined,
+): number | null {
+  if (!binding || typeof binding !== 'object') return null;
+  const b = binding as {
+    mode?: string;
+    ref?: { blockId?: string; field?: string; pageKey?: string };
+    fallbackValue?: unknown;
+  };
+  if (b.mode !== 'block_ref' || !b.ref?.blockId) {
+    return typeof b.fallbackValue === 'number' ? b.fallbackValue : null;
+  }
+  if (!liveValues) return null;
+  const field = b.ref.field ?? 'value';
+  const blockId = b.ref.blockId;
+  const pageKey = b.ref.pageKey;
+  // Совпадает с conventions из bindings.ts/use-live-block-values.ts:
+  //   field === 'value' → ключ = blockId (или pageKey:blockId)
+  //   иначе              → ключ = blockId.field (или pageKey:blockId.field)
+  const base = field === 'value' ? blockId : `${blockId}.${field}`;
+  const key = pageKey ? `${pageKey}:${base}` : base;
+  const v = liveValues[key];
+  if (typeof v === 'number') return v;
+  if (typeof v === 'string') {
+    const num = Number(v.replace(',', '.'));
+    if (Number.isFinite(num)) return num;
+  }
+  return typeof b.fallbackValue === 'number' ? b.fallbackValue : null;
+}
 
 type RawColumn = {
   id: string;
@@ -50,10 +92,15 @@ function readCfg(instance: BlockInstance): Record<string, unknown> {
   return (instance.config ?? {}) as Record<string, unknown>;
 }
 
-function exportXlsx(instance: BlockInstance, _def: BlockDef): Uint8Array {
+function exportXlsx(
+  instance: BlockInstance,
+  _def: BlockDef,
+  opts?: ExportXlsxOptions,
+): Uint8Array {
   const cfg = readCfg(instance);
   const columns = Array.isArray(cfg.columns) ? (cfg.columns as RawColumn[]) : [];
   const rows = Array.isArray(cfg.rows) ? (cfg.rows as RawRow[]) : [];
+  const liveValues = opts?.liveValues;
 
   // Колонки в порядке: identity, остальные. Identity-колонки имеют type === 'identity'.
   const visibleColumns = columns.filter((c) => !c.hidden);
@@ -74,16 +121,31 @@ function exportXlsx(instance: BlockInstance, _def: BlockDef): Uint8Array {
       }
       // Для formula-колонок берётся col.formula (общая для всех строк)
       if (col.type === 'formula' && typeof col.formula === 'string' && col.formula.trim() !== '') {
-        const f = col.formula.startsWith('=') ? col.formula.slice(1) : col.formula;
-        tuple.push({ __formula: f });
+        const body = col.formula.startsWith('=') ? col.formula.slice(1) : col.formula;
+        // Подставляем @-refs (формула может содержать `@blockId.field`).
+        const out = containsAtRef(body) ? substituteAtRefs(body, liveValues).result : body;
+        tuple.push({ __formula: out });
         continue;
       }
-      // Bindings скрываются (они на другие блоки), берём только сырое значение из values.
+      // 1) Если у ячейки есть binding на другой блок — берём resolved value
+      //    из liveValues и пишем как НАСТОЯЩЕЕ ЧИСЛО (не формулу с @-ref).
+      //    Без liveValues binding не резолвится → пустая ячейка.
+      const binding = row.bindings?.[col.id];
+      if (binding && typeof binding === 'object') {
+        const resolved = resolveBinding(binding, liveValues);
+        tuple.push(resolved !== null ? resolved : '');
+        continue;
+      }
+      // 2) Сырое значение из values — может быть число, текст или формула.
       const v = row.values?.[col.id];
       if (v === null || v === undefined) {
         tuple.push('');
       } else if (typeof v === 'string' && v.startsWith('=')) {
-        tuple.push({ __formula: v.slice(1) });
+        // 2a) Если формула содержит @-ref — подставляем числовое значение.
+        //     Excel не понимает `@blockId.field`.
+        const body = v.slice(1);
+        const out = containsAtRef(body) ? substituteAtRefs(body, liveValues).result : body;
+        tuple.push({ __formula: out });
       } else {
         tuple.push(v);
       }

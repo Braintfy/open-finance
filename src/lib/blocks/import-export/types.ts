@@ -55,6 +55,17 @@ export type ImportPreview =
     };
 
 /**
+ * Опции экспорта. `liveValues` — снапшот live-store значений
+ * (`{ 'blockId' | 'blockId.field' → value }`), необходим для адаптеров,
+ * которые подставляют @-references в формулах перед записью в XLSX
+ * (Excel не понимает `@blockId.field`). Если не передан — @-refs
+ * становятся `0`.
+ */
+export type ExportXlsxOptions = {
+  liveValues?: Record<string, number | string | null>;
+};
+
+/**
  * Адаптер импорта/экспорта блока. Один на тип блока.
  *
  * - JSON-методы обязательны (универсальный JSON-адаптер ставится по умолчанию).
@@ -68,7 +79,7 @@ export type BlockImportExportAdapter = {
   supportsXlsx: boolean;
   exportJson(instance: BlockInstance, def: BlockDef): BlockExportPayload;
   importJson(payload: BlockExportPayload, current: BlockInstance): ImportPreview;
-  exportXlsx?(instance: BlockInstance, def: BlockDef): Uint8Array;
+  exportXlsx?(instance: BlockInstance, def: BlockDef, opts?: ExportXlsxOptions): Uint8Array;
   importXlsx?(buffer: ArrayBuffer, current: BlockInstance): ImportPreview;
 };
 

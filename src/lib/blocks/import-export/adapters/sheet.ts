@@ -15,15 +15,50 @@ import {
 } from '../xlsx-utils';
 import { buildJsonPayload, buildJsonPreview } from '../json-adapter';
 import { scrubCrossRefs, blockHasUserData } from '../refs-scrubber';
-import type { BlockImportExportAdapter, ImportPreview } from '../types';
+import { containsAtRef, isFormulaString, substituteAtRefs } from '../formula-utils';
+import type {
+  BlockImportExportAdapter,
+  ExportXlsxOptions,
+  ImportPreview,
+} from '../types';
 
 function readSheetConfig(instance: BlockInstance): Record<string, unknown> {
   return (instance.config ?? {}) as Record<string, unknown>;
 }
 
-function exportXlsx(instance: BlockInstance, _def: BlockDef): Uint8Array {
+/**
+ * Подставляет @-refs в формулах внутри cells 2D-матрицы. Возвращает копию
+ * матрицы с заменёнными формулами. Источник значений — `cfg.blockRefs`
+ * (snapshot из конфига) + `opts.liveValues` (runtime).
+ *
+ * Sheet-A1 = Excel-A1, поэтому shiftA1Addresses не вызываем.
+ */
+function preprocessCellsForExport(
+  cells: string[][],
+  cfg: Record<string, unknown>,
+  liveValues: Record<string, number | string | null> | undefined,
+): string[][] {
+  const snapshot = (cfg.blockRefs ?? {}) as Record<string, number | string | null>;
+  // Объединяем: live > snapshot (live store актуальнее, как и в render-path).
+  const merged: Record<string, number | string | null> = { ...snapshot, ...(liveValues ?? {}) };
+  return cells.map((row) =>
+    row.map((cell) => {
+      if (!isFormulaString(cell)) return cell;
+      if (!containsAtRef(cell)) return cell;
+      const sub = substituteAtRefs(cell.slice(1), merged);
+      return `=${sub.result}`;
+    }),
+  );
+}
+
+function exportXlsx(
+  instance: BlockInstance,
+  _def: BlockDef,
+  opts?: ExportXlsxOptions,
+): Uint8Array {
   const cfg = readSheetConfig(instance);
-  const cells = Array.isArray(cfg.cells) ? (cfg.cells as string[][]) : [];
+  const rawCells = Array.isArray(cfg.cells) ? (cfg.cells as string[][]) : [];
+  const cells = preprocessCellsForExport(rawCells, cfg, opts?.liveValues);
   const dataSheet = cellsMatrixToSheet(cells);
 
   const headerCells = Array.isArray(cfg.headerCells)

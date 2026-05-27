@@ -16,7 +16,12 @@ import {
 } from '../xlsx-utils';
 import { buildJsonPayload, buildJsonPreview } from '../json-adapter';
 import { blockHasUserData, scrubCrossRefs } from '../refs-scrubber';
-import type { BlockImportExportAdapter, ImportPreview } from '../types';
+import { shiftA1Addresses, substituteAtRefs } from '../formula-utils';
+import type {
+  BlockImportExportAdapter,
+  ExportXlsxOptions,
+  ImportPreview,
+} from '../types';
 
 type RawColumn = {
   id: string;
@@ -48,12 +53,20 @@ function readCfg(instance: BlockInstance): Record<string, unknown> {
   return (instance.config ?? {}) as Record<string, unknown>;
 }
 
-function exportXlsx(instance: BlockInstance, _def: BlockDef): Uint8Array {
+function exportXlsx(
+  instance: BlockInstance,
+  _def: BlockDef,
+  opts?: ExportXlsxOptions,
+): Uint8Array {
   const cfg = readCfg(instance);
   const columns = Array.isArray(cfg.columns) ? (cfg.columns as RawColumn[]) : [];
   const rows = Array.isArray(cfg.rows) ? (cfg.rows as RawRow[]) : [];
+  const liveValues = opts?.liveValues;
 
-  // Header row: первая колонка = «Строка» (row label), остальные — column labels
+  // Header row: первая колонка = «Строка» (row label), остальные — column labels.
+  // Excel-A1 = «Строка», Excel-B1 = первая user-колонка. Поэтому при экспорте
+  // ВСЕ A1-адреса внутри формул нужно сдвигать на (+1 колонка, +1 строка)
+  // относительно block-A1 (A = первая user-колонка, row 1 = первая data-строка).
   const headers: string[] = ['Строка', ...columns.map((c) => c.label || c.id)];
   const aoa: unknown[][] = [headers];
 
@@ -67,8 +80,12 @@ function exportXlsx(instance: BlockInstance, _def: BlockDef): Uint8Array {
       }
       const v = cell.v;
       if (typeof v === 'string' && v.startsWith('=')) {
-        // Формула — пишется через cell.f. Создадим спец-объект.
-        tuple.push({ __formula: v.slice(1) });
+        // 1) Подставляем @-refs из liveValues (Excel их не понимает).
+        const raw = v.slice(1);
+        const sub = substituteAtRefs(raw, liveValues);
+        // 2) Сдвигаем A1-адреса +1 +1 (label col + header row).
+        const shifted = shiftA1Addresses(sub.result, 1, 1);
+        tuple.push({ __formula: shifted });
       } else {
         tuple.push(v);
       }
@@ -238,7 +255,9 @@ function importXlsx(buffer: ArrayBuffer, current: BlockInstance): ImportPreview 
       if (!cell) continue;
       let value: number | string | null = null;
       if (cell.f) {
-        value = `=${cell.f}`;
+        // При экспорте формулы сдвигались на (+1, +1) — восстанавливаем
+        // block-A1 (A=первая user-колонка, row 1=первая data-строка).
+        value = `=${shiftA1Addresses(cell.f, -1, -1)}`;
         formulaCount += 1;
       } else if (cell.v !== undefined && cell.v !== null) {
         if (typeof cell.v === 'number') value = cell.v;

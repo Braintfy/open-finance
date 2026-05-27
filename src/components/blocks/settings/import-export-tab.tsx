@@ -3,7 +3,7 @@
 // у адаптера блока есть exportXlsx/importXlsx.
 'use client';
 
-import { useRef, useState } from 'react';
+import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ChevronDown,
@@ -17,6 +17,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import type { BlockDef, BlockInstance } from '@/lib/blocks/types';
+import { BlockValuesContext } from '@/lib/blocks/values';
 import { getImportExportAdapter } from '@/lib/blocks/import-export/registry';
 import { parseJsonPayload } from '@/lib/blocks/import-export/json-adapter';
 import {
@@ -24,6 +25,36 @@ import {
   safeFilename,
 } from '@/lib/blocks/import-export/xlsx-utils';
 import type { ImportPreview } from '@/lib/blocks/import-export/types';
+
+/**
+ * Снапшот live-store: `{ 'blockId' → output.value, 'blockId.field' → ...
+ * }`. Используется XLSX-адаптерами для подстановки `@blockId.field`
+ * в формулах перед записью в Excel (Excel не понимает @-refs).
+ *
+ * Подписка через `tick` — store mutable, поэтому нужен явный rerender
+ * сигнал.
+ */
+function useLiveValuesSnapshot(): Record<string, number | string | null> {
+  const api = useContext(BlockValuesContext);
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (!api) return;
+    return api.subscribe(() => setTick((t) => t + 1));
+  }, [api]);
+  return useMemo(() => {
+    if (!api) return {};
+    const result: Record<string, number | string | null> = {};
+    for (const [blockId, output] of api.get().values.entries()) {
+      for (const [field, value] of Object.entries(output)) {
+        const key = field === 'value' ? blockId : `${blockId}.${field}`;
+        result[key] = value as number | string | null;
+      }
+    }
+    return result;
+    // tick — reactive trigger
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api, tick]);
+}
 
 type Props = {
   def: BlockDef;
@@ -40,6 +71,7 @@ type LoadedFile = {
 
 export function ImportExportTab({ def, instance, onApply }: Props) {
   const adapter = getImportExportAdapter(def.type);
+  const liveValues = useLiveValuesSnapshot();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [loaded, setLoaded] = useState<LoadedFile | null>(null);
   const [showScrubbed, setShowScrubbed] = useState(false);
@@ -58,7 +90,7 @@ export function ImportExportTab({ def, instance, onApply }: Props) {
 
   function handleExportXlsx() {
     if (!adapter.exportXlsx) return;
-    const bytes = adapter.exportXlsx(instance, def);
+    const bytes = adapter.exportXlsx(instance, def, { liveValues });
     const arrCopy = bytes.slice().buffer;
     const blob = new Blob([arrCopy], {
       type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
