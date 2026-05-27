@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.25.0] - 2026-05-27
+
+Универсальная вкладка «Импорт / Экспорт» во всех настройках блоков. Два формата: JSON (полная копия блока для переноса в другой проект) и XLSX (данные + формулы для редактирования в Excel/Numbers/Google Sheets и обратного импорта). Preview-режим с предупреждением о перезаписи и автоматической зачисткой cross-block ссылок.
+
+### Added
+
+- **`src/lib/blocks/import-export/`** — новый модуль:
+  - `types.ts` — `BlockImportExportAdapter`, `BlockExportPayload` (schema `open-finance.block-export.v1`), `ImportPreview`, `ScrubbedRef`.
+  - `json-adapter.ts` — универсальный JSON-сериализатор/парсер с zod-валидацией. Включает `config`, `appearance`, `size`, `dependencies`, `aiPromptSupplement`. ID/position не сохраняются.
+  - `refs-scrubber.ts` — рекурсивно зачищает cross-block ссылки (`dependencies.sources`, `config.blockRefs`/`moneyRefs`, `sourceBinding`/`defaultSourceBinding`, `cells[].sourceBindingOverride`, `rows[].cells.ref`, `rows[].bindings`). @-токены в формулах остаются «битыми» — пользователь видит и переопределяет.
+  - `xlsx-utils.ts` — shared helpers поверх sheetjs (`readWorkbook` с `cellFormula: true`, `cellsMatrixToSheet`, meta-листы, `safeFilename`, `downloadBlob`).
+  - `registry.ts` — `getImportExportAdapter(blockType)` + `supportsXlsx()`.
+- **XLSX-адаптеры** для блоков с пользовательскими данными:
+  - `sheet` — `Data` (cells 2D + формулы), `Header` (header-ячейки), `_meta` (rows/cols/widths/heights/showHeader/showFormulaBar/showKopecks/highlights).
+  - `custom.data` — `Data` (row label + columns), `_meta` (columns config, publishMode, publishColumnId).
+  - `kpi.grid` — `Cells` (один rows за ячейку: id/metric/label/format/accentColor/period/source), `_meta` (title/layout/defaultPeriodOverride). Source bindings зачищаются.
+  - `excel.cell` — A1 (formula через `cell.f` или literal), `_meta` (title/showFormulaBar/showKopecks).
+  - `unit.my-store-table` — `Data` (identity-колонки + пользовательские), `_meta` (columns/global/pinnedColumns). Bindings зачищаются.
+- **`src/components/blocks/settings/import-export-tab.tsx`** — UI-вкладка:
+  - Секция «Экспорт»: 2 карточки (JSON всегда, XLSX дисэйблится если адаптер не поддерживает).
+  - Секция «Импорт»: file input, preview panel с stats (pills) + scrubbed refs (collapsible) + conflict-баннер + кнопки «Перезаписать» (destructive если есть данные) / «Объединить» (для табличных) / «Отменить».
+- **`BlockSettingsDialog`** — добавлена вкладка `{ key: 'io', label: 'Импорт / Экспорт' }` между `style` и `ai`. Доступна для всех блоков (JSON работает везде).
+- **`scripts/test-block-import-export.ts`** — unit-тесты на refs-scrubber, JSON adapter, все 5 XLSX-адаптеров, registry (~50 проверок).
+
+### Notes
+
+- При импорте `id` блока **не сохраняется** — генерируется новый. Position (`x`, `y`) тоже не переносится — берётся из текущего блока. Размер (`w`, `h`) переписывается из файла.
+- При несовпадении `blockType` импорта и типа целевого блока — ошибка в preview, импорт блокируется.
+- Лимит ячеек XLSX — 10 000 (`XLSX_CELL_LIMIT`), как в существующем `sheet-import.ts`.
+- Cross-page binding'и (`pageKey`) в SourceBinding **не зачищаются** агрессивно — только `mode: 'block'` сбрасывается в `{ mode: 'empty' }`. Если пользователь импортирует обратно в тот же проект — он сможет перепривязать вручную.
+- `dependencies.sources` всегда очищается (пустой массив), потому что blockId источника заведомо невалиден в новом контексте.
+
 ## [0.24.5] - 2026-05-27
 
 Hot-fix hydration mismatch на `/unit-economics`, появившийся после фикса tab-persistence в v0.24.4.

@@ -40,7 +40,7 @@ Context7: `mcp0_resolve-library-id` → `mcp0_query-docs`. Не более 3 в�
 - **Phase 2:** Tauri 2.0 desktop.
 - **Phase 3:** React Native + Expo mobile.
 - **Главная идея:** почти каждая страница = настраиваемый **BlockGrid** (Lego из блоков). Новая фича обычно = новый block type в `src/lib/blocks/catalog/`, а не статичная страница.
-- **Источник правды версии:** `CHANGELOG.md` + `git log` (`package.json` остался на `0.5.0`, не используется). Текущая версия — **v0.24.5** (2026-05-27). UI читает версию через `src/lib/version.ts` (`APP_VERSION`), значение инжектируется в build-time из `CHANGELOG.md` через `next.config.mjs` → `env.NEXT_PUBLIC_APP_VERSION`.
+- **Источник правды версии:** `CHANGELOG.md` + `git log` (`package.json` остался на `0.5.0`, не используется). Текущая версия — **v0.25.0** (2026-05-27). UI читает версию через `src/lib/version.ts` (`APP_VERSION`), значение инжектируется в build-time из `CHANGELOG.md` через `next.config.mjs` → `env.NEXT_PUBLIC_APP_VERSION`.
 
 ## Жёсткие правила
 
@@ -113,7 +113,9 @@ docs/memory-archive/      исторические разделы MEMORY.md (п�
 - `src/components/blocks/block-grid.tsx` — drag/resize/save, relations overlay, AI dialog, auto-mount providers.
 - `src/components/blocks/block-grid.css` — координатная сетка-фон (1:1 с RGL-cells), resize handle CSS-only через `:has([data-resize-hotzone]:hover)`.
 - `src/components/blocks/block-chrome.tsx` — wrapper, hover controls, settings/delete/AI, **рамка через absolute-overlay z-20** (не `boxShadow inset`).
-- `src/components/blocks/block-settings-dialog.tsx` — 4 таба (params → links → style → ai).
+- `src/components/blocks/block-settings-dialog.tsx` — 5 табов (params → links → style → io → ai).
+- `src/components/blocks/settings/import-export-tab.tsx` — UI вкладки «Импорт / Экспорт» (JSON всегда + XLSX для табличных).
+- `src/lib/blocks/import-export/` — модуль I/O: `types`, `json-adapter` (универсальный), `refs-scrubber` (зачистка cross-block ссылок), `xlsx-utils` (sheetjs helpers с `cellFormula: true`), `registry` (`getImportExportAdapter`/`supportsXlsx`), `adapters/{sheet,custom-data,kpi-grid,excel-cell,my-store-table}.ts`.
 - `src/app/api/blocks/layout/[pageKey]/route.ts` — persist layout.
 - `src/app/api/blocks/sources/route.ts` — sources для `@связать`, Sheet formula evaluation, server-side aggregates для cross-page bindings.
 - `src/app/api/blocks/relations/route.ts` — cross-page outgoing detection (lightweight).
@@ -158,10 +160,11 @@ docs/memory-archive/      исторические разделы MEMORY.md (п�
 - **`/admin/ai/{local-models,providers,system-prompt}`** — admin AI.
 - **`/reset-password`** — Suspense + useSearchParams.
 
-## Активные грабли (последние версии v0.21-v0.24)
+## Активные грабли (последние версии v0.21-v0.25)
 
 > Исторические грабли (v0.10-v0.20) — в `docs/memory-archive/`.
 
+- **Universal Block Import/Export (v0.25.0)** — модуль `src/lib/blocks/import-export/` с адаптерным паттерном. JSON-универсальный (config + appearance + size + dependencies + aiPromptSupplement, schema `open-finance.block-export.v1`). XLSX-адаптеры для `sheet`/`custom.data`/`kpi.grid`/`excel.cell`/`unit.my-store-table` (формулы через `cell.f`, мета-листы для config). `refs-scrubber.ts` зачищает все cross-block ссылки (`dependencies.sources`, `blockRefs`, `sourceBinding`, cell-level bindings). UI — вкладка «Импорт / Экспорт» в `BlockSettingsDialog` (между `style` и `ai`), доступна всем блокам. Preview-режим с pills/scrubbed/conflict-баннер. Кнопки «Перезаписать» (destructive если есть данные) / «Объединить» (только табличные). **Грабли:** не передавать `def.icon` через RSC-границу в адаптеры (используем `iconName`); `cellFormula: true` ОБЯЗАТЕЛЕН при `XLSX.read`; формулы в sheetjs хранятся без `=` — адаптер добавляет/убирает; merge-режим в custom-data ремаппит cols по `label`-сопоставлению чтобы новые данные легли на старые колонки. Тесты: `pnpm tsx scripts/test-block-import-export.ts` (70 проверок).
 - **UI polish batch (v0.24.4)** — 4 точечных фикса + inbox overhaul.
   1. **Sticky-bleed в `unit.my-store-table`** — `MyStoreSortableHeaderCell` после v0.24.2 навешивал `bg-card` только на `isPinned`, не-pinned заголовки прозрачны → текст «просвечивал» под `Артикул`/`Название` при скролле. Плюс `hover:bg-accent/30` на pinned делал её полупрозрачной. **Грабли:** ВСЕ sticky-headers должны быть `bg-card` всегда (не только pinned), `hover:*` только на не-pinned. `PIN_SHADOW` = `'1px 0 0 0 var(--border)'` (project invariant).
   2. **`LinkableNumberCell` integer vs float форматирование** — `Number.isInteger(v) → String(v)` (без разделителей) vs `Intl.NumberFormat` (с разделителями) → каша в одной колонке. **Грабли:** всегда `Intl.NumberFormat` для отображения, никогда `String(v)`. Проп `money={true}` респектируется через `formatRublesWithSettings(rublesToKopecks(v), showKopecks)` с обрезкой ` ₽` (badge уже в шапке).

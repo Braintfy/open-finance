@@ -27,6 +27,7 @@ import { cn } from '@/lib/utils';
 import { BlockReferencePicker } from './block-reference-picker';
 import { SourceBindingPicker } from './source-binding-picker';
 import { isBoundBlockType, readSourceBindingField } from '@/lib/blocks/source-binding';
+import { ImportExportTab } from './settings/import-export-tab';
 
 const IconPickerModal = lazy(() =>
   import('./icon-picker-modal').then((m) => ({ default: m.IconPickerModal }))
@@ -36,6 +37,7 @@ const TABS = [
   { key: 'params', label: 'Параметры' },
   { key: 'links', label: 'Связи' },
   { key: 'style', label: 'Стиль и размер' },
+  { key: 'io', label: 'Импорт / Экспорт' },
   { key: 'ai', label: 'AI / Промпт' },
 ] as const;
 type TabKey = (typeof TABS)[number]['key'];
@@ -161,6 +163,10 @@ export function BlockSettingsDialog({
               onAppearanceChange={(appearance) => onChange({ appearance })}
               onSizeChange={({ w, h }) => onChange({ w, h })}
             />
+          )}
+
+          {tab === 'io' && (
+            <ImportExportTab def={def} instance={instance} onApply={onChange} />
           )}
 
           {tab === 'ai' && (
