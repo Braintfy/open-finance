@@ -15,6 +15,8 @@ import {
   Info,
   Lock,
   RefreshCw,
+  Search,
+  X,
 } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Switch } from '@/components/ui/switch';
@@ -40,7 +42,7 @@ import type { OzonCampaignsResponse } from '@/app/api/marketplaces/ozon/campaign
 
 const ALL_CAMPAIGN_COLS = [
   'campaign', 'type', 'state', 'budget', 'expense', 'revenue',
-  'orders', 'views', 'clicks', 'ctr', 'cpc', 'drr',
+  'orders', 'views', 'clicks', 'cartAdds', 'ctr', 'cpc', 'cpo', 'drr',
 ] as const;
 export type CampaignColKey = (typeof ALL_CAMPAIGN_COLS)[number];
 
@@ -103,8 +105,10 @@ type SortKey =
   | 'orders'
   | 'views'
   | 'clicks'
+  | 'cartAdds'
   | 'ctr'
   | 'cpc'
+  | 'cpo'
   | 'drr';
 
 /** Humanize Ozon Performance payment/adv type codes. */
@@ -135,6 +139,43 @@ function drrColorCls(drrPct: number | null): string {
   return 'text-red-600 dark:text-red-400';
 }
 type SortDir = 'asc' | 'desc';
+
+function CampaignsKpiStrip({
+  summary,
+}: {
+  summary: OzonCampaignsResponse['summary'];
+}) {
+  const fmtR = (v: number) => Math.round(v).toLocaleString('ru-RU') + ' ₽';
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-border/40 bg-muted/20 px-3 py-2">
+      <div className="flex flex-col">
+        <span className="text-[10px] text-muted-foreground">Расход</span>
+        <span className="text-[13px] font-semibold tabular-nums leading-tight">{fmtR(summary.expenseRub)}</span>
+      </div>
+      <div className="h-6 w-px bg-border/40" />
+      <div className="flex flex-col">
+        <span className="text-[10px] text-muted-foreground">Выручка с рекл.</span>
+        <span className="text-[13px] font-semibold tabular-nums leading-tight">{fmtR(summary.ordersRub)}</span>
+      </div>
+      <div className="h-6 w-px bg-border/40" />
+      <div className="flex flex-col">
+        <span className="text-[10px] text-muted-foreground">Заказы</span>
+        <span className="text-[13px] font-semibold tabular-nums leading-tight">{summary.orders.toLocaleString('ru-RU')}</span>
+      </div>
+      {summary.drrPct !== null && (
+        <>
+          <div className="h-6 w-px bg-border/40" />
+          <div className="flex flex-col">
+            <span className="text-[10px] text-muted-foreground">ДРР</span>
+            <span className={'text-[13px] font-semibold tabular-nums leading-tight ' + drrColorCls(summary.drrPct)}>
+              {summary.drrPct.toFixed(1)}%
+            </span>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 
 function RenderOzonCampaigns({ instance }: BlockRenderProps) {
   const config = useMemo(() => parseConfig(instance.config), [instance.config]);
@@ -176,6 +217,7 @@ function RenderOzonCampaigns({ instance }: BlockRenderProps) {
     [accounts, config.accountId],
   );
 
+  const [filterQuery, setFilterQuery] = useState('');
   const [colWidths, setColWidths] = useState<Partial<Record<CampaignColKey, number>>>({});
   const resizingRef = useRef<{ key: CampaignColKey; startX: number; startW: number } | null>(null);
 
@@ -278,12 +320,16 @@ function RenderOzonCampaigns({ instance }: BlockRenderProps) {
     __periodKey: formatPeriodKey(period),
   });
 
-  // Фильтр «только активные» + сортировка по выбранной колонке.
+  // Фильтр «только активные» + фильтр по имени + сортировка по выбранной колонке.
   const rows = data?.rows ?? [];
   const displayRows = useMemo(() => {
-    const filtered = config.onlyActive
+    let filtered = config.onlyActive
       ? rows.filter((r) => r.state?.includes('RUNNING'))
       : rows.slice();
+    if (filterQuery.trim()) {
+      const q = filterQuery.trim().toLowerCase();
+      filtered = filtered.filter((r) => (r.title ?? r.campaignId).toLowerCase().includes(q));
+    }
     const dir = sort.dir === 'asc' ? 1 : -1;
     const cmp = (a: typeof rows[number], b: typeof rows[number]): number => {
       switch (sort.key) {
@@ -311,10 +357,14 @@ function RenderOzonCampaigns({ instance }: BlockRenderProps) {
           return (a.views - b.views) * dir;
         case 'clicks':
           return (a.clicks - b.clicks) * dir;
+        case 'cartAdds':
+          return (a.cartAdds - b.cartAdds) * dir;
         case 'ctr':
           return ((a.ctrPct ?? -1) - (b.ctrPct ?? -1)) * dir;
         case 'cpc':
           return ((a.cpcRub ?? -1) - (b.cpcRub ?? -1)) * dir;
+        case 'cpo':
+          return ((a.orders > 0 ? a.expenseRub / a.orders : -1) - (b.orders > 0 ? b.expenseRub / b.orders : -1)) * dir;
         case 'drr':
           return ((a.drrPct ?? -1) - (b.drrPct ?? -1)) * dir;
         default:
@@ -323,7 +373,7 @@ function RenderOzonCampaigns({ instance }: BlockRenderProps) {
     };
     filtered.sort(cmp);
     return filtered;
-  }, [rows, config.onlyActive, sort]);
+  }, [rows, config.onlyActive, filterQuery, sort]);
 
   // Default auto widths (used when user hasn't resized)
   const autoWidths = useMemo(
@@ -337,8 +387,10 @@ function RenderOzonCampaigns({ instance }: BlockRenderProps) {
       orders: autoColumnWidth('Заказы', displayRows.map((r) => String(r.orders)), { min: 60, max: 90 }),
       views: autoColumnWidth('Показы', displayRows.map((r) => r.views.toLocaleString('ru-RU')), { min: 70, max: 110 }),
       clicks: autoColumnWidth('Клики', displayRows.map((r) => r.clicks.toLocaleString('ru-RU')), { min: 60, max: 90 }),
+      cartAdds: autoColumnWidth('В корзину', displayRows.map((r) => r.cartAdds > 0 ? r.cartAdds.toLocaleString('ru-RU') : '—'), { min: 70, max: 100 }),
       ctr: 70,
       cpc: autoColumnWidth('CPC', displayRows.map((r) => r.cpcRub ? r.cpcRub.toFixed(1) + ' ₽' : '—'), { min: 60, max: 100 }),
+      cpo: 80,
       drr: 80,
     }),
     [displayRows],
@@ -357,9 +409,10 @@ function RenderOzonCampaigns({ instance }: BlockRenderProps) {
     const totalOrders = r.reduce((a, b) => a + b.orders, 0);
     const totalViews = r.reduce((a, b) => a + b.views, 0);
     const totalClicks = r.reduce((a, b) => a + b.clicks, 0);
+    const totalCartAdds = r.reduce((a, b) => a + b.cartAdds, 0);
     const avgDrr = totalRevenue > 0 ? (totalExpense / totalRevenue) * 100 : null;
     const avgCtr = totalViews > 0 ? (totalClicks / totalViews) * 100 : null;
-    return { totalExpense, totalRevenue, totalOrders, totalViews, totalClicks, avgDrr, avgCtr };
+    return { totalExpense, totalRevenue, totalOrders, totalViews, totalClicks, totalCartAdds, avgDrr, avgCtr };
   }, [displayRows]);
 
   // Структурированный empty state.
@@ -408,6 +461,25 @@ function RenderOzonCampaigns({ instance }: BlockRenderProps) {
             <Info className="h-3 w-3" /> Расход — суммарный по аккаунту
           </span>
         )}
+        <div className="relative flex items-center">
+          <Search className="absolute left-1.5 top-1/2 h-2.5 w-2.5 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+          <input
+            type="text"
+            value={filterQuery}
+            onChange={(e) => setFilterQuery(e.target.value)}
+            placeholder="Фильтр кампаний…"
+            className="h-6 w-28 rounded-md border border-border/60 bg-transparent pl-5 pr-5 text-[11px] placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+          {filterQuery && (
+            <button
+              type="button"
+              onClick={() => setFilterQuery('')}
+              className="absolute right-1 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            >
+              <X className="h-2.5 w-2.5" />
+            </button>
+          )}
+        </div>
         <div className="block-toolbar-shift ml-auto flex items-center gap-1.5">
           <button
             type="button"
@@ -420,6 +492,7 @@ function RenderOzonCampaigns({ instance }: BlockRenderProps) {
           </button>
         </div>
       </div>
+      {data?.summary && !emptyKind && <CampaignsKpiStrip summary={data.summary} />}
       <div className="min-h-0 flex-1 overflow-auto">
         {emptyKind ? (
           <CampaignsEmptyState
@@ -433,6 +506,13 @@ function RenderOzonCampaigns({ instance }: BlockRenderProps) {
           <div className="flex h-full items-center justify-center text-center text-[12px] text-muted-foreground">
             Загрузка…
           </div>
+        ) : displayRows.length === 0 ? (
+          <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-[12px] text-muted-foreground">
+            <span>{filterQuery ? `Нет кампаний по запросу «${filterQuery}»` : 'Нет кампаний с активным статусом'}</span>
+            {filterQuery && (
+              <button type="button" onClick={() => setFilterQuery('')} className="text-[11px] underline hover:text-foreground">Сбросить фильтр</button>
+            )}
+          </div>
         ) : (
           <table className="w-full text-[11px]" style={{ tableLayout: 'fixed' }}>
             <colgroup>
@@ -443,13 +523,7 @@ function RenderOzonCampaigns({ instance }: BlockRenderProps) {
             <thead className="sticky top-0 bg-muted/60 backdrop-blur">
               <tr className="text-left text-muted-foreground">
                 {visibleCols.map((key) => {
-                  const isRight = ['budget','expense','revenue','orders','views','clicks','ctr','cpc','drr'].includes(key);
-                  const labels: Record<CampaignColKey, string> = {
-                    campaign: 'Кампания', type: 'Тип', state: 'Статус',
-                    budget: 'Бюджет/д', expense: 'Расход', revenue: 'Выручка р.',
-                    orders: 'Заказы', views: 'Показы', clicks: 'Клики',
-                    ctr: 'CTR', cpc: 'CPC', drr: 'ДРР',
-                  };
+                  const isRight = ['budget','expense','revenue','orders','views','clicks','cartAdds','ctr','cpc','cpo','drr'].includes(key);
                   return (
                     <th
                       key={key}
@@ -462,7 +536,7 @@ function RenderOzonCampaigns({ instance }: BlockRenderProps) {
                         onClick={() => toggleSort(key as SortKey)}
                         title={sort.key === key ? `Сортировка: ${sort.dir === 'asc' ? '↑' : '↓'}` : 'Кликните для сортировки'}
                       >
-                        <span>{labels[key]}</span>
+                        <span>{COL_LABELS[key]}</span>
                         {sort.key === key
                           ? (sort.dir === 'asc' ? <ArrowUp className="h-2.5 w-2.5 shrink-0" /> : <ArrowDown className="h-2.5 w-2.5 shrink-0" />)
                           : <ArrowUpDown className="h-2.5 w-2.5 shrink-0 opacity-30 group-hover:opacity-70" />}
@@ -516,12 +590,24 @@ function RenderOzonCampaigns({ instance }: BlockRenderProps) {
                           {c.dailyBudgetRub ? fmtRub(c.dailyBudgetRub) : '—'}
                         </td>
                       );
-                      if (key === 'expense') return (
-                        <td key={key} className={'px-2 py-1.5 text-right tabular-nums ' + (hasNoStats ? 'italic text-muted-foreground' : '')}
-                          title={hasNoStats ? 'Нет perf-данных для этой кампании' : undefined}>
-                          {hasNoStats ? '—' : fmtRub(c.expenseRub)}
-                        </td>
-                      );
+                      if (key === 'expense') {
+                        const expShare = totals.totalExpense > 0 ? (c.expenseRub / totals.totalExpense) * 100 : 0;
+                        return (
+                          <td key={key} className={'px-2 py-1.5 text-right ' + (hasNoStats ? 'italic text-muted-foreground' : '')}
+                            title={hasNoStats ? 'Нет perf-данных для этой кампании' : undefined}>
+                            {hasNoStats ? '—' : (
+                              <div className="flex flex-col items-end gap-0.5">
+                                <span className="tabular-nums">{fmtRub(c.expenseRub)}</span>
+                                {totals.totalExpense > 0 && (
+                                  <div className="h-[2px] w-full max-w-[48px] overflow-hidden rounded-full bg-border/40">
+                                    <div className="h-full rounded-full bg-primary/50" style={{ width: `${Math.min(100, expShare)}%` }} />
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </td>
+                        );
+                      }
                       if (key === 'revenue') return (
                         <td key={key} className="px-2 py-1.5 text-right tabular-nums">{c.ordersRub > 0 ? fmtRub(c.ordersRub) : '—'}</td>
                       );
@@ -534,6 +620,9 @@ function RenderOzonCampaigns({ instance }: BlockRenderProps) {
                       if (key === 'clicks') return (
                         <td key={key} className="px-2 py-1.5 text-right tabular-nums text-muted-foreground">{c.clicks > 0 ? fmtNum(c.clicks) : '—'}</td>
                       );
+                      if (key === 'cartAdds') return (
+                        <td key={key} className="px-2 py-1.5 text-right tabular-nums text-muted-foreground">{c.cartAdds > 0 ? fmtNum(c.cartAdds) : '—'}</td>
+                      );
                       if (key === 'ctr') return (
                         <td key={key} className="px-2 py-1.5 text-right tabular-nums text-muted-foreground">
                           {c.ctrPct !== null ? c.ctrPct.toFixed(2) + '%' : '—'}
@@ -542,6 +631,11 @@ function RenderOzonCampaigns({ instance }: BlockRenderProps) {
                       if (key === 'cpc') return (
                         <td key={key} className="px-2 py-1.5 text-right tabular-nums text-muted-foreground">
                           {c.cpcRub !== null ? c.cpcRub.toFixed(1) + ' ₽' : '—'}
+                        </td>
+                      );
+                      if (key === 'cpo') return (
+                        <td key={key} className="px-2 py-1.5 text-right tabular-nums text-muted-foreground">
+                          {c.orders > 0 ? Math.round(c.expenseRub / c.orders).toLocaleString('ru-RU') + ' ₽' : '—'}
                         </td>
                       );
                       if (key === 'drr') return (
@@ -570,7 +664,7 @@ function RenderOzonCampaigns({ instance }: BlockRenderProps) {
             <tfoot className="sticky bottom-0 border-t border-border/60 bg-muted/80 backdrop-blur text-[10px] text-muted-foreground font-medium">
               <tr>
                 {visibleCols.map((key) => {
-                  const isRight = ['budget','expense','revenue','orders','views','clicks','ctr','cpc','drr'].includes(key);
+                  const isRight = ['budget','expense','revenue','orders','views','clicks','cartAdds','ctr','cpc','cpo','drr'].includes(key);
                   if (key === 'campaign') return <td key={key} className="px-2 py-1 text-[10px] font-semibold text-foreground">Итого: {displayRows.length}</td>;
                   if (key === 'type' || key === 'state' || key === 'budget') return <td key={key} className="px-2 py-1" />;
                   if (key === 'expense') return <td key={key} className={'px-2 py-1 tabular-nums ' + (isRight ? 'text-right' : '')}>{Math.round(totals.totalExpense).toLocaleString('ru-RU')} ₽</td>;
@@ -578,8 +672,10 @@ function RenderOzonCampaigns({ instance }: BlockRenderProps) {
                   if (key === 'orders') return <td key={key} className={'px-2 py-1 tabular-nums ' + (isRight ? 'text-right' : '')}>{totals.totalOrders.toLocaleString('ru-RU')}</td>;
                   if (key === 'views') return <td key={key} className={'px-2 py-1 tabular-nums ' + (isRight ? 'text-right' : '')}>{totals.totalViews.toLocaleString('ru-RU')}</td>;
                   if (key === 'clicks') return <td key={key} className={'px-2 py-1 tabular-nums ' + (isRight ? 'text-right' : '')}>{totals.totalClicks.toLocaleString('ru-RU')}</td>;
+                  if (key === 'cartAdds') return <td key={key} className={'px-2 py-1 tabular-nums ' + (isRight ? 'text-right' : '')}>{totals.totalCartAdds > 0 ? totals.totalCartAdds.toLocaleString('ru-RU') : '—'}</td>;
                   if (key === 'ctr') return <td key={key} className={'px-2 py-1 tabular-nums ' + (isRight ? 'text-right' : '')}>{totals.avgCtr !== null ? totals.avgCtr.toFixed(2) + '%' : '—'}</td>;
                   if (key === 'cpc') return <td key={key} className={'px-2 py-1 tabular-nums ' + (isRight ? 'text-right' : '')}>{totals.totalClicks > 0 ? (totals.totalExpense / totals.totalClicks).toFixed(1) + ' ₽' : '—'}</td>;
+                  if (key === 'cpo') return <td key={key} className={'px-2 py-1 tabular-nums ' + (isRight ? 'text-right' : '')}>{totals.totalOrders > 0 ? Math.round(totals.totalExpense / totals.totalOrders).toLocaleString('ru-RU') + ' ₽' : '—'}</td>;
                   if (key === 'drr') return <td key={key} className={'px-2 py-1 tabular-nums ' + drrColorCls(totals.avgDrr) + (isRight ? ' text-right' : '')}>{totals.avgDrr !== null ? totals.avgDrr.toFixed(1) + '%' : '—'}</td>;
                   return <td key={key} className="px-2 py-1" />;
                 })}
@@ -679,59 +775,11 @@ function CampaignsEmptyState({
   );
 }
 
-function SortableHeader({
-  sortKey,
-  sort,
-  onClick,
-  align,
-  children,
-}: {
-  sortKey: SortKey;
-  sort: { key: SortKey; dir: SortDir };
-  onClick: (key: SortKey) => void;
-  align?: 'left' | 'right';
-  children: React.ReactNode;
-}) {
-  const active = sort.key === sortKey;
-  const Icon = !active ? ArrowUpDown : sort.dir === 'asc' ? ArrowUp : ArrowDown;
-  return (
-    <th
-      className={
-        'group cursor-pointer select-none px-2 py-1.5 font-medium hover:text-foreground ' +
-        (align === 'right' ? 'text-right' : '')
-      }
-      onClick={() => onClick(sortKey)}
-      title={
-        active
-          ? `Сортировка: ${sort.dir === 'asc' ? '↑ по возрастанию' : '↓ по убыванию'}`
-          : 'Кликните для сортировки'
-      }
-    >
-      <span
-        className={
-          'inline-flex items-center gap-1 ' +
-          (align === 'right' ? 'flex-row-reverse' : '')
-        }
-      >
-        <span>{children}</span>
-        <Icon
-          className={
-            'h-3 w-3 ' +
-            (active
-              ? 'text-foreground'
-              : 'text-muted-foreground/40 group-hover:text-muted-foreground')
-          }
-        />
-      </span>
-    </th>
-  );
-}
-
 const COL_LABELS: Record<CampaignColKey, string> = {
   campaign: 'Кампания', type: 'Тип', state: 'Статус',
   budget: 'Бюджет/день', expense: 'Расход', revenue: 'Выручка с рекл.',
   orders: 'Заказы', views: 'Показы', clicks: 'Клики',
-  ctr: 'CTR', cpc: 'CPC', drr: 'ДРР',
+  cartAdds: 'В корзину', ctr: 'CTR', cpc: 'CPC', cpo: 'CPO', drr: 'ДРР',
 };
 
 function SettingsForm({ config, onChange }: BlockSettingsFormProps) {

@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { z } from 'zod';
-import { Map as MapIcon, RefreshCw, AlertCircle, ExternalLink, Lock } from 'lucide-react';
+import { Map as MapIcon, RefreshCw, AlertCircle, ExternalLink, Lock, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 import Link from 'next/link';
 import { Card } from '@/components/ui/card';
 import {
@@ -41,6 +41,7 @@ const CLUSTER_COLUMN_KEYS = [
   'sharePct',
   'ordersInPeriod',
   'revenueInPeriod',
+  'dsiDays',
 ] as const;
 export type ClusterColumnKey = (typeof CLUSTER_COLUMN_KEYS)[number];
 
@@ -61,6 +62,7 @@ export const OzonWarehouseClustersBlockConfigSchema = z.object({
       'sharePct',
       'ordersInPeriod',
       'revenueInPeriod',
+      'dsiDays',
     ]),
   showShareBar: z.boolean().default(true),
 });
@@ -82,6 +84,7 @@ const COLUMN_LABELS: Record<ClusterColumnKey, { label: string; right?: boolean }
   sharePct: { label: 'Доля, %', right: true },
   ordersInPeriod: { label: 'Заказов / период', right: true },
   revenueInPeriod: { label: 'Выручка / период', right: true },
+  dsiDays: { label: 'Дни запаса', right: true },
 };
 
 type Sort = { key: ClusterColumnKey; dir: 'asc' | 'desc' } | null;
@@ -130,6 +133,8 @@ function formatCell(row: OzonClusterStocksRow, key: ClusterColumnKey): string {
       return fmtNum(row.ordersInPeriod);
     case 'revenueInPeriod':
       return fmtRub(row.revenueInPeriod);
+    case 'dsiDays':
+      return '—';
   }
 }
 
@@ -179,6 +184,49 @@ function ClusterEmptyState({
         Перейти в настройки синхронизации
         <ExternalLink className="h-3 w-3" />
       </Link>
+    </div>
+  );
+}
+
+function ClusterKpiStrip({
+  totals,
+}: {
+  totals: OzonClusterStocksResponse['totals'];
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-border/40 bg-muted/20 px-3 py-2">
+      <div className="flex flex-col">
+        <span className="text-[10px] text-muted-foreground">Всего, шт</span>
+        <span className="text-[13px] font-semibold tabular-nums leading-tight">{fmtNum(totals.totalStock)}</span>
+      </div>
+      <div className="h-6 w-px bg-border/40" />
+      <div className="flex flex-col">
+        <span className="text-[10px] text-muted-foreground">Свободно</span>
+        <span className="text-[13px] font-semibold tabular-nums leading-tight text-emerald-600 dark:text-emerald-400">{fmtNum(totals.freeStock)}</span>
+      </div>
+      <div className="h-6 w-px bg-border/40" />
+      <div className="flex flex-col">
+        <span className="text-[10px] text-muted-foreground">Резерв</span>
+        <span className="text-[13px] font-semibold tabular-nums leading-tight text-amber-600 dark:text-amber-400">{fmtNum(totals.reservedStock)}</span>
+      </div>
+      {totals.skuCount > 0 && (
+        <>
+          <div className="h-6 w-px bg-border/40" />
+          <div className="flex flex-col">
+            <span className="text-[10px] text-muted-foreground">SKU</span>
+            <span className="text-[13px] font-semibold tabular-nums leading-tight">{fmtNum(totals.skuCount)}</span>
+          </div>
+        </>
+      )}
+      {totals.revenueInPeriod > 0 && (
+        <>
+          <div className="h-6 w-px bg-border/40" />
+          <div className="flex flex-col">
+            <span className="text-[10px] text-muted-foreground">Выручка / период</span>
+            <span className="text-[13px] font-semibold tabular-nums leading-tight">{fmtRub(totals.revenueInPeriod)}</span>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -265,6 +313,11 @@ function RenderOzonWarehouseClusters({ instance }: BlockRenderProps) {
   const rows = useMemo(() => sortRows(data?.rows ?? [], sort), [data, sort]);
   const totals = data?.totals ?? null;
 
+  const periodDays = useMemo(() => {
+    const range = resolvePeriod(period.preset, period.customFrom, period.customTo);
+    return Math.max(1, Math.round((range.to.getTime() - range.from.getTime()) / (1000 * 60 * 60 * 24)));
+  }, [period.preset, period.customFrom, period.customTo]);
+
   const cycleSort = (key: ClusterColumnKey) => {
     setSort((prev) => {
       if (!prev || prev.key !== key) return { key, dir: 'desc' };
@@ -335,6 +388,7 @@ function RenderOzonWarehouseClusters({ instance }: BlockRenderProps) {
           </button>
         </div>
       </div>
+      {data?.totals && rows.length > 0 && <ClusterKpiStrip totals={data.totals} />}
       {showClustersBanner && (
         <div className="flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
           <AlertCircle className="h-3 w-3 shrink-0" />
@@ -358,24 +412,26 @@ function RenderOzonWarehouseClusters({ instance }: BlockRenderProps) {
           <ClusterEmptyState meta={data.meta} />
         ) : (
           <table className="w-full text-[12px]">
-            <thead className="sticky top-0 z-[1] bg-muted/40 text-[10px] uppercase tracking-wider text-muted-foreground">
+            <thead className="sticky top-0 z-[1] bg-muted/60 backdrop-blur text-[10px] text-muted-foreground">
               <tr>
                 {visibleCols.map((key) => {
                   const def = COLUMN_LABELS[key];
                   const isSorted = sort?.key === key;
-                  const indicator = isSorted ? (sort.dir === 'asc' ? '↑' : '↓') : '';
+                  const SortIcon = !isSorted ? ArrowUpDown : sort!.dir === 'asc' ? ArrowUp : ArrowDown;
                   return (
                     <th
                       key={key}
                       onClick={() => cycleSort(key)}
                       className={
-                        'select-none cursor-pointer px-2 py-1.5 font-medium hover:bg-muted/70 ' +
+                        'group select-none cursor-pointer px-2 py-1.5 font-medium hover:text-foreground ' +
                         (def.right ? 'text-right' : 'text-left')
                       }
                       title="Клик: сортировка (↓ → ↑ → сброс)"
                     >
-                      {def.label}
-                      {isSorted && <span className="ml-1 opacity-60">{indicator}</span>}
+                      <span className={'inline-flex items-center gap-1 ' + (def.right ? 'flex-row-reverse' : '')}>
+                        <span>{def.label}</span>
+                        <SortIcon className={'h-2.5 w-2.5 shrink-0 ' + (isSorted ? 'text-foreground' : 'text-muted-foreground/40 group-hover:text-muted-foreground')} />
+                      </span>
                     </th>
                   );
                 })}
@@ -410,6 +466,29 @@ function RenderOzonWarehouseClusters({ instance }: BlockRenderProps) {
                         </td>
                       );
                     }
+                    if (key === 'totalStock') {
+                      const total = row.totalStock;
+                      const freePct = total > 0 ? (row.freeStock / total) * 100 : 0;
+                      const resPct = total > 0 ? (row.reservedStock / total) * 100 : 0;
+                      const promPct = total > 0 ? (row.promisedStock / total) * 100 : 0;
+                      return (
+                        <td key={key} className="px-2 py-1.5 text-right tabular-nums">
+                          <div className="flex flex-col items-end gap-0.5">
+                            <span>{fmtNum(total)}</span>
+                            {total > 0 && (
+                              <div
+                                className="flex h-[3px] w-full max-w-[56px] overflow-hidden rounded-full"
+                                title={`Свободно: ${fmtNum(row.freeStock)} · Резерв: ${fmtNum(row.reservedStock)} · Ожидается: ${fmtNum(row.promisedStock)}`}
+                              >
+                                <div className="h-full bg-emerald-500" style={{ width: `${freePct}%` }} />
+                                <div className="h-full bg-amber-400" style={{ width: `${resPct}%` }} />
+                                <div className="h-full bg-sky-400" style={{ width: `${promPct}%` }} />
+                              </div>
+                            )}
+                          </div>
+                        </td>
+                      );
+                    }
                     if (key === 'sharePct' && config.showShareBar) {
                       return (
                         <td key={key} className="px-2 py-1.5 text-right tabular-nums">
@@ -422,6 +501,27 @@ function RenderOzonWarehouseClusters({ instance }: BlockRenderProps) {
                             </div>
                             <span>{row.sharePct.toFixed(1)}%</span>
                           </div>
+                        </td>
+                      );
+                    }
+                    if (key === 'dsiDays') {
+                      const dsi = row.ordersInPeriod > 0
+                        ? Math.round(row.totalStock / (row.ordersInPeriod / periodDays))
+                        : null;
+                      const dsiCls = dsi === null
+                        ? 'text-muted-foreground'
+                        : dsi < 7
+                          ? 'text-red-600 dark:text-red-400 font-medium'
+                          : dsi < 14
+                            ? 'text-amber-600 dark:text-amber-400'
+                            : 'text-emerald-600 dark:text-emerald-400';
+                      return (
+                        <td
+                          key={key}
+                          className={'px-2 py-1.5 text-right tabular-nums ' + dsiCls}
+                          title={dsi !== null ? `${dsi} дн. запаса при текущем темпе продаж` : 'Нет данных о продажах за период'}
+                        >
+                          {dsi !== null ? `${dsi} дн.` : '—'}
                         </td>
                       );
                     }
@@ -439,12 +539,14 @@ function RenderOzonWarehouseClusters({ instance }: BlockRenderProps) {
                   })}
                 </tr>
               ))}
-              {totals && (
-                <tr className="bg-muted/30 font-medium">
+            </tbody>
+            {totals && (
+              <tfoot className="sticky bottom-0 border-t border-border/60 bg-muted/80 backdrop-blur text-[10px] font-medium text-muted-foreground">
+                <tr>
                   {visibleCols.map((key) => {
                     const def = COLUMN_LABELS[key];
-                    let content: string = '';
-                    if (key === 'clusterName') content = 'Итого';
+                    let content: React.ReactNode = '';
+                    if (key === 'clusterName') content = <span className="font-semibold text-foreground text-[10px]">Итого</span>;
                     else if (key === 'totalStock') content = fmtNum(totals.totalStock);
                     else if (key === 'freeStock') content = fmtNum(totals.freeStock);
                     else if (key === 'reservedStock') content = fmtNum(totals.reservedStock);
@@ -453,27 +555,33 @@ function RenderOzonWarehouseClusters({ instance }: BlockRenderProps) {
                     else if (key === 'sharePct') content = '100%';
                     else if (key === 'ordersInPeriod') content = fmtNum(totals.ordersInPeriod);
                     else if (key === 'revenueInPeriod') content = fmtRub(totals.revenueInPeriod);
+                    else if (key === 'dsiDays') content = '';
                     return (
                       <td
                         key={key}
-                        className={
-                          'px-2 py-1.5 tabular-nums ' +
-                          (def.right ? 'text-right' : 'text-left')
-                        }
+                        className={'px-2 py-1.5 tabular-nums ' + (def.right ? 'text-right' : 'text-left')}
                       >
                         {content}
                       </td>
                     );
                   })}
                 </tr>
-              )}
-            </tbody>
+              </tfoot>
+            )}
           </table>
         )}
       </div>
     </Card>
   );
 }
+
+const COL_DESCRIPTIONS: Partial<Record<ClusterColumnKey, string>> = {
+  dsiDays: 'Дней до исчерпания при текущем темпе',
+  ordersInPeriod: 'За выбранный период',
+  revenueInPeriod: 'За выбранный период',
+  sharePct: 'Доля от общего остатка',
+  promisedStock: 'Ожидается поступление',
+};
 
 function SettingsForm({ config, onChange }: BlockSettingsFormProps) {
   const parsed = parseConfig(config);
@@ -495,60 +603,50 @@ function SettingsForm({ config, onChange }: BlockSettingsFormProps) {
         }
         showPerfStatus
       />
-      <PeriodPicker
-        value={{
-          preset: parsed.periodPreset as PeriodPreset,
-          customFrom: parsed.customFrom,
-          customTo: parsed.customTo,
-        }}
-        onChange={(v) =>
-          onChange({
-            ...parsed,
-            periodPreset: v.preset,
-            customFrom: v.customFrom ?? null,
-            customTo: v.customTo ?? null,
-          } as unknown as Record<string, unknown>)
-        }
-      />
-      <div>
-        <div className="mb-1.5 text-[11px] font-medium text-muted-foreground">
-          Колонки
-        </div>
-        <div className="grid grid-cols-2 gap-1.5">
+      <div className="space-y-1.5">
+        <p className="text-[11px] font-medium text-muted-foreground">Колонки</p>
+        <div className="grid grid-cols-2 gap-0.5">
           {CLUSTER_COLUMN_KEYS.map((key) => {
             const def = COLUMN_LABELS[key];
+            const desc = COL_DESCRIPTIONS[key];
             const checked = parsed.visibleColumns.includes(key);
             return (
               <label
                 key={key}
-                className="inline-flex cursor-pointer items-center gap-2 text-[12px]"
+                className="flex cursor-pointer items-start gap-2 rounded px-2 py-1 text-[12px] hover:bg-accent/40"
               >
                 <input
                   type="checkbox"
                   checked={checked}
                   onChange={() => toggleColumn(key)}
+                  className="mt-0.5 h-3.5 w-3.5 shrink-0 rounded accent-primary"
                 />
-                {def.label}
+                <span className="flex flex-col leading-snug">
+                  <span>{def.label}</span>
+                  {desc && <span className="text-[10px] text-muted-foreground">{desc}</span>}
+                </span>
               </label>
             );
           })}
         </div>
       </div>
-      <div>
-        <label className="inline-flex cursor-pointer items-center gap-2 text-[12px]">
-          <input
-            type="checkbox"
-            checked={parsed.showShareBar}
-            onChange={(e) =>
-              onChange({
-                ...parsed,
-                showShareBar: e.target.checked,
-              } as unknown as Record<string, unknown>)
-            }
-          />
-          Показывать прогресс-бар «Доля, %»
-        </label>
-      </div>
+      <label className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-[12px] hover:bg-accent/40">
+        <input
+          type="checkbox"
+          checked={parsed.showShareBar}
+          onChange={(e) =>
+            onChange({
+              ...parsed,
+              showShareBar: e.target.checked,
+            } as unknown as Record<string, unknown>)
+          }
+          className="h-3.5 w-3.5 shrink-0 rounded accent-primary"
+        />
+        <span>Показывать прогресс-бар «Доля, %»</span>
+      </label>
+      <p className="text-[10px] text-muted-foreground opacity-70">
+        Период задаётся в шапке блока и синхронизирован с периодом страницы.
+      </p>
     </div>
   );
 }

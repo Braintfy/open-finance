@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.27.0] - 2026-05-29
+
+### Added
+
+- **`unit.ozon-warehouse-clusters` — KPI strip** — полоска с 4 метриками над таблицей (Всего шт / Свободно / Резерв / Выручка/период); цветовые акценты для free (emerald) / reserved (amber).
+- **`unit.ozon-warehouse-clusters` — колонка «Дни запаса» (DSI)** — `totalStock / (ordersInPeriod / periodDays)`, цветовая кодировка: 🔴 <7д / 🟡 7–14д / 🟢 ≥14д; включена по умолчанию.
+- **`unit.ozon-warehouse-clusters` — mini stacked bar** — 3px бар в колонке «Всего» показывает состав: free (emerald) / reserved (amber) / promised (sky); tooltip с числами.
+- **`unit.ozon-campaigns` — KPI strip** — полоска с Расход / Выручка с рекл. / Заказы / ДРР (с цветом) над таблицей.
+- **`unit.ozon-campaigns` — колонка «В корзину»** (`cartAdds`) — данные уже были в API; завершает воронку Показы→Клики→Корзина→Заказы; по умолчанию выключена.
+- **`unit.ozon-campaigns` — колонка CPO** — расход/заказы; по умолчанию выключена.
+- **`unit.ozon-campaigns` — expense share bar** — 2px бар под суммой расхода показывает долю кампании в общем бюджете.
+- **`unit.ozon-campaigns` — фильтр по имени кампании** — поиск-input в шапке блока с кнопкой сброса и empty-state «Нет кампаний по запросу».
+
+### Changed
+
+- **`unit.ozon-warehouse-clusters` — sort icons** — текстовые ↑↓ заменены на Lucide `ArrowUp/ArrowDown/ArrowUpDown` (единообразно с campaigns).
+- **`unit.ozon-warehouse-clusters` — sticky tfoot** — строка «Итого» перенесена из `<tbody>` в `<tfoot sticky bottom-0>` с `backdrop-blur`.
+- **`unit.ozon-warehouse-clusters` — SettingsForm** — убран дублирующий PeriodPicker (уже в шапке); стилизованы checkboxes с hover-состоянием и описаниями колонок.
+- **`unit.ozon-campaigns` — dedup COL_LABELS** — удалён inline объект `labels` в thead; используется единый `COL_LABELS` (module-level).
+
+### Removed
+
+- **`unit.ozon-campaigns` — мёртвый `SortableHeader`** — компонент был определён, но нигде не использовался; удалён (~47 строк).
+
 ## [0.26.1] - 2026-05-27
 
 ### Fixed
