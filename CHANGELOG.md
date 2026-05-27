@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.26.1] - 2026-05-27
+
+### Fixed
+
+- **`unit.ozon-kpi` (и все 8 Ozon-блоков) — flash «не теми данными» при перезагрузке страницы** — `PagePeriodProvider` инициализируется через `useState` дефолтным `mtd`, потом гидратируется из localStorage в `useEffect`. То же самое в `usePersistedPeriodWithGlobal` для блок-level overrides. В результате на старте `fetchData` запускался 2-3 раза подряд с разными периодами (мерцание данных). Добавлен `ready` флаг в `useBlockPeriod` (`@/Users/firay/open-finance/open-finance/src/lib/blocks/use-block-period.ts:160-167`), который флипается в `true` через `setTimeout(0)` после первого useEffect-тика — гарантирует что page+block гидратация завершилась. Все 8 блоков теперь gate-ят `useEffect(fetchData)` на `periodReady` → один fetch со стабильным периодом.
+- **`!== '30d'` guard в configOverride** — убран в `unit-ozon-top-ads.tsx`, `unit-ozon-search-phrases.tsx`, `unit-ozon-analytics.tsx`, `unit-ozon-ai-insights.tsx` (был источником того же flash в этих блоках до v0.25.2 фикса для kpi/chart/abc).
+
+### Changed
+
+- **Refresh-кнопки — динамический сдвиг вместо статичного `mr-20`** — кнопки в правом верхнем углу контента блока (refresh / sync / export) теперь:
+  - **По умолчанию** — в исходной позиции (`margin-right: 0`).
+  - **При hover на toolbar-hotzone или сами кнопки** — плавно сдвигаются на `5rem` (`mr-20`) с `transition: 200ms ease`.
+  - **На un-hover** — `transition-delay: 300ms` даёт юзеру время дотянуться, не «прыгает обратно».
+  - **`:has(.block-toolbar-shift:hover)`** — пока курсор на самих кнопках, они остаются сдвинутыми (можно нажать без спешки).
+  - Решение pure-CSS (новое правило `.block-toolbar-shift` в `@/Users/firay/open-finance/open-finance/src/components/blocks/block-grid.css:64-89`), zero JS state, zero re-renders. Зеркальный паттерн с существующим `:has([data-toolbar-hotzone]:hover) .block-toolbar`.
+  - **Применено к 7 блокам**: `unit-ozon-kpi` (новый), `unit-ozon-campaigns`, `unit-ozon-warehouse-clusters`, `unit-ozon-analytics`, `unit-ozon-top-ads`, `unit-ozon-search-phrases`, `unit-ozon-ai-insights` (новый), `currency-rates` (новый).
+
+## [0.26.0] - 2026-05-27
+
+### Added
+
+- **Sync freshness badge** — `SyncAllButton` показывает цветной бейдж (🟢 ≤1д / 🟡 1–3д / 🔴 ≥4д) рядом с кнопкой «Синхронизировать» с tooltip полной датой. Автообновляется раз в минуту.
+- **Auto-refresh после ручного sync** — `SyncAllButton` диспатчит `CustomEvent('ozon-sync-completed')` после завершения диалога; новый хук `use-ozon-sync-listener.ts` подписывается на него во всех 8 Ozon-блоках (kpi, chart, campaigns, analytics, abc, top-ads, search-phrases, warehouse-clusters) → блоки перезагружаются автоматически без F5.
+- **Кампании — новые колонки**: Выручка с рекл. (`ordersRub`), Показы, Клики, CTR, CPC — API `campaigns/route.ts` теперь агрегирует `views/clicks/cart_adds` из `ozon_perf_sku_stats`. Поля `startDate`/`endDate` кампании добавлены в ответ.
+- **Кампании — drag-to-resize колонки** — drag handle на правом краю каждого заголовка; ширина хранится в локальном state `colWidths`.
+- **Кампании — ДРР color bar** — 🟢 ≤15%, 🟡 15–25%, 🔴 >25%; мини-бар пропорционально max-ДРР в таблице.
+- **Кампании — Summary footer** — sticky `<tfoot>` с Σ Расход, Σ Выручка, Σ Заказы, avg ДРР, Σ Показы/Клики, avg CTR.
+- **Кампании — видимые колонки** — в Settings блока чекбоксы включения/отключения каждой из 12 колонок; колонка «Кампания» всегда видна.
+- **Кампании — humanized type labels** — `CPC → Клики (CPC)`, `CPO → Заказы (CPO)`, `SKU → По SKU`, `ALL_SKU_PROMO → Все SKU` и т.д.
+- **Кампании — даты кампании** в подстроке названия (startDate–endDate).
+
+### Fixed
+
+- **Button overlap fix** — кнопки AI/Settings из `BlockChrome` накрывали кнопку «Обновить» в блоках (Кампании, Кластеры, Аналитика, Топ реклам, Поисковые фразы). Добавлен `mr-20` к `ml-auto`-группе кнопок.
+- **Clusters — revenue multiplication bug** — SQL в `cluster-stocks-v2/route.ts` джойнил `order_items` с `ozon_warehouse_stocks` без pre-агрегации: каждый заказ умножался на количество SKU-строк того же склада. Исправлено: CTE `order_sums` агрегирует выручку per (order_id, warehouse_name), CTE `warehouse_cluster` с `DISTINCT ON` устраняет дубли.
+- **Clusters — tooltip «Без кластера»** — строка помечена `ⓘ` с объяснением что включает заказы из складов без совпадения в справочнике.
+- **`unit.ozon-warehouse-clusters` configOverride** — убрана проверка `!== '30d'`, аналогично kpi/chart/abc из v0.25.2.
+- **`unit.ozon-campaigns` configOverride** — убрана проверка `!== '30d'`.
+
+## [0.25.2] - 2026-05-27
+
+### Fixed
+
+- **`custom.data` XLSX-экспорт — форматирование десятичных** — числовые ячейки экспортировались без Excel-формата (`z`), поэтому General-формат Excel показывал дроби для нецелых значений (`333,33`) при `showKopecks=false`. Теперь при экспорте каждой ячейке выставляется `cell.z` по схеме `(формат_колонки × showKopecks)`: `#,##0" ₽"` / `#,##0.00" ₽"` для рублей, `#,##0` / `#,##0.00` для чисел, `#,##0"%"` / `#,##0.00"%"` для процентов. `showKopecks` резолвится через цепочку row → col → block (`null`/`undefined` → `false`). Применяется к обычным ячейкам **и** формульным ячейкам.
+- **`unit.ozon-kpi` / `unit.ozon-chart` / `unit.ozon-abc` — мигание месячных данных на каждой загрузке** — условие `config.periodPreset !== '7d'` в `configOverride` делало `7d` (схемный дефолт) неотличимым от «без конфига» → блок стартовал в global-режиме (MTD страницы), делал первый fetch с месячным периодом, и лишь после `useEffect` читал localStorage и переключался на нужный период. Убрана проверка `!== '7d'`; теперь `configOverride` всегда заполняется из `config`, что устраняет flash при загрузке и корректно инициализирует блок с настроенным пресетом. localStorage-оверрайды пользователя по-прежнему имеют приоритет.
+
 ## [0.25.1] - 2026-05-27
 
 ### Fixed

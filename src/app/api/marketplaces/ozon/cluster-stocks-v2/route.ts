@@ -168,16 +168,33 @@ export async function GET(req: NextRequest) {
             AND o.order_created_at < ${toIso}::timestamp
             AND o.cancelled_at IS NULL
             AND o.returned_at IS NULL
+        ),
+        -- Pre-aggregate per (order_id, warehouse_name) to avoid N-multiplication
+        -- when ozon_warehouse_stocks has multiple SKU rows for the same warehouse.
+        order_sums AS (
+          SELECT
+            id,
+            warehouse_name,
+            SUM(price_rub * qty) AS total_rub
+          FROM order_items
+          GROUP BY id, warehouse_name
+        ),
+        -- Resolve cluster per warehouse (DISTINCT ON prevents stock-row duplication)
+        warehouse_cluster AS (
+          SELECT DISTINCT ON (ws.warehouse_name)
+            ws.warehouse_name,
+            ws.cluster_id
+          FROM ${ozonWarehouseStocks} ws
+          WHERE ws.tenant_id = ${session.tenantId}
+            ${accountCondStocks}
         )
         SELECT
-          COALESCE(ws.cluster_id, '__none__') AS cluster_key,
-          COUNT(DISTINCT oi.id)::int AS orders,
-          COALESCE(SUM(oi.price_rub * oi.qty), 0)::numeric AS revenue_rub
-        FROM order_items oi
-        LEFT JOIN ${ozonWarehouseStocks} ws
-          ON ws.tenant_id = ${session.tenantId}
-          AND ws.warehouse_name = oi.warehouse_name
-        GROUP BY COALESCE(ws.cluster_id, '__none__')
+          COALESCE(wc.cluster_id, '__none__') AS cluster_key,
+          COUNT(DISTINCT os.id)::int AS orders,
+          COALESCE(SUM(os.total_rub), 0)::numeric AS revenue_rub
+        FROM order_sums os
+        LEFT JOIN warehouse_cluster wc ON wc.warehouse_name = os.warehouse_name
+        GROUP BY COALESCE(wc.cluster_id, '__none__')
       `);
       const ordersRows: OrderClusterRow[] = Array.isArray(ordersResult)
         ? (ordersResult as OrderClusterRow[])

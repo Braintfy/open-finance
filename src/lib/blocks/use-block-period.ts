@@ -27,7 +27,7 @@
 
 'use client';
 
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { OzonAnalyticsPeriodPreset } from './catalog/unit-ozon-analytics-types';
 import {
   usePagePeriod,
@@ -71,6 +71,14 @@ export type UseBlockPeriodResult = {
   resetToGlobal: () => void;
   /** Удобный shortcut: `override !== null`. */
   isOverride: boolean;
+  /**
+   * `true` после того как localStorage hydration завершился (блок-level и page-level).
+   *
+   * Используйте для gating первого fetch — иначе блок сделает fetch с дефолтным
+   * (config) периодом до гидратации, а потом ещё раз с правильным (flash). Гарантия:
+   *   `useEffect(() => { if (ready) fetchData(); }, [fetchData, ready]);`
+   */
+  ready: boolean;
 };
 
 export function useBlockPeriod(
@@ -146,6 +154,18 @@ export function useBlockPeriod(
     };
   }, [instanceId, isOverride, resetToGlobal, registerBlock, unregisterBlock]);
 
+  // ── 5. Ready flag — true после того как useEffect-гидратация в usePersistedPeriodWithGlobal
+  // и PagePeriodProvider успела отработать. Блоки-консьюмеры gate-ят на этом флаге
+  // свой первый fetch — это устраняет "flash другими данными" на первой загрузке.
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    // setTimeout(0) гарантирует что этот effect выполнится ПОСЛЕ всех других useEffect
+    // первого рендера (в том числе в PagePeriodProvider и usePersistedPeriodWithGlobal),
+    // и setState'ы внутри них успеют запланировать ре-рендер со стабильным period.
+    const id = window.setTimeout(() => setReady(true), 0);
+    return () => window.clearTimeout(id);
+  }, []);
+
   return {
     period,
     source,
@@ -153,5 +173,6 @@ export function useBlockPeriod(
     setOverride,
     resetToGlobal,
     isOverride,
+    ready,
   };
 }

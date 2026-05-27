@@ -20,12 +20,19 @@ export type OzonCampaignsResponse = {
     state: string | null;
     advObjectType: string | null;
     paymentType: string | null;
+    startDate: string | null;
+    endDate: string | null;
     dailyBudgetRub: number | null;
     budgetRub: number | null;
     expenseRub: number;
     orders: number;
     ordersRub: number;
+    views: number;
+    clicks: number;
+    cartAdds: number;
     drrPct: number | null;
+    ctrPct: number | null;
+    cpcRub: number | null;
   }>;
   /** Суммарный расход / ордера по всем perf_sku_stats за период (включая campaign_id=null). */
   summary: {
@@ -80,13 +87,19 @@ export async function GET(req: NextRequest) {
       expense_kopecks: number;
       orders: number;
       orders_kopecks: number;
+      views: number;
+      clicks: number;
+      cart_adds: number;
     };
     const aggResult = await db.execute<AggRow>(sql`
       SELECT
         s.campaign_id,
         SUM(s.expense_kopecks) AS expense_kopecks,
         SUM(s.orders) AS orders,
-        SUM(s.orders_kopecks) AS orders_kopecks
+        SUM(s.orders_kopecks) AS orders_kopecks,
+        SUM(s.views) AS views,
+        SUM(s.clicks) AS clicks,
+        SUM(s.cart_adds) AS cart_adds
       FROM ${ozonPerfSkuStats} s
       WHERE s.tenant_id = ${session.tenantId}
         ${accountCondStats}
@@ -105,6 +118,9 @@ export async function GET(req: NextRequest) {
           expense_kopecks: Number(a.expense_kopecks ?? 0),
           orders: Number(a.orders ?? 0),
           orders_kopecks: Number(a.orders_kopecks ?? 0),
+          views: Number(a.views ?? 0),
+          clicks: Number(a.clicks ?? 0),
+          cart_adds: Number(a.cart_adds ?? 0),
         },
       ]),
     );
@@ -140,18 +156,27 @@ export async function GET(req: NextRequest) {
       const agg = aggByCampaign.get(c.campaignId);
       const expenseRub = (agg?.expense_kopecks ?? 0) / 100;
       const ordersRub = (agg?.orders_kopecks ?? 0) / 100;
+      const views = agg?.views ?? 0;
+      const clicks = agg?.clicks ?? 0;
       return {
         campaignId: c.campaignId,
         title: c.title,
         state: c.state,
         advObjectType: c.advObjectType,
         paymentType: c.paymentType,
+        startDate: c.startDate ?? null,
+        endDate: c.endDate ?? null,
         dailyBudgetRub: c.dailyBudgetKopecks ? c.dailyBudgetKopecks / 100 : null,
         budgetRub: c.budgetKopecks ? c.budgetKopecks / 100 : null,
         expenseRub,
         orders: agg?.orders ?? 0,
         ordersRub,
+        views,
+        clicks,
+        cartAdds: agg?.cart_adds ?? 0,
         drrPct: ordersRub > 0 ? (expenseRub / ordersRub) * 100 : null,
+        ctrPct: views > 0 ? (clicks / views) * 100 : null,
+        cpcRub: clicks > 0 ? expenseRub / clicks : null,
       };
     });
 

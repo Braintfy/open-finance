@@ -61,6 +61,33 @@
   pointer-events: auto;
 }
 
+/*
+  Block-toolbar-shift (v0.26.1): кнопки в правом верхнем углу контента блока
+  (refresh / sync / export) сдвигаются влево когда появляется .block-toolbar
+  (AI / Settings / Delete), чтобы не пересекаться. Зеркальный паттерн с
+  visibility-правилом выше:
+    1. Edit mode (`.react-grid-item.block-edit-mode`).
+    2. Курсор над hot-zone (`[data-toolbar-hotzone]:hover`).
+    3. Курсор над самим toolbar (`.block-toolbar:hover`).
+    4. Курсор над shifted-кнопками (`.block-toolbar-shift:hover`) — чтобы они
+       не "прыгали обратно", пока юзер тянется к ним.
+
+  Transition-delay 300ms на un-hover даёт юзеру время дотянуться до кнопок
+  после того как курсор вышел из hot-zone. На hover-IN delay = 0 (мгновенно).
+*/
+.block-toolbar-shift {
+  transition: margin-right 200ms ease 300ms;
+  margin-right: 0;
+}
+
+.react-grid-item.block-edit-mode .block-toolbar-shift,
+.react-grid-item:has([data-toolbar-hotzone]:hover) .block-toolbar-shift,
+.react-grid-item:has(.block-toolbar:hover) .block-toolbar-shift,
+.react-grid-item:has(.block-toolbar-shift:hover) .block-toolbar-shift {
+  transition-delay: 0ms;
+  margin-right: 5rem; /* = mr-20 = 80px */
+}
+
 .react-grid-item.react-grid-item-resizing {
   z-index: 10;
   opacity: 0.95;

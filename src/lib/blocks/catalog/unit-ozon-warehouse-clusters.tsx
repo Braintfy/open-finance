@@ -20,6 +20,7 @@ import {
 import { OzonAccountSelector } from '@/components/marketplaces/ozon-account-selector';
 import { useBlockValuePublisher } from '@/lib/blocks/values';
 import { useBlockPeriod } from '@/lib/blocks/use-block-period';
+import { useOzonSyncListener } from '@/lib/blocks/use-ozon-sync-listener';
 import type {
   BlockDef,
   BlockRenderProps,
@@ -189,16 +190,14 @@ function RenderOzonWarehouseClusters({ instance }: BlockRenderProps) {
     setOverride: setPeriodOverride,
     resetToGlobal: resetPeriodToGlobal,
     isOverride: isPeriodOverride,
+    ready: periodReady,
   } = useBlockPeriod({
     instanceId: instance.id,
-    configOverride:
-      config.periodPreset !== '30d' || config.customFrom || config.customTo
-        ? {
-            preset: config.periodPreset,
-            customFrom: config.customFrom,
-            customTo: config.customTo,
-          }
-        : null,
+    configOverride: {
+      preset: config.periodPreset,
+      customFrom: config.customFrom ?? null,
+      customTo: config.customTo ?? null,
+    },
     defaultMode: 'global',
   });
   const setPeriod = useCallback(
@@ -257,8 +256,11 @@ function RenderOzonWarehouseClusters({ instance }: BlockRenderProps) {
   }, [config.accountId, period.preset, period.customFrom, period.customTo]);
 
   useEffect(() => {
+    if (!periodReady) return;
     fetchData();
-  }, [fetchData]);
+  }, [fetchData, periodReady]);
+
+  useOzonSyncListener(fetchData);
 
   const rows = useMemo(() => sortRows(data?.rows ?? [], sort), [data, sort]);
   const totals = data?.totals ?? null;
@@ -321,15 +323,17 @@ function RenderOzonWarehouseClusters({ instance }: BlockRenderProps) {
             свой
           </button>
         )}
-        <button
-          type="button"
-          onClick={() => fetchData()}
-          disabled={loading}
-          className="ml-auto inline-flex items-center gap-1 rounded-md border border-border/60 px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
-          title="Обновить данные"
-        >
-          <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
-        </button>
+        <div className="block-toolbar-shift ml-auto flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => fetchData()}
+            disabled={loading}
+            className="inline-flex items-center gap-1 rounded-md border border-border/60 px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
+            title="Обновить данные"
+          >
+            <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
+          </button>
+        </div>
       </div>
       {showClustersBanner && (
         <div className="flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
@@ -383,9 +387,21 @@ function RenderOzonWarehouseClusters({ instance }: BlockRenderProps) {
                   {visibleCols.map((key) => {
                     const def = COLUMN_LABELS[key];
                     if (key === 'clusterName') {
+                      const isNoCluster = !row.clusterId;
                       return (
                         <td key={key} className="px-2 py-1.5 font-medium">
-                          <div>{row.clusterName}</div>
+                          <div
+                            title={
+                              isNoCluster
+                                ? 'Включает заказы из складов, чьи названия не совпали ни с одним кластером в справочнике. Для корректной разбивки запустите стейдж «Кластеры».'
+                                : undefined
+                            }
+                          >
+                            {row.clusterName}
+                            {isNoCluster && (
+                              <span className="ml-1 text-[9px] text-muted-foreground/60">ⓘ</span>
+                            )}
+                          </div>
                           {row.clusterType && (
                             <div className="text-[10px] text-muted-foreground">
                               {row.clusterType}

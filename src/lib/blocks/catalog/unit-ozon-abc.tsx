@@ -15,6 +15,7 @@ import {
 import { OzonAccountSelector } from '@/components/marketplaces/ozon-account-selector';
 import { useBlockValuePublisher } from '@/lib/blocks/values';
 import { useBlockPeriod } from '@/lib/blocks/use-block-period';
+import { useOzonSyncListener } from '@/lib/blocks/use-ozon-sync-listener';
 import type {
   BlockDef,
   BlockRenderProps,
@@ -48,16 +49,14 @@ function RenderOzonAbc({ instance }: BlockRenderProps) {
     setOverride: setPeriodOverride,
     resetToGlobal: resetPeriodToGlobal,
     isOverride: isPeriodOverride,
+    ready: periodReady,
   } = useBlockPeriod({
     instanceId: instance.id,
-    configOverride:
-      config.periodPreset !== '7d' || config.customFrom || config.customTo
-        ? {
-            preset: config.periodPreset,
-            customFrom: config.customFrom,
-            customTo: config.customTo,
-          }
-        : null,
+    configOverride: {
+      preset: config.periodPreset,
+      customFrom: config.customFrom ?? null,
+      customTo: config.customTo ?? null,
+    },
     defaultMode: 'global',
   });
   const setPeriod = useCallback(
@@ -113,8 +112,11 @@ function RenderOzonAbc({ instance }: BlockRenderProps) {
   }, [config.accountId, period.preset, period.customFrom, period.customTo]);
 
   useEffect(() => {
+    if (!periodReady) return;
     fetchData();
-  }, [fetchData]);
+  }, [fetchData, periodReady]);
+
+  useOzonSyncListener(fetchData);
 
   // Cell-binding source: A/B/C groups как primitives для биндинга в Excel-блоки.
   const aGroup = data?.groups.find((g) => g.label === 'A');

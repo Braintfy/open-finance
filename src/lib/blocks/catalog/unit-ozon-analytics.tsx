@@ -43,6 +43,7 @@ import {
   type OzonAnalyticsPeriodPreset,
 } from './unit-ozon-analytics-types';
 import { useBlockPeriod } from '../use-block-period';
+import { useOzonSyncListener } from '../use-ozon-sync-listener';
 import type { OzonAnalyticsResponse } from '@/app/api/marketplaces/analytics/ozon/route';
 
 function parseConfig(raw: unknown): OzonAnalyticsBlockConfig {
@@ -79,16 +80,14 @@ function RenderOzonAnalytics({ instance, onConfigChange }: BlockRenderProps) {
     setOverride: setPeriodOverride,
     resetToGlobal: resetPeriodToGlobal,
     isOverride: isPeriodOverride,
+    ready: periodReady,
   } = useBlockPeriod({
     instanceId: instance.id,
-    configOverride:
-      config.periodPreset !== '30d' || config.customFrom || config.customTo
-        ? {
-            preset: config.periodPreset,
-            customFrom: config.customFrom,
-            customTo: config.customTo,
-          }
-        : null,
+    configOverride: {
+      preset: config.periodPreset,
+      customFrom: config.customFrom ?? null,
+      customTo: config.customTo ?? null,
+    },
     defaultMode: 'global',
   });
   const periodPreset = blockPeriod.preset;
@@ -186,8 +185,11 @@ function RenderOzonAnalytics({ instance, onConfigChange }: BlockRenderProps) {
   }, [config.accountId, periodPreset, customFrom, customTo]);
 
   useEffect(() => {
+    if (!periodReady) return;
     fetchData();
-  }, [fetchData]);
+  }, [fetchData, periodReady]);
+
+  useOzonSyncListener(fetchData);
 
   const rows = response?.rows ?? [];
   const filteredRows = useMemo(
@@ -445,7 +447,7 @@ function RenderOzonAnalytics({ instance, onConfigChange }: BlockRenderProps) {
             </button>
           )}
         </div>
-        <div className="ml-auto flex items-center gap-1.5">
+        <div className="block-toolbar-shift ml-auto flex items-center gap-1.5">
           {lastFetchedLabel && (
             <span
               className={

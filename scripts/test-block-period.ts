@@ -52,6 +52,7 @@ const _typeResult: UseBlockPeriodResult = {
   setOverride: () => {},
   resetToGlobal: () => {},
   isOverride: false,
+  ready: true,
 };
 void _typeResult;
 
@@ -74,6 +75,7 @@ const synthetic: UseBlockPeriodResult = {
   setOverride: () => {},
   resetToGlobal: () => {},
   isOverride: true,
+  ready: true,
 };
 ok('override → isOverride=true', synthetic.isOverride === true);
 ok('override → source=override', synthetic.source === 'override');

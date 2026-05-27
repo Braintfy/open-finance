@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { AlertTriangle, Info, LineChart as LineIcon, Lock, SlidersHorizontal } from 'lucide-react';
 import { useBlockValuePublisher, formatPeriodKey } from '@/lib/blocks/values';
 import { useBlockPeriod } from '@/lib/blocks/use-block-period';
+import { useOzonSyncListener } from '@/lib/blocks/use-ozon-sync-listener';
 import { useBlockSize } from '@/components/blocks/block-size';
 import { Card } from '@/components/ui/card';
 import { Switch } from '@/components/ui/switch';
@@ -147,16 +148,14 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
     setOverride: setPeriodOverride,
     resetToGlobal: resetPeriodToGlobal,
     isOverride: isPeriodOverride,
+    ready: periodReady,
   } = useBlockPeriod({
     instanceId: instance.id,
-    configOverride:
-      config.periodPreset !== '7d' || config.customFrom || config.customTo
-        ? {
-            preset: config.periodPreset,
-            customFrom: config.customFrom,
-            customTo: config.customTo,
-          }
-        : null,
+    configOverride: {
+      preset: config.periodPreset,
+      customFrom: config.customFrom ?? null,
+      customTo: config.customTo ?? null,
+    },
     defaultMode: 'global',
   });
   const setPeriod = useCallback(
@@ -227,8 +226,11 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
   ]);
 
   useEffect(() => {
+    if (!periodReady) return;
     fetchData();
-  }, [fetchData]);
+  }, [fetchData, periodReady]);
+
+  useOzonSyncListener(fetchData);
 
   const series: ChartSeries[] = useMemo(() => {
     const out: ChartSeries[] = [];

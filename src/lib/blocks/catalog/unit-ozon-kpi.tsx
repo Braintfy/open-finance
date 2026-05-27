@@ -25,6 +25,7 @@ import { OzonAccountSelector } from '@/components/marketplaces/ozon-account-sele
 import { OzonSyncSection } from '@/components/unit-economics/ozon-sync-section';
 import { useBlockValuePublisher, formatPeriodKey } from '@/lib/blocks/values';
 import { useBlockPeriod } from '@/lib/blocks/use-block-period';
+import { useOzonSyncListener } from '@/lib/blocks/use-ozon-sync-listener';
 import { Lock } from 'lucide-react';
 import type {
   BlockDef,
@@ -120,16 +121,14 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
     setOverride: setPeriodOverride,
     resetToGlobal: resetPeriodToGlobal,
     isOverride: isPeriodOverride,
+    ready: periodReady,
   } = useBlockPeriod({
     instanceId: instance.id,
-    configOverride:
-      config.periodPreset !== '7d' || config.customFrom || config.customTo
-        ? {
-            preset: config.periodPreset,
-            customFrom: config.customFrom,
-            customTo: config.customTo,
-          }
-        : null,
+    configOverride: {
+      preset: config.periodPreset,
+      customFrom: config.customFrom ?? null,
+      customTo: config.customTo ?? null,
+    },
     defaultMode: 'global',
   });
   const setPeriod = useCallback(
@@ -188,8 +187,11 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
   }, [config.accountId, period.preset, period.customFrom, period.customTo, compareMode]);
 
   useEffect(() => {
+    if (!periodReady) return;
     fetchData();
-  }, [fetchData]);
+  }, [fetchData, periodReady]);
+
+  useOzonSyncListener(fetchData);
 
   const sparklineRevenue = useMemo(
     () => (data?.byDay ?? []).map((d) => d.revenueRub),
@@ -347,7 +349,7 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
             Реклама ≈
           </span>
         )}
-        <div className="ml-auto flex items-center gap-1.5">
+        <div className="block-toolbar-shift ml-auto flex items-center gap-1.5">
           {lastFetchedLabel && (
             <span
               className={

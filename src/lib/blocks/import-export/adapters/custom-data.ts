@@ -43,6 +43,27 @@ type RawRow = {
 
 const COLUMN_FORMATS = new Set(['rubles', 'number', 'percent', 'text']);
 
+/** Mirrors custom-data.tsx resolveShowKopecks (inlined to avoid catalog → adapter coupling). */
+function resolveShowKopecks(
+  rowSk: boolean | null | undefined,
+  colSk: boolean | null | undefined,
+  blockDefault: boolean,
+): boolean {
+  if (typeof rowSk === 'boolean') return rowSk;
+  if (typeof colSk === 'boolean') return colSk;
+  return blockDefault;
+}
+
+/** Returns Excel number-format code matching block's showKopecks + column format. */
+function getExcelFormatCode(format: string, showKopecks: boolean): string {
+  switch (format) {
+    case 'rubles':  return showKopecks ? '#,##0.00" ₽"' : '#,##0" ₽"';
+    case 'number':  return showKopecks ? '#,##0.00'     : '#,##0';
+    case 'percent': return showKopecks ? '#,##0.00"%"' : '#,##0"%"';
+    default:        return '@';
+  }
+}
+
 function makeId(prefix: string): string {
   return typeof crypto !== 'undefined' && 'randomUUID' in crypto
     ? crypto.randomUUID()
@@ -67,6 +88,9 @@ function exportXlsx(
   // Excel-A1 = «Строка», Excel-B1 = первая user-колонка. Поэтому при экспорте
   // ВСЕ A1-адреса внутри формул нужно сдвигать на (+1 колонка, +1 строка)
   // относительно block-A1 (A = первая user-колонка, row 1 = первая data-строка).
+  // Блочный дефолт showKopecks: null/undefined → false (консервативно для Excel).
+  const blockShowKopecks: boolean = cfg.showKopecks === true ? true : false;
+
   const headers: string[] = ['Строка', ...columns.map((c) => c.label || c.id)];
   const aoa: unknown[][] = [headers];
 
@@ -79,13 +103,17 @@ function exportXlsx(
         continue;
       }
       const v = cell.v;
+      const cellShowKopecks = resolveShowKopecks(row.showKopecks, col.showKopecks, blockShowKopecks);
+      const fmtCode = getExcelFormatCode(col.format ?? 'rubles', cellShowKopecks);
       if (typeof v === 'string' && v.startsWith('=')) {
         // 1) Подставляем @-refs из liveValues (Excel их не понимает).
         const raw = v.slice(1);
         const sub = substituteAtRefs(raw, liveValues);
         // 2) Сдвигаем A1-адреса +1 +1 (label col + header row).
         const shifted = shiftA1Addresses(sub.result, 1, 1);
-        tuple.push({ __formula: shifted });
+        tuple.push({ __formula: shifted, __formatCode: fmtCode });
+      } else if (typeof v === 'number') {
+        tuple.push({ __value: v, __formatCode: fmtCode });
       } else {
         tuple.push(v);
       }
@@ -104,11 +132,15 @@ function exportXlsx(
       const addr = XLSX.utils.encode_cell({ r, c });
       if (val === '' || val === null || val === undefined) continue;
       if (typeof val === 'object' && val !== null && '__formula' in val) {
-        ws[addr] = {
-          t: 'n',
-          f: (val as { __formula: string }).__formula,
-          v: 0,
-        } as XLSX.CellObject;
+        const fv = val as { __formula: string; __formatCode?: string };
+        const cell: XLSX.CellObject = { t: 'n', f: fv.__formula, v: 0 };
+        if (fv.__formatCode) cell.z = fv.__formatCode;
+        ws[addr] = cell;
+      } else if (typeof val === 'object' && val !== null && '__value' in val) {
+        const vv = val as { __value: number; __formatCode?: string };
+        const cell: XLSX.CellObject = { t: 'n', v: vv.__value };
+        if (vv.__formatCode) cell.z = vv.__formatCode;
+        ws[addr] = cell;
       } else if (typeof val === 'number') {
         ws[addr] = { t: 'n', v: val } as XLSX.CellObject;
       } else {

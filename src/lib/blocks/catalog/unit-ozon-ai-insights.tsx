@@ -173,16 +173,14 @@ function RenderOzonAiInsights({ instance }: BlockRenderProps) {
     setOverride: setPeriodOverride,
     resetToGlobal: resetPeriodToGlobal,
     isOverride: isPeriodOverride,
+    ready: periodReady,
   } = useBlockPeriod({
     instanceId: instance.id,
-    configOverride:
-      config.periodPreset !== '30d' || config.customFrom || config.customTo
-        ? {
-            preset: config.periodPreset,
-            customFrom: config.customFrom,
-            customTo: config.customTo,
-          }
-        : null,
+    configOverride: {
+      preset: config.periodPreset,
+      customFrom: config.customFrom ?? null,
+      customTo: config.customTo ?? null,
+    },
     defaultMode: 'global',
   });
   const setPeriod = useCallback(
@@ -270,7 +268,7 @@ function RenderOzonAiInsights({ instance }: BlockRenderProps) {
           <Sparkles className="h-4 w-4 text-primary" />
           <span className="text-sm font-medium">AI инсайты</span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="block-toolbar-shift flex items-center gap-2">
           <PeriodPicker
             value={{ preset: period.preset as PeriodPreset, customFrom: period.customFrom, customTo: period.customTo }}
             onChange={setPeriod}

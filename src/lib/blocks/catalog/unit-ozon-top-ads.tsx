@@ -19,6 +19,7 @@ import { OzonAccountSelector } from '@/components/marketplaces/ozon-account-sele
 import { useMarketplaceAccounts } from '@/lib/marketplaces/use-accounts';
 import { useBlockValuePublisher } from '@/lib/blocks/values';
 import { useBlockPeriod } from '@/lib/blocks/use-block-period';
+import { useOzonSyncListener } from '@/lib/blocks/use-ozon-sync-listener';
 import { autoColumnWidth } from '@/lib/blocks/auto-column-width';
 import type {
   BlockDef,
@@ -70,16 +71,14 @@ function RenderOzonTopAds({ instance }: BlockRenderProps) {
     setOverride: setPeriodOverride,
     resetToGlobal: resetPeriodToGlobal,
     isOverride: isPeriodOverride,
+    ready: periodReady,
   } = useBlockPeriod({
     instanceId: instance.id,
-    configOverride:
-      config.periodPreset !== '30d' || config.customFrom || config.customTo
-        ? {
-            preset: config.periodPreset,
-            customFrom: config.customFrom,
-            customTo: config.customTo,
-          }
-        : null,
+    configOverride: {
+      preset: config.periodPreset,
+      customFrom: config.customFrom ?? null,
+      customTo: config.customTo ?? null,
+    },
     defaultMode: 'global',
   });
   const setPeriod = useCallback(
@@ -154,8 +153,11 @@ function RenderOzonTopAds({ instance }: BlockRenderProps) {
   ]);
 
   useEffect(() => {
+    if (!periodReady) return;
     fetchData();
-  }, [fetchData]);
+  }, [fetchData, periodReady]);
+
+  useOzonSyncListener(fetchData);
 
   const rows = useMemo(() => {
     if (!data) return [];
@@ -273,7 +275,7 @@ function RenderOzonTopAds({ instance }: BlockRenderProps) {
         >
           CPC/CPM
         </span>
-        <div className="ml-auto flex items-center gap-1.5">
+        <div className="block-toolbar-shift ml-auto flex items-center gap-1.5">
           {lastFetchedLabel && (
             <span
               className={
