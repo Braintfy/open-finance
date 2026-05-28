@@ -347,11 +347,13 @@ function RenderExcelCell({ instance, onConfigChange }: BlockRenderProps) {
     if (!editing) setDraft(config.value);
   }, [config.value, editing]);
 
-  // Fetch cross-page sources into shared cache when picker opens (for formula eval too)
+  // Fetch cross-page sources into shared cache when picker opens (TTL-aware, mirrors source-block-picker)
   useEffect(() => {
     if (!blockPickerOpen) return;
-    if (_sourcePagesCache.data) {
-      setSourcePages(_sourcePagesCache.data);
+    const cacheAge = Date.now() - _sourcePagesCache.fetchedAt;
+    const isFresh = _sourcePagesCache.data !== null && cacheAge < 30_000;
+    if (isFresh) {
+      setSourcePages(_sourcePagesCache.data!);
       return;
     }
     let cancelled = false;
@@ -360,6 +362,7 @@ function RenderExcelCell({ instance, onConfigChange }: BlockRenderProps) {
       .then((data) => {
         if (!cancelled && data.ok && Array.isArray(data.pages)) {
           _sourcePagesCache.data = data.pages as SourcePage[];
+          _sourcePagesCache.fetchedAt = Date.now();
           setSourcePages(data.pages as SourcePage[]);
         }
       })

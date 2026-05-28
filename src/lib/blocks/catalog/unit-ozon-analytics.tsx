@@ -89,6 +89,18 @@ function RenderOzonAnalytics({ instance, onConfigChange }: BlockRenderProps) {
       customTo: config.customTo ?? null,
     },
     defaultMode: 'global',
+    // Persist explicit period changes to DB config so /api/blocks/sources uses the correct period
+    // in the cross-page source picker (avoids value mismatch between pages).
+    onConfigChange: (next) => {
+      if (next) {
+        onConfigChange?.({
+          ...config,
+          periodPreset: next.preset,
+          customFrom: next.customFrom,
+          customTo: next.customTo,
+        } as unknown as Record<string, unknown>);
+      }
+    },
   });
   const periodPreset = blockPeriod.preset;
   const customFrom = blockPeriod.customFrom;

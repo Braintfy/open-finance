@@ -112,7 +112,7 @@ const COMPARE_OPTIONS: Array<{ value: CompareMode; label: string; description: s
   },
 ];
 
-function RenderOzonKpi({ instance }: BlockRenderProps) {
+function RenderOzonKpi({ instance, onConfigChange }: BlockRenderProps) {
   const config = useMemo(() => parseConfig(instance.config), [instance.config]);
   // v0.23: единый useBlockPeriod — блок по дефолту наследует global page period
   // (override от PagePeriodHeader); inline PeriodPicker создаёт override.
@@ -130,6 +130,18 @@ function RenderOzonKpi({ instance }: BlockRenderProps) {
       customTo: config.customTo ?? null,
     },
     defaultMode: 'global',
+    // Persist explicit period changes to DB config so /api/blocks/sources uses the correct period
+    // in the cross-page source picker (avoids value mismatch between pages).
+    onConfigChange: (next) => {
+      if (next) {
+        onConfigChange?.({
+          ...config,
+          periodPreset: next.preset,
+          customFrom: next.customFrom,
+          customTo: next.customTo,
+        } as unknown as Record<string, unknown>);
+      }
+    },
   });
   const setPeriod = useCallback(
     (next: PeriodValue) =>

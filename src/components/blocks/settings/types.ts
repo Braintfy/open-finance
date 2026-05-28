@@ -18,6 +18,18 @@ export type SourceBlock = {
   category: string;
   label: string;
   fields: SourceField[];
+  /**
+   * Human-readable instance label from server: includes period + page context.
+   * Example: «Ozon · аналитика · 30 дней — Аналитика Ozon».
+   * Present for cross-page blocks from /api/blocks/sources, absent for live blocks.
+   */
+  instanceLabel?: string;
+  /**
+   * Period key for the period badge in the picker (e.g. '30d', '7d', 'mtd').
+   * Live blocks override this via liveValues[blockId.__periodKey].
+   * Cross-page blocks get it from the server via /api/blocks/sources.
+   */
+  periodKey?: string | null;
 };
 
 export type SourcePage = {

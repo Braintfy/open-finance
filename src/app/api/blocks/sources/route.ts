@@ -59,6 +59,12 @@ type SourceBlock = {
    * разных страницах.
    */
   instanceLabel: string;
+  /**
+   * Ключ периода для бейджа в пикере (например '30d', '7d', 'mtd').
+   * Синхронизирован с formatPeriodKey из values.tsx.
+   * Для не-Ozon блоков — null.
+   */
+  periodKey: string | null;
 };
 
 const DEFAULT_PAGE_KEYS = [
@@ -259,6 +265,18 @@ function decorateOzonGroups(fields: SourceField[]): SourceField[] {
  * Для не-Ozon блоков — просто `{label} ({pageLabel})`, чтобы UI всегда имел
  * фоллбек.
  */
+/** Вычисляет ключ периода из конфига блока — синхронизировано с formatPeriodKey в values.tsx. */
+function computePeriodKey(cfg: Record<string, unknown> | undefined): string | null {
+  if (!cfg) return null;
+  const preset = typeof cfg.periodPreset === 'string' ? cfg.periodPreset : null;
+  if (!preset) return null;
+  if (preset !== 'custom') return preset;
+  const from = typeof cfg.customFrom === 'string' ? cfg.customFrom : '';
+  const to = typeof cfg.customTo === 'string' ? cfg.customTo : '';
+  if (!from || !to) return null;
+  return `custom:${from}:${to}`;
+}
+
 function buildInstanceLabel(args: {
   type: string;
   typeLabel: string;
@@ -1243,6 +1261,7 @@ export async function GET() {
           pageLabel: pLabel,
           config: block.config,
         }),
+        periodKey: block.type.startsWith('unit.ozon-') ? computePeriodKey(block.config) : null,
       } satisfies SourceBlock;
     }));
     // Сортировка: по категории (CATEGORY_ORDER), потом по label.
@@ -1315,6 +1334,7 @@ async function buildVirtualCashflowPage(tenantId: string): Promise<{
         label,
         fields,
         instanceLabel: `${label} (виртуальный)`,
+        periodKey: null,
       } satisfies SourceBlock;
     }),
   );

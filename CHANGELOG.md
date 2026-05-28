@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.27.1] - 2026-05-28
+
+### Fixed
+- **Cross-page source picker: period mismatch** — значения из раздела аналитики в модалке «Связать ячейку с источником» показывали данные за другой период при открытии с чужой страницы. Root causes: (1) сервер `/api/blocks/sources` использовал `periodPreset` из DB-конфига, а не live-период блока; (2) `useBlockPeriod` в `unit-ozon-analytics` и `unit-ozon-kpi` не вызывал `onConfigChange`, поэтому выбор периода через кнопки в шапке блока не сохранялся в DB. Добавлен `onConfigChange` в оба блока — теперь явный выбор периода сохраняется в DB и сервер читает правильный период.
+- **Cross-page source picker: нет бейджа периода** — у кросс-страничных блоков (не mounted на текущей странице) период-бейдж `30d`/`7d` не показывался. Добавлено поле `periodKey` в `SourceBlock` (клиентский тип + сервер), `computePeriodKey()` в `route.ts`, fallback `block.periodKey ?? null` в `source-block-picker.tsx`.
+- **Source picker cache: значения никогда не обновлялись** — `excel-cell.tsx` использовал `_sourcePagesCache` без проверки `fetchedAt`, кэш не сбрасывался даже после истечения 30s TTL. Исправлено: `excel-cell` теперь использует тот же TTL-aware паттерн что и `source-block-picker`.
+- **SourceBlock type: отсутствовали поля `instanceLabel` и `periodKey`** — клиентский `types.ts` не имел полей, которые сервер уже возвращал. Добавлены с документацией.
+
 ## [0.27.0] - 2026-05-29
 
 ### Added

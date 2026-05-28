@@ -21,7 +21,12 @@ import type { SourceField, SourceBlock, SourcePage } from './types';
 export type { SourceField, SourceBlock, SourcePage };
 
 /** Module-level cache for /api/blocks/sources responses — shared across all picker instances. */
-export const _sourceBlockPickerCache: { data: SourcePage[] | null } = { data: null };
+export const _sourceBlockPickerCache: { data: SourcePage[] | null; fetchedAt: number } = {
+  data: null,
+  fetchedAt: 0,
+};
+/** Cross-page source values are time-sensitive (rolling windows). Refetch after 30s. */
+const SOURCES_CACHE_TTL_MS = 30_000;
 
 /**
  * Returns a flat map of all currently published block values from the reactive store.
@@ -109,11 +114,13 @@ export function SourceBlockPicker({
     });
   }, []);
 
-  // Fetch cross-page sources when picker opens (lazy, with shared cache)
+  // Fetch cross-page sources when picker opens (lazy, with TTL-aware shared cache)
   useEffect(() => {
     if (!open || !fetchCrossPage) return;
-    if (_sourceBlockPickerCache.data) {
-      setSourcePages(_sourceBlockPickerCache.data);
+    const cacheAge = Date.now() - _sourceBlockPickerCache.fetchedAt;
+    const isFresh = _sourceBlockPickerCache.data !== null && cacheAge < SOURCES_CACHE_TTL_MS;
+    if (isFresh) {
+      setSourcePages(_sourceBlockPickerCache.data!);
       return;
     }
     let cancelled = false;
@@ -123,11 +130,12 @@ export function SourceBlockPicker({
       .then((data) => {
         if (!cancelled && data.ok && Array.isArray(data.pages)) {
           _sourceBlockPickerCache.data = data.pages as SourcePage[];
+          _sourceBlockPickerCache.fetchedAt = Date.now();
           setSourcePages(data.pages as SourcePage[]);
         }
       })
       .catch(() => {
-        if (!cancelled) setSourcePages([]);
+        if (!cancelled) setSourcePages(_sourceBlockPickerCache.data ?? []);
       })
       .finally(() => {
         if (!cancelled) setSourceLoading(false);
@@ -282,7 +290,7 @@ export function SourceBlockPicker({
                 const periodKey =
                   typeof liveValues[`${block.blockId}.__periodKey`] === 'string'
                     ? (liveValues[`${block.blockId}.__periodKey`] as string)
-                    : null;
+                    : block.periodKey ?? null;
                 const mainFields = block.fields.filter(
                   (f) =>
                     f.name !== 'label' && f.name !== 'raw' && f.group !== 'Ячейки',
