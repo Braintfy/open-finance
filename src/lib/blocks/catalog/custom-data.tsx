@@ -412,10 +412,24 @@ function toNumeric(value: number | string | null): number | null {
   return null;
 }
 
+// Кэш Intl.NumberFormat-инстансов: их конструирование дорогое, а в таблицах
+// форматирование вызывается на каждую ячейку каждого рендера. Ключ — стабильная
+// строка из опций.
+const _numberFormatCache = new Map<string, Intl.NumberFormat>();
+function getNumberFormat(options: Intl.NumberFormatOptions): Intl.NumberFormat {
+  const key = JSON.stringify(options);
+  let fmt = _numberFormatCache.get(key);
+  if (!fmt) {
+    fmt = new Intl.NumberFormat('ru-RU', options);
+    _numberFormatCache.set(key, fmt);
+  }
+  return fmt;
+}
+
 /** Excel General-like: целые без дробной части; дробные — умная точность (MDN Intl). */
 function formatPlainNumber(value: number, showDecimals: boolean): string {
   if (!Number.isFinite(value)) return String(value);
-  const intlInt = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 });
+  const intlInt = getNumberFormat({ maximumFractionDigits: 0 });
   if (!showDecimals) return intlInt.format(value);
 
   const rounded = Math.round(value);
@@ -428,7 +442,7 @@ function formatPlainNumber(value: number, showDecimals: boolean): string {
       ? 2
       : Math.min(6, Math.max(2, Math.ceil(-Math.log10(abs)) + 1));
 
-  return new Intl.NumberFormat('ru-RU', {
+  return getNumberFormat({
     minimumFractionDigits: 0,
     maximumFractionDigits: maxFractionDigits,
   }).format(value);
@@ -436,7 +450,7 @@ function formatPlainNumber(value: number, showDecimals: boolean): string {
 
 /** ₽-колонка custom.data: значения в рублях (не копейках), Intl currency ru-RU. */
 function formatCustomDataRubles(value: number, showDecimals: boolean): string {
-  return new Intl.NumberFormat('ru-RU', {
+  return getNumberFormat({
     style: 'currency',
     currency: 'RUB',
     minimumFractionDigits: showDecimals ? 2 : 0,
@@ -1283,7 +1297,7 @@ const VIRTUAL_THRESHOLD = 50;
 const VIRTUAL_ROW_HEIGHT = 32;
 
 function RenderCustomData({ instance, onConfigChange }: BlockRenderProps) {
-  const config = parseConfig(instance.config);
+  const config = useMemo(() => parseConfig(instance.config), [instance.config]);
   const density = useBlockDensity();
   const { settings: globalSettings } = useFormatSettings();
   const showKopecks = resolveBlockShowKopecks(config.showKopecks, globalSettings.showKopecks);
@@ -2802,6 +2816,13 @@ function SortableRowGroup({
 }) {
   const sortable = useSortable({ id: row.id });
   const rowHighlight = getHighlight(row.highlight);
+  // Локальный draft метки строки: ввод не пишет в config на каждый символ
+  // (что триггерило бы полный ре-рендер сетки + пересчёт computeAll/ширин).
+  // Коммит в config — на blur / Enter.
+  const [labelDraft, setLabelDraft] = useState(row.label);
+  useEffect(() => {
+    setLabelDraft(row.label);
+  }, [row.label]);
   return (
     <div
       ref={sortable.setNodeRef}
@@ -2857,8 +2878,14 @@ function SortableRowGroup({
       </button>
       <div className="flex min-w-0 items-center rounded-md border border-border/40 bg-muted/20 px-2 py-1">
         <Input
-          value={row.label}
-          onChange={(e) => onLabelChange(e.target.value)}
+          value={labelDraft}
+          onChange={(e) => setLabelDraft(e.target.value)}
+          onBlur={() => {
+            if (labelDraft !== row.label) onLabelChange(labelDraft);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') e.currentTarget.blur();
+          }}
           className="h-6 w-full min-w-0 truncate border-none bg-transparent px-0 text-xs shadow-none focus-visible:bg-background"
           placeholder="Название"
         />

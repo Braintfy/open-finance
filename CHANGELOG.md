@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.27.2] - 2026-05-29
+
+### Fixed
+- **Сильные лаги ввода в таблицах/блоках** — набор цифр/текста в `sheet` и `custom.data` тормозил, символы появлялись с задержкой. Root cause: `parseConfig(instance.config)` / `SheetConfig.parse(...)` вызывались на **каждый рендер** — (1) Zod валидировал весь конфиг (включая большие массивы ячеек) на каждый keystroke; (2) возвращал новые ссылки на `config.columns`/`config.rows`/`cfg.moneyRefs`/`cfg.blockRefs`, из-за чего тяжёлые `useMemo` (`computeAll` — формулы по всем ячейкам, `autoValueWidths`/`autoLabelWidth` — canvas `measureText` по всем ячейкам, `evaluatedCells`/`blockValues`) пересчитывались на каждый символ. Лаг был page-independent (одинаков везде).
+
+### Changed (performance)
+- **Мемоизация разбора конфига** — `const config = useMemo(() => parseConfig(instance.config), [instance.config])` (и аналог для `cfg`) в `custom-data.tsx`, `sheet.tsx`, `excel-cell.tsx`, `unit-my-store-table.tsx`, `unit-ozon-multi-table.tsx`. Во время локального ввода `instance.config` стабилен → зависимые `useMemo` больше не пересчитываются, Zod-валидация уходит из горячего пути.
+- **Кэш `Intl.NumberFormat`** — `custom-data.tsx`: `getNumberFormat()` переиспользует инстансы (раньше `new Intl.NumberFormat(...)` создавался на каждую ячейку каждого рендера).
+- **Локальный draft для полей названий** — метка строки `custom.data` (`SortableRowGroup`) и метка header-ячейки `sheet` (`updateHeaderCell`/`flushHeaderSave`) больше не пишут в config на каждый символ: ввод в локальный state, коммит в config на `blur`/`Enter` (sheet — дебаунс 400ms + flush на blur). Раньше каждый символ триггерил `onConfigChange` → полный ре-рендер сетки + сетевой save.
+
 ## [0.27.1] - 2026-05-28
 
 ### Fixed

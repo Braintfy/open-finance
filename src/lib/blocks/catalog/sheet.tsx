@@ -533,7 +533,7 @@ function computeCell(
 // ============================================================================
 
 function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
-  const cfg = SheetConfig.parse(instance.config ?? {});
+  const cfg = useMemo(() => SheetConfig.parse(instance.config ?? {}), [instance.config]);
   const density = useBlockDensity();
   const { settings: globalFormatSettings } = useFormatSettings();
   const showKopecks = cfg.showKopecks ?? globalFormatSettings.showKopecks;
@@ -573,6 +573,12 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
   const openingBlockPickerRef = useRef(false);
   const resizingCol = useRef<{ col: number; startX: number; startW: number } | null>(null);
   const resizingRow = useRef<{ row: number; startY: number; startH: number } | null>(null);
+  // Дебаунс сохранения метки header-ячейки — чтобы ввод не дёргал onConfigChange
+  // (полный ре-рендер сетки + сетевой save) на каждый символ.
+  const headerSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (headerSaveTimer.current) clearTimeout(headerSaveTimer.current);
+  }, []);
   const [importNotice, setImportNotice] = useState<string | null>(null);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -1189,7 +1195,27 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
   function updateHeaderCell(id: string, patch: Partial<HeaderCell>) {
     const next = headerCells.map((hc) => (hc.id === id ? { ...hc, ...patch } : hc));
     setHeaderCells(next);
-    saveConfig({ headerCells: next });
+    if (headerSaveTimer.current) {
+      clearTimeout(headerSaveTimer.current);
+      headerSaveTimer.current = null;
+    }
+    // Метку дебаунсим (ввод по символу); остальные патчи (value/width) сохраняем сразу.
+    const isLabelOnly = Object.keys(patch).length === 1 && 'label' in patch;
+    if (isLabelOnly) {
+      headerSaveTimer.current = setTimeout(() => {
+        headerSaveTimer.current = null;
+        saveConfig({ headerCells: next });
+      }, 400);
+    } else {
+      saveConfig({ headerCells: next });
+    }
+  }
+
+  function flushHeaderSave() {
+    if (!headerSaveTimer.current) return;
+    clearTimeout(headerSaveTimer.current);
+    headerSaveTimer.current = null;
+    saveConfig({ headerCells });
   }
 
   function addHeaderCell() {
@@ -1378,6 +1404,7 @@ function RenderSheet({ instance, onConfigChange }: BlockRenderProps) {
                   className="h-4 flex-1 border-0 bg-transparent p-0 text-[10px] font-medium text-muted-foreground outline-none focus:ring-0"
                   value={hc.label}
                   onChange={(e) => updateHeaderCell(hc.id, { label: e.target.value })}
+                  onBlur={flushHeaderSave}
                   placeholder="Метка"
                 />
                 <button

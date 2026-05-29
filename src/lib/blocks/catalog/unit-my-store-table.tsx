@@ -302,7 +302,7 @@ const DEFAULT_COL_IDS = new Set([
 ]);
 
 function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
-  const config = parseConfig(instance.config);
+  const config = useMemo(() => parseConfig(instance.config), [instance.config]);
   const liveValues = useAllBlockValuesFlat();
   const { settings } = useFormatSettings();
   const showKopecks = settings.showKopecks;

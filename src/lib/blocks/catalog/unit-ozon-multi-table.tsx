@@ -381,7 +381,7 @@ function resolveColumnOrder<T extends string>(saved: string[] | undefined, defau
 }
 
 function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
-  const config = parseConfig(instance.config);
+  const config = useMemo(() => parseConfig(instance.config), [instance.config]);
   const liveValues = useAllBlockValuesFlat();
   const { settings } = useFormatSettings();
   const showKopecks = settings.showKopecks;

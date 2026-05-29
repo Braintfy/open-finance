@@ -265,7 +265,7 @@ function CashflowOverrideValues({
 }
 
 function RenderExcelCell({ instance, onConfigChange }: BlockRenderProps) {
-  const config = parseConfig(instance.config);
+  const config = useMemo(() => parseConfig(instance.config), [instance.config]);
   const density = useBlockDensity();
   const { settings: globalSettings } = useFormatSettings();
   const showKopecks = config.showKopecks ?? globalSettings.showKopecks;
