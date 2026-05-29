@@ -13,6 +13,7 @@ import { sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { unitProducts } from '@/lib/db/schema/unit-economics';
 import {
+  ozonAnalyticsDaily,
   ozonOrders,
   ozonPerfSkuStats,
 } from '@/lib/db/schema/marketplaces';
@@ -145,6 +146,7 @@ async function runAggregate(
   toDateExclusive: string,
 ): Promise<CoreTotals> {
   const accountCondOrders = accountId ? sql`AND o.account_id = ${accountId}` : sql``;
+  const accountCondAnalytics = accountId ? sql`AND ad.account_id = ${accountId}` : sql``;
   const accountCondPerf = accountId ? sql`AND ps.account_id = ${accountId}` : sql``;
   const accountCondUp = accountId
     ? sql`AND ${unitProducts.marketplaceAccountId} = ${accountId}`
@@ -158,22 +160,40 @@ async function runAggregate(
   });
   const adsRub = adsTotals.adsRub;
   const adsSource = adsTotals.adsSource;
-  type PerProductRow = {
-    product_id: string;
-    article: string | null;
-    name: string;
-    stock_marketplace: number | string;
-    stock_own: number | string;
-    cost_kopecks: number | string;
-    delivered: number | string;
-    cancelled: number | string;
-    returned: number | string;
-    qty_delivered: number | string;
-    revenue_kopecks: number | string;
-    ads_kopecks: number | string;
-  };
-  const productResult = await db.execute<PerProductRow>(sql`
-    WITH order_items AS (
+
+  type CountRow = { cnt: number };
+  const analyticsCheck = await db.execute<CountRow>(sql`
+    SELECT COUNT(*)::int AS cnt FROM ${ozonAnalyticsDaily} ad
+    WHERE ad.tenant_id = ${tenantId}
+      ${accountCondAnalytics}
+      AND ad.date >= ${fromDate}::date
+      AND ad.date < ${toDateExclusive}::date
+    LIMIT 1
+  `);
+  const analyticsCheckRows: CountRow[] = Array.isArray(analyticsCheck)
+    ? (analyticsCheck as CountRow[])
+    : (((analyticsCheck as unknown) as { rows: CountRow[] }).rows ?? []);
+  const hasAnalyticsData = (analyticsCheckRows[0]?.cnt ?? 0) > 0;
+
+  const ordersCte = hasAnalyticsData
+    ? sql`
+    agg_orders AS (
+      SELECT
+        ad.sku AS match_key,
+        SUM(ad.ordered_units)::int AS delivered,
+        SUM(ad.cancellations)::int AS cancelled,
+        SUM(ad.returns)::int AS returned,
+        SUM(ad.delivered_units)::numeric AS qty_delivered,
+        SUM(ad.revenue_kopecks)::numeric / 100 AS revenue_rub
+      FROM ${ozonAnalyticsDaily} ad
+      WHERE ad.tenant_id = ${tenantId}
+        ${accountCondAnalytics}
+        AND ad.date >= ${fromDate}::date
+        AND ad.date < ${toDateExclusive}::date
+      GROUP BY ad.sku
+    )`
+    : sql`
+    order_items AS (
       SELECT
         o.id,
         o.status,
@@ -191,7 +211,7 @@ async function runAggregate(
     ),
     agg_orders AS (
       SELECT
-        offer_id,
+        offer_id AS match_key,
         COUNT(DISTINCT id) FILTER (
           WHERE cancelled_at IS NULL
             AND returned_at IS NULL
@@ -219,7 +239,27 @@ async function runAggregate(
       FROM order_items
       WHERE offer_id IS NOT NULL AND offer_id <> ''
       GROUP BY offer_id
-    ),
+    )`;
+  const ordersJoin = hasAnalyticsData
+    ? sql`LEFT JOIN agg_orders ao ON ao.match_key = ${unitProducts.sku}`
+    : sql`LEFT JOIN agg_orders ao ON ao.match_key = ${unitProducts.article}`;
+
+  type PerProductRow = {
+    product_id: string;
+    article: string | null;
+    name: string;
+    stock_marketplace: number | string;
+    stock_own: number | string;
+    cost_kopecks: number | string;
+    delivered: number | string;
+    cancelled: number | string;
+    returned: number | string;
+    qty_delivered: number | string;
+    revenue_kopecks: number | string;
+    ads_kopecks: number | string;
+  };
+  const productResult = await db.execute<PerProductRow>(sql`
+    WITH ${ordersCte},
     agg_ads_sku AS (
       SELECT
         ps.sku,
@@ -247,11 +287,13 @@ async function runAggregate(
       COALESCE(ao.revenue_rub * 100, 0) AS revenue_kopecks,
       COALESCE(ad.ads_kopecks, 0) AS ads_kopecks
     FROM ${unitProducts}
-    LEFT JOIN agg_orders ao ON ao.offer_id = ${unitProducts.article}
+    ${ordersJoin}
     LEFT JOIN LATERAL (
       SELECT SUM(ads.ads_kopecks) AS ads_kopecks
       FROM agg_ads_sku ads
       WHERE ads.sku = ${unitProducts.sku}
+         OR ads.sku = (${unitProducts.metadata}->>'productId')
+         OR ads.sku = (${unitProducts.metadata}->>'ozonSku')
          OR ads.offer_id = ${unitProducts.article}
          OR ads.article_raw = ${unitProducts.article}
     ) ad ON TRUE
