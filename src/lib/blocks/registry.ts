@@ -35,6 +35,7 @@ import { UnitOzonAiInsightsBlock } from './catalog/unit-ozon-ai-insights';
 import { UnitYandexCalculatorBlock } from './catalog/unit-yandex-calculator';
 import { UnitMyStoreTableBlock } from './catalog/unit-my-store-table';
 import { CurrencyRatesBlock } from './catalog/currency-rates';
+import { MarkdownNoteBlock } from './catalog/markdown-note';
 
 /**
  * Метаданные маркетплейса для каждого блока — tags, recommendedFor, iconName
@@ -210,6 +211,11 @@ const BLOCK_META: Record<
     recommendedFor: ['dashboard'],
     iconName: 'Banknote',
   },
+  'note.markdown': {
+    tags: ['notes', 'markdown', 'universal', 'custom'],
+    recommendedFor: ['dashboard', 'boards'],
+    iconName: 'NotebookPen',
+  },
 };
 
 function withMeta(def: BlockDef): BlockDef {
@@ -258,6 +264,7 @@ const ALL_BLOCKS: BlockDef[] = [
   UnitYandexCalculatorBlock,
   UnitMyStoreTableBlock,
   CurrencyRatesBlock,
+  MarkdownNoteBlock,
 ].map(withMeta);
 
 const REGISTRY = new Map<string, BlockDef>(ALL_BLOCKS.map((b) => [b.type, b]));

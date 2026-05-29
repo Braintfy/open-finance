@@ -40,7 +40,7 @@ Context7: `mcp0_resolve-library-id` → `mcp0_query-docs`. Не более 3 в�
 - **Phase 2:** Tauri 2.0 desktop.
 - **Phase 3:** React Native + Expo mobile.
 - **Главная идея:** почти каждая страница = настраиваемый **BlockGrid** (Lego из блоков). Новая фича обычно = новый block type в `src/lib/blocks/catalog/`, а не статичная страница.
-- **Источник правды версии:** `CHANGELOG.md` + `git log` (`package.json` остался на `0.5.0`, не используется). Текущая версия — **v0.27.0** (2026-05-29). UI читает версию через `src/lib/version.ts` (`APP_VERSION`), значение инжектируется в build-time из `CHANGELOG.md` через `next.config.mjs` → `env.NEXT_PUBLIC_APP_VERSION`.
+- **Источник правды версии:** `CHANGELOG.md` + `git log` (`package.json` остался на `0.5.0`, не используется). Текущая версия — **v0.28.0** (2026-05-29). UI читает версию через `src/lib/version.ts` (`APP_VERSION`), значение инжектируется в build-time из `CHANGELOG.md` через `next.config.mjs` → `env.NEXT_PUBLIC_APP_VERSION`.
 
 ## Жёсткие правила
 
@@ -119,6 +119,8 @@ docs/memory-archive/      исторические разделы MEMORY.md (п�
 - `src/app/api/blocks/layout/[pageKey]/route.ts` — persist layout.
 - `src/app/api/blocks/sources/route.ts` — sources для `@связать`, Sheet formula evaluation, server-side aggregates для cross-page bindings.
 - `src/app/api/blocks/relations/route.ts` — cross-page outgoing detection (lightweight).
+- `src/lib/blocks/catalog/markdown-note.tsx` (v0.28.0) — блок `note.markdown`: два режима (Текст WYSIWYG / MD raw) на одном `config.content`, счётчики, импорт/экспорт `.md`/`.txt`, публикует `chars/words/lines/tokens/title/updatedAt`. Ввод дебаунсится (250ms counters / 700ms commit + flush на blur).
+- `src/components/blocks/markdown/{InitializedMDXEditor,ForwardRefEditor}.tsx` (v0.28.0) — обёртка MDXEditor v4 по App Router паттерну: `ForwardRefEditor` = `next/dynamic(ssr:false)` + forwardRef → редактор (~850 kB) в async-чанке; режим через `diffSourcePlugin` + controlled bridge на `viewMode$` (без remount). CSS — `globals.css` (`.note-md-editor`, тёмная тема через класс `dark-theme`).
 
 ### Ключевые инварианты
 - Grid: 12 колонок, `rowHeight=40`, `margin=[10,10]`.
@@ -136,7 +138,7 @@ docs/memory-archive/      исторические разделы MEMORY.md (п�
 
 **Cashflow** (`stat.income`, `stat.expense`, `stat.balance` помечены `tags:['legacy']`): `stat.income`, `stat.expense`, `stat.balance`, `stat.custom`, `cashflow.top-categories`, `cashflow.transactions`, `chart.cashflow`, **`kpi.grid`** (v0.20.0).
 
-**Generic**: `sheet`, `excel.cell`, `custom.data`, `navigate.card`, `computed.sum`, `ai.micro-agent`.
+**Generic**: `sheet`, `excel.cell`, `custom.data`, `navigate.card`, `computed.sum`, `ai.micro-agent`, **`note.markdown`** (v0.28.0).
 
 **Inbox**: `inbox.channel-feed`, **`inbox.dashboard`** (v0.19.0).
 

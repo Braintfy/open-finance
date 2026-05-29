@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.28.0] - 2026-05-29
+
+### Added
+- **Новый блок `note.markdown` («Заметка»)** — универсальная markdown-заметка в стиле Zettlr/Notion. Два режима: **«Текст»** (WYSIWYG, как Telegraph) и **«MD»** (сырой markdown-исходник) на одном документе (`config.content`). Шапка: заголовок + счётчики (символы/слова/строки/≈токены) + переключатель режима + меню импорт/экспорт `.md`/`.txt`. Доступен на всех страницах (`pages: ['*']`), рекомендован для `dashboard`/`boards`.
+- **Публикация в «Связи»** — блок публикует через `useBlockValuePublisher`: `chars`, `words`, `lines`, `tokens` (числа — ссылаемы формулами из `sheet`/`custom.data`/`excel.cell`), `title`, `updatedAt` + `__labels`. Полный текст доступен AI-ассистенту поверх блока через `config.content` (не публикуется в store).
+- **Импорт/экспорт в блоке** — скачивание `.md` (raw) и `.txt` (markdown stripped), загрузка `.md`/`.markdown`/`.txt` через file input с подтверждением замены (AlertDialog). Универсальный JSON import/export работает автоматически (JSON-only adapter).
+
+### Changed
+- **Интеграция MDXEditor v4** — добавлена зависимость `@mdxeditor/editor`. Подключён по паттерну App Router: `InitializedMDXEditor.tsx` (плагины + CSS) + `ForwardRefEditor.tsx` (`next/dynamic`, `ssr:false`, forwardRef). Тяжёлый редактор (~850 kB) ушёл в отдельный async-чанк — общий бандл блоков не вырос (shared JS ~103 kB). Режимы переключаются через `diffSourcePlugin` + controlled bridge на `viewMode$` (без remount). Ввод дебаунсится (250ms счётчики / 700ms commit + flush на blur), чтобы не дёргать config на каждый символ.
+- **CSS** — `globals.css`: стабильные селекторы (`.note-md-editor .mdxeditor`, `[contenteditable]`) для layout/scroll/sticky-тулбара; тёмная тема через класс `dark-theme` (по `next-themes`).
+
 ## [0.27.2] - 2026-05-29
 
 ### Fixed

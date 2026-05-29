@@ -254,3 +254,33 @@
   0%, 100% { transform: scale(1); }
   50% { transform: scale(1.25); }
 }
+
+/* ===========================================================================
+   note.markdown — встраивание MDXEditor в блок-грид.
+   Используем только стабильные селекторы (.mdxeditor, [contenteditable]),
+   НЕ хешированные CSS-module классы (они меняются между версиями).
+   =========================================================================== */
+.note-md-editor {
+  height: 100%;
+  overflow: auto;
+}
+.note-md-editor .mdxeditor {
+  height: 100%;
+  background: transparent;
+}
+/* фон редактора наследуем от карточки блока (свет/тёмная тема) */
+.note-md-editor .mdxeditor [contenteditable="true"] {
+  background: transparent;
+}
+/* компактный размер контента под блок-грид */
+.note-md-editor .note-md-content {
+  font-size: 0.8125rem;
+  padding: 0.5rem 0.75rem;
+}
+/* тулбар прилипает сверху при скролле контента */
+.note-md-editor .mdxeditor [role="toolbar"] {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  flex-wrap: wrap;
+}
