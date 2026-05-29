@@ -37,11 +37,11 @@
 }
 
 /*
-  Action toolbar (AI + Settings + Delete, v0.23.3).
+  Action toolbar (AI + Settings — левый нижний угол; Delete — правый верхний, v0.28.1).
   Зеркальный паттерн ресайз-хэндла: по умолчанию скрыт (opacity 0 + pointer-events none).
   Появляется в трёх случаях:
     1. Edit mode — `.react-grid-item.block-edit-mode`.
-    2. Курсор над hot-zone в правом верхнем углу
+    2. Курсор над hot-zone в левом нижнем углу
        (`<div data-toolbar-hotzone>` в BlockChrome).
     3. Курсор над самим toolbar (`.block-toolbar:hover`) — чтобы не моргал
        во время клика по кнопке.
@@ -59,33 +59,6 @@
 .react-grid-item:has(.block-toolbar:hover) .block-toolbar {
   opacity: 1;
   pointer-events: auto;
-}
-
-/*
-  Block-toolbar-shift (v0.26.1): кнопки в правом верхнем углу контента блока
-  (refresh / sync / export) сдвигаются влево когда появляется .block-toolbar
-  (AI / Settings / Delete), чтобы не пересекаться. Зеркальный паттерн с
-  visibility-правилом выше:
-    1. Edit mode (`.react-grid-item.block-edit-mode`).
-    2. Курсор над hot-zone (`[data-toolbar-hotzone]:hover`).
-    3. Курсор над самим toolbar (`.block-toolbar:hover`).
-    4. Курсор над shifted-кнопками (`.block-toolbar-shift:hover`) — чтобы они
-       не "прыгали обратно", пока юзер тянется к ним.
-
-  Transition-delay 300ms на un-hover даёт юзеру время дотянуться до кнопок
-  после того как курсор вышел из hot-zone. На hover-IN delay = 0 (мгновенно).
-*/
-.block-toolbar-shift {
-  transition: margin-right 200ms ease 300ms;
-  margin-right: 0;
-}
-
-.react-grid-item.block-edit-mode .block-toolbar-shift,
-.react-grid-item:has([data-toolbar-hotzone]:hover) .block-toolbar-shift,
-.react-grid-item:has(.block-toolbar:hover) .block-toolbar-shift,
-.react-grid-item:has(.block-toolbar-shift:hover) .block-toolbar-shift {
-  transition-delay: 0ms;
-  margin-right: 5rem; /* = mr-20 = 80px */
 }
 
 .react-grid-item.react-grid-item-resizing {

@@ -376,7 +376,7 @@ function RenderOzonWarehouseClusters({ instance }: BlockRenderProps) {
             свой
           </button>
         )}
-        <div className="block-toolbar-shift ml-auto flex items-center gap-1.5">
+        <div className="ml-auto flex items-center gap-1.5">
           <button
             type="button"
             onClick={() => fetchData()}

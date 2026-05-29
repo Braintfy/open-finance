@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.28.1] - 2026-05-29
+
+### Changed
+- **Тулбар блоков `ИИ`/`Настройки` → левый нижний угол (глобально)** — кнопки `block-toolbar` (`block-chrome.tsx`) перенесены с `right-1 top-1` на `bottom-1 left-1`. Причина: в правом верхнем углу они часто перекрывали собственные кнопки шапки блоков (refresh/sync, mode-toggle и т.п.). Низ-лево — зона, где других кнопок не бывает. Hot-zone-триггер (`data-toolbar-hotzone`) тоже переехал в `bottom-0 left-0`. Кнопка удаления (`X`, edit-mode only) **осталась** в правом верхнем углу отдельным `block-toolbar`-блоком.
+
+### Removed
+- **Сдвиг влево у верхних кнопок блоков (`block-toolbar-shift`)** — удалён полностью (не нужен после переноса тулбара). Вырезаны CSS-правила `.block-toolbar-shift` + `:has(...)` из `block-grid.css` и класс-токен из 8 блоков (`currency-rates`, `unit-ozon-{ai-insights,analytics,campaigns,kpi,search-phrases,top-ads,warehouse-clusters}`). Кнопки `refresh`/`sync`/`export` больше не смещаются на hover.
+
 ## [0.28.0] - 2026-05-29
 
 ### Added

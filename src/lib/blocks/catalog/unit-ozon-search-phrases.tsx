@@ -245,7 +245,7 @@ function RenderOzonSearchPhrases({ instance }: BlockRenderProps) {
         >
           CPC/CPM
         </span>
-        <div className="block-toolbar-shift ml-auto flex items-center gap-1.5">
+        <div className="ml-auto flex items-center gap-1.5">
           {lastFetchedLabel && (
             <span
               className={

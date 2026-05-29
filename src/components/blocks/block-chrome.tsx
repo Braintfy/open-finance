@@ -109,41 +109,46 @@ export function BlockChrome({
       )}
 
       {/*
-        Action toolbar справа-сверху (v0.23.3).
-        Видимость управляется CSS из `block-grid.css` — зеркальный паттерн
-        с resize-handle. Триггеры:
+        Action toolbar (v0.28.1):
+          - ИИ + Настройки — ЛЕВЫЙ НИЖНИЙ угол. Перенесены сюда, т.к. в правом
+            верхнем углу пересекались с кнопками шапки блоков (refresh/sync,
+            mode-toggle и т.п.). Низ-лево — зона, где других кнопок не бывает.
+          - Удалить (X) — правый верхний угол, только в edit mode.
+        Видимость управляется CSS из `block-grid.css` (класс `block-toolbar`):
           1. Edit mode (`.react-grid-item.block-edit-mode`).
-          2. Курсор над hot-zone в правом верхнем углу (`[data-toolbar-hotzone]`).
+          2. Курсор над hot-zone в левом нижнем углу (`[data-toolbar-hotzone]`).
           3. Курсор над самой панелью (`.block-toolbar:hover`) — не моргает.
-        Класс `block-toolbar` опознаётся CSS-правилом. Без `showControls`-JS-
-        стейта: один источник правды — CSS. Делает поведение идентичным ресайзу.
       */}
-      <div
-        className="block-toolbar absolute right-1 top-1 z-30 flex gap-1"
-      >
-        {onOpenAi && (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 rounded-full bg-background/95 shadow-sm ring-1 ring-border hover:bg-accent text-primary"
-            onClick={onOpenAi}
-            aria-label="AI Микроагент"
-          >
-            <Sparkles className="h-3.5 w-3.5" />
-          </Button>
-        )}
-        {onOpenSettings && (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 rounded-full bg-background/95 shadow-sm ring-1 ring-border hover:bg-accent"
-            onClick={onOpenSettings}
-            aria-label="Настройки блока"
-          >
-            <Settings2 className="h-3.5 w-3.5" />
-          </Button>
-        )}
-        {editMode && onRemove && (
+      {(onOpenAi || onOpenSettings) && (
+        <div className="block-toolbar absolute bottom-1 left-1 z-30 flex gap-1">
+          {onOpenAi && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 rounded-full bg-background/95 shadow-sm ring-1 ring-border hover:bg-accent text-primary"
+              onClick={onOpenAi}
+              aria-label="AI Микроагент"
+            >
+              <Sparkles className="h-3.5 w-3.5" />
+            </Button>
+          )}
+          {onOpenSettings && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 rounded-full bg-background/95 shadow-sm ring-1 ring-border hover:bg-accent"
+              onClick={onOpenSettings}
+              aria-label="Настройки блока"
+            >
+              <Settings2 className="h-3.5 w-3.5" />
+            </Button>
+          )}
+        </div>
+      )}
+
+      {/* Удалить блок (X) — правый верхний угол, только в edit mode. */}
+      {editMode && onRemove && (
+        <div className="block-toolbar absolute right-1 top-1 z-30 flex gap-1">
           <Button
             variant="ghost"
             size="icon"
@@ -153,19 +158,19 @@ export function BlockChrome({
           >
             <X className="h-3.5 w-3.5" />
           </Button>
-        )}
-      </div>
+        </div>
+      )}
 
       {/*
-        Toolbar hot-zone (v0.23.3): невидимая 40×72 область в правом верхнем углу.
+        Toolbar hot-zone (v0.28.1): невидимая 40×80 область в ЛЕВОМ НИЖНЕМ углу.
         Зеркало resize-hotzone — служит триггером CSS `:has([data-toolbar-hotzone]:hover)`
-        для показа `.block-toolbar`. Не блокирует клики по самому toolbar (там
+        для показа `.block-toolbar`. Не блокирует клики по самой панели (там
         `block-toolbar` имеет более высокий z-index 30 vs 15 у hotzone).
       */}
       <div
         data-toolbar-hotzone
         aria-hidden
-        className="pointer-events-auto absolute right-0 top-0 z-[15] h-10 w-20"
+        className="pointer-events-auto absolute bottom-0 left-0 z-[15] h-10 w-20"
       />
 
       {/* Micro-icon: блок участвует в связях */}

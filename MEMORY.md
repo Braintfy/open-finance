@@ -40,7 +40,7 @@ Context7: `mcp0_resolve-library-id` → `mcp0_query-docs`. Не более 3 в�
 - **Phase 2:** Tauri 2.0 desktop.
 - **Phase 3:** React Native + Expo mobile.
 - **Главная идея:** почти каждая страница = настраиваемый **BlockGrid** (Lego из блоков). Новая фича обычно = новый block type в `src/lib/blocks/catalog/`, а не статичная страница.
-- **Источник правды версии:** `CHANGELOG.md` + `git log` (`package.json` остался на `0.5.0`, не используется). Текущая версия — **v0.28.0** (2026-05-29). UI читает версию через `src/lib/version.ts` (`APP_VERSION`), значение инжектируется в build-time из `CHANGELOG.md` через `next.config.mjs` → `env.NEXT_PUBLIC_APP_VERSION`.
+- **Источник правды версии:** `CHANGELOG.md` + `git log` (`package.json` остался на `0.5.0`, не используется). Текущая версия — **v0.28.1** (2026-05-29). UI читает версию через `src/lib/version.ts` (`APP_VERSION`), значение инжектируется в build-time из `CHANGELOG.md` через `next.config.mjs` → `env.NEXT_PUBLIC_APP_VERSION`.
 
 ## Жёсткие правила
 
@@ -132,6 +132,7 @@ docs/memory-archive/      исторические разделы MEMORY.md (п�
 - **Не использовать `sanitizeBlocks` на сервере** — client-only catalog пуст в server bundle.
 - **`BlockDef` НЕЛЬЗЯ передавать через RSC props** — catalog файлы `'use client'` → opaque proxy. Использовать `b.iconName` (string из `BLOCK_META`), не `b.icon.displayName`.
 - **`DndContext` обязан иметь `id={useId()}`** при >1 на странице (иначе hydration mismatch через `aria-describedby`).
+- **Позиция тулбара блока (v0.28.1):** `ИИ`+`Настройки` — в **левом нижнем** углу (`block-toolbar` на `bottom-1 left-1`), `data-toolbar-hotzone` тоже `bottom-0 left-0`. `X` (удалить, edit-mode only) — в **правом верхнем** углу отдельным `block-toolbar`. Шапки блоков (refresh/sync/mode-toggle) кладём **справа-сверху** — там тулбар чрома больше не пересекается. Класс `block-toolbar-shift` удалён (не использовать).
 - **Источник правды для cross-page связей** — `block.dependencies.sources` + `@`-refs из config (`collectRefsFromConfig` рекурсивно).
 
 ### Текущий каталог блоков

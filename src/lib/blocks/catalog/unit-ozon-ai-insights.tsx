@@ -268,7 +268,7 @@ function RenderOzonAiInsights({ instance }: BlockRenderProps) {
           <Sparkles className="h-4 w-4 text-primary" />
           <span className="text-sm font-medium">AI инсайты</span>
         </div>
-        <div className="block-toolbar-shift flex items-center gap-2">
+        <div className="flex items-center gap-2">
           <PeriodPicker
             value={{ preset: period.preset as PeriodPreset, customFrom: period.customFrom, customTo: period.customTo }}
             onChange={setPeriod}
