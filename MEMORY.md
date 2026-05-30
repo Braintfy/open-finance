@@ -40,7 +40,7 @@ Context7: `mcp0_resolve-library-id` → `mcp0_query-docs`. Не более 3 в�
 - **Phase 2:** Tauri 2.0 desktop.
 - **Phase 3:** React Native + Expo mobile.
 - **Главная идея:** почти каждая страница = настраиваемый **BlockGrid** (Lego из блоков). Новая фича обычно = новый block type в `src/lib/blocks/catalog/`, а не статичная страница.
-- **Источник правды версии:** `CHANGELOG.md` + `git log` (`package.json` остался на `0.5.0`, не используется). Текущая версия — **v0.29.0** (2026-05-29). UI читает версию через `src/lib/version.ts` (`APP_VERSION`), значение инжектируется в build-time из `CHANGELOG.md` через `next.config.mjs` → `env.NEXT_PUBLIC_APP_VERSION`.
+- **Источник правды версии:** `CHANGELOG.md` + `git log` (`package.json` остался на `0.5.0`, не используется). Текущая версия — **v0.30.0** (2026-05-30). UI читает версию через `src/lib/version.ts` (`APP_VERSION`), значение инжектируется в build-time из `CHANGELOG.md` через `next.config.mjs` → `env.NEXT_PUBLIC_APP_VERSION`.
 
 ## Жёсткие правила
 
@@ -110,7 +110,11 @@ docs/memory-archive/      исторические разделы MEMORY.md (п�
 ### Ключевые файлы
 - `src/lib/blocks/types.ts` — `BlockDef`, `BlockInstance`, `BlockDependencies`, `BlockAppearance`, `PageLayout`.
 - `src/lib/blocks/registry.ts` — `ALL_BLOCKS`, `DEFAULT_LAYOUTS`, `BLOCK_META` (iconName для RSC), `BLOCK_PRESETS`.
-- `src/components/blocks/block-grid.tsx` — drag/resize/save, relations overlay, AI dialog, auto-mount providers.
+- `src/components/blocks/block-grid.tsx` — drag/resize/save, переключатель `viewMode` Грид↔Карта (кнопка `Связи`), AI dialog, auto-mount providers.
+- `src/components/blocks/block-mindmap.tsx` (v0.30.0) — режим «Карта связей» (React Flow `@xyflow/react` v12): узлы/рёбра из `collectBlockRelationEdges`, controlled nodes, `onNodeDragStop`→persist, Background/MiniMap/Controls, тёмный canvas. Грузится лениво через `next/dynamic(ssr:false)` из `block-grid.tsx`.
+- `src/components/blocks/block-node.tsx` (v0.30.0) — гибридный узел: compact↔expanded живой блок, `dragHandle: '.block-node-drag-handle'`, сокеты in/out, cross-page бейджи. `MindmapContext` прокидывает стабильные handlers.
+- `src/lib/blocks/mindmap-layout.ts` (v0.30.0) — `blockMindmapPosition`/`isBlockCollapsed`/`initialMindmapPosition` (сидирование + toggle-collapse без потери позиции).
+- `src/components/blocks/block-relations-overlay.tsx` — СТАРЫЙ SVG-overlay связей, **больше не используется** (заменён картой); оставлен ради reuse-логики (цвета рёбер, cross-page popover).
 - `src/components/blocks/block-grid.css` — координатная сетка-фон (1:1 с RGL-cells), resize handle CSS-only через `:has([data-resize-hotzone]:hover)`.
 - `src/components/blocks/block-chrome.tsx` — wrapper, hover controls, settings/delete/AI, **рамка через absolute-overlay z-20** (не `boxShadow inset`).
 - `src/components/blocks/block-settings-dialog.tsx` — 5 табов (params → links → style → io → ai).
@@ -134,6 +138,7 @@ docs/memory-archive/      исторические разделы MEMORY.md (п�
 - **`DndContext` обязан иметь `id={useId()}`** при >1 на странице (иначе hydration mismatch через `aria-describedby`).
 - **Позиция тулбара блока (v0.28.1):** `ИИ`+`Настройки` — в **левом нижнем** углу (`block-toolbar` на `bottom-1 left-1`), `data-toolbar-hotzone` тоже `bottom-0 left-0`. `X` (удалить, edit-mode only) — в **правом верхнем** углу отдельным `block-toolbar`. Шапки блоков (refresh/sync/mode-toggle) кладём **справа-сверху** — там тулбар чрома больше не пересекается. Класс `block-toolbar-shift` удалён (не использовать).
 - **Источник правды для cross-page связей** — `block.dependencies.sources` + `@`-refs из config (`collectRefsFromConfig` рекурсивно).
+- **Раскладка карты — отдельное поле `BlockInstance.mindmap { x, y, collapsed }`**, независимо от грид-полей `x/y/w/h`. ОБЯЗАТЕЛЬНО дублировать в zod `BlockInstanceSchema` (`api/blocks/layout/[pageKey]`), иначе PUT вырежет координаты при jsonb round-trip. Координаты canvas (float, могут быть < 0).
 
 ### Текущий каталог блоков
 

@@ -2,8 +2,9 @@
 'use client';
 
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import dynamic from 'next/dynamic';
 import { Responsive, WidthProvider, type Layout } from 'react-grid-layout';
-import { Plus, Pencil, Check, RotateCcw, Network } from 'lucide-react';
+import { Plus, Pencil, Check, RotateCcw, Network, LayoutGrid } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   AlertDialog,
@@ -32,16 +33,30 @@ import {
 } from '@/lib/blocks/page-source-context';
 import { PagePeriodHeader } from './page-period-header';
 import { VirtualSourcesBridge } from '@/lib/blocks/virtual-sources';
-import { BlockRelationsOverlay } from './block-relations-overlay';
 import { MicroAgentDialog } from '@/components/micro-agent/micro-agent-dialog';
 import type { BlockContext, SuggestedAction } from '@/lib/ai/micro-agent/types';
-import { collectBlockRelationEdges, collectBlockRelationIds } from '@/lib/blocks/relations';
+import { collectBlockRelationIds } from '@/lib/blocks/relations';
+import { blockMindmapPosition, isBlockCollapsed } from '@/lib/blocks/mindmap-layout';
 
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import './block-grid.css';
 
 const ResponsiveGridLayout = WidthProvider(Responsive);
+
+// React Flow тяжёлый и client-only → грузим карту связей лениво,
+// отдельным чанком, только когда пользователь открывает режим «Связи».
+const BlockMindmap = dynamic(
+  () => import('./block-mindmap').then((m) => m.BlockMindmap),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-[78vh] min-h-[560px] w-full items-center justify-center rounded-xl border border-slate-800 bg-[#0b1220] text-sm text-slate-400">
+        Загрузка карты связей…
+      </div>
+    ),
+  },
+);
 
 function EmptyState({ onAdd, onReset }: { onAdd: () => void; onReset: () => void }) {
   return (
@@ -414,8 +429,11 @@ function BlockGridInner({
     };
   }, []);
   const [saving, setSaving] = useState(false);
-  /** Mindmap-overlay: связи между блоками. Выкл/Вкл через кнопку. */
-  const [showRelations, setShowRelations] = useState(false);
+  /**
+   * Режим визуализации: 'grid' — react-grid-layout, 'map' — node-editor
+   * (React Flow) с раскладкой связей. Переключается кнопкой «Связи».
+   */
+  const [viewMode, setViewMode] = useState<'grid' | 'map'>('grid');
   /** Активный drag/resize — для усиления фон-сетки */
   const [gridActive, setGridActive] = useState(false);
   const gridContainerRef = useRef<HTMLDivElement | null>(null);
@@ -442,11 +460,6 @@ function BlockGridInner({
    */
   const hadBlocksRef = useRef<boolean>((initialBlocks?.length ?? 0) > 0);
   const explicitClearRef = useRef<boolean>(false);
-  /** Есть ли хотя бы одна связь между блоками — для показа toggle кнопки */
-  const hasRelations = useMemo(
-    () => collectBlockRelationEdges(blocks, pageKey).length > 0,
-    [blocks, pageKey]
-  );
   /** Set ID блоков, участвующих в связях (source или target) — для микро-иконки */
   const participatingIds = useMemo(() => {
     return collectBlockRelationIds(blocks, pageKey);
@@ -744,6 +757,52 @@ function BlockGridInner({
     updateBlock(id, { config });
   }
 
+  /* ── Mindmap (режим «Карта связей») ── */
+
+  /** Сохранить позицию узла после drag (не трогает грид-поля x/y/w/h). */
+  const handleMindmapMove = useCallback(
+    (id: string, position: { x: number; y: number }) => {
+      setBlocks((prev) => {
+        const next = prev.map((b) =>
+          b.id === id
+            ? { ...b, mindmap: { x: position.x, y: position.y, collapsed: b.mindmap?.collapsed } }
+            : b,
+        );
+        scheduleSave(next);
+        return next;
+      });
+    },
+    [scheduleSave],
+  );
+
+  /** Свернуть/развернуть узел; позицию сохраняем (выводим из грида, если её нет). */
+  const handleToggleCollapse = useCallback(
+    (id: string) => {
+      setBlocks((prev) => {
+        const next = prev.map((b) => {
+          if (b.id !== id) return b;
+          const pos = blockMindmapPosition(b);
+          return { ...b, mindmap: { x: pos.x, y: pos.y, collapsed: !isBlockCollapsed(b) } };
+        });
+        scheduleSave(next);
+        return next;
+      });
+    },
+    [scheduleSave],
+  );
+
+  /** Стабильный config-колбек для узлов карты (для редактирования внутри блока). */
+  const handleMapConfigChange = useCallback(
+    (id: string, config: Record<string, unknown>) => {
+      setBlocks((prev) => {
+        const next = prev.map((b) => (b.id === id ? { ...b, config } : b));
+        scheduleSave(next);
+        return next;
+      });
+    },
+    [scheduleSave],
+  );
+
   function applyAiConfigToBlock(id: string, blockType: string, payload: Record<string, unknown>) {
     setBlocks((prev) => {
       const next = prev.map((b) => {
@@ -901,14 +960,24 @@ function BlockGridInner({
           );
         })}
       </ResponsiveGridLayout>
-      <BlockRelationsOverlay
-        blocks={blocks}
-        currentPageKey={pageKey}
-        containerRef={gridContainerRef}
-        highlighted={showRelations}
-      />
     </div>
   );
+
+  // Режим «Карта связей» — node-editor (React Flow). Рендерится вместо грида.
+  const mapEl = (
+    <BlockMindmap
+      blocks={blocks}
+      pageKey={pageKey}
+      tenantId={tenantId}
+      onMindmapMove={handleMindmapMove}
+      onToggleCollapse={handleToggleCollapse}
+      onConfigChange={handleMapConfigChange}
+      onOpenSettings={(id) => setSettingsId(id)}
+      onOpenAi={(id) => setAiBlockId(id)}
+    />
+  );
+
+  const content = viewMode === 'map' ? mapEl : grid;
 
   return (
     <BlockValuesProvider>
@@ -923,21 +992,40 @@ function BlockGridInner({
           )}
         </div>
         <div className="flex items-center gap-1.5">
-          {/* Период + источник — компактный inline прямо в тулбаре */}
-          {showPanel && (
+          {/* Период + источник — компактный inline прямо в тулбаре (только в гриде) */}
+          {viewMode === 'grid' && showPanel && (
             <PagePeriodHeader showSourceFilter={showSourceFilter} />
           )}
-          {hasRelations && (
+          {/* Переключатель Грид ↔ Карта связей */}
+          {blocks.length > 0 && (
             <Button
-              variant={showRelations ? 'default' : 'ghost'}
+              variant={viewMode === 'map' ? 'default' : 'ghost'}
               size="sm"
-              onClick={() => setShowRelations((v) => !v)}
-              title={showRelations ? 'Скрыть связи' : 'Показать связи между блоками'}
+              onClick={() => {
+                if (editMode) {
+                  flushSave();
+                  setEditMode(false);
+                }
+                setViewMode((v) => (v === 'map' ? 'grid' : 'map'));
+              }}
+              title={
+                viewMode === 'map'
+                  ? 'Вернуться к сетке'
+                  : 'Карта связей между блоками'
+              }
             >
-              <Network /> Связи
+              {viewMode === 'map' ? (
+                <>
+                  <LayoutGrid /> Сетка
+                </>
+              ) : (
+                <>
+                  <Network /> Связи
+                </>
+              )}
             </Button>
           )}
-          {editMode && (
+          {viewMode === 'grid' && editMode && (
             <>
               <Button variant="ghost" size="sm" onClick={resetToDefaults}>
                 <RotateCcw /> Сбросить
@@ -947,24 +1035,26 @@ function BlockGridInner({
               </Button>
             </>
           )}
-          <Button
-            variant={editMode ? 'default' : 'outline'}
-            size="sm"
-            onClick={() => {
-              if (editMode) flushSave();
-              setEditMode((v) => !v);
-            }}
-          >
-            {editMode ? (
-              <>
-                <Check /> Готово
-              </>
-            ) : (
-              <>
-                <Pencil /> Настроить
-              </>
-            )}
-          </Button>
+          {viewMode === 'grid' && (
+            <Button
+              variant={editMode ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => {
+                if (editMode) flushSave();
+                setEditMode((v) => !v);
+              }}
+            >
+              {editMode ? (
+                <>
+                  <Check /> Готово
+                </>
+              ) : (
+                <>
+                  <Pencil /> Настроить
+                </>
+              )}
+            </Button>
+          )}
         </div>
       </div>
 
@@ -981,9 +1071,9 @@ function BlockGridInner({
           onReset={resetToDefaults}
         />
       ) : children ? (
-        children(grid)
+        children(content)
       ) : (
-        grid
+        content
       )}
 
       <AddBlockDialog

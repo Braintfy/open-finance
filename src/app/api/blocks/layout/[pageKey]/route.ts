@@ -42,6 +42,15 @@ const BlockInstanceSchema = z.object({
   dependencies: BlockDependenciesSchema,
   aiPrompt: z.string().max(8000).optional(),
   aiPromptSupplement: z.string().max(500).optional(),
+  // Раскладка узла в режиме «Карта связей». Координаты canvas (px, могут быть < 0).
+  // Без этого поля PUT вырезал бы mindmap-позиции (jsonb round-trip).
+  mindmap: z
+    .object({
+      x: z.number().min(-100000).max(100000),
+      y: z.number().min(-100000).max(100000),
+      collapsed: z.boolean().optional(),
+    })
+    .optional(),
 });
 
 const PutBody = z.object({

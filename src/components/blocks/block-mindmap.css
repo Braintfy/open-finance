@@ -1,0 +1,61 @@
+/* PURPOSE: Стили режима «Карта связей» (React Flow node-editor). */
+
+/* Контейнер карты — высокий, фиксированной высоты; RF заполняет 100%. */
+.block-mindmap-root {
+  height: 78vh;
+  min-height: 560px;
+}
+
+.block-mindmap-root .react-flow {
+  height: 100%;
+}
+
+/* Сокеты узла — тонкие точки в цвет акцента. */
+.block-node-handle {
+  width: 9px;
+  height: 9px;
+  border: 2px solid #ffffff;
+  background: var(--bn-accent, #6366f1);
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.15);
+}
+
+.block-node-handle.react-flow__handle-left {
+  left: -5px;
+}
+.block-node-handle.react-flow__handle-right {
+  right: -5px;
+}
+
+/* Узел: на тёмном canvas карточка должна «парить». */
+.block-node {
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+.react-flow__node.selected .block-node {
+  box-shadow:
+    0 0 0 2px var(--bn-accent, #6366f1),
+    0 8px 24px rgba(2, 6, 23, 0.45);
+}
+
+/* Контролы (zoom / fit) — светлые на тёмном фоне. */
+.block-mindmap-controls.react-flow__controls {
+  box-shadow: 0 4px 12px rgba(2, 6, 23, 0.4);
+}
+.block-mindmap-controls .react-flow__controls-button {
+  background: #1e293b;
+  border-bottom: 1px solid #334155;
+  color: #e2e8f0;
+}
+.block-mindmap-controls .react-flow__controls-button:hover {
+  background: #334155;
+}
+.block-mindmap-controls .react-flow__controls-button svg {
+  fill: #e2e8f0;
+}
+
+/* Атрибуция React Flow — приглушаем на тёмном фоне. */
+.block-mindmap-root .react-flow__attribution {
+  background: rgba(15, 23, 42, 0.6);
+}
+.block-mindmap-root .react-flow__attribution a {
+  color: #94a3b8;
+}
