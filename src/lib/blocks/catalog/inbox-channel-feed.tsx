@@ -1,7 +1,7 @@
 // PURPOSE: Inbox channel feed block — unified read-only intake view for email/Telegram messages.
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ComponentType, ReactNode } from 'react';
 import {
   Inbox,
@@ -37,13 +37,30 @@ import { Label } from '@/components/ui/label';
 import { cn, formatDate } from '@/lib/utils';
 import { useBlockDensity } from '@/components/blocks/block-size';
 import { useBlockValuePublisher } from '@/lib/blocks/values';
-import { sanitizeEmailHtml } from '@/lib/inbox/sanitize-html';
+import { sanitizeEmailHtml, buildEmailSrcDoc } from '@/lib/inbox/sanitize-html';
+import { cleanPreview, cleanPlainTextBody } from '@/lib/inbox/clean-text';
 import type { BlockDef, BlockRenderProps, BlockSettingsFormProps } from '../types';
 import type { InboxChannelDto, InboxMessageDto } from '@/lib/inbox/types';
 
 const Config = z.object({
   title: z.string().default('Входящие'),
 });
+
+/** Инициалы отправителя для аватара (по имени или email). */
+function initialsOf(value: string): string {
+  const parts = value.trim().split(/[\s@._-]+/).filter(Boolean);
+  if (parts.length === 0) return '?';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[1][0]).toUpperCase();
+}
+
+const AVATAR_COLORS = ['#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
+/** Стабильный цвет аватара из строки-сида (имя/email отправителя). */
+function avatarColor(seed: string): string {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
+  return AVATAR_COLORS[hash % AVATAR_COLORS.length];
+}
 
 function RenderInboxChannelFeed({ instance }: BlockRenderProps) {
   const density = useBlockDensity();
@@ -86,7 +103,7 @@ function RenderInboxChannelFeed({ instance }: BlockRenderProps) {
     count: messages.length,
     latestSubject: latest?.subject ?? null,
     latestSender: latest?.senderName ?? latest?.senderAddress ?? null,
-    latestPreview: latest?.preview ?? null,
+    latestPreview: cleanPreview(latest?.preview) || null,
   });
 
   const counts = useMemo(() => {
@@ -189,40 +206,57 @@ function RenderInboxChannelFeed({ instance }: BlockRenderProps) {
                   {message.subject || 'Без темы'}
                 </div>
                 <div className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-muted-foreground">
-                  {message.preview || 'Нет превью'}
+                  {cleanPreview(message.preview) || 'Нет превью'}
                 </div>
               </button>
             ))}
           </div>
 
-          <div className="min-h-0 overflow-y-auto bg-background">
+          <div className="flex min-h-0 flex-col bg-background">
             {selected && (
-              <div className="space-y-3 p-4">
-                <div className="border-b border-border/60 pb-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="text-[11px] font-semibold text-muted-foreground">
+              <>
+                {/* Шапка письма в стиле почтовых сервисов */}
+                <div className="flex shrink-0 items-start gap-3 border-b border-border/60 px-4 py-3">
+                  <div
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-semibold text-white"
+                    style={{ backgroundColor: avatarColor(selected.senderName || selected.senderAddress || '?') }}
+                  >
+                    {initialsOf(selected.senderName || selected.senderAddress || '?')}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <h3 className="break-words text-base font-semibold leading-tight tracking-tight">
+                      {selected.subject || 'Без темы'}
+                    </h3>
+                    <div className="mt-1 flex flex-wrap items-baseline gap-x-1.5 text-xs">
+                      <span className="font-medium text-foreground/90">
                         {selected.senderName || selected.senderAddress || 'Без отправителя'}
-                      </div>
-                      <h3 className="mt-1 break-words text-base font-semibold tracking-tight">
-                        {selected.subject || 'Без темы'}
-                      </h3>
-                      <div className="mt-1 text-xs text-muted-foreground">
-                        Кому: Open Finance · {formatDate(selected.receivedAt, true)}
-                      </div>
+                      </span>
+                      {selected.senderName && selected.senderAddress && (
+                        <span className="truncate text-muted-foreground">&lt;{selected.senderAddress}&gt;</span>
+                      )}
                     </div>
-                    <Mail className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    <div className="mt-0.5 text-[11px] text-muted-foreground">
+                      Кому: Open Finance · {formatDate(selected.receivedAt, true)}
+                    </div>
                   </div>
                 </div>
-                {selected.bodyHtml ? (
-                  <EmailHtmlBody html={selected.bodyHtml} />
-                ) : (
-                  <div className="whitespace-pre-wrap break-words rounded-md bg-muted/35 p-3 text-sm leading-6 text-foreground/85">
-                    {selected.body || selected.preview || 'Тело сообщения пустое.'}
-                  </div>
-                )}
-                <AiRecognizePanel messageId={selected.id} />
-              </div>
+
+                {/* Тело письма */}
+                <div className="min-h-0 flex-1">
+                  {selected.bodyHtml ? (
+                    <EmailHtmlBody html={selected.bodyHtml} />
+                  ) : (
+                    <div className="h-full overflow-y-auto whitespace-pre-wrap break-words p-4 text-sm leading-6 text-foreground/85">
+                      {cleanPlainTextBody(selected.body) || cleanPreview(selected.preview) || 'Тело сообщения пустое.'}
+                    </div>
+                  )}
+                </div>
+
+                {/* AI-распознавание (внизу, ограничено по высоте) */}
+                <div className="max-h-[45%] shrink-0 overflow-y-auto border-t border-border/60 p-3">
+                  <AiRecognizePanel messageId={selected.id} />
+                </div>
+              </>
             )}
           </div>
         </div>
@@ -232,43 +266,25 @@ function RenderInboxChannelFeed({ instance }: BlockRenderProps) {
 }
 
 // ============================================================================
-// EmailHtmlBody — рендер sanitized HTML с lazy-load картинок
+// EmailHtmlBody — рендер HTML письма в sandboxed iframe (картинки on-demand)
 // ============================================================================
 
 /**
- * Рендерит HTML-тел письма. Перед монтом прогоняет через `sanitizeEmailHtml`
- * (DOMPurify + замена `<img src>` → `data-src` + плейсхолдер). Если есть
- * заблокированные картинки — показывает баннер «Загрузить картинки». При
- * клике обходит `[data-blocked="1"]` и восстанавливает src из dataset.
- *
- * Используем inline div с `prose` (без iframe) — легче по DOM, наследует
- * шрифты приложения, плюс совместимо с light/dark темой. Картинки в DB
- * НЕ хранятся, грузятся on-demand с внешних URL по нажатию пользователя.
+ * Рендерит HTML-тело письма в sandboxed `<iframe srcdoc>` (как почтовые
+ * сервисы): CSS письма изолирован, `<style>`/preheader работают корректно,
+ * скрипты письма не исполняются (sandbox без allow-scripts/allow-same-origin).
+ * Картинки по умолчанию заблокированы (privacy/трафик) — баннер «Загрузить»
+ * пересобирает srcdoc с реальными `<img src>`. Картинки в DB не хранятся.
  */
 function EmailHtmlBody({ html }: { html: string }) {
   const { html: safeHtml, hasImages } = useMemo(() => sanitizeEmailHtml(html), [html]);
-  const [imagesLoaded, setImagesLoaded] = useState(false);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-
-  const loadImages = useCallback(() => {
-    const root = containerRef.current;
-    if (!root) return;
-    const blocked = root.querySelectorAll<HTMLImageElement>('img[data-blocked="1"]');
-    blocked.forEach((img) => {
-      const src = img.dataset.src;
-      if (src) {
-        img.src = src;
-        img.removeAttribute('data-blocked');
-        img.removeAttribute('data-src');
-      }
-    });
-    setImagesLoaded(true);
-  }, []);
+  const [showImages, setShowImages] = useState(false);
+  const srcDoc = useMemo(() => buildEmailSrcDoc(safeHtml, { showImages }), [safeHtml, showImages]);
 
   return (
-    <div className="space-y-2">
-      {hasImages && !imagesLoaded && (
-        <div className="flex items-center justify-between gap-3 rounded-md border border-amber-200 bg-amber-50/60 px-3 py-1.5 text-xs text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-200">
+    <div className="flex h-full flex-col">
+      {hasImages && !showImages && (
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-amber-200 bg-amber-50/60 px-4 py-1.5 text-xs text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-200">
           <span className="inline-flex items-center gap-1.5">
             <ImageIcon className="h-3.5 w-3.5" />
             Картинки заблокированы для приватности и экономии трафика.
@@ -277,7 +293,7 @@ function EmailHtmlBody({ html }: { html: string }) {
             type="button"
             size="sm"
             variant="outline"
-            onClick={loadImages}
+            onClick={() => setShowImages(true)}
             className="h-6 gap-1 px-2 text-[11px]"
           >
             <Eye className="h-3 w-3" />
@@ -285,10 +301,12 @@ function EmailHtmlBody({ html }: { html: string }) {
           </Button>
         </div>
       )}
-      <div
-        ref={containerRef}
-        className="prose prose-sm max-w-none rounded-md bg-muted/35 p-3 text-sm leading-6 dark:prose-invert prose-a:break-words prose-img:my-2 prose-img:max-w-full prose-img:rounded"
-        dangerouslySetInnerHTML={{ __html: safeHtml }}
+      <iframe
+        title="Содержимое письма"
+        sandbox="allow-popups allow-popups-to-escape-sandbox"
+        referrerPolicy="no-referrer"
+        srcDoc={srcDoc}
+        className="min-h-0 w-full flex-1 border-0 bg-white"
       />
     </div>
   );

@@ -40,7 +40,7 @@ Context7: `mcp0_resolve-library-id` → `mcp0_query-docs`. Не более 3 в�
 - **Phase 2:** Tauri 2.0 desktop.
 - **Phase 3:** React Native + Expo mobile.
 - **Главная идея:** почти каждая страница = настраиваемый **BlockGrid** (Lego из блоков). Новая фича обычно = новый block type в `src/lib/blocks/catalog/`, а не статичная страница.
-- **Источник правды версии:** `CHANGELOG.md` + `git log` (`package.json` остался на `0.5.0`, не используется). Текущая версия — **v0.28.1** (2026-05-29). UI читает версию через `src/lib/version.ts` (`APP_VERSION`), значение инжектируется в build-time из `CHANGELOG.md` через `next.config.mjs` → `env.NEXT_PUBLIC_APP_VERSION`.
+- **Источник правды версии:** `CHANGELOG.md` + `git log` (`package.json` остался на `0.5.0`, не используется). Текущая версия — **v0.29.0** (2026-05-29). UI читает версию через `src/lib/version.ts` (`APP_VERSION`), значение инжектируется в build-time из `CHANGELOG.md` через `next.config.mjs` → `env.NEXT_PUBLIC_APP_VERSION`.
 
 ## Жёсткие правила
 
@@ -306,7 +306,7 @@ docs/memory-archive/      исторические разделы MEMORY.md (п�
 
 ## Inbox / Currency / Boards (краткая навигация)
 
-- **Inbox MVP** (v0.10-v0.19, parser v0.24.4): `src/lib/{inbox,db/schema/inbox}.ts`, `src/lib/blocks/catalog/inbox-{channel-feed,dashboard}.tsx`. IMAP test/sync (Beget STARTTLS fallback). AES-256-GCM (`INBOX_SECRET_KEY`). **Парсинг через `mailparser.simpleParser`** (v0.24.4) — nested multipart, charset, encoded-words, QP/base64. **`body_html` колонка** + DOMPurify санитизация (`src/lib/inbox/sanitize-html.ts`) + lazy images (placeholder + `data-src`, on-demand загрузка по кнопке). Sync default 200, `?limit=N` clamp 1..500. AI Vision для распознавания вложений: `AiRecognizePanel` + `/api/inbox/messages/[id]/recognize`.
+- **Inbox MVP** (v0.10-v0.19, parser v0.24.4, render v0.29.0): `src/lib/{inbox,db/schema/inbox}.ts`, `src/lib/blocks/catalog/inbox-{channel-feed,dashboard}.tsx`. IMAP test/sync (Beget STARTTLS fallback). AES-256-GCM (`INBOX_SECRET_KEY`). **Парсинг через `mailparser.simpleParser`** (v0.24.4) — nested multipart, charset, encoded-words, QP/base64. **`body_html` колонка**. **Рендер HTML письма — sandboxed `<iframe srcdoc>`** (v0.29.0): `sanitizeEmailHtml` (DOMPurify, разрешены `<style>`/class/id/font для достоверной вёрстки + скрытия preheader) + `buildEmailSrcDoc` (charset utf-8, `<base target=_blank>`, гейтинг картинок). `sandbox` без `allow-scripts`/`allow-same-origin` — JS писем не исполняется. Картинки on-demand с внешних URL по кнопке (в DB не хранятся). **`lib/inbox/clean-text.ts`** — `decodeEntities`/`cleanPreview`/`cleanPlainTextBody` против preheader-мусора `&zwnj;`. Sync default 200, `?limit=N` clamp 1..500. AI Vision: `AiRecognizePanel` + `/api/inbox/messages/[id]/recognize`.
 - **Currency** (v0.16.0): `src/lib/{db/schema/currency,currency}/*`, `src/lib/blocks/catalog/currency-rates.tsx`. ЦБ через `cbr-xml-daily.ru`, lazy-refresh 23h. **Курс НЕ money-формат.**
 - **Boards** (foundation): `src/lib/{db/schema,boards}/*`, `src/app/(app)/boards/*`, `boardPageKey(id) → 'board-{id}'`.
 

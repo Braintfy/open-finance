@@ -1,13 +1,18 @@
-// PURPOSE: Санитизация HTML-тел писем + замена <img src> на data-src для lazy-load.
+// PURPOSE: Санитизация HTML-тел писем + сборка srcdoc для sandboxed-iframe.
 // Используется ТОЛЬКО на клиенте (EmailHtmlBody в 'use client'-блоке). На SSR
-// возвращает no-op (пустой html, hasImages=false) — реальный санитайз произойдёт
-// при первом client-render через useMemo.
+// `sanitizeEmailHtml` возвращает no-op (пустой html) — реальный санитайз
+// произойдёт при первом client-render через useMemo.
+//
+// Письмо рендерится в <iframe srcdoc> (sandbox без allow-scripts/allow-same-origin),
+// поэтому санитайзер может быть достоверным: сохраняем <style>, class/id, font/center
+// (нужно для вёрстки писем и скрытия preheader `.preheader{display:none}`). Sandbox —
+// граница безопасности; DOMPurify оставляем как defense-in-depth (срезает script и пр.).
 //
 // Почему `dompurify` (browser-only), а не `isomorphic-dompurify`: последний
 // тащит за собой jsdom, который webpack Next.js не умеет корректно бандлить
 // (mangles `__dirname` → jsdom не может найти `browser/default-stylesheet.css`).
-// Картинки в DB НЕ хранятся — оригинальные URL остаются в data-src и грузятся
-// on-demand с внешних серверов по нажатию пользователя.
+// Картинки в DB НЕ хранятся — грузятся on-demand с внешних URL по кнопке
+// (см. buildEmailSrcDoc: при showImages=false `<img src>` нейтрализуется).
 import DOMPurify from 'dompurify';
 
 /**
@@ -20,17 +25,20 @@ const IMG_PLACEHOLDER =
 const ALLOWED_TAGS = [
   'p', 'div', 'span', 'a', 'strong', 'em', 'b', 'i', 'u', 's', 'br', 'hr',
   'ul', 'ol', 'li',
-  'table', 'thead', 'tbody', 'tfoot', 'tr', 'td', 'th',
+  'table', 'thead', 'tbody', 'tfoot', 'tr', 'td', 'th', 'caption', 'col', 'colgroup',
   'blockquote', 'pre', 'code',
   'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
   'img', 'figure', 'figcaption',
+  'style', 'center', 'font', 'small', 'sub', 'sup',
 ];
 
 const ALLOWED_ATTR = [
-  'href', 'title', 'alt', 'src', 'width', 'height', 'style',
-  'colspan', 'rowspan', 'align', 'valign',
+  'href', 'title', 'alt', 'src', 'srcset', 'width', 'height', 'style',
+  'class', 'id', 'dir', 'lang',
+  'colspan', 'rowspan', 'align', 'valign', 'nowrap',
   'target', 'rel',
   'border', 'cellpadding', 'cellspacing',
+  'bgcolor', 'background', 'color', 'face', 'size',
 ];
 
 export type SanitizedEmailHtml = {
@@ -39,13 +47,13 @@ export type SanitizedEmailHtml = {
 };
 
 /**
- * Санитизирует email HTML: вырезает script/iframe/onclick-атрибуты,
- * затем подменяет `<img src="...">` на `<img data-src="..." src="placeholder"
- * data-blocked="1">`. Клиент при клике на «Загрузить картинки» обходит
- * `[data-blocked="1"]` и восстанавливает src из data-src.
+ * Санитизирует email HTML: вырезает script/iframe/object/form и on*-атрибуты,
+ * но СОХРАНЯЕТ `<style>`, class/id, font/center и табличные атрибуты — для
+ * достоверной вёрстки письма внутри sandboxed-iframe. Возвращает `{ html,
+ * hasImages }`; гейтинг картинок выполняется в `buildEmailSrcDoc`.
  *
  * Также для `<a>` добавляет `target="_blank" rel="noopener noreferrer"`,
- * чтобы клики не покидали приложение.
+ * чтобы клики открывались в новой вкладке (вне sandbox).
  *
  * SSR-safe: если вызывается на сервере (нет `window`), возвращает no-op —
  * реальная санитизация произойдёт при гидратации через `useMemo`.
@@ -60,19 +68,16 @@ export function sanitizeEmailHtml(html: string): SanitizedEmailHtml {
     ALLOWED_TAGS,
     ALLOWED_ATTR,
     ALLOWED_URI_REGEXP: /^(?:https?:|mailto:|tel:|cid:|#)/i,
-    FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed', 'meta', 'link', 'base', 'form', 'input', 'button'],
+    // <style> и class/id СОХРАНЯЕМ — нужны для вёрстки письма и скрытия
+    // preheader. Безопасно: рендер в sandboxed-iframe (см. buildEmailSrcDoc).
+    FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'meta', 'link', 'base', 'form', 'input', 'button'],
     FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover', 'onfocus', 'onblur', 'onsubmit'],
   });
 
-  let hasImages = false;
-  let result = clean.replace(/<img\b([^>]*?)\bsrc=(["'])([^"']+)\2([^>]*)>/gi, (_, before, q, src, after) => {
-    hasImages = true;
-    const safeSrc = String(src).replace(/"/g, '&quot;');
-    return `<img${before}src="${IMG_PLACEHOLDER}" data-src=${q}${safeSrc}${q} data-blocked="1"${after}>`;
-  });
+  const hasImages = /<img\b/i.test(clean);
 
-  // `<a>` → target=_blank + rel=noopener
-  result = result.replace(/<a\b([^>]*)>/gi, (_full, attrs: string) => {
+  // `<a>` → target=_blank + rel=noopener (открывать ссылки вне sandbox).
+  const result = clean.replace(/<a\b([^>]*)>/gi, (_full, attrs: string) => {
     const hasTarget = /\btarget=/.test(attrs);
     const hasRel = /\brel=/.test(attrs);
     let next = attrs;
@@ -82,4 +87,44 @@ export function sanitizeEmailHtml(html: string): SanitizedEmailHtml {
   });
 
   return { html: result, hasImages };
+}
+
+// ============================================================================
+// buildEmailSrcDoc — сборка полного HTML-документа для <iframe srcdoc>
+// ============================================================================
+
+/** Базовые стили документа письма (письмо переопределит своими inline/<style>). */
+const BASE_CSS = `
+  html,body{margin:0;padding:0;}
+  body{background:#ffffff;color:#1a1a1a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;padding:12px;word-break:break-word;-webkit-text-size-adjust:100%;}
+  img{max-width:100%;height:auto;border:0;}
+  table{max-width:100%;}
+  a{color:#2563eb;}
+  ::-webkit-scrollbar{width:10px;height:10px;}
+  ::-webkit-scrollbar-thumb{background:rgba(0,0,0,.2);border-radius:5px;}
+`;
+
+/** Нейтрализует загрузку картинок: src→плейсхолдер, убирает srcset/background. */
+function blockImages(html: string): string {
+  return html
+    .replace(/(<img\b[^>]*?)\ssrc=(["'])[^"']*\2/gi, `$1 src="${IMG_PLACEHOLDER}"`)
+    .replace(/(<img\b[^>]*?)\ssrcset=(["'])[^"']*\2/gi, '$1')
+    .replace(/(<[^>]*?)\sbackground=(["'])[^"']*\2/gi, '$1');
+}
+
+/**
+ * Собирает полноценный HTML-документ для `<iframe srcdoc>`: charset utf-8
+ * (чинит кодировки тела), `<base target="_blank">` (ссылки в новой вкладке),
+ * базовые стили. При `showImages=false` картинки нейтрализуются (privacy/трафик).
+ */
+export function buildEmailSrcDoc(cleanHtml: string, opts: { showImages: boolean }): string {
+  const body = opts.showImages ? cleanHtml : blockImages(cleanHtml);
+  return (
+    '<!doctype html><html><head>' +
+    '<meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+    '<base target="_blank">' +
+    `<style>${BASE_CSS}</style>` +
+    `</head><body>${body}</body></html>`
+  );
 }

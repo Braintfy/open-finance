@@ -3,6 +3,7 @@ import net from 'net';
 import tls from 'tls';
 import { simpleParser, type AddressObject } from 'mailparser';
 import type { InboxEmailSettings, ParsedInboxMessage } from './types';
+import { cleanPreview } from './clean-text';
 
 type SocketLike = net.Socket | tls.TLSSocket;
 
@@ -88,7 +89,8 @@ function shouldRetryBegetStartTls(settings: InboxEmailSettings, error: unknown):
 }
 
 function makePreview(value: string): string {
-  return value.replace(/\s+/g, ' ').trim().slice(0, 240);
+  // Декодируем entities + срезаем preheader-набивку (`&zwnj;`/`&nbsp;`) до slice.
+  return cleanPreview(value, 240);
 }
 
 class ImapClient {

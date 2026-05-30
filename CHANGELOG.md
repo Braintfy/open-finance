@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.29.0] - 2026-05-29
+
+### Added
+- **Рендер писем в sandboxed `<iframe srcdoc>`** (`inbox.channel-feed`) — HTML-тело письма показывается как в почтовых сервисах: CSS письма изолирован, `<style>`/class-селекторы работают (preheader корректно скрыт), скрипты письма не исполняются (`sandbox` без `allow-scripts`/`allow-same-origin`). `buildEmailSrcDoc()` в `lib/inbox/sanitize-html.ts` собирает документ с `charset=utf-8` + `<base target="_blank">` + базовыми стилями. Ссылки открываются в новой вкладке.
+- **Util `lib/inbox/clean-text.ts`** — `decodeEntities` (numeric/hex + именованные), `stripZeroWidth`, `cleanPreview`, `cleanPlainTextBody`. Работает и на сервере, и на клиенте.
+
+### Fixed
+- **Слипшиеся абзацы в блоке `note.markdown` (WYSIWYG)** — MDXEditor не задаёт margin для `p`/заголовков/списков, а Tailwind Preflight их обнуляет. Добавлена типографика для `.note-md-content` в `globals.css` (источник MD был корректен — чинился только рендер «Текст»).
+- **Мусор `&zwnj;`/`&nbsp;` в письмах** — `cleanPreview` декодирует HTML-entities и срезает символы нулевой ширины из превью списка и plain-text fallback; `makePreview` (sync) теперь чистит preheader-набивку. Старые письма в БД отображаются чисто без ре-синка.
+- **Кодировка тела письма** — `charset=utf-8` в srcdoc iframe чинит отображение кириллицы.
+
+### Changed
+- **Санитайзер писем (`sanitize-html.ts`)** — под sandboxed-iframe разрешены `<style>`, `class`/`id`, `font`/`center` и табличные атрибуты (`bgcolor`/`background`/…) для достоверной вёрстки; убрана подмена `<img src>`→`data-src` (гейтинг картинок перенесён в `buildEmailSrcDoc`, картинки грузятся on-demand с внешних URL по кнопке).
+- **Шапка превью письма** — аватар-инициалы отправителя + `From <address>` + дата в стиле почтовых сервисов; панель письма перестроена в flex-колонку (шапка / тело-iframe / AI-распознавание).
+
 ## [0.28.1] - 2026-05-29
 
 ### Changed
