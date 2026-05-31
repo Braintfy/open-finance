@@ -13,7 +13,7 @@ import {
 } from '@/lib/format-settings';
 import type { BlockDef, BlockRenderProps, BlockSettingsFormProps } from '../types';
 import { useBlockDensity, useBlockSize } from '@/components/blocks/block-size';
-import { useBlockValuePublisher } from '../values';
+import { useBlockValuePublisher, serializeSpark } from '../values';
 import { useEffectivePeriod } from '../page-period-context';
 import { useEffectiveSource } from '../page-source-context';
 import { usePersistedPeriodWithGlobal } from '../use-persisted-period';
@@ -226,6 +226,7 @@ function ChartRender({ instance }: BlockRenderProps) {
     totalExpense,
     count: data.length,
     label: instance.appearance?.title ?? cfg.title ?? 'График денежного потока',
+    __spark: serializeSpark(data.map((p) => p.income - p.expense)),
     __money: 'value,totalIncome,totalExpense',
     __labels:
       'value=Чистый поток,totalIncome=Доходы,totalExpense=Расходы,count=Кол-во точек',

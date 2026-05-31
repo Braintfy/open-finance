@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { z } from 'zod';
 import { AlertTriangle, Info, LineChart as LineIcon, Lock, SlidersHorizontal } from 'lucide-react';
-import { useBlockValuePublisher, formatPeriodKey } from '@/lib/blocks/values';
+import { useBlockValuePublisher, formatPeriodKey, serializeSpark } from '@/lib/blocks/values';
 import { useBlockPeriod } from '@/lib/blocks/use-block-period';
 import { useOzonSyncListener } from '@/lib/blocks/use-ozon-sync-listener';
 import { useBlockSize } from '@/components/blocks/block-size';
@@ -438,6 +438,7 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
     orders: totals.orders,
     drr: totals.revenue > 0 ? (totals.ads / totals.revenue) * 100 : 0,
     label: instance.appearance?.title ?? 'Ozon · Динамика',
+    __spark: serializeSpark(visiblePoints.map((p) => p.revenueRub ?? 0)),
     __money: 'value,revenue,ads',
     __labels:
       'value=Выручка / период,revenue=Выручка / период,ads=Реклама / период,' +

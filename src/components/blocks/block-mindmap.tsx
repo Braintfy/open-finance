@@ -3,7 +3,7 @@
 // Раскладка узлов хранится отдельно в block.mindmap и не сбивает грид.
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Background,
   BackgroundVariant,
@@ -28,7 +28,8 @@ import {
   computeInitialPositions,
   isBlockCollapsed,
 } from '@/lib/blocks/mindmap-layout';
-import { getMapPreviewSize } from './map-previews';
+import { getBlockDef } from '@/lib/blocks/registry';
+import { getMapExpandedSize, getMapPreviewSize } from './map-previews';
 import {
   BlockNode,
   MindmapContext,
@@ -54,8 +55,15 @@ function edgeColor(kind: BlockRelationEdge['kind']): string {
   return STROKE;
 }
 
-/** Размер превью-узла блока (для компактной раскладки и позиций соседей). */
-const sizeOf = (block: BlockInstance) => getMapPreviewSize(block.type);
+/**
+ * Размер узла блока для раскладки. Учитывает состояние: свёрнутый → размер
+ * превью, развёрнутый → размер живого блока (чтобы compact-раскладка
+ * резервировала место и раскрытые узлы не наезжали на соседей).
+ */
+const sizeOf = (block: BlockInstance): { w: number; h: number } =>
+  isBlockCollapsed(block)
+    ? getMapPreviewSize(block.type)
+    : getMapExpandedSize(getBlockDef(block.type), block.type);
 
 export type BlockMindmapProps = {
   blocks: BlockInstance[];
@@ -107,6 +115,23 @@ function BlockMindmapInner({
       return blocks.map((b) => buildNode(b, positions.get(b.id) ?? blockMindmapPosition(b)));
     })(),
   );
+
+  // Seed-and-persist: при первом входе на карту фиксируем compact-раскладку для
+  // блоков без сохранённой mindmap-позиции. Иначе toggle-collapse сохранял бы
+  // позицию, выведенную из грида (а не ту, что видит пользователь) → при
+  // повторном входе блоки разлетались «в кучу».
+  const seededRef = useRef(false);
+  useEffect(() => {
+    if (seededRef.current || blocks.length === 0) return;
+    seededRef.current = true;
+    const unsaved = blocks.filter((b) => !b.mindmap);
+    if (unsaved.length === 0) return;
+    const positions = computeInitialPositions(blocks, sizeOf);
+    for (const b of unsaved) {
+      const p = positions.get(b.id);
+      if (p) onMindmapMove(b.id, { x: Math.round(p.x), y: Math.round(p.y) });
+    }
+  }, [blocks, onMindmapMove]);
 
   // Синхронизация data при изменении блоков (config/collapse),
   // СОХРАНЯЯ живую позицию узла (drag не должен прыгать).

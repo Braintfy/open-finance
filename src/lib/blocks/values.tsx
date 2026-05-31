@@ -331,6 +331,22 @@ function parseMoneyString(raw: unknown): Set<string> {
 }
 
 /**
+ * Сериализует числовую серию в CSV для публикации в `__spark` (мини-спарклайн
+ * на «Карте»). Downsample до maxPoints точек, округление (форма важнее точности).
+ */
+export function serializeSpark(values: number[], maxPoints = 40): string {
+  const clean = values.filter((v) => Number.isFinite(v));
+  if (clean.length === 0) return '';
+  if (clean.length <= maxPoints) return clean.map((v) => Math.round(v)).join(',');
+  const step = clean.length / maxPoints;
+  const out: number[] = [];
+  for (let i = 0; i < maxPoints; i += 1) {
+    out.push(clean[Math.min(clean.length - 1, Math.floor(i * step))]);
+  }
+  return out.map((v) => Math.round(v)).join(',');
+}
+
+/**
  * Форматирует ключ периода для публикации в __periodKey.
  * Convention: блоки с периодом публикуют __periodKey чтобы модалка связей
  * показывала тег периода рядом с источником (например «30d», «7d», «custom:…»).

@@ -68,20 +68,45 @@ function configStringList(config: BlockInstance['config'], key: string, prop: st
     .filter(Boolean);
 }
 
+/** Парсит CSV чисел (для серии __spark). */
+function parseNums(raw: unknown): number[] {
+  if (typeof raw !== 'string' || !raw) return [];
+  return raw
+    .split(',')
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isFinite(n));
+}
+/** Помечено ли поле как денежное в `__money` (CSV). */
+function isMoneyField(output: BlockOutput | undefined, field: string): boolean {
+  return parseMoneySet(output?.__money).has(field);
+}
+
 const DEFAULT_PREVIEW_SIZE: Size = { w: 240, h: 116 };
 
 /* ── builders ── */
 
+/** Деньги по умолчанию в КОПЕЙКАХ → рубли; исключения (уже рубли): top-ads/search/ABC. */
+const KOPECK_SCALE = 0.01;
+
 function buildMetric(cfg: {
+  field?: string;
   format?: StatCardFormat;
+  /** Явный множитель. Если money=true и scale не задан → KOPECK_SCALE. */
   scale?: number;
+  money?: boolean;
   accent?: PreviewAccent;
   labelFallback: string;
   goodDirection?: 'up' | 'down';
+  /** Поле с CSV-серией для мини-спарклайна (например `__spark`). */
+  sparkField?: string;
   previewSize?: Size;
   expandedSize?: Size;
   needsLiveData?: boolean;
 }): MapPreviewEntry {
+  const field = cfg.field ?? 'value';
+  const isMoney = cfg.money ?? false;
+  const effScale = cfg.scale ?? (isMoney ? KOPECK_SCALE : 1);
+  const effFormat: StatCardFormat = cfg.format ?? (isMoney ? 'rub' : 'int');
   return {
     previewSize: cfg.previewSize ?? DEFAULT_PREVIEW_SIZE,
     expandedSize: cfg.expandedSize,
@@ -89,8 +114,8 @@ function buildMetric(cfg: {
     Preview: ({ block }) => {
       const output = useBlockOutput(block.id);
       const def = getBlockDef(block.type);
-      const raw = num(output, 'value');
-      const value = raw === null ? null : raw * (cfg.scale ?? 1);
+      const raw = num(output, field);
+      const value = raw === null ? null : raw * effScale;
       const label =
         str(output, 'label') ?? block.appearance?.title ?? def?.displayName ?? cfg.labelFallback;
       const deltaPct = num(output, 'deltaPct');
@@ -98,13 +123,15 @@ function buildMetric(cfg: {
         deltaPct !== null && deltaPct !== 0
           ? { value: deltaPct, label: 'vs прошлый период', goodDirection: cfg.goodDirection }
           : null;
+      const spark = cfg.sparkField ? parseNums(output?.[cfg.sparkField]) : [];
       const Icon = resolveIcon(block.appearance?.icon ?? def?.iconName, Box);
       return (
         <MetricPreview
           label={label}
           value={value === null ? '—' : value}
-          format={value === null ? undefined : cfg.format}
+          format={value === null ? undefined : effFormat}
           delta={delta}
+          sparkline={spark.length > 1 ? spark : null}
           accent={cfg.accent}
           icon={Icon}
           iconColor={block.appearance?.accentColor}
@@ -114,8 +141,32 @@ function buildMetric(cfg: {
   };
 }
 
+/** Чарт-превью: крупная метрика + реальный мини-спарклайн из `__spark`. */
+function buildChart(cfg: {
+  field?: string;
+  money?: boolean;
+  sparkField?: string;
+  accent?: PreviewAccent;
+  labelFallback: string;
+  goodDirection?: 'up' | 'down';
+  previewSize?: Size;
+}): MapPreviewEntry {
+  return buildMetric({
+    ...cfg,
+    sparkField: cfg.sparkField ?? '__spark',
+    previewSize: cfg.previewSize ?? { w: 280, h: 150 },
+    needsLiveData: true,
+  });
+}
+
 function buildMulti(
-  specs: Array<{ field: string; label: string; format?: StatCardFormat; scale?: number }>,
+  specs: Array<{
+    field: string;
+    label: string;
+    format?: StatCardFormat;
+    scale?: number;
+    money?: boolean;
+  }>,
   opts?: { previewSize?: Size; expandedSize?: Size; needsLiveData?: boolean },
 ): MapPreviewEntry {
   return {
@@ -126,10 +177,12 @@ function buildMulti(
       const output = useBlockOutput(block.id);
       const items = specs.map((s) => {
         const raw = num(output, s.field);
+        const money = s.money ?? false;
+        const scale = s.scale ?? (money ? KOPECK_SCALE : 1);
         return {
           label: s.label,
-          value: raw === null ? '—' : raw * (s.scale ?? 1),
-          format: raw === null ? undefined : s.format,
+          value: raw === null ? '—' : raw * scale,
+          format: raw === null ? undefined : (s.format ?? (money ? 'rub' : undefined)),
         };
       });
       return <MultiMetricPreview items={items} />;
@@ -141,7 +194,10 @@ function buildGeneric(opts?: {
   previewSize?: Size;
   expandedSize?: Size;
   needsLiveData?: boolean;
+  /** Множитель для money-полей (по умолчанию копейки → рубли). */
+  moneyScale?: number;
 }): MapPreviewEntry {
+  const moneyScale = opts?.moneyScale ?? KOPECK_SCALE;
   return {
     previewSize: opts?.previewSize ?? DEFAULT_PREVIEW_SIZE,
     expandedSize: opts?.expandedSize,
@@ -153,12 +209,12 @@ function buildGeneric(opts?: {
       const title = block.appearance?.title ?? def?.displayName ?? block.type;
       const raw = num(output, 'value');
       if (raw !== null) {
-        const isMoney = typeof output?.__money === 'string' && output.__money.includes('value');
+        const money = isMoneyField(output, 'value');
         return (
           <MetricPreview
             label={str(output, 'label') ?? title}
-            value={raw}
-            format={isMoney ? 'rub' : 'int'}
+            value={money ? raw * moneyScale : raw}
+            format={money ? 'rub' : 'int'}
             icon={Icon}
             iconColor={block.appearance?.accentColor}
           />
@@ -181,11 +237,11 @@ function buildGeneric(opts?: {
 const TABLE_SIZE: Size = { w: 300, h: 160 };
 
 export const MAP_PREVIEWS: Record<string, MapPreviewEntry> = {
-  // --- cashflow KPI (value в КОПЕЙКАХ → scale 0.01) ---
-  'stat.income': buildMetric({ format: 'rub', scale: 0.01, accent: 'emerald', goodDirection: 'up', labelFallback: 'Доходы' }),
-  'stat.expense': buildMetric({ format: 'rub', scale: 0.01, accent: 'rose', goodDirection: 'down', labelFallback: 'Расходы' }),
-  'stat.balance': buildMetric({ format: 'rub', scale: 0.01, accent: 'sky', labelFallback: 'Баланс' }),
-  'stat.custom': buildMetric({ format: 'rub', scale: 0.01, accent: 'violet', labelFallback: 'KPI' }),
+  // --- cashflow KPI (value в КОПЕЙКАХ → money) ---
+  'stat.income': buildMetric({ money: true, accent: 'emerald', goodDirection: 'up', labelFallback: 'Доходы' }),
+  'stat.expense': buildMetric({ money: true, accent: 'rose', goodDirection: 'down', labelFallback: 'Расходы' }),
+  'stat.balance': buildMetric({ money: true, accent: 'sky', labelFallback: 'Баланс' }),
+  'stat.custom': buildMetric({ money: true, accent: 'violet', labelFallback: 'KPI' }),
 
   'cashflow.top-categories': {
     previewSize: { w: 260, h: 150 },
@@ -209,9 +265,9 @@ export const MAP_PREVIEWS: Record<string, MapPreviewEntry> = {
 
   'cashflow.transactions': buildMulti(
     [
-      { field: 'count', label: 'Операций', format: 'int' },
-      { field: 'totalIncome', label: 'Доход', format: 'rub', scale: 0.01 },
-      { field: 'totalExpense', label: 'Расход', format: 'rub', scale: 0.01 },
+      { field: 'count', label: 'Операций' },
+      { field: 'totalIncome', label: 'Доход', money: true },
+      { field: 'totalExpense', label: 'Расход', money: true },
     ],
     { previewSize: { w: 300, h: 130 } },
   ),
@@ -228,7 +284,7 @@ export const MAP_PREVIEWS: Record<string, MapPreviewEntry> = {
         .slice(0, 4)
         .map(([k, v]) => ({
           label: labels[k] ?? k,
-          value: v as number,
+          value: money.has(k) ? (v as number) * KOPECK_SCALE : (v as number),
           format: (money.has(k) ? 'rub' : 'int') as StatCardFormat,
         }));
       if (items.length === 0) {
@@ -240,8 +296,8 @@ export const MAP_PREVIEWS: Record<string, MapPreviewEntry> = {
     },
   },
 
-  'chart.cashflow': buildGeneric({ previewSize: { w: 280, h: 140 }, needsLiveData: false }),
-  'computed.sum': buildMetric({ format: 'int', accent: 'violet', labelFallback: 'Результат' }),
+  'chart.cashflow': buildChart({ money: true, accent: 'sky', labelFallback: 'Чистый поток' }),
+  'computed.sum': buildGeneric({ previewSize: DEFAULT_PREVIEW_SIZE }),
 
   // --- static (config-derived, no live mount) ---
   sheet: {
@@ -261,16 +317,44 @@ export const MAP_PREVIEWS: Record<string, MapPreviewEntry> = {
     },
   },
   'custom.data': {
-    previewSize: TABLE_SIZE,
-    needsLiveData: false,
+    previewSize: { w: 300, h: 150 },
+    needsLiveData: true,
     Preview: ({ block }) => {
-      const cols = configStringList(block.config, 'columns', 'label');
-      const rowCount = configArrayLength(block.config, 'rows');
+      const output = useBlockOutput(block.id);
+      const labels = parseLabels(output?.__labels);
+      const money = parseMoneySet(output?.__money);
+      // Колонко-агрегаты: числовые поля без '.' (per-cell ключи) и без служебных.
+      const cols = Object.entries(output ?? {})
+        .filter(
+          ([k, v]) =>
+            typeof v === 'number' &&
+            !k.startsWith('__') &&
+            !k.includes('.') &&
+            !['value', 'count', 'missing'].includes(k),
+        )
+        .slice(0, 3)
+        .map(([k, v]) => ({
+          label: labels[k] ?? k,
+          value: money.has(k) ? (v as number) * KOPECK_SCALE : (v as number),
+          format: (money.has(k) ? 'rub' : 'int') as StatCardFormat,
+        }));
+      const count = num(output, 'count');
+      if (cols.length > 0) {
+        const items = [
+          { label: 'Строк', value: count ?? 0, format: 'int' as StatCardFormat },
+          ...cols,
+        ];
+        return <MultiMetricPreview items={items} />;
+      }
+      // Фолбэк до live-mount: таблица из config.
+      const cfgCols = configStringList(block.config, 'columns', 'label');
+      const rowCount = count ?? configArrayLength(block.config, 'rows');
+      const colCount = cfgCols.length || configArrayLength(block.config, 'columns');
       return (
         <MiniTablePreview
-          columns={cols.length ? cols : ['Данные']}
+          columns={cfgCols.length ? cfgCols : ['Данные']}
           rows={[]}
-          footer={`${rowCount} строк`}
+          footer={`${rowCount} строк × ${colCount} колонок`}
         />
       );
     },
@@ -324,13 +408,17 @@ export const MAP_PREVIEWS: Record<string, MapPreviewEntry> = {
       const title = block.appearance?.title || (typeof cfg.title === 'string' ? cfg.title : '') || 'Ячейка';
       const raw = num(output, 'value');
       const rawStr = str(output, 'value');
-      const isMoney = typeof output?.__money === 'string' && output.__money.includes('value');
-      const value: number | string = raw ?? rawStr ?? (typeof cfg.value === 'string' ? cfg.value : '—');
+      const money = isMoneyField(output, 'value');
+      // Никогда не показываем сырую формулу (=@uuid…). Только вычисленный
+      // результат: число (с money-scale) или строка-результат (не формула).
+      const strResult = rawStr && !rawStr.trim().startsWith('=') ? rawStr : null;
+      const value: number | string =
+        raw !== null ? (money ? raw * KOPECK_SCALE : raw) : (strResult ?? '—');
       return (
         <MetricPreview
           label={title}
           value={value}
-          format={typeof value === 'number' ? (isMoney ? 'rub' : 'int') : undefined}
+          format={typeof value === 'number' ? (money ? 'rub' : 'int') : undefined}
           icon={Icon}
           iconColor={block.appearance?.accentColor}
         />
@@ -381,7 +469,7 @@ export const MAP_PREVIEWS: Record<string, MapPreviewEntry> = {
   },
 
   // --- unit ozon analytics ---
-  'unit.ozon-kpi': buildMetric({ format: 'rub', scale: 0.01, accent: 'sky', labelFallback: 'Выручка', previewSize: { w: 260, h: 120 } }),
+  'unit.ozon-kpi': buildChart({ money: true, accent: 'sky', labelFallback: 'Выручка' }),
   'unit.ozon-multi-table': buildMulti(
     [
       { field: 'rowsCount', label: 'Товаров', format: 'int' },
@@ -393,16 +481,50 @@ export const MAP_PREVIEWS: Record<string, MapPreviewEntry> = {
   'unit.ozon-top-ads': buildMetric({ format: 'rub', accent: 'amber', labelFallback: 'Расход на рекламу', previewSize: { w: 260, h: 120 } }),
   'unit.ozon-search-phrases': buildMetric({ format: 'rub', accent: 'amber', labelFallback: 'Расход', previewSize: { w: 260, h: 120 } }),
   'unit.ozon-ai-insights': buildMetric({ format: 'int', accent: 'violet', labelFallback: 'Инсайтов' }),
-  'unit.ozon-abc': buildMetric({ format: 'int', accent: 'sky', labelFallback: 'Товаров A' }),
-  'unit.ozon-analytics': buildGeneric({ previewSize: TABLE_SIZE }),
-  'unit.ozon-chart': buildGeneric({ previewSize: { w: 280, h: 140 }, needsLiveData: false }),
+  'unit.ozon-abc': {
+    previewSize: { w: 300, h: 120 },
+    Preview: ({ block }) => {
+      const output = useBlockOutput(block.id);
+      // aRevenue/bRevenue/cRevenue публикуются в РУБЛЯХ; показываем доли A/B/C.
+      const a = num(output, 'aRevenue') ?? 0;
+      const b = num(output, 'bRevenue') ?? 0;
+      const c = num(output, 'cRevenue') ?? 0;
+      const total = a + b + c;
+      const pct = (x: number) => (total > 0 ? (x / total) * 100 : 0);
+      const items =
+        total > 0
+          ? [
+              { label: 'A', value: pct(a), format: 'pct' as StatCardFormat },
+              { label: 'B', value: pct(b), format: 'pct' as StatCardFormat },
+              { label: 'C', value: pct(c), format: 'pct' as StatCardFormat },
+            ]
+          : [{ label: 'Товаров A', value: num(output, 'value') ?? '—', format: 'int' as StatCardFormat }];
+      return <MultiMetricPreview items={items} />;
+    },
+  },
+  'unit.ozon-analytics': buildMetric({ money: true, accent: 'sky', labelFallback: 'Выручка', previewSize: { w: 260, h: 120 } }),
+  'unit.ozon-chart': buildChart({ money: true, accent: 'sky', labelFallback: 'Выручка' }),
   'unit.ozon-campaigns': buildGeneric({ previewSize: TABLE_SIZE }),
   'unit.ozon-stock-clusters': buildGeneric({ previewSize: TABLE_SIZE }),
   'unit.ozon-warehouse-clusters': buildGeneric({ previewSize: TABLE_SIZE }),
 
   // --- calculators / tables / misc ---
-  'unit.ozon-calculator': buildGeneric({ previewSize: { w: 260, h: 120 } }),
-  'unit.yandex-calculator': buildGeneric({ previewSize: { w: 260, h: 120 } }),
+  'unit.ozon-calculator': buildMulti(
+    [
+      { field: 'profitPerMonth', label: 'Прибыль / мес', money: true },
+      { field: 'margin', label: 'Маржа', format: 'pct' },
+      { field: 'roi', label: 'ROI', format: 'pct' },
+    ],
+    { previewSize: { w: 300, h: 120 } },
+  ),
+  'unit.yandex-calculator': buildMulti(
+    [
+      { field: 'profitPerMonth', label: 'Прибыль / мес', money: true },
+      { field: 'margin', label: 'Маржа', format: 'pct' },
+      { field: 'roi', label: 'ROI', format: 'pct' },
+    ],
+    { previewSize: { w: 300, h: 120 } },
+  ),
   'unit.my-store-table': {
     previewSize: TABLE_SIZE,
     needsLiveData: false,
@@ -418,7 +540,25 @@ export const MAP_PREVIEWS: Record<string, MapPreviewEntry> = {
       );
     },
   },
-  'currency.rates': buildGeneric({ previewSize: { w: 260, h: 120 }, needsLiveData: false }),
+  'currency.rates': {
+    previewSize: { w: 240, h: 110 },
+    needsLiveData: true,
+    Preview: ({ block }) => {
+      const output = useBlockOutput(block.id);
+      const def = getBlockDef(block.type);
+      const Icon = resolveIcon(block.appearance?.icon ?? def?.iconName, Box);
+      const rate = num(output, 'value');
+      const label = str(output, 'label') ?? block.appearance?.title ?? def?.displayName ?? 'Курс';
+      const formatted =
+        rate === null
+          ? '—'
+          : new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 4 }).format(rate) +
+            ' ₽';
+      return (
+        <MetricPreview label={label} value={formatted} icon={Icon} iconColor={block.appearance?.accentColor} />
+      );
+    },
+  },
 };
 
 function buildInboxList(countLabel: string): MapPreviewEntry {

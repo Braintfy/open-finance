@@ -23,7 +23,7 @@ import {
 } from '@/components/blocks/period-picker';
 import { OzonAccountSelector } from '@/components/marketplaces/ozon-account-selector';
 import { OzonSyncSection } from '@/components/unit-economics/ozon-sync-section';
-import { useBlockValuePublisher, formatPeriodKey } from '@/lib/blocks/values';
+import { useBlockValuePublisher, formatPeriodKey, serializeSpark } from '@/lib/blocks/values';
 import { useBlockPeriod } from '@/lib/blocks/use-block-period';
 import { useOzonSyncListener } from '@/lib/blocks/use-ozon-sync-listener';
 import { Lock } from 'lucide-react';
@@ -266,6 +266,7 @@ function RenderOzonKpi({ instance, onConfigChange }: BlockRenderProps) {
     deltaRevenuePct,
     deltaOrdersPct,
     deltaAdsPct,
+    __spark: serializeSpark(sparklineRevenue),
     __labels:
       'value=Выручка / период,revenue=Выручка / период,orders=Заказы / период,' +
       'ads=Расход на рекламу,drr=ДРР %,aov=Средний чек,cpo=Средний CPO,' +
