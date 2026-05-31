@@ -1011,7 +1011,7 @@ function BlockGridInner({
               title={
                 viewMode === 'map'
                   ? 'Вернуться к сетке'
-                  : 'Карта связей между блоками'
+                  : 'Карта блоков и связей'
               }
             >
               {viewMode === 'map' ? (
@@ -1020,7 +1020,7 @@ function BlockGridInner({
                 </>
               ) : (
                 <>
-                  <Network /> Связи
+                  <Network /> Карта
                 </>
               )}
             </Button>

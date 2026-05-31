@@ -14,6 +14,8 @@ export type CrossPageLink = {
   pageKey: string;
   pageLabel: string;
   blockId: string;
+  /** Тип блока (для иконки призрачной карточки на карте). */
+  type: string;
   /** Title или typeLabel блока на той странице */
   label: string;
   /** Имя поля (для группировки/диагностики; в UI обычно не показывается) */
@@ -81,12 +83,13 @@ export function useCrossPageRelations(
     if (!data?.ok || !data.pages) return cache.get(currentPageKey) ?? {};
 
     // Карта (pageKey, blockId) → label для popover'ов
-    const labelByKey = new Map<string, { pageLabel: string; label: string }>();
+    const labelByKey = new Map<string, { pageLabel: string; label: string; type: string }>();
     for (const p of data.pages) {
       for (const b of p.blocks) {
         labelByKey.set(`${p.pageKey}:${b.blockId}`, {
           pageLabel: p.pageLabel,
           label: b.label,
+          type: b.type,
         });
       }
     }
@@ -114,6 +117,7 @@ export function useCrossPageRelations(
             pageKey: out.pageKey,
             pageLabel: meta?.pageLabel ?? out.pageKey,
             blockId: out.blockId,
+            type: meta?.type ?? 'unknown',
             label: meta?.label ?? `Блок ${out.blockId.slice(0, 8)}`,
             field: out.field,
           });
@@ -142,6 +146,7 @@ export function useCrossPageRelations(
             pageKey: page.pageKey,
             pageLabel: page.pageLabel,
             blockId: block.blockId,
+            type: block.type,
             label: block.label,
             field: out.field,
           });

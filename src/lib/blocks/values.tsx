@@ -144,6 +144,24 @@ export function useBlockValue(ref: BlockRef): number | string | null {
 }
 
 /**
+ * Хук: вернуть весь опубликованный output блока по его id (реактивно).
+ * Используется мини-превью в режиме «Карта» для чтения ключевой метрики.
+ */
+export function useBlockOutput(blockId: string): BlockOutput | undefined {
+  const api = useContext(BlockValuesContext);
+  const [tick, setTick] = useState(0);
+
+  useEffect(() => {
+    if (!api) return;
+    return api.subscribe(() => setTick((t) => t + 1));
+  }, [api]);
+
+  void tick;
+  if (!api) return undefined;
+  return api.get().values.get(blockId);
+}
+
+/**
  * Хук для computed-блока: возвращает агрегированный результат на основе всех зависимостей.
  * Реактивно пересчитывается при изменении любого источника.
  */

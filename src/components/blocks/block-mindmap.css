@@ -59,3 +59,37 @@
 .block-mindmap-root .react-flow__attribution a {
   color: #94a3b8;
 }
+
+/* Кнопка привязки к сетке (snap) — активное состояние подсвечено. */
+.block-mindmap-controls .react-flow__controls-button.block-mindmap-snap-active {
+  background: #4f46e5;
+}
+.block-mindmap-controls .react-flow__controls-button.block-mindmap-snap-active:hover {
+  background: #6366f1;
+}
+.block-mindmap-controls .react-flow__controls-button.block-mindmap-snap-active svg {
+  fill: #ffffff;
+}
+
+/* Призрачные узлы — полупрозрачные карточки соседних разделов. */
+.ghost-node {
+  opacity: 0.6;
+  transition: opacity 0.15s ease, box-shadow 0.15s ease;
+}
+.ghost-node:hover {
+  opacity: 1;
+  box-shadow: 0 6px 18px rgba(2, 6, 23, 0.4);
+}
+.ghost-node-handle {
+  width: 7px;
+  height: 7px;
+  border: 1.5px solid #ffffff;
+  background: #94a3b8;
+  opacity: 0.7;
+}
+.ghost-node-handle.react-flow__handle-left {
+  left: -4px;
+}
+.ghost-node-handle.react-flow__handle-right {
+  right: -4px;
+}

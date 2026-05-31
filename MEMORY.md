@@ -40,7 +40,7 @@ Context7: `mcp0_resolve-library-id` → `mcp0_query-docs`. Не более 3 в�
 - **Phase 2:** Tauri 2.0 desktop.
 - **Phase 3:** React Native + Expo mobile.
 - **Главная идея:** почти каждая страница = настраиваемый **BlockGrid** (Lego из блоков). Новая фича обычно = новый block type в `src/lib/blocks/catalog/`, а не статичная страница.
-- **Источник правды версии:** `CHANGELOG.md` + `git log` (`package.json` остался на `0.5.0`, не используется). Текущая версия — **v0.30.0** (2026-05-30). UI читает версию через `src/lib/version.ts` (`APP_VERSION`), значение инжектируется в build-time из `CHANGELOG.md` через `next.config.mjs` → `env.NEXT_PUBLIC_APP_VERSION`.
+- **Источник правды версии:** `CHANGELOG.md` + `git log` (`package.json` остался на `0.5.0`, не используется). Текущая версия — **v0.31.0** (2026-05-31). UI читает версию через `src/lib/version.ts` (`APP_VERSION`), значение инжектируется в build-time из `CHANGELOG.md` через `next.config.mjs` → `env.NEXT_PUBLIC_APP_VERSION`.
 
 ## Жёсткие правила
 
@@ -110,10 +110,12 @@ docs/memory-archive/      исторические разделы MEMORY.md (п�
 ### Ключевые файлы
 - `src/lib/blocks/types.ts` — `BlockDef`, `BlockInstance`, `BlockDependencies`, `BlockAppearance`, `PageLayout`.
 - `src/lib/blocks/registry.ts` — `ALL_BLOCKS`, `DEFAULT_LAYOUTS`, `BLOCK_META` (iconName для RSC), `BLOCK_PRESETS`.
-- `src/components/blocks/block-grid.tsx` — drag/resize/save, переключатель `viewMode` Грид↔Карта (кнопка `Связи`), AI dialog, auto-mount providers.
-- `src/components/blocks/block-mindmap.tsx` (v0.30.0) — режим «Карта связей» (React Flow `@xyflow/react` v12): узлы/рёбра из `collectBlockRelationEdges`, controlled nodes, `onNodeDragStop`→persist, Background/MiniMap/Controls, тёмный canvas. Грузится лениво через `next/dynamic(ssr:false)` из `block-grid.tsx`.
-- `src/components/blocks/block-node.tsx` (v0.30.0) — гибридный узел: compact↔expanded живой блок, `dragHandle: '.block-node-drag-handle'`, сокеты in/out, cross-page бейджи. `MindmapContext` прокидывает стабильные handlers.
-- `src/lib/blocks/mindmap-layout.ts` (v0.30.0) — `blockMindmapPosition`/`isBlockCollapsed`/`initialMindmapPosition` (сидирование + toggle-collapse без потери позиции).
+- `src/components/blocks/block-grid.tsx` — drag/resize/save, переключатель `viewMode` Грид↔Карта (кнопка `Карта`), AI dialog, auto-mount providers.
+- `src/components/blocks/block-mindmap.tsx` (v0.30→v0.31) — режим «Карта» (React Flow `@xyflow/react` v12): узлы/рёбра из `collectBlockRelationEdges`, controlled nodes, `onNodeDragStop`→persist, snap-to-grid по умолчанию (`ControlButton`-магнит), призрачные узлы соседей + пунктирные edges, тёмный canvas. Грузится лениво через `next/dynamic(ssr:false)`.
+- `src/components/blocks/block-node.tsx` (v0.31) — узел карты: collapsed → кастомный `MapPreview` (read-only), expanded → живой блок в `expandedSize` per-type; `HiddenPublisher` скрыто монтирует data-блок offscreen чтобы опубликовать метрику в store. `dragHandle: '.block-node-drag-handle'`, `MindmapContext` прокидывает handlers.
+- `src/components/blocks/map-previews/` (v0.31) — `primitives.tsx` (Metric/MultiMetric/MiniTable/ListSummary/Status/IconTitle/TextExcerpt) + `index.tsx` реестр `MAP_PREVIEWS` (per-type Preview + `previewSize`/`expandedSize`/`needsLiveData`), `getMapPreview`/`getMapPreviewSize`/`getMapExpandedSize`. Live-метрика через `useBlockOutput`. Деньги cashflow/ozon-kpi в КОПЕЙКАХ → scale 0.01; ozon `*Rub` поля в рублях.
+- `src/components/blocks/ghost-node.tsx` (v0.31) — призрачная карточка соседнего блока из другого раздела (полупрозрачная, клик → `router.push(pageHref)`). Данные из `CrossPageLink` (добавлен `type`).
+- `src/lib/blocks/mindmap-layout.ts` (v0.30→v0.31) — `blockMindmapPosition`/`isBlockCollapsed`/`initialMindmapPosition` + `computeCompactLayout`/`computeInitialPositions` (компактная раскладка рядами) + `snapTo`/`MINDMAP_SNAP=16`.
 - `src/components/blocks/block-relations-overlay.tsx` — СТАРЫЙ SVG-overlay связей, **больше не используется** (заменён картой); оставлен ради reuse-логики (цвета рёбер, cross-page popover).
 - `src/components/blocks/block-grid.css` — координатная сетка-фон (1:1 с RGL-cells), resize handle CSS-only через `:has([data-resize-hotzone]:hover)`.
 - `src/components/blocks/block-chrome.tsx` — wrapper, hover controls, settings/delete/AI, **рамка через absolute-overlay z-20** (не `boxShadow inset`).
