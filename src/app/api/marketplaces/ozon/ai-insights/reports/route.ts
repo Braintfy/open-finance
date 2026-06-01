@@ -12,10 +12,21 @@ export const runtime = 'nodejs';
 const InsightSchema = z.object({
   type: z.enum(['positive', 'warning', 'danger', 'info']),
   category: z.enum(['revenue', 'ads', 'products', 'stock', 'returns', 'general']),
+  kind: z.enum(['action', 'observation', 'opportunity', 'info']).optional(),
   title: z.string().min(1).max(300),
   description: z.string().max(2000),
   metric: z.string().max(120).optional(),
   priority: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional(),
+  sku: z.string().max(120).optional(),
+  productName: z.string().max(300).optional(),
+  tags: z.array(z.string().max(60)).max(6).optional(),
+  recommendation: z
+    .object({
+      action: z.string().max(300),
+      basis: z.string().max(500),
+      expectedEffect: z.string().max(500),
+    })
+    .optional(),
 });
 
 const SaveSchema = z.object({

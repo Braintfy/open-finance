@@ -6,6 +6,7 @@
 import { z } from 'zod';
 import type { OzonKpiResponse } from '@/app/api/marketplaces/ozon/kpi/route';
 import type { OzonAnalyticsResponse } from '@/app/api/marketplaces/analytics/ozon/route';
+import type { OzonAnalyticsRow } from '@/lib/blocks/catalog/unit-ozon-analytics-types';
 
 export type InsightType = 'positive' | 'warning' | 'danger' | 'info';
 
@@ -17,16 +18,40 @@ export type InsightCategory =
   | 'returns'
   | 'general';
 
+/**
+ * Классификация для tabs-фильтра (как в yoolip): что делать пользователю.
+ * action — требует действия сейчас; observation — мониторить;
+ * opportunity — точка роста; info — нейтральный факт.
+ */
+export type InsightKind = 'action' | 'observation' | 'opportunity' | 'info';
+
+/** Рекомендация в стиле yoolip: что сделать + основание + ожидаемый эффект. */
+export type InsightRecommendation = {
+  action: string;
+  basis: string;
+  expectedEffect: string;
+};
+
 export type Insight = {
   type: InsightType;
   /** Категория для группировки в раскрываемые модули. */
   category: InsightCategory;
+  /** Класс для tabs-фильтра. Если не задан — выводится из type. */
+  kind?: InsightKind;
   title: string;
   description: string;
   /** Короткая метрика-бейдж, напр. «ДРР 34%». */
   metric?: string;
   /** Приоритет: 1 — высокий, 3 — низкий. Используется для сортировки. */
   priority?: 1 | 2 | 3;
+  /** Артикул/SKU товара для per-SKU инсайтов. */
+  sku?: string;
+  /** Название товара для per-SKU инсайтов. */
+  productName?: string;
+  /** Короткие пилюли-теги, напр. «Реклама без заказов 3+ дня». */
+  tags?: string[];
+  /** Структурированная рекомендация (раскрывается в карточке). */
+  recommendation?: InsightRecommendation;
 };
 
 /** Один ИИ-сгенерированный отчёт (хранится в БД). */
@@ -65,6 +90,25 @@ export const INSIGHT_CATEGORY_META: Record<
   general: { label: 'Общее', order: 6 },
 };
 
+export const INSIGHT_KIND_META: Record<
+  InsightKind,
+  { label: string; order: number }
+> = {
+  action: { label: 'Действие', order: 1 },
+  observation: { label: 'Наблюдение', order: 2 },
+  opportunity: { label: 'Возможности', order: 3 },
+  info: { label: 'Инфо', order: 4 },
+};
+
+/** Класс инсайта для tabs: явный kind, иначе выводим из type. */
+export function resolveInsightKind(ins: Insight): InsightKind {
+  if (ins.kind) return ins.kind;
+  if (ins.type === 'danger') return 'action';
+  if (ins.type === 'warning') return 'observation';
+  if (ins.type === 'positive') return 'opportunity';
+  return 'info';
+}
+
 export const OZON_AI_INSIGHTS_MAX_REPORTS = 10;
 
 export const OzonAiInsightsBlockConfigSchema = z.object({
@@ -78,6 +122,10 @@ export const OzonAiInsightsBlockConfigSchema = z.object({
   showMetrics: z.boolean().default(true),
   /** Состояние раскрытия модулей (ключ → открыт). Persist per-user. */
   expandedModules: z.record(z.string(), z.boolean()).default({}),
+  /** Активный tab-фильтр авто-инсайтов. 'all' | InsightKind. Persist per-user. */
+  insightTab: z
+    .enum(['all', 'action', 'observation', 'opportunity', 'info'])
+    .default('all'),
 });
 
 export type OzonAiInsightsBlockConfig = z.infer<typeof OzonAiInsightsBlockConfigSchema>;
@@ -351,6 +399,7 @@ export function generateInsights(
     insights.push({
       type: 'warning',
       category: 'stock',
+      kind: 'action',
       priority: 1,
       title: `${lowStock.length} ходовых SKU с остатком <14 дней`,
       description: `Срочно докупите: ${lowStock
@@ -365,6 +414,7 @@ export function generateInsights(
     insights.push({
       type: 'warning',
       category: 'stock',
+      kind: 'opportunity',
       priority: 2,
       title: 'Заморожен капитал в неликвиде',
       description: `${fmtRub(s.frozenStockValueRub)} в остатках товаров без продаж за период (${((s.frozenStockValueRub / s.stockValueRub) * 100).toFixed(0)}% склада). Рассмотрите акции/уценку.`,
@@ -449,6 +499,77 @@ export function generateInsights(
     });
   }
 
+  // 13. Рост ДРР по тренду (текущий vs предыдущий период).
+  if (
+    kpi.previous.drrPct !== null &&
+    kpi.current.drrPct !== null &&
+    kpi.previous.drrPct > 0 &&
+    kpi.current.drrPct > 15 &&
+    kpi.current.drrPct >= kpi.previous.drrPct * 1.2
+  ) {
+    const deltaPp = kpi.current.drrPct - kpi.previous.drrPct;
+    insights.push({
+      type: 'warning',
+      category: 'ads',
+      kind: 'observation',
+      priority: 2,
+      title: 'ДРР растёт по тренду',
+      description: `ДРР вырос с ${kpi.previous.drrPct.toFixed(1)}% до ${kpi.current.drrPct.toFixed(1)}% (+${deltaPp.toFixed(1)} п.п.) vs ${kpi.compareLabel.toLowerCase()}. Реклама дорожает быстрее отдачи — проверьте ставки и ключевые слова.`,
+      metric: `+${deltaPp.toFixed(1)} п.п.`,
+    });
+  }
+
+  // 14. Расход на рекламу растёт быстрее выручки.
+  if (kpi.previous.adsRub > 0 && kpi.previous.revenueRub > 0 && kpi.current.adsRub > 0) {
+    const adsDelta = ((kpi.current.adsRub - kpi.previous.adsRub) / kpi.previous.adsRub) * 100;
+    const revDelta = ((kpi.current.revenueRub - kpi.previous.revenueRub) / kpi.previous.revenueRub) * 100;
+    if (adsDelta > 20 && adsDelta - revDelta > 25) {
+      insights.push({
+        type: 'danger',
+        category: 'ads',
+        kind: 'action',
+        priority: 1,
+        title: 'Расход на рекламу опережает выручку',
+        description: `Реклама ${adsDelta >= 0 ? '+' : ''}${adsDelta.toFixed(0)}%, а выручка ${revDelta >= 0 ? '+' : ''}${revDelta.toFixed(0)}% vs ${kpi.compareLabel.toLowerCase()}. Бюджет растёт без пропорциональной отдачи — пересмотрите кампании.`,
+        metric: `реклама ${adsDelta >= 0 ? '+' : ''}${adsDelta.toFixed(0)}%`,
+      });
+    }
+  }
+
+  // 15. Медленная оборачиваемость (много SKU с длинным запасом).
+  const stocked = rows.filter((r) => r.stockMarketplace + r.stockOwn > 0);
+  const slowMoving = stocked.filter((r) => (r.daysOfStock ?? 0) > 90);
+  if (stocked.length >= 5 && slowMoving.length / stocked.length >= 0.4) {
+    const sharePct = (slowMoving.length / stocked.length) * 100;
+    insights.push({
+      type: 'warning',
+      category: 'stock',
+      kind: 'observation',
+      priority: 2,
+      title: 'Медленная оборачиваемость склада',
+      description: `${slowMoving.length} из ${stocked.length} SKU с остатком (${sharePct.toFixed(0)}%) имеют запас >90 дней. Капитал лежит в товаре — рассмотрите акции и сокращение закупок.`,
+      metric: `${sharePct.toFixed(0)}% >90 дн`,
+    });
+  }
+
+  // 16. Низкая конверсия в корзину (трафик есть, добавлений мало).
+  const totalViews = rows.reduce((sum, r) => sum + (r.views ?? 0), 0);
+  const totalCartAdds = rows.reduce((sum, r) => sum + (r.cartAdds ?? 0), 0);
+  if (totalViews >= 1000) {
+    const cartConv = (totalCartAdds / totalViews) * 100;
+    if (cartConv < 3) {
+      insights.push({
+        type: 'warning',
+        category: 'products',
+        kind: 'observation',
+        priority: 3,
+        title: 'Низкая конверсия в корзину',
+        description: `Из ${fmtInt(totalViews)} просмотров только ${cartConv.toFixed(1)}% дошли до корзины. Поработайте над карточками: фото, цена, отзывы, заголовки.`,
+        metric: `${cartConv.toFixed(1)}% в корзину`,
+      });
+    }
+  }
+
   // Сортировка по приоритету (1 → 3), стабильно.
   return insights.sort((a, b) => (a.priority ?? 2) - (b.priority ?? 2));
 }
@@ -470,4 +591,294 @@ export function groupInsightsByCategory(
       items,
     }))
     .sort((a, b) => INSIGHT_CATEGORY_META[a.category].order - INSIGHT_CATEGORY_META[b.category].order);
+}
+
+function skuLabel(r: OzonAnalyticsRow): string {
+  return r.article || r.name || r.sku || 'SKU';
+}
+
+/** Ранг важности для сортировки per-SKU инсайтов (меньше = важнее). */
+function severityRank(type: InsightType): number {
+  return type === 'danger' ? 0 : type === 'warning' ? 1 : type === 'positive' ? 2 : 3;
+}
+
+/**
+ * Per-SKU анализаторы (как yoolip): инсайты по конкретным товарам с
+ * рекомендацией (Действие / Основание / Ожидаемый эффект). Pure — тестируемо.
+ * Возвращает топ-N по важности и влиянию (выручка/расход).
+ */
+export function generatePerSkuInsights(
+  analytics: OzonAnalyticsResponse,
+  limit = 20,
+): Insight[] {
+  const rows = analytics.rows;
+  const out: Insight[] = [];
+
+  // Средний % возвратов по товарам с продажами (для сравнения «в N× выше нормы»).
+  let retSum = 0;
+  let retCount = 0;
+  for (const r of rows) {
+    const denom = r.delivered + r.returned;
+    if (denom >= 3) {
+      retSum += (r.returned / denom) * 100;
+      retCount += 1;
+    }
+  }
+  const avgReturnPct = retCount > 0 ? retSum / retCount : null;
+
+  for (const r of rows) {
+    const label = skuLabel(r);
+    const units = r.stockMarketplace + r.stockOwn;
+    const marginRub = r.priceRub - r.costRub;
+
+    // 1. Приостановить кампанию — реклама без заказов.
+    if (r.adsRub > 0 && r.delivered === 0) {
+      out.push({
+        type: 'danger',
+        category: 'ads',
+        kind: 'action',
+        priority: 1,
+        sku: r.sku ?? r.article ?? undefined,
+        productName: r.name,
+        title: `Реклама без заказов: ${label}`,
+        description: `Расход на рекламу ${fmtRub(r.adsRub)} при нуле доставленных заказов за период.`,
+        metric: fmtRub(r.adsRub),
+        tags: ['Реклама без заказов', 'Слив бюджета'],
+        recommendation: {
+          action: 'Приостановить или пересобрать рекламную кампанию',
+          basis: `Реклама расходует ${fmtRub(r.adsRub)}, но не приносит заказов.`,
+          expectedEffect: 'Прекращение слива бюджета, перераспределение на работающие SKU.',
+        },
+      });
+      continue;
+    }
+
+    // 2. Высокий ДРР на товаре.
+    if (r.drrPct !== null && r.drrPct > 30 && r.adsRub > 0 && r.delivered > 0) {
+      out.push({
+        type: 'warning',
+        category: 'ads',
+        kind: 'action',
+        priority: 1,
+        sku: r.sku ?? r.article ?? undefined,
+        productName: r.name,
+        title: `Высокий ДРР: ${label}`,
+        description: `ДРР ${r.drrPct.toFixed(0)}% при расходе ${fmtRub(r.adsRub)}. Реклама съедает маржу товара.`,
+        metric: `ДРР ${r.drrPct.toFixed(0)}%`,
+        tags: ['Высокий ДРР', 'Реклама съедает маржу'],
+        recommendation: {
+          action: 'Снизить ставки или оптимизировать ключевые слова',
+          basis: `ДРР ${r.drrPct.toFixed(0)}% значительно выше целевых 20%.`,
+          expectedEffect: 'Снижение ДРР и рост прибыли с заказа.',
+        },
+      });
+      continue;
+    }
+
+    // 3. Нулевые остатки при активной карточке.
+    if (units === 0 && (r.delivered > 0 || r.priceRub > 0)) {
+      const hadDemand = r.delivered > 0;
+      out.push({
+        type: hadDemand ? 'danger' : 'info',
+        category: 'stock',
+        kind: hadDemand ? 'action' : 'info',
+        priority: hadDemand ? 1 : 3,
+        sku: r.sku ?? r.article ?? undefined,
+        productName: r.name,
+        title: `Нет остатка: ${label}`,
+        description: hadDemand
+          ? `Остаток 0 при ${r.delivered} продажах за период — теряются заказы и позиции в выдаче.`
+          : `Остаток 0 при активной карточке. Товар не участвует в продажах.`,
+        metric: '0 шт',
+        tags: hadDemand ? ['Нет в наличии', 'Был спрос'] : ['Нет в наличии'],
+        recommendation: {
+          action: 'Срочно пополнить остаток',
+          basis: hadDemand
+            ? `${r.delivered} заказов за период при нулевом остатке.`
+            : 'Активная карточка без остатка.',
+          expectedEffect: 'Возврат продаж и сохранение позиций в поиске.',
+        },
+      });
+      continue;
+    }
+
+    // 4. OOS-риск — низкий остаток при продажах.
+    if (r.delivered > 0 && units > 0 && r.daysOfStock !== null && r.daysOfStock < 14) {
+      out.push({
+        type: 'warning',
+        category: 'stock',
+        kind: 'action',
+        priority: 1,
+        sku: r.sku ?? r.article ?? undefined,
+        productName: r.name,
+        title: `Скоро закончится: ${label}`,
+        description: `Запаса хватит на ~${r.daysOfStock.toFixed(0)} дн при текущих продажах (${r.delivered} шт за период).`,
+        metric: `${r.daysOfStock.toFixed(0)} дн`,
+        tags: ['Низкий остаток', `${r.daysOfStock.toFixed(0)} дн запаса`],
+        recommendation: {
+          action: 'Запланировать поставку',
+          basis: `Остаток ${units} шт при скорости ${r.delivered} шт/период.`,
+          expectedEffect: 'Избежать out-of-stock и потери оборота.',
+        },
+      });
+      continue;
+    }
+
+    // 5. Убыточный товар — цена ≤ себестоимости.
+    if (r.costRub > 0 && r.priceRub > 0 && marginRub <= 0) {
+      out.push({
+        type: 'danger',
+        category: 'products',
+        kind: 'action',
+        priority: 1,
+        sku: r.sku ?? r.article ?? undefined,
+        productName: r.name,
+        title: `Убыточный товар: ${label}`,
+        description: `Цена ${fmtRub(r.priceRub)} ≤ себестоимости ${fmtRub(r.costRub)}. Каждая продажа в минус.`,
+        metric: `${fmtRub(marginRub)}/шт`,
+        tags: ['Убыточный товар', 'Цена ≤ себестоимости'],
+        recommendation: {
+          action: 'Поднять цену или убрать из рекламы',
+          basis: `Маржа ${fmtRub(marginRub)} на единицу.`,
+          expectedEffect: 'Выход в положительную маржу.',
+        },
+      });
+      continue;
+    }
+
+    // 6. Высокие возвраты по товару.
+    const retDenom = r.delivered + r.returned;
+    if (
+      r.returned >= 3 &&
+      retDenom > 0 &&
+      avgReturnPct !== null &&
+      (r.returned / retDenom) * 100 > Math.max(avgReturnPct * 2, 10)
+    ) {
+      const retPct = (r.returned / retDenom) * 100;
+      out.push({
+        type: 'warning',
+        category: 'returns',
+        kind: 'observation',
+        priority: 2,
+        sku: r.sku ?? r.article ?? undefined,
+        productName: r.name,
+        title: `Высокие возвраты: ${label}`,
+        description: `${retPct.toFixed(0)}% возвратов (${r.returned} шт) — заметно выше среднего ${avgReturnPct.toFixed(0)}%.`,
+        metric: `${retPct.toFixed(0)}%`,
+        tags: ['Возвраты выше нормы'],
+        recommendation: {
+          action: 'Проверить качество, описание и размерную сетку',
+          basis: `Возвраты ${retPct.toFixed(0)}% против среднего ${avgReturnPct.toFixed(0)}%.`,
+          expectedEffect: 'Снижение возвратов и рост чистой выручки.',
+        },
+      });
+      continue;
+    }
+
+    // 7. Замороженный неликвид — остаток без продаж.
+    if (units > 0 && r.delivered === 0 && r.costRub > 0 && r.costRub * units >= 5000) {
+      out.push({
+        type: 'warning',
+        category: 'stock',
+        kind: 'opportunity',
+        priority: 2,
+        sku: r.sku ?? r.article ?? undefined,
+        productName: r.name,
+        title: `Неликвид: ${label}`,
+        description: `${units} шт на сумму ${fmtRub(r.costRub * units)} без продаж за период.`,
+        metric: fmtRub(r.costRub * units),
+        tags: ['Неликвид', 'Капитал заморожен'],
+        recommendation: {
+          action: 'Запустить акцию или уценку',
+          basis: `Остаток на ${fmtRub(r.costRub * units)} не оборачивается.`,
+          expectedEffect: 'Высвобождение замороженного капитала.',
+        },
+      });
+      continue;
+    }
+  }
+
+  // 8. Масштабировать лидеров — высокая выручка + хорошая маржа + низкий ДРР.
+  const winners = [...rows]
+    .filter(
+      (r) =>
+        r.revenueRub > 0 &&
+        r.delivered > 0 &&
+        r.costRub > 0 &&
+        (r.priceRub - r.costRub) / r.priceRub > 0.2 &&
+        (r.drrPct === null || r.drrPct < 15),
+    )
+    .sort((a, b) => b.revenueRub - a.revenueRub)
+    .slice(0, 3);
+  for (const r of winners) {
+    out.push({
+      type: 'positive',
+      category: 'products',
+      kind: 'opportunity',
+      priority: 3,
+      sku: r.sku ?? r.article ?? undefined,
+      productName: r.name,
+      title: `Масштабировать: ${skuLabel(r)}`,
+      description: `Выручка ${fmtRub(r.revenueRub)} при хорошей марже${r.drrPct !== null ? ` и ДРР ${r.drrPct.toFixed(0)}%` : ''}. Есть запас для роста рекламы.`,
+      metric: fmtRub(r.revenueRub),
+      tags: ['Лидер продаж', r.drrPct !== null ? `ДРР ${r.drrPct.toFixed(0)}%` : 'Хорошая маржа'],
+      recommendation: {
+        action: 'Увеличить рекламный бюджет на товар',
+        basis: 'Высокая выручка при хорошей марже и низком ДРР.',
+        expectedEffect: 'Масштабирование прибыльных продаж.',
+      },
+    });
+  }
+
+  return out
+    .sort((a, b) => {
+      const sr = severityRank(a.type) - severityRank(b.type);
+      if (sr !== 0) return sr;
+      return 0;
+    })
+    .slice(0, limit);
+}
+
+/**
+ * Объединённый список: агрегатные + per-SKU инсайты. Стабильная сортировка
+ * по приоритету (агрегатные идут первыми при равном приоритете).
+ */
+export function generateAllInsights(
+  kpi: OzonKpiResponse,
+  analytics: OzonAnalyticsResponse,
+): Insight[] {
+  const aggregate = generateInsights(kpi, analytics);
+  const perSku = generatePerSkuInsights(analytics);
+  return [...aggregate, ...perSku];
+}
+
+/** Tabs-фильтр: вкладки kind со счётчиками (как yoolip). */
+export function buildInsightTabs(
+  insights: Insight[],
+): Array<{ key: 'all' | InsightKind; label: string; count: number }> {
+  const counts: Record<InsightKind, number> = {
+    action: 0,
+    observation: 0,
+    opportunity: 0,
+    info: 0,
+  };
+  for (const ins of insights) counts[resolveInsightKind(ins)] += 1;
+  const tabs: Array<{ key: 'all' | InsightKind; label: string; count: number }> = [
+    { key: 'all', label: 'Все', count: insights.length },
+  ];
+  (Object.keys(INSIGHT_KIND_META) as InsightKind[])
+    .sort((a, b) => INSIGHT_KIND_META[a].order - INSIGHT_KIND_META[b].order)
+    .forEach((k) => {
+      if (counts[k] > 0) tabs.push({ key: k, label: INSIGHT_KIND_META[k].label, count: counts[k] });
+    });
+  return tabs;
+}
+
+/** Фильтрация инсайтов по выбранному tab. */
+export function filterInsightsByTab(
+  insights: Insight[],
+  tab: 'all' | InsightKind,
+): Insight[] {
+  if (tab === 'all') return insights;
+  return insights.filter((ins) => resolveInsightKind(ins) === tab);
 }

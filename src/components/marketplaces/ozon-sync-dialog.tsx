@@ -247,11 +247,47 @@ export function OzonSyncDialog({
 
   // Stage selection — defaults в зависимости от preset.
   const [enabled, setEnabled] = useState<Record<StageKey, boolean>>(() => initialStages(defaultPreset));
+  // Пользователь вручную менял тогглы — тогда не сбрасываем их при смене пресета.
+  const manuallyEditedRef = useRef(false);
 
-  // Reset когда меняется preset (auto-toggle date-aware vs all).
+  // Смена preset: применяем дефолты ТОЛЬКО если пользователь не настраивал вручную.
   useEffect(() => {
+    if (manuallyEditedRef.current) return;
     setEnabled(initialStages(preset));
   }, [preset]);
+
+  // Загрузка сохранённых тогглов из localStorage при открытии / смене аккаунта.
+  // SSR-safe: localStorage читаем только в эффекте. Должен идти ПОСЛЕ preset-эффекта,
+  // чтобы при открытии сохранённый выбор перекрывал дефолты пресета.
+  useEffect(() => {
+    if (!open || !account) return;
+    const saved = loadSavedStages(account.id);
+    if (saved) {
+      manuallyEditedRef.current = true;
+      setEnabled(saved);
+    } else {
+      manuallyEditedRef.current = false;
+      setEnabled(initialStages(preset));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, account?.id]);
+
+  // Обновление выбора + persist в localStorage (помечаем как ручное изменение).
+  const updateEnabled = useCallback(
+    (next: Record<StageKey, boolean>) => {
+      manuallyEditedRef.current = true;
+      setEnabled(next);
+      if (account) saveStages(account.id, next);
+    },
+    [account],
+  );
+
+  // Сбросить к дефолтам текущего пресета (и очистить сохранённое).
+  const resetStagesToPreset = useCallback(() => {
+    manuallyEditedRef.current = false;
+    setEnabled(initialStages(preset));
+    if (account) clearSavedStages(account.id);
+  }, [account, preset]);
 
   // Reset когда модалка закрывается.
   useEffect(() => {
@@ -513,21 +549,21 @@ export function OzonSyncDialog({
                     title="Каталог · snapshot (не зависит от даты)"
                     stages={STAGES_CATALOG}
                     enabled={enabled}
-                    setEnabled={setEnabled}
+                    setEnabled={updateEnabled}
                     perfConnected={account.perfConnected}
                   />
                   <StageGroup
                     title="Продажи / финансы"
                     stages={STAGES_SALES}
                     enabled={enabled}
-                    setEnabled={setEnabled}
+                    setEnabled={updateEnabled}
                     perfConnected={account.perfConnected}
                   />
                   <StageGroup
                     title="Реклама (Performance API)"
                     stages={STAGES_ADS}
                     enabled={enabled}
-                    setEnabled={setEnabled}
+                    setEnabled={updateEnabled}
                     perfConnected={account.perfConnected}
                   />
                   {!account.perfConnected && (
@@ -536,6 +572,16 @@ export function OzonSyncDialog({
                       Подключите в Настройки → Интеграции для полной аналитики.
                     </div>
                   )}
+                  <div className="flex items-center justify-between gap-2 border-t border-border/40 pt-2 text-[10px] text-muted-foreground">
+                    <span>Выбор стейджей сохраняется для этого магазина.</span>
+                    <button
+                      type="button"
+                      onClick={resetStagesToPreset}
+                      className="shrink-0 rounded px-1.5 py-0.5 font-medium text-primary transition hover:bg-accent/40"
+                    >
+                      Сбросить по пресету
+                    </button>
+                  </div>
                 </div>
               )}
             </section>
@@ -632,6 +678,47 @@ export function OzonSyncDialog({
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** Ключ localStorage для сохранённого выбора стейджей по аккаунту. */
+function stagesStorageKey(accountId: string): string {
+  return `of:ozon-sync-stages:${accountId}`;
+}
+
+/** SSR-safe чтение сохранённого выбора стейджей. Валидирует против ALL_STAGES. */
+function loadSavedStages(accountId: string): Record<StageKey, boolean> | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(stagesStorageKey(accountId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== 'object') return null;
+    const out = ALL_STAGES.reduce<Record<StageKey, boolean>>((acc, s) => {
+      acc[s.key] = Boolean(parsed[s.key]);
+      return acc;
+    }, {} as Record<StageKey, boolean>);
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+function saveStages(accountId: string, enabled: Record<StageKey, boolean>): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(stagesStorageKey(accountId), JSON.stringify(enabled));
+  } catch {
+    /* ignore quota/serialization errors */
+  }
+}
+
+function clearSavedStages(accountId: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(stagesStorageKey(accountId));
+  } catch {
+    /* ignore */
+  }
+}
 
 function initialStages(preset: DateRangePreset): Record<StageKey, boolean> {
   const out = ALL_STAGES.reduce<Record<StageKey, boolean>>((acc, s) => {

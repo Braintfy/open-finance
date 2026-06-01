@@ -96,6 +96,14 @@
 **Фикс:** Вынес типы + pure-функции в `unit-ozon-ai-insights-types.ts` (без `'use client'`); типы из API-routes тянул только `import type` (route-файлы server-only, type-импорт стирается).
 **Урок:** Pure-логику/типы, нужные и на сервере, и в client-блоке, держать в отдельном не-'use client' файле; кросс-импорт типов из server-роутов — всегда `import type`.
 
+### 2026-06-01 — stale `.next` даёт «Element type is invalid: got undefined» после правок catalog-блоков
+
+**Контекст:** Доработка `unit-ozon-ai-insights` (новые экспорты в types-файле, удаление импортов в блоке, новый `inline-md.tsx`).
+**Грабля:** `pnpm typecheck` — чисто (exit 0), но `pnpm build` падал на prerender `/_not-found` и `/marketplaces/ozon` с `Element type is invalid: expected a string ... but got: undefined`.
+**Причина:** Не циклический импорт и не реальная ошибка кода — **stale `.next` cache**. Catalog-блоки тянутся в registry → command-palette (есть в корневом layout), поэтому битый кэш-чанк ломает рендер на ВСЕХ страницах, включая `/_not-found`. typecheck (tsc) не зависит от `.next`, поэтому не ловит.
+**Фикс:** `rm -rf .next && pnpm build` — собралось с exit 0 без изменений кода.
+**Урок:** После добавления/удаления/переименования экспортов в `src/lib/blocks/catalog/**` (особенно общих types-файлах) — если build падает на prerender с «Element type invalid», сначала `rm -rf .next`, а не искать несуществующий цикл. Не доверять инкрементальному `.next` при структурных правках блоков.
+
 ---
 
 ## Как использовать

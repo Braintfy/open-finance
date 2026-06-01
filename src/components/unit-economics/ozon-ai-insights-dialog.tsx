@@ -4,7 +4,7 @@
 // перезаписи самого старого отчёта.
 'use client';
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Sparkles, Square, RefreshCw, Loader2, Save } from 'lucide-react';
 import {
   Dialog,
@@ -25,7 +25,12 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { InsightCard } from '@/components/unit-economics/ozon-insight-card';
-import type { Insight } from '@/lib/blocks/catalog/unit-ozon-ai-insights-types';
+import { renderInlineMd } from '@/components/unit-economics/inline-md';
+import type {
+  Insight,
+  InsightKind,
+  InsightRecommendation,
+} from '@/lib/blocks/catalog/unit-ozon-ai-insights-types';
 
 type StreamEvent =
   | { type: 'start'; model?: string }
@@ -38,6 +43,21 @@ type ParsedReport = { summary: string; insights: Insight[] };
 
 const VALID_TYPES = new Set(['positive', 'warning', 'danger', 'info']);
 const VALID_CATEGORIES = new Set(['revenue', 'ads', 'products', 'stock', 'returns', 'general']);
+const VALID_KINDS = new Set(['action', 'observation', 'opportunity', 'info']);
+
+function str(v: unknown, max: number): string | undefined {
+  return typeof v === 'string' && v.trim() ? v.slice(0, max) : undefined;
+}
+
+function parseRecommendation(v: unknown): InsightRecommendation | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const r = v as Record<string, unknown>;
+  const action = str(r.action, 300);
+  const basis = str(r.basis, 500);
+  const expectedEffect = str(r.expectedEffect, 500);
+  if (!action && !basis && !expectedEffect) return undefined;
+  return { action: action ?? '', basis: basis ?? '', expectedEffect: expectedEffect ?? '' };
+}
 
 /** Достать первый JSON-объект из ответа (модель иногда оборачивает в ```json). */
 function extractJson(raw: string): ParsedReport | null {
@@ -69,9 +89,14 @@ function extractJson(raw: string): ParsedReport | null {
     const category = String(r.category ?? 'general');
     const title = typeof r.title === 'string' ? r.title : '';
     if (!title) continue;
+    const kind = typeof r.kind === 'string' && VALID_KINDS.has(r.kind) ? (r.kind as InsightKind) : undefined;
+    const tags = Array.isArray(r.tags)
+      ? r.tags.filter((t): t is string => typeof t === 'string' && !!t.trim()).map((t) => t.slice(0, 60)).slice(0, 4)
+      : undefined;
     insights.push({
       type: (VALID_TYPES.has(type) ? type : 'info') as Insight['type'],
       category: (VALID_CATEGORIES.has(category) ? category : 'general') as Insight['category'],
+      kind,
       title: title.slice(0, 300),
       description: typeof r.description === 'string' ? r.description.slice(0, 2000) : '',
       metric: typeof r.metric === 'string' ? r.metric.slice(0, 120) : undefined,
@@ -79,6 +104,10 @@ function extractJson(raw: string): ParsedReport | null {
         r.priority === 1 || r.priority === 2 || r.priority === 3
           ? (r.priority as 1 | 2 | 3)
           : undefined,
+      sku: str(r.sku, 120),
+      productName: str(r.productName, 300),
+      tags: tags && tags.length ? tags : undefined,
+      recommendation: parseRecommendation(r.recommendation),
     });
   }
   if (!summary && insights.length === 0) return null;
@@ -118,11 +147,23 @@ export function OzonAiInsightsDialog({
   const [confirmOverwrite, setConfirmOverwrite] = useState<{ oldestAt: string } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const resultRef = useRef<HTMLDivElement>(null);
+  const rafRef = useRef<number | null>(null);
 
   const stop = useCallback(() => {
     abortRef.current?.abort();
     abortRef.current = null;
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
     setStreaming(false);
+  }, []);
+
+  // Очистка отложенного кадра авто-скролла при размонтировании.
+  useEffect(() => {
+    return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    };
   }, []);
 
   const analyze = useCallback(async () => {
@@ -182,8 +223,12 @@ export function OzonAiInsightsDialog({
           if (evt.type === 'token' && evt.delta) {
             full += evt.delta;
             setRaw(full);
-            requestAnimationFrame(() => {
-              resultRef.current?.scrollTo({ top: resultRef.current.scrollHeight });
+            // Один отложенный кадр авто-скролла за раз — без дёрганья layout.
+            if (rafRef.current) cancelAnimationFrame(rafRef.current);
+            rafRef.current = requestAnimationFrame(() => {
+              const el = resultRef.current;
+              if (el) el.scrollTop = el.scrollHeight;
+              rafRef.current = null;
             });
           }
           if (evt.type === 'done') {
@@ -278,7 +323,7 @@ export function OzonAiInsightsDialog({
             </DialogDescription>
           </DialogHeader>
 
-          <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4">
+          <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-contain p-4">
             <div className="space-y-1">
               <label className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                 Фокус анализа (необязательно)
@@ -303,7 +348,7 @@ export function OzonAiInsightsDialog({
                     <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary">
                       Резюме
                     </div>
-                    {parsed.summary}
+                    {renderInlineMd(parsed.summary)}
                   </div>
                 )}
                 {parsed.insights.map((ins, i) => (
@@ -314,7 +359,7 @@ export function OzonAiInsightsDialog({
               (streaming || raw) && (
                 <div
                   ref={resultRef}
-                  className="max-h-[280px] min-h-[80px] overflow-y-auto rounded-md border bg-muted/30 p-3 text-[12px] leading-relaxed"
+                  className="max-h-[280px] min-h-[80px] overflow-y-auto overscroll-contain rounded-md border bg-muted/30 p-3 text-[12px] leading-relaxed"
                 >
                   <div className="whitespace-pre-wrap font-mono text-[11px] text-muted-foreground">
                     {raw}

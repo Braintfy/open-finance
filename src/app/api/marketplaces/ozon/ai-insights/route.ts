@@ -56,10 +56,18 @@ function buildOzonInsightsPrompt(globalPrompt: string): string {
     {
       "category": "revenue|ads|products|stock|returns|general",
       "type": "positive|warning|danger|info",
+      "kind": "action|observation|opportunity|info",
       "priority": 1,
       "title": "краткий заголовок (до 80 символов)",
-      "description": "1-3 предложения с конкретикой и рекомендацией",
-      "metric": "короткий бейдж, напр. «ДРР 34%» (опционально)"
+      "description": "1-3 предложения с конкретикой",
+      "metric": "короткий бейдж, напр. «ДРР 34%» (опционально)",
+      "sku": "артикул/SKU товара (только для per-SKU инсайтов, опционально)",
+      "tags": ["короткая пилюля", "ещё пилюля"],
+      "recommendation": {
+        "action": "что конкретно сделать",
+        "basis": "на чём основано (из данных)",
+        "expectedEffect": "ожидаемый эффект"
+      }
     }
   ]
 }
@@ -68,6 +76,9 @@ function buildOzonInsightsPrompt(globalPrompt: string): string {
 - Только из предоставленных данных. НИЧЕГО не выдумывай. Нет данных по разделу — пропусти его.
 - 6-12 инсайтов суммарно, самые важные — priority 1.
 - "type": danger = критично/убыток, warning = риск, positive = хорошо, info = нейтрально.
+- "kind": action = требует действия сейчас, observation = мониторить, opportunity = точка роста, info = факт.
+- Для проблемных/перспективных товаров давай per-SKU инсайт: укажи "sku", "tags" и "recommendation" (action/basis/expectedEffect).
+- ВАЖНО: "summary" и "description" — ОБЫЧНЫЙ текст БЕЗ markdown-разметки (никаких **, _, #, списков). Числа писать как есть, без звёздочек.
 - Суммы — рубли как в данных, проценты с 1 знаком.
 - Русский язык. Без «конечно», «вот анализ» и прочих вступлений.
 - Ответ — ТОЛЬКО JSON-объект, ничего до или после.`;

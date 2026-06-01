@@ -33,17 +33,20 @@ import { OzonAccountSelector } from '@/components/marketplaces/ozon-account-sele
 import { useBlockValuePublisher, formatPeriodKey } from '@/lib/blocks/values';
 import { useBlockPeriod } from '@/lib/blocks/use-block-period';
 import { InsightCard } from '@/components/unit-economics/ozon-insight-card';
+import { renderInlineMd } from '@/components/unit-economics/inline-md';
 import { OzonAiInsightsDialog } from '@/components/unit-economics/ozon-ai-insights-dialog';
 import {
   OzonAiInsightsBlockConfigSchema,
   parseOzonAiInsightsConfig,
-  generateInsights,
+  generateAllInsights,
   computeInsightMetrics,
-  groupInsightsByCategory,
+  buildInsightTabs,
+  filterInsightsByTab,
   summarizeAnalytics,
   type AiInsightReport,
   type InsightMetric,
   type MetricTone,
+  type InsightKind,
 } from './unit-ozon-ai-insights-types';
 import type {
   BlockDef,
@@ -253,14 +256,28 @@ function RenderOzonAiInsights({ instance, onConfigChange }: BlockRenderProps) {
   }, []);
 
   const insights = useMemo(
-    () => (kpi && analytics ? generateInsights(kpi, analytics) : []),
+    () => (kpi && analytics ? generateAllInsights(kpi, analytics) : []),
     [kpi, analytics],
   );
   const metrics = useMemo(
     () => (kpi && analytics ? computeInsightMetrics(kpi, analytics) : []),
     [kpi, analytics],
   );
-  const grouped = useMemo(() => groupInsightsByCategory(insights), [insights]);
+  const insightTabs = useMemo(() => buildInsightTabs(insights), [insights]);
+  // Если сохранённый tab больше не содержит инсайтов — показываем «Все».
+  const activeTab = insightTabs.some((t) => t.key === config.insightTab)
+    ? config.insightTab
+    : 'all';
+  const visibleInsights = useMemo(
+    () => filterInsightsByTab(insights, activeTab),
+    [insights, activeTab],
+  );
+  const setInsightTab = useCallback(
+    (tab: 'all' | InsightKind) => {
+      onConfigChange?.({ ...config, insightTab: tab } as unknown as Record<string, unknown>);
+    },
+    [config, onConfigChange],
+  );
 
   const periodLabel = useMemo(() => {
     try {
@@ -303,10 +320,12 @@ function RenderOzonAiInsights({ instance, onConfigChange }: BlockRenderProps) {
       lines.push('#### Реклама без продаж');
       for (const r of adsNoSales) lines.push(`- ${r.article ?? r.name}: расход ${rub(r.adsRub)}`);
     }
-    if (insights.length) {
+    const aggregateInsights = insights.filter((ins) => !ins.sku);
+    if (aggregateInsights.length) {
       lines.push('');
       lines.push('#### Авто-инсайты (rule-based, как факты)');
-      for (const ins of insights) lines.push(`- [${ins.category}/${ins.type}] ${ins.title}: ${ins.description}`);
+      for (const ins of aggregateInsights)
+        lines.push(`- [${ins.category}/${ins.type}] ${ins.title}: ${ins.description}`);
     }
     return lines.join('\n');
   }, [kpi, analytics, insights]);
@@ -416,16 +435,34 @@ function RenderOzonAiInsights({ instance, onConfigChange }: BlockRenderProps) {
                   Всё стабильно. Аномалий не найдено.
                 </div>
               ) : (
-                grouped.map((g) => (
-                  <div key={g.category} className="space-y-1.5">
-                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                      {g.label} · {g.items.length}
-                    </div>
-                    {g.items.map((ins, i) => (
-                      <InsightCard key={i} insight={ins} />
+                <>
+                  <div className="flex flex-wrap gap-1">
+                    {insightTabs.map((tab) => (
+                      <button
+                        key={tab.key}
+                        type="button"
+                        onClick={() => setInsightTab(tab.key)}
+                        className={
+                          'rounded-full px-2 py-0.5 text-[10px] font-medium transition ' +
+                          (activeTab === tab.key
+                            ? 'bg-primary text-primary-foreground'
+                            : 'bg-muted text-muted-foreground hover:bg-accent')
+                        }
+                      >
+                        {tab.label} {tab.count}
+                      </button>
                     ))}
                   </div>
-                ))
+                  {visibleInsights.length === 0 ? (
+                    <div className="py-2 text-center text-[11px] text-muted-foreground">
+                      Нет инсайтов в этой категории.
+                    </div>
+                  ) : (
+                    visibleInsights.map((ins, i) => (
+                      <InsightCard key={`${ins.category}-${ins.sku ?? ''}-${i}`} insight={ins} />
+                    ))
+                  )}
+                </>
               )}
               {lastUpdate && (
                 <div className="text-[10px] text-muted-foreground">
@@ -495,7 +532,7 @@ function RenderOzonAiInsights({ instance, onConfigChange }: BlockRenderProps) {
                         <div className="space-y-2 border-t border-border/50 p-2">
                           {rep.summary && (
                             <div className="rounded-md border border-primary/30 bg-primary/5 p-2 text-[11px] leading-relaxed">
-                              {rep.summary}
+                              {renderInlineMd(rep.summary)}
                             </div>
                           )}
                           {rep.insights.map((ins, i) => (
