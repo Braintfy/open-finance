@@ -259,6 +259,26 @@ function RenderOzonAnalytics({ instance, onConfigChange }: BlockRenderProps) {
     0,
   );
 
+  // Богатый текстовый контекст для «AI Анализ раздела» (конвенция __aiContext).
+  const aiContext = useMemo(() => {
+    if (!response) return null;
+    const rub = (v: number) => Math.round(v).toLocaleString('ru-RU') + ' ₽';
+    const t = response.totals;
+    const parts = [
+      `Аналитика Ozon за период: выручка ${rub(t.revenueRub)}, реклама ${rub(t.adsRub)}, ` +
+        `ДРР ${t.drrPct?.toFixed(1) ?? '—'}%, прибыль ${rub(extendedTotals.totalProfitRub)}, ` +
+        `заказы ${t.delivered}, отмены ${t.cancelled}, возвраты ${t.returned}.`,
+      `Товаров ${rows.length}, с продажами ${t.productsWithSales}, остатки на ${rub(totalStockValueRub)}, ` +
+        `средний выкуп ${extendedTotals.avgBuyoutPct ?? '—'}%. Средний ДРР по SKU ${avgDrr}%, макс ${maxDrr}%.`,
+    ];
+    if (top1) {
+      parts.push(
+        `Топ-1 SKU: ${top1.article ?? top1.name} — выручка ${rub(top1.revenueRub)}, ДРР ${top1.drrPct?.toFixed(0) ?? '—'}%.`,
+      );
+    }
+    return parts.join(' ');
+  }, [response, rows.length, extendedTotals, top1, avgDrr, maxDrr, totalStockValueRub]);
+
   useBlockValuePublisher(instance.id, {
     value: (response?.totals.revenueRub ?? 0) * 100,
     revenue: (response?.totals.revenueRub ?? 0) * 100,
@@ -299,6 +319,7 @@ function RenderOzonAnalytics({ instance, onConfigChange }: BlockRenderProps) {
       'top1Ads=Реклама топ-1 SKU,avgDrr=Средний ДРР по SKU %,' +
       'maxDrr=Максимальный ДРР %,totalStockValueRub=Стоимость остатков',
     __periodKey: formatPeriodKey(blockPeriod),
+    __aiContext: aiContext,
   });
 
   const handleExport = useCallback(() => {

@@ -1,74 +1,79 @@
 // PURPOSE: POST /api/ai/analyze-section — AI анализ раздела (страницы BlockGrid).
-// Загружает layout блоков, собирает контекст, стримит NDJSON ответ.
-// Формат: { type: 'start'|'token'|'done'|'error'|'aborted', ... }
+// Принимает снапшот блоков (config + live-значения + __aiContext), собранный
+// клиентом, опц. выбранные прошлые отчёты раздела, и стримит строго
+// структурированный NDJSON-ответ (summary + insights[]). НЕ персистит —
+// сохранение через /api/ai/section-reports.
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { auth } from '@/lib/auth';
 import { db } from '@/lib/db/client';
 import { tenants } from '@/lib/db/schema/tenants';
 import { eq } from 'drizzle-orm';
-import { loadLayout } from '@/lib/blocks/queries';
-import { getBlockDef } from '@/lib/blocks/registry';
-import { resolvePromptStack } from '@/lib/ai/prompt-resolver';
+import { getSystemPrompt } from '@/lib/ai/system-prompt';
 import { getActiveCredentials } from '@/lib/ai/user-keys';
 import { streamOpenAICompat } from '@/lib/ai/providers/openai-compat';
 import { listInstalledModels, isChatCapableModel } from '@/lib/ai/providers/ollama';
 import { env } from '@/lib/env';
-import type { BlockInstance } from '@/lib/blocks/types';
+import {
+  SectionBlockSnapshotSchema,
+  assembleSectionContext,
+  type SectionInsight,
+} from '@/lib/ai/section-insights';
+import { getSectionReportsByIds } from '@/lib/ai/section-reports-queries';
 
 export const runtime = 'nodejs';
 export const maxDuration = 120;
 
 const RequestSchema = z.object({
   pageKey: z.string().min(1).max(64),
-  /** Конкретные blockIds для анализа (если не задан — берём все блоки страницы) */
-  blockIds: z.array(z.string()).max(50).optional(),
-  /** Пользовательский вопрос */
+  pageLabel: z.string().max(120).optional(),
+  /** Снапшот блоков раздела (собран клиентом). */
+  blocks: z.array(SectionBlockSnapshotSchema).max(60).default([]),
+  /** Фокус-вопрос пользователя. */
   userQuery: z.string().max(2000).optional(),
-  /** 'all' — все блоки, 'subgraph' — автоподбор связанных (dependency tree) */
-  scope: z.enum(['all', 'subgraph']).default('all'),
+  /** id сохранённых отчётов раздела для подмешивания в контекст. */
+  includeReportIds: z.array(z.string().max(64)).max(10).optional(),
 });
 
 const OLLAMA_BASE = env.OLLAMA_BASE_URL;
 
-/** Сериализовать блок в краткий текст для контекста AI */
-function serializeBlock(block: BlockInstance): string {
-  const def = getBlockDef(block.type);
-  const title = block.appearance?.title ?? def?.displayName ?? block.type;
-  const parts = [`[${title} (${block.type})]`];
+/** Строго структурированный system prompt для анализа раздела (контракт JSON). */
+function buildSectionPrompt(globalPrompt: string, pageLabel?: string): string {
+  return `${globalPrompt}
 
-  if (block.config && Object.keys(block.config).length > 0) {
-    const configStr = JSON.stringify(block.config);
-    const truncated = configStr.length > 600 ? configStr.slice(0, 600) + '...' : configStr;
-    parts.push(`  config: ${truncated}`);
-  }
+---
 
-  if (block.dependencies?.sources && block.dependencies.sources.length > 0) {
-    const srcs = block.dependencies.sources.map((s) => s.label ?? s.blockId).join(', ');
-    parts.push(`  источники: ${srcs}`);
-  }
+Ты — аналитик бизнес-данных. Анализируешь раздел${pageLabel ? ` «${pageLabel}»` : ''} дашборда (набор блоков: метрики, графики, таблицы) и даёшь предпринимателю действенные выводы СТРОГО по предоставленным данным.
 
-  return parts.join('\n');
-}
-
-/** Построить subgraph — найти все блоки связанные с указанным (источники + потребители) */
-function buildSubgraph(blocks: BlockInstance[]): BlockInstance[] {
-  const allDepsBlockIds = new Set<string>();
-
-  for (const block of blocks) {
-    if (block.dependencies?.sources) {
-      for (const src of block.dependencies.sources) {
-        allDepsBlockIds.add(src.blockId);
+## Формат ответа — СТРОГО валидный JSON, без markdown-обёртки, без преамбул:
+{
+  "summary": "2-4 предложения executive summary: главное по разделу",
+  "insights": [
+    {
+      "type": "positive|warning|danger|info",
+      "kind": "action|observation|opportunity|info",
+      "category": "короткая тема, напр. «выручка», «реклама», «остатки»",
+      "title": "краткий заголовок (до 80 символов)",
+      "description": "1-3 предложения с конкретикой",
+      "metric": "короткий бейдж, напр. «ДРР 34%» (опц.)",
+      "blockTitle": "к какому блоку относится (опц.)",
+      "tags": ["короткая пилюля"],
+      "recommendation": {
+        "action": "что конкретно сделать",
+        "basis": "на чём основано (из данных)",
+        "expectedEffect": "ожидаемый эффект"
       }
     }
-  }
+  ]
+}
 
-  // Все блоки у которых есть зависимости И их источники
-  return blocks.filter(
-    (b) =>
-      (b.dependencies?.sources && b.dependencies.sources.length > 0) ||
-      allDepsBlockIds.has(b.id),
-  );
+## Правила
+- Только из предоставленных данных. НИЧЕГО не выдумывай. Нет данных — так и скажи в summary.
+- 4-10 инсайтов, самые важные — выше. Для проблем/возможностей добавляй "recommendation".
+- "type": danger = критично/убыток, warning = риск, positive = хорошо, info = нейтрально.
+- "kind": action = требует действия, observation = мониторить, opportunity = рост, info = факт.
+- ВАЖНО: "summary" и "description" — ОБЫЧНЫЙ текст БЕЗ markdown (никаких **, _, #, списков).
+- Русский язык. Ответ — ТОЛЬКО JSON-объект, ничего до или после.`;
 }
 
 function sse(controller: ReadableStreamDefaultController, data: Record<string, unknown>) {
@@ -91,42 +96,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { pageKey, blockIds, userQuery, scope } = body.data;
+    const { pageKey, pageLabel, blocks, userQuery, includeReportIds } = body.data;
 
-    // Загрузить layout страницы
-    const layout = await loadLayout({
-      tenantId: session.tenantId,
-      userId: session.userId,
-      pageKey,
-    });
-
-    let targetBlocks = layout.blocks as BlockInstance[];
-
-    // Фильтр по blockIds если передан
-    if (blockIds && blockIds.length > 0) {
-      targetBlocks = targetBlocks.filter((b) => blockIds.includes(b.id));
-    }
-
-    // Если scope=subgraph — берём только связанные блоки
-    if (scope === 'subgraph') {
-      const subgraph = buildSubgraph(targetBlocks);
-      if (subgraph.length > 0) targetBlocks = subgraph;
-    }
-
-    // Ограничиваем до 20 блоков для token budget
-    const limitedBlocks = targetBlocks.slice(0, 20);
-
-    // Сериализуем блоки в контекст
-    const sectionBlocksCtx = limitedBlocks.map((b) => ({
-      blockId: b.id,
-      blockType: b.type,
-      blockTitle: b.appearance?.title ?? getBlockDef(b.type)?.displayName,
-      config: b.config as Record<string, unknown> | undefined,
-    }));
-
-    const blocksText = limitedBlocks.map(serializeBlock).join('\n\n');
-
-    // Загрузить tenant settings
+    // Загрузить tenant settings.
     const [tenant] = await db
       .select({ settings: tenants.settings })
       .from(tenants)
@@ -134,22 +106,30 @@ export async function POST(req: NextRequest) {
       .limit(1);
     const tenantSettings = tenant?.settings ?? null;
 
-    // Сформировать user message
-    const contextMessage = [
-      `## Блоки раздела "${pageKey}" (${limitedBlocks.length} из ${targetBlocks.length}${scope === 'subgraph' ? ', только связанные' : ''}):`,
-      '',
-      blocksText,
-      userQuery ? `\n## Вопрос пользователя:\n${userQuery}` : '',
-      !userQuery ? '\n## Задача:\nПроанализируй данный раздел. Дай краткое резюме (3-5 наблюдений), выяви потенциальные проблемы, предложи рекомендации.' : '',
-    ].filter(Boolean).join('\n');
+    // Выбранные прошлые отчёты раздела — для подмешивания в контекст.
+    let reports: Array<{ createdAt: string; summary: string; insights: SectionInsight[] }> = [];
+    if (includeReportIds && includeReportIds.length > 0) {
+      const rows = await getSectionReportsByIds({
+        tenantId: session.tenantId,
+        userId: session.userId,
+        pageKey,
+        ids: includeReportIds,
+      });
+      reports = rows.map((r) => ({
+        createdAt: r.createdAt.toISOString(),
+        summary: r.summary,
+        insights: r.insights,
+      }));
+    }
 
-    // Резолвим промпт
-    const { systemPrompt } = resolvePromptStack({
-      tenantSettings,
-      pageKey,
-      scope: 'section',
-      sectionBlocks: sectionBlocksCtx,
+    const contextMessage = assembleSectionContext({
+      pageLabel,
+      blocks,
+      reports,
+      userQuery,
     });
+
+    const systemPrompt = buildSectionPrompt(getSystemPrompt(tenantSettings), pageLabel);
 
     // Резолвим credentials
     const activeCreds = await getActiveCredentials(

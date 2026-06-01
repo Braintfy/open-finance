@@ -53,6 +53,7 @@
     "drizzle-orm": "^0.45.2",
     "fast-formula-parser": "^1.0.19",
     "jose": "^5.9.6",
+    "js-tiktoken": "^1.0.21",
     "lucide-react": "^0.460.0",
     "mailparser": "^3.9.8",
     "next": "15.5.18",

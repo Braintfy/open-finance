@@ -23,6 +23,7 @@ import { AddBlockDialog, type AddBlockResult } from './add-block-dialog';
 import { BlockSettingsDialog } from './block-settings-dialog';
 import { BlockSizeProvider } from './block-size';
 import { BlockValuesProvider, BlockValuesContext } from '@/lib/blocks/values';
+import { PageSnapshotPublisher } from './page-snapshot-publisher';
 import {
   PagePeriodContext,
   PagePeriodProvider,
@@ -981,6 +982,7 @@ function BlockGridInner({
 
   return (
     <BlockValuesProvider>
+      <PageSnapshotPublisher pageKey={pageKey} blocks={blocks} />
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 text-[11px] text-muted-foreground">

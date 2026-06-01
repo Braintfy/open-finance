@@ -332,12 +332,18 @@ function RenderOzonAiInsights({ instance, onConfigChange }: BlockRenderProps) {
 
   // Cell-binding: счётчики для дашбордов.
   const criticalCount = insights.filter((i) => i.type === 'danger').length;
+  // Богатый контекст для «AI Анализ раздела» (конвенция __aiContext).
+  const aiContext = useMemo(
+    () => (kpi && analytics ? buildContext().slice(0, 5000) : null),
+    [kpi, analytics, buildContext],
+  );
   useBlockValuePublisher(instance.id, {
     value: insights.length,
     criticalCount,
     aiReports: reports.length,
     __labels: 'value=Инсайтов,criticalCount=Критических,aiReports=ИИ-отчётов',
     __periodKey: formatPeriodKey(period),
+    __aiContext: aiContext,
   });
 
   // Модули раскрытия (состояние в config.expandedModules).

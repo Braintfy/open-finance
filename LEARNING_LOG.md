@@ -104,6 +104,15 @@
 **Фикс:** `rm -rf .next && pnpm build` — собралось с exit 0 без изменений кода.
 **Урок:** После добавления/удаления/переименования экспортов в `src/lib/blocks/catalog/**` (особенно общих types-файлах) — если build падает на prerender с «Element type invalid», сначала `rm -rf .next`, а не искать несуществующий цикл. Не доверять инкрементальному `.next` при структурных правках блоков.
 
+### 2026-06-01 — доступ к live-значениям блоков из UI вне BlockValuesProvider
+
+**Контекст:** Глобальный «AI Анализ раздела»: кнопка в шапке страницы должна видеть live-значения блоков, чтобы ИИ анализировал реальные метрики, а не только `config`.
+**Грабля:** `BlockValuesProvider` оборачивает контент ВНУТРИ `BlockGrid`, а кнопка `SectionAiButton` рендерится в шапке страницы — СИБЛИНГ над `BlockGrid`, т.е. вне провайдера. Прямой `useContext(BlockValuesContext)` из шапки вернёт null.
+**Фикс:** Bridge-паттерн через внешний (вне React) store. `PageSnapshotPublisher` монтируется ВНУТРИ провайдера (в `BlockGrid`), читает value-store + live `blocks`, пишет снапшот в module-level `Map<pageKey, ...>` (`src/lib/blocks/page-snapshot.ts`). Модалка в шапке читает снапшот по `pageKey` (get + subscribe). Не пришлось лифтить провайдер на уровень страницы (6 страниц не тронуты).
+**Бонус-паттерн:** конвенция `__aiContext` — блок публикует богатый текст для ИИ как служебное `__`-поле в `useBlockValuePublisher`. `useAvailableBlockSources()` уже скрывает `__`-поля, поэтому пикеры источников не засоряются. Универсально: любой блок может дать ИИ-контекст, не меняя API анализа.
+**js-tiktoken:** ставить пакет `js-tiktoken` (pure-JS, не wasm `tiktoken`). Использование: `new (await import('js-tiktoken/lite')).Tiktoken((await import('js-tiktoken/ranks/o200k_base')).default)`. Ранги тянуть динамически (client-only), иначе раздувают bundle. Без `.free()` (это у wasm-версии).
+**Урок:** Для доступа к реактивному page-state из UI вне его провайдера — bridge-компонент внутри провайдера + module-level external store по ключу, а не лифтинг провайдера. Единая pure-функция сборки контекста (`assembleSectionContext`) для клиент-счётчика и сервер-промпта гарантирует, что счётчик токенов = тому, что реально отправлено.
+
 ---
 
 ## Как использовать

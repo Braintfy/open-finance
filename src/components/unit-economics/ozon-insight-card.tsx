@@ -4,8 +4,21 @@
 
 import { useState } from 'react';
 import { AlertTriangle, ShoppingBag, TrendingUp, Info, ChevronDown, ChevronRight } from 'lucide-react';
-import type { Insight, InsightType } from '@/lib/blocks/catalog/unit-ozon-ai-insights-types';
+import type { InsightType } from '@/lib/blocks/catalog/unit-ozon-ai-insights-types';
 import { renderInlineMd } from '@/components/unit-economics/inline-md';
+
+/**
+ * Минимальный структурный тип данных для карточки. И ozon `Insight`, и
+ * `SectionInsight` ему соответствуют — карточка переиспользуется в обоих ИИ-UI.
+ */
+export interface InsightCardData {
+  type: InsightType;
+  title: string;
+  description?: string;
+  metric?: string;
+  tags?: string[];
+  recommendation?: { action: string; basis: string; expectedEffect: string };
+}
 
 export const INSIGHT_STYLES: Record<
   InsightType,
@@ -37,7 +50,7 @@ export function InsightCard({
   insight,
   defaultOpen = false,
 }: {
-  insight: Insight;
+  insight: InsightCardData;
   defaultOpen?: boolean;
 }) {
   const style = INSIGHT_STYLES[insight.type] ?? INSIGHT_STYLES.info;

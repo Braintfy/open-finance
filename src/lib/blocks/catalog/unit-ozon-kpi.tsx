@@ -269,6 +269,20 @@ function RenderOzonKpi({ instance, onConfigChange }: BlockRenderProps) {
   const deltaAdsPct =
     prevAds > 0 ? Math.round(((currAds - prevAds) / prevAds) * 1000) / 10 : 0;
 
+  // Богатый текстовый контекст для «AI Анализ раздела» (конвенция __aiContext).
+  const aiContext = useMemo(() => {
+    if (!data) return null;
+    const rub = (v: number) => Math.round(v).toLocaleString('ru-RU') + ' ₽';
+    const sign = (n: number) => (n >= 0 ? '+' : '') + n + '%';
+    return (
+      `KPI Ozon за период: выручка ${rub(currRevenue)} (${sign(deltaRevenuePct)} к прошлому), ` +
+      `заказы ${currOrders} (${sign(deltaOrdersPct)}), реклама ${rub(currAds)} (${sign(deltaAdsPct)}), ` +
+      `ДРР ${data.current.drrPct?.toFixed(1) ?? '—'}%, ` +
+      `средний чек ${data.current.aovRub ? rub(data.current.aovRub) : '—'}, ` +
+      `CPO ${data.current.cpoRub ? rub(data.current.cpoRub) : '—'}.`
+    );
+  }, [data, currRevenue, currOrders, currAds, deltaRevenuePct, deltaOrdersPct, deltaAdsPct]);
+
   useBlockValuePublisher(instance.id, {
     // Money fields published in KOPECKS (× 100) — global convention.
     // StatCard displays use rubles directly from data (not from this publisher).
@@ -294,6 +308,7 @@ function RenderOzonKpi({ instance, onConfigChange }: BlockRenderProps) {
       'deltaOrdersPct=Δ Заказы %,deltaAdsPct=Δ Реклама %',
     __money: 'value,revenue,ads,aov,cpo,revenuePrev,adsPrev',
     __periodKey: formatPeriodKey(period),
+    __aiContext: aiContext,
   });
 
   return (

@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.34.0] - 2026-06-01
+
+### Added
+- **Глобальный «AI Анализ раздела» переработан в стиле блока «AI инсайты»** — кнопка `SectionAiButton` на всех разделах (cashflow, dashboard, inbox, marketplaces/ozon, unit-economics, boards) теперь даёт структурный отчёт: резюме + раскрываемые карточки-инсайты (`InsightCard`) с tabs-фильтром по kind (Действие/Наблюдение/Возможности/Инфо).
+- **ИИ видит реальный контент блоков** — снапшот блоков страницы (config + live-значения + богатый `__aiContext`) собирается на клиенте (`PageSnapshotPublisher` внутри `BlockValuesProvider` → внешний store `src/lib/blocks/page-snapshot.ts`) и уходит в роут. Ozon-блоки (KPI, Аналитика, AI инсайты) публикуют богатый `__aiContext` — «глубокие данные Ozon».
+- **Глобальный токенайзер** — `src/lib/ai/tokenizer.ts` (`useTokenizer`, `estimateTokens`): точный подсчёт через `js-tiktoken` (o200k_base, lazy client-only) + эвристика-fallback. Модалка показывает счётчик «≈ N токенов · M символов · K блоков» с предупреждением о бюджете.
+- **Сохранение отчётов по разделу в БД** — таблица `section_ai_reports` (`drizzle/init/13-section-ai-reports.sql`), **лимит 10 на раздел** (tenant+user+pageKey) с перезаписью самого старого (AlertDialog). API `GET/POST /api/ai/section-reports`, `DELETE .../[reportId]`. Queries — `src/lib/ai/section-reports-queries.ts`.
+- **Подмешивание прошлых отчётов в контекст** — чекбокс на каждом сохранённом отчёте; выбранные (summary + insights) добавляются в контекст нового анализа, счётчик токенов учитывает их.
+- **Универсальные шаблоны** — табы над полем ввода (Общий обзор / Аномалии / Проблемы и риски / Точки роста / Что изменилось), клик подставляет редактируемый промпт (`SECTION_TEMPLATES`).
+
+### Changed
+- **`/api/ai/analyze-section`** — принимает клиентский снапшот блоков (`SectionBlockSnapshotSchema`) + `includeReportIds`, собирает контекст через общий `assembleSectionContext` (та же сборка для клиент-счётчика и сервер-промпта), стримит строгий JSON (summary + insights[]). Раньше видел только `config` блоков (отсюда ответ «у меня только настройки блоков»).
+- **`InsightCard`** обобщён (`InsightCardData`) — переиспользуется и в Ozon-инсайтах, и в анализе раздела.
+
+### Added (dependency)
+- **`js-tiktoken@^1.0.21`** — точный токенайзер для ИИ-ассистентов.
+
 ## [0.33.0] - 2026-06-01
 
 ### Added

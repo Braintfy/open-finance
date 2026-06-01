@@ -14,3 +14,4 @@ export * from './currency';
 export * from './marketplaces';
 export * from './user-ai-credentials';
 export * from './ozon-ai-insights';
+export * from './section-ai-reports';
