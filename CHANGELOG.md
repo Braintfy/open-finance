@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.32.0] - 2026-05-31
+
+### Added
+- **Блок «Ozon · AI инсайты» — полная доработка** — раскрываемые модули (Показатели / Авто-инсайты по категориям / ИИ-отчёты), новые показатели (прибыль, маржа, % возвратов/отмен, выкуп, стоимость остатков, заморозка в неликвиде, концентрация топ-3) и инсайты (маржа ≤0, высокий % возвратов, низкий выкуп, ABC-концентрация, заморозка капитала, падение заказов). Логика вынесена в `src/lib/blocks/catalog/unit-ozon-ai-insights-types.ts` (pure, shared с server).
+- **ИИ-анализ Ozon (кнопка «ИИ Анализ»)** — модалка `ozon-ai-insights-dialog.tsx` со стримингом (NDJSON), строгий JSON-контракт (summary + insights[]). Новый эндпойнт `POST /api/marketplaces/ozon/ai-insights` (reuse провайдера из `analyze-section`: user-keys → OpenAI-compat → Ollama fallback).
+- **История ИИ-отчётов в БД** — новая таблица `ozon_ai_insight_reports` (`drizzle/init/12-ozon-ai-insights.sql`), **лимит 10 на блок** (tenant+user+block_id). При 11-й генерации сохранение запрашивает подтверждение перезаписи самого старого (`AlertDialog`). API: `GET/POST /api/marketplaces/ozon/ai-insights/reports`, `DELETE .../reports/[reportId]`. Queries — `src/lib/marketplaces/ozon/ai-insights-queries.ts`.
+- **Строка «Итог» в блоке «Ozon · Аналитика»** — закреплённая снизу `<tfoot>` со сводными суммами (выручка/реклама/заказы/остатки/просмотры/клики…); проценты и ₽-за-единицу считаются из сумм, per-unit (цена/себест/маржа/дни) → «—». Тоггл в шапке блока + в настройках (`showTotalsRow`, default on).
+- **Режим сравнения «Месяц назад» в блоке «Ozon · KPI»** — `shiftOzonQueryPeriodMonths` в `query-period.ts`, обработка в `/api/marketplaces/ozon/kpi`.
+
+### Changed
+- **Ozon KPI «Сравнить с»** — дефолт теперь «Неделя назад» (был «Прошлый период»). Нативный `<select>` заменён на `DropdownSelect` (фикс пустой метки на macOS).
+
+### Fixed
+- **Сброс «Сравнить с» в Ozon KPI** — `compareMode` теперь персистится в config через `onConfigChange` (раньше жил только в локальном `useState` и откатывался на дефолт при ре-рендере/перезагрузке).
+
+### Removed
+- **Бейдж «Эталон Ads»** — убран из блоков «Ozon · KPI» и «Ozon · Динамика» (источник расхода остаётся в тултипах метрик).
+
 ## [0.31.1] - 2026-05-31
 
 ### Fixed

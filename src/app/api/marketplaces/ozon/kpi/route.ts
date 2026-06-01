@@ -14,12 +14,13 @@ import {
   getPreviousOzonQueryPeriod,
   parseOzonPeriodFromRequest,
   shiftOzonQueryPeriod,
+  shiftOzonQueryPeriodMonths,
   type OzonQueryPeriod,
 } from '@/lib/marketplaces/ozon/query-period';
 
 export const runtime = 'nodejs';
 
-export type CompareMode = 'previous' | 'week-ago';
+export type CompareMode = 'previous' | 'week-ago' | 'month-ago';
 
 export type OzonKpiResponse = {
   ok: true;
@@ -219,14 +220,25 @@ export async function GET(req: NextRequest) {
       );
     }
 
+    const compareModeParam = url.searchParams.get('compareMode');
     const compareMode: CompareMode =
-      url.searchParams.get('compareMode') === 'week-ago' ? 'week-ago' : 'previous';
+      compareModeParam === 'week-ago'
+        ? 'week-ago'
+        : compareModeParam === 'month-ago'
+          ? 'month-ago'
+          : 'previous';
     const prevPeriod =
       compareMode === 'week-ago'
         ? shiftOzonQueryPeriod(period, -7)
-        : getPreviousOzonQueryPeriod(period);
+        : compareMode === 'month-ago'
+          ? shiftOzonQueryPeriodMonths(period, -1)
+          : getPreviousOzonQueryPeriod(period);
     const compareLabel =
-      compareMode === 'week-ago' ? 'Неделя назад' : 'Прошлый период';
+      compareMode === 'week-ago'
+        ? 'Неделя назад'
+        : compareMode === 'month-ago'
+          ? 'Месяц назад'
+          : 'Прошлый период';
 
     const [current, previous] = await Promise.all([
       getAggregateForRange({

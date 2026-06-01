@@ -23,6 +23,7 @@ import {
 } from '@/components/blocks/period-picker';
 import { OzonAccountSelector } from '@/components/marketplaces/ozon-account-selector';
 import { OzonSyncSection } from '@/components/unit-economics/ozon-sync-section';
+import { DropdownSelect } from '@/components/unit-economics/dropdown-select';
 import { useBlockValuePublisher, formatPeriodKey, serializeSpark } from '@/lib/blocks/values';
 import { useBlockPeriod } from '@/lib/blocks/use-block-period';
 import { useOzonSyncListener } from '@/lib/blocks/use-ozon-sync-listener';
@@ -50,8 +51,8 @@ export const OzonKpiBlockConfigSchema = z.object({
     .default('7d'),
   customFrom: z.string().nullable().default(null),
   customTo: z.string().nullable().default(null),
-  /** Режим сравнения для delta-бейджей. previous = предыдущий период (default), week-ago = тот же период неделю назад. */
-  compareMode: z.enum(['previous', 'week-ago']).default('previous'),
+  /** Режим сравнения для delta-бейджей. week-ago (default) = тот же период неделю назад, previous = предыдущий отрезок, month-ago = месяц назад. */
+  compareMode: z.enum(['previous', 'week-ago', 'month-ago']).default('week-ago'),
   visibleCards: VisibleCardsSchema.default({}),
 });
 
@@ -97,18 +98,23 @@ function buildDeltaTooltip(
   );
 }
 
-type CompareMode = 'previous' | 'week-ago';
+type CompareMode = 'previous' | 'week-ago' | 'month-ago';
 
 const COMPARE_OPTIONS: Array<{ value: CompareMode; label: string; description: string }> = [
-  {
-    value: 'previous',
-    label: 'Прошлый период',
-    description: 'Сравнение с предыдущим отрезком той же длины (напр. 7д ↔ предыдущие 7д).',
-  },
   {
     value: 'week-ago',
     label: 'Неделя назад',
     description: 'Сравнение с той же датой неделю назад (день-к-дню, учитывает weekly seasonality).',
+  },
+  {
+    value: 'month-ago',
+    label: 'Месяц назад',
+    description: 'Сравнение с тем же периодом месяц назад (учитывает месячную динамику).',
+  },
+  {
+    value: 'previous',
+    label: 'Прошлый период',
+    description: 'Сравнение с предыдущим отрезком той же длины (напр. 7д ↔ предыдущие 7д).',
   },
 ];
 
@@ -153,6 +159,19 @@ function RenderOzonKpi({ instance, onConfigChange }: BlockRenderProps) {
     [setPeriodOverride],
   );
   const [compareMode, setCompareMode] = useState<CompareMode>(config.compareMode);
+  // Синхронизируем локальный compareMode если config изменился извне (SettingsForm).
+  useEffect(() => {
+    setCompareMode(config.compareMode);
+  }, [config.compareMode]);
+  // Смена сравнения должна персиститься в config, иначе при ре-рендере/перезагрузке
+  // откатывается на дефолт (баг «Сравнить с» сбрасывается). v0.32.
+  const handleCompareModeChange = useCallback(
+    (next: CompareMode) => {
+      setCompareMode(next);
+      onConfigChange?.({ ...config, compareMode: next } as unknown as Record<string, unknown>);
+    },
+    [config, onConfigChange],
+  );
   const [data, setData] = useState<OzonKpiResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -313,17 +332,12 @@ function RenderOzonKpi({ instance, onConfigChange }: BlockRenderProps) {
           title="Бейджи ↗/↘ справа от каждой метрики показывают изменение относительно этого baseline'а."
         >
           <span className="hidden sm:inline">Сравнить с:</span>
-          <select
+          <DropdownSelect
             value={compareMode}
-            onChange={(e) => setCompareMode(e.target.value as CompareMode)}
-            className="rounded-md border border-border/60 bg-background px-1.5 py-0.5 text-[11px] hover:bg-accent focus:outline-none focus:ring-1 focus:ring-ring"
-          >
-            {COMPARE_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value} title={opt.description}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
+            onChange={(v) => handleCompareModeChange(v as CompareMode)}
+            options={COMPARE_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+            triggerClassName="h-6 min-w-[8rem] max-w-[11rem]"
+          />
         </div>
         {data?.ordersSource === 'orders-fallback' && (
           <span
@@ -335,16 +349,8 @@ function RenderOzonKpi({ instance, onConfigChange }: BlockRenderProps) {
           </span>
         )}
         {/* Badge источника рекламных данных. Помогает быстро понять,
-            почему «Расход» отличается от кабинета Ozon — эталон или
-            fallback. v0.18.22. */}
-        {data?.adsSource === 'expense' && (
-          <span
-            className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
-            title="Расход — эталон Performance API /statistics/expense (все типы кампаний + бонусы)."
-          >
-            Эталон Ads
-          </span>
-        )}
+            почему «Расход» отличается от кабинета Ozon. v0.32: бейдж
+            «Эталон Ads» убран (источник «Расхода» — в тултипе карточки). */}
         {data?.adsSource === 'performance' && (
           <span
             className="inline-flex items-center gap-1 rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-medium text-sky-700 dark:bg-sky-950 dark:text-sky-300"
@@ -603,17 +609,15 @@ function SettingsForm({ config, onChange }: BlockSettingsFormProps) {
       </div>
       <div className="space-y-1.5">
         <Label className="text-[11px] text-muted-foreground">Сравнение по умолчанию</Label>
-        <select
+        <DropdownSelect
           value={parsed.compareMode}
-          onChange={(e) => patch({ compareMode: e.target.value as 'previous' | 'week-ago' })}
-          className="w-full rounded-md border border-border/60 bg-background px-2 py-1.5 text-[12px] hover:bg-accent focus:outline-none focus:ring-1 focus:ring-ring"
-        >
-          {COMPARE_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label} — {opt.description}
-            </option>
-          ))}
-        </select>
+          onChange={(v) => patch({ compareMode: v as CompareMode })}
+          options={COMPARE_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+          triggerClassName="h-8 w-full max-w-full"
+        />
+        <p className="text-[10px] text-muted-foreground/80">
+          {COMPARE_OPTIONS.find((o) => o.value === parsed.compareMode)?.description}
+        </p>
       </div>
       <div className="space-y-2">
         <Label className="text-[11px] text-muted-foreground">Видимые карточки</Label>

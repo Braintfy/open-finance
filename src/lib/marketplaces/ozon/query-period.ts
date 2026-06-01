@@ -105,6 +105,28 @@ export function shiftOzonQueryPeriod(
   };
 }
 
+/**
+ * Сдвиг периода на N календарных месяцев назад (для compareMode=month-ago).
+ * Те же даты, но на месяц(ы) раньше. Edge-case с 31-м числом обрабатывается
+ * нативным `Date.setUTCMonth` (переполнение откатывается к следующему месяцу),
+ * что для периодов week/month-aligned достаточно точно.
+ */
+export function shiftOzonQueryPeriodMonths(
+  period: OzonQueryPeriod,
+  deltaMonths: number,
+): OzonQueryPeriod {
+  const shift = (iso: string): string => {
+    const d = new Date(iso + 'T00:00:00Z');
+    d.setUTCMonth(d.getUTCMonth() + deltaMonths);
+    return d.toISOString().slice(0, 10);
+  };
+  return {
+    fromDate: shift(period.fromDate),
+    toDateExclusive: shift(period.toDateExclusive),
+    timezone: OZON_QUERY_TIMEZONE,
+  };
+}
+
 /** Человеко-читаемый label периода в MSC. */
 export function describeOzonQueryPeriod(period: OzonQueryPeriod): string {
   const inclusiveTo = shiftIsoDate(period.toDateExclusive, -1);

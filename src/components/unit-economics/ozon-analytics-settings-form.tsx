@@ -14,6 +14,7 @@ import {
   Paintbrush,
   Pin,
   ShoppingBag,
+  Sigma,
   TrendingUp,
 } from 'lucide-react';
 import Link from 'next/link';
@@ -244,6 +245,13 @@ export function OzonAnalyticsSettingsForm({
             hint="Красный <7 дней / оранжевый <14 / нейтральный <30 / зелёный ≥30."
             checked={value.showStockColor}
             onChange={(on) => onChange({ ...value, showStockColor: on })}
+          />
+          <ToggleRow
+            icon={<Sigma className="h-3.5 w-3.5" />}
+            label="Строка «Итог»"
+            hint="Закреплённая снизу строка со сводными суммами (выручка, реклама, заказы, остатки…). Проценты и ₽-за-единицу считаются из сумм."
+            checked={value.showTotalsRow}
+            onChange={(on) => onChange({ ...value, showTotalsRow: on })}
           />
         </div>
       </section>

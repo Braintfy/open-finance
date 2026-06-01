@@ -15,6 +15,7 @@ import {
   Loader2,
   Lock,
   RefreshCw,
+  Sigma,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { useLastFetched } from '@/lib/blocks/use-last-fetched';
@@ -483,6 +484,25 @@ function RenderOzonAnalytics({ instance, onConfigChange }: BlockRenderProps) {
           </button>
           <button
             type="button"
+            onClick={() =>
+              onConfigChange?.({
+                ...config,
+                showTotalsRow: !config.showTotalsRow,
+              } as unknown as Record<string, unknown>)
+            }
+            className={
+              'inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] transition-colors ' +
+              (config.showTotalsRow
+                ? 'border-primary bg-primary/10 text-primary'
+                : 'border-border/60 text-muted-foreground hover:bg-accent hover:text-foreground')
+            }
+            title={config.showTotalsRow ? 'Скрыть строку «Итог»' : 'Показать строку «Итог»'}
+          >
+            <Sigma className="h-3 w-3" />
+            <span className="hidden sm:inline">Итог</span>
+          </button>
+          <button
+            type="button"
             onClick={() => setSyncDialogOpen(true)}
             disabled={!config.accountId}
             className="inline-flex items-center gap-1 rounded-md border border-border/60 px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
@@ -658,6 +678,7 @@ CPC/CPO — breakdown per-SKU/CPO (может не суммироваться в
             showDrrColor={config.showDrrColor}
             showStockColor={config.showStockColor}
             useOzonTurnover={config.useOzonTurnover}
+            showTotalsRow={config.showTotalsRow}
           />
         )}
       </div>

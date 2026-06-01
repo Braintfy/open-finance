@@ -81,6 +81,21 @@
 **Фикс:** Обновил `install-agentmemory.sh` (ставит iii-engine + @xenova/transformers + опц. global agentmemory), launchd plist (добавил `~/.local/bin` в PATH), `docs/MEMORY_SETUP.md` (полная картина с runtime + LLM провайдерами).
 **Урок:** **ВСЕГДА читать официальный README**, не только третьесторонние обзоры. Dev.to статьи дают концептуальное понимание, но опускают critical install details. Перед deployment чужого open-source — `git clone` или хотя бы Read raw README.md с GitHub.
 
+### 2026-05-31 — block-level state, который не персистится, тихо сбрасывается
+
+**Контекст:** Блок `unit.ozon-kpi`, селектор «Сравнить с» (`compareMode`).
+**Грабля:** Выбор пользователя откатывался на дефолт после ре-рендера/перезагрузки.
+**Причина:** `compareMode` жил только в локальном `useState(config.compareMode)`, без записи в config — при любом ре-маунте брался дефолт из config.
+**Фикс:** Смена пишет в config через `onConfigChange` + `useEffect` синхронизирует локальный стейт с config. Тот же паттерн уже был для периода (`useBlockPeriod.onConfigChange`).
+**Урок:** Любой пользовательский выбор в блоке (не только период) ДОЛЖЕН персиститься в config через `onConfigChange`, иначе тихо сбрасывается. Локальный `useState` — только зеркало config.
+
+### 2026-05-31 — shared pure-логика для server+client: отдельный не-'use client' файл
+
+**Контекст:** Блок `unit.ozon-ai-insights` + новые API-routes + DB schema должны делить тип `Insight` и rule-based генераторы.
+**Грабля:** Логика и тип `Insight` жили внутри `'use client'` блока — их нельзя импортировать в server (schema/queries/route) без затягивания React.
+**Фикс:** Вынес типы + pure-функции в `unit-ozon-ai-insights-types.ts` (без `'use client'`); типы из API-routes тянул только `import type` (route-файлы server-only, type-импорт стирается).
+**Урок:** Pure-логику/типы, нужные и на сервере, и в client-блоке, держать в отдельном не-'use client' файле; кросс-импорт типов из server-роутов — всегда `import type`.
+
 ---
 
 ## Как использовать

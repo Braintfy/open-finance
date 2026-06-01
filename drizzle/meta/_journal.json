@@ -43,6 +43,13 @@
       "when": 1779829231863,
       "tag": "0005_aberrant_roland_deschain",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1780256222471,
+      "tag": "0006_natural_mongoose",
+      "breakpoints": true
     }
   ]
 }

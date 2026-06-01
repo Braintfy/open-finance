@@ -229,6 +229,12 @@ export const OzonAnalyticsBlockConfigSchema = z.object({
    * стабильно покрывает большинство SKU.
    */
   useOzonTurnover: z.boolean().default(true),
+  /**
+   * Показывать закреплённую снизу строку «Итог» со сводными суммами по
+   * видимым строкам (суммы где это имеет смысл, производные %/₽ из сумм).
+   * Default on.
+   */
+  showTotalsRow: z.boolean().default(true),
 });
 
 export type OzonAnalyticsBlockConfig = z.infer<typeof OzonAnalyticsBlockConfigSchema>;

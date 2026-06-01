@@ -231,6 +231,142 @@ function formatInt(value: number): string {
   return value.toLocaleString('ru-RU');
 }
 
+/** Сводные суммы по строкам таблицы — для закреплённой строки «Итог». */
+export type AnalyticsTotals = {
+  count: number;
+  delivered: number;
+  deliveredFbo: number;
+  deliveredFbs: number;
+  qtyDelivered: number;
+  cancelled: number;
+  returned: number;
+  revenueRub: number;
+  adsRub: number;
+  views: number;
+  clicks: number;
+  cartAdds: number;
+  stock: number;
+  stockFbo: number;
+  stockFbs: number;
+  /** Простое среднее buyoutPct по строкам, где он задан. */
+  buyoutPctAvg: number | null;
+};
+
+export function computeAnalyticsTotals(rows: OzonAnalyticsRow[]): AnalyticsTotals {
+  const t: AnalyticsTotals = {
+    count: rows.length,
+    delivered: 0,
+    deliveredFbo: 0,
+    deliveredFbs: 0,
+    qtyDelivered: 0,
+    cancelled: 0,
+    returned: 0,
+    revenueRub: 0,
+    adsRub: 0,
+    views: 0,
+    clicks: 0,
+    cartAdds: 0,
+    stock: 0,
+    stockFbo: 0,
+    stockFbs: 0,
+    buyoutPctAvg: null,
+  };
+  let buyoutSum = 0;
+  let buyoutCount = 0;
+  for (const r of rows) {
+    t.delivered += r.delivered;
+    t.deliveredFbo += r.deliveredFbo;
+    t.deliveredFbs += r.deliveredFbs;
+    t.qtyDelivered += r.qtyDelivered;
+    t.cancelled += r.cancelled;
+    t.returned += r.returned;
+    t.revenueRub += r.revenueRub;
+    t.adsRub += r.adsRub;
+    t.views += r.views;
+    t.clicks += r.clicks;
+    t.cartAdds += r.cartAdds;
+    t.stock += r.stockMarketplace + r.stockOwn;
+    t.stockFbo += r.stockMarketplace;
+    t.stockFbs += r.stockOwn;
+    if (r.buyoutPct !== null && Number.isFinite(r.buyoutPct)) {
+      buyoutSum += r.buyoutPct;
+      buyoutCount += 1;
+    }
+  }
+  t.buyoutPctAvg = buyoutCount > 0 ? Math.round((buyoutSum / buyoutCount) * 10) / 10 : null;
+  return t;
+}
+
+/**
+ * Содержимое ячейки строки «Итог» для колонки. Суммируем там, где это
+ * имеет смысл; производные (%/₽-за-единицу) считаем из сумм; per-unit
+ * (цена/себест/маржа/дни) → «—», т.к. суммировать их некорректно.
+ */
+function totalCellContent(
+  key: TableColumnKey,
+  totals: AnalyticsTotals,
+  periodDays: number,
+): React.ReactNode {
+  switch (key) {
+    case 'delivered':
+      return formatInt(totals.delivered);
+    case 'deliveredFbo':
+      return formatInt(totals.deliveredFbo);
+    case 'deliveredFbs':
+      return formatInt(totals.deliveredFbs);
+    case 'qtyDelivered':
+      return formatInt(totals.qtyDelivered);
+    case 'cancelled':
+      return formatInt(totals.cancelled);
+    case 'returned':
+      return formatInt(totals.returned);
+    case 'returnPct': {
+      const denom = totals.delivered + totals.returned;
+      return formatPct(denom > 0 ? (totals.returned / denom) * 100 : null);
+    }
+    case 'revenueRub':
+      return formatRub(totals.revenueRub);
+    case 'adsRub':
+      return formatRub(totals.adsRub);
+    case 'drrPct':
+      return formatPct(totals.revenueRub > 0 ? (totals.adsRub / totals.revenueRub) * 100 : null);
+    case 'stock':
+      return formatInt(totals.stock);
+    case 'stockFbo':
+      return formatInt(totals.stockFbo);
+    case 'stockFbs':
+      return formatInt(totals.stockFbs);
+    case 'views':
+      return formatInt(totals.views);
+    case 'clicks':
+      return formatInt(totals.clicks);
+    case 'cartAdds':
+      return formatInt(totals.cartAdds);
+    case 'ctr':
+      return formatPct(totals.views > 0 ? (totals.clicks / totals.views) * 100 : null);
+    case 'cpc':
+      return totals.clicks > 0 ? formatRub(totals.adsRub / totals.clicks, false) : '—';
+    case 'cpm':
+      return totals.views > 0 ? formatRub((totals.adsRub / totals.views) * 1000) : '—';
+    case 'buyoutPct':
+      return formatPct(totals.buyoutPctAvg);
+    case 'salesPerDay':
+      return periodDays > 0 ? (totals.qtyDelivered / periodDays).toFixed(1) : '—';
+    case 'salesShare':
+      return totals.revenueRub > 0 ? '100%' : '—';
+    // Per-unit / неагрегируемые колонки.
+    case 'article':
+    case 'name':
+    case 'sku':
+    case 'priceRub':
+    case 'costRub':
+    case 'marginRub':
+    case 'daysOfStock':
+    default:
+      return '—';
+  }
+}
+
 type DrrTone = 'good' | 'ok' | 'warning' | 'danger';
 
 function drrTone(drr: number | null): DrrTone {
@@ -396,6 +532,7 @@ export function OzonAnalyticsTable({
   showDrrColor = true,
   showStockColor = true,
   useOzonTurnover = false,
+  showTotalsRow = true,
 }: {
   rows: OzonAnalyticsRow[];
   enabledColumns: TableColumnKey[];
@@ -425,6 +562,8 @@ export function OzonAnalyticsTable({
    * значения Ozon — fallback на расчётный.
    */
   useOzonTurnover?: boolean;
+  /** Показывать закреплённую снизу строку «Итог» со сводными суммами. Default true. */
+  showTotalsRow?: boolean;
 }) {
   // Порядок колонок задаётся `enabledColumns` (это `config.visibleColumns`
   // блока). Закреплённые (`pinnedColumns`) всегда идут первыми в указанном
@@ -453,6 +592,9 @@ export function OzonAnalyticsTable({
   // sort=null значит «не сортировать» — отдаём rows как пришло из API
   // (естественный порядок: revenue desc по умолчанию из бэкенда).
   const sorted = useMemo(() => (sort ? sortRows(rows, sort) : rows), [rows, sort]);
+
+  // Сводные суммы для строки «Итог» (по всем строкам, порядок неважен).
+  const totals = useMemo(() => computeAnalyticsTotals(rows), [rows]);
 
   // Column widths state: initialized from defaultPx, user can resize via drag.
   const [colWidths, setColWidths] = useState<Record<string, number>>(() => {
@@ -893,6 +1035,52 @@ export function OzonAnalyticsTable({
             })
           )}
             </tbody>
+            {showTotalsRow && sorted.length > 0 && (
+              <tfoot className="sticky bottom-0 z-10">
+                <tr>
+                  {columns.map((col, colIdx) => {
+                    const stickyLeft = stickyOffsets.get(col.key);
+                    const isPinned = stickyLeft !== undefined;
+                    const isLastPinned =
+                      isPinned && !stickyOffsets.has(columns[colIdx + 1]?.key);
+                    // Подпись «Итог · N» — в самой первой колонке таблицы.
+                    const isFirst = colIdx === 0;
+                    const content = isFirst ? (
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="font-semibold">Итог</span>
+                        <span className="text-[10px] font-normal text-muted-foreground">
+                          {totals.count.toLocaleString('ru-RU')} тов.
+                        </span>
+                      </span>
+                    ) : (
+                      totalCellContent(col.key, totals, periodDays)
+                    );
+                    const cellStyle: React.CSSProperties = isPinned
+                      ? {
+                          position: 'sticky',
+                          left: stickyLeft,
+                          zIndex: 11,
+                          backgroundColor: 'hsl(var(--card))',
+                          boxShadow: isLastPinned ? '2px 0 4px -2px rgba(0,0,0,0.08)' : undefined,
+                        }
+                      : {};
+                    return (
+                      <td
+                        key={col.key}
+                        className={cn(
+                          'whitespace-nowrap overflow-hidden border-t-2 border-border/70 bg-card px-2 py-1.5 align-middle text-[12px] font-semibold tabular-nums',
+                          col.align === 'right' ? 'text-right' : 'text-left',
+                        )}
+                        style={cellStyle}
+                        title={isFirst ? `Итог по ${totals.count} товарам` : undefined}
+                      >
+                        {content}
+                      </td>
+                    );
+                  })}
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
       </SortableContext>

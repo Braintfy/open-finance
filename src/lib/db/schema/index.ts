@@ -13,3 +13,4 @@ export * from './unit-economics-tabs';
 export * from './currency';
 export * from './marketplaces';
 export * from './user-ai-credentials';
+export * from './ozon-ai-insights';
