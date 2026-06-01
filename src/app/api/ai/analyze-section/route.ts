@@ -16,10 +16,11 @@ import { listInstalledModels, isChatCapableModel } from '@/lib/ai/providers/olla
 import { env } from '@/lib/env';
 import {
   SectionBlockSnapshotSchema,
+  ExternalSourceSelectionSchema,
   assembleSectionContext,
-  type SectionInsight,
+  type ExternalSourceContext,
 } from '@/lib/ai/section-insights';
-import { getSectionReportsByIds } from '@/lib/ai/section-reports-queries';
+import { resolveExternalSources } from '@/lib/ai/context-sources-queries';
 
 export const runtime = 'nodejs';
 export const maxDuration = 120;
@@ -31,8 +32,8 @@ const RequestSchema = z.object({
   blocks: z.array(SectionBlockSnapshotSchema).max(60).default([]),
   /** Фокус-вопрос пользователя. */
   userQuery: z.string().max(2000).optional(),
-  /** id сохранённых отчётов раздела для подмешивания в контекст. */
-  includeReportIds: z.array(z.string().max(64)).max(10).optional(),
+  /** Выбранные кросс-раздельные источники (резолвятся сервером из БД). */
+  externalSources: z.array(ExternalSourceSelectionSchema).max(10).optional(),
 });
 
 const OLLAMA_BASE = env.OLLAMA_BASE_URL;
@@ -96,7 +97,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { pageKey, pageLabel, blocks, userQuery, includeReportIds } = body.data;
+    const { pageLabel, blocks, userQuery, externalSources } = body.data;
 
     // Загрузить tenant settings.
     const [tenant] = await db
@@ -106,26 +107,20 @@ export async function POST(req: NextRequest) {
       .limit(1);
     const tenantSettings = tenant?.settings ?? null;
 
-    // Выбранные прошлые отчёты раздела — для подмешивания в контекст.
-    let reports: Array<{ createdAt: string; summary: string; insights: SectionInsight[] }> = [];
-    if (includeReportIds && includeReportIds.length > 0) {
-      const rows = await getSectionReportsByIds({
+    // Кросс-раздельные источники — резолвятся из БД (последний отчёт / config блоков).
+    let extraSections: ExternalSourceContext[] = [];
+    if (externalSources && externalSources.length > 0) {
+      extraSections = await resolveExternalSources({
         tenantId: session.tenantId,
         userId: session.userId,
-        pageKey,
-        ids: includeReportIds,
+        selections: externalSources,
       });
-      reports = rows.map((r) => ({
-        createdAt: r.createdAt.toISOString(),
-        summary: r.summary,
-        insights: r.insights,
-      }));
     }
 
     const contextMessage = assembleSectionContext({
       pageLabel,
       blocks,
-      reports,
+      extraSections,
       userQuery,
     });
 

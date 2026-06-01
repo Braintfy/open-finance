@@ -54,6 +54,35 @@ export type SectionReportMeta = {
 
 export const SECTION_AI_MAX_REPORTS = 10;
 
+// ───────────────────────────────────────────────────────────────
+// Кросс-раздельный контекст (выбор источников из других разделов)
+// ───────────────────────────────────────────────────────────────
+
+/** Один раздел-источник в мини-модалке выбора контекста. */
+export type SectionContextSourceDto = {
+  pageKey: string;
+  label: string;
+  /** true — это текущий раздел (база уже = live-блоки, подмешивается только отчёт). */
+  isCurrent: boolean;
+  /** Блоки раздела (config-only, из layout; без live-значений). */
+  blocks: SectionBlockSnapshot[];
+  /** Последний сохранённый ИИ-отчёт раздела (или null). */
+  lastReport: {
+    id: string;
+    createdAt: string;
+    model: string | null;
+    summary: string;
+    insights: SectionInsight[];
+  } | null;
+};
+
+/** Выбор одного раздела-источника для подмешивания в контекст. */
+export type ExternalSourceSelection = {
+  pageKey: string;
+  /** report — последний ИИ-отчёт; blocks — config блоков раздела. */
+  mode: 'report' | 'blocks';
+};
+
 // ─────────────────────────────────────────────────────────────────────────
 // Снапшот блоков страницы (собирается клиентом, отправляется в route)
 // ─────────────────────────────────────────────────────────────────────────
@@ -78,6 +107,12 @@ export const SectionBlockSnapshotSchema = z.object({
   output: z.record(z.union([z.number(), z.string(), z.null()])).optional(),
   aiContext: z.string().max(6000).nullable().optional(),
   sources: z.array(z.string().max(64)).max(50).optional(),
+});
+
+/** Выбор кросс-раздельного источника (только ref — тело резолвится сервером из БД). */
+export const ExternalSourceSelectionSchema = z.object({
+  pageKey: z.string().min(1).max(64),
+  mode: z.enum(['report', 'blocks']),
 });
 
 /** Отфильтровать снапшот до «связанных» блоков (есть зависимости или сами источники). */
@@ -180,6 +215,53 @@ export function buildBlocksContext(
   return parts.join('\n\n');
 }
 
+function fmtReportDate(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleString('ru-RU');
+}
+
+/** Один источник кросс-разделного контекста (resolved). */
+export type ExternalSourceContext = {
+  label: string;
+  mode: 'report' | 'blocks';
+  report?: { createdAt: string; summary: string; insights: SectionInsight[] };
+  blocks?: SectionBlockSnapshot[];
+};
+
+/** Контекст из выбранных других разделов (последний отчёт или config блоков). */
+export function buildExternalSourcesContext(sources: ExternalSourceContext[]): string {
+  if (!sources.length) return '';
+  const parts: string[] = ['## Контекст из других разделов'];
+  for (const s of sources) {
+    if (s.mode === 'report' && s.report) {
+      const block: string[] = [`### ${s.label} — ИИ-отчёт ${fmtReportDate(s.report.createdAt)}`.trim()];
+      if (s.report.summary) block.push(`Резюме: ${trimText(s.report.summary, 600)}`);
+      for (const ins of s.report.insights.slice(0, 6)) {
+        block.push(`- [${ins.type}] ${ins.title}: ${trimText(ins.description, 200)}`);
+      }
+      parts.push(block.join('\n'));
+    } else if (s.blocks && s.blocks.length) {
+      const limited = s.blocks.slice(0, 12);
+      const block: string[] = [`### ${s.label} — блоки (${limited.length} из ${s.blocks.length})`];
+      for (const b of limited) {
+        const lines: string[] = [`- ${b.title} (${b.type})`];
+        if (b.aiContext && b.aiContext.trim()) {
+          lines.push('  ' + trimText(b.aiContext.trim(), 800));
+        } else {
+          const fields = formatOutputFields(b.output);
+          if (fields.length) lines.push('  Значения: ' + fields.join('; '));
+          else if (b.config && Object.keys(b.config).length > 0) {
+            lines.push('  Настройки: ' + trimText(JSON.stringify(b.config), 300));
+          }
+        }
+        block.push(lines.join('\n'));
+      }
+      parts.push(block.join('\n'));
+    }
+  }
+  return parts.join('\n\n');
+}
+
 /** Контекст из выбранных прошлых отчётов (история). */
 export function buildReportsContext(
   reports: Array<{ createdAt: string; summary: string; insights: SectionInsight[] }>,
@@ -211,15 +293,19 @@ export function assembleSectionContext(args: {
   pageLabel?: string;
   blocks: SectionBlockSnapshot[];
   reports?: Array<{ createdAt: string; summary: string; insights: SectionInsight[] }>;
+  /** Подмешанный контекст из других разделов (последний отчёт или config блоков). */
+  extraSections?: ExternalSourceContext[];
   userQuery?: string;
   maxChars?: number;
 }): string {
-  const { pageLabel, blocks, reports = [], userQuery, maxChars = 28000 } = args;
+  const { pageLabel, blocks, reports = [], extraSections = [], userQuery, maxChars = 28000 } = args;
   const parts: string[] = [];
   if (pageLabel) parts.push(`# Раздел: ${pageLabel}`);
   parts.push(buildBlocksContext(blocks));
   const reportsCtx = buildReportsContext(reports);
   if (reportsCtx) parts.push(reportsCtx);
+  const extraCtx = buildExternalSourcesContext(extraSections);
+  if (extraCtx) parts.push(extraCtx);
   if (userQuery && userQuery.trim()) {
     parts.push(`## Фокус-вопрос пользователя\n${userQuery.trim()}`);
   } else {

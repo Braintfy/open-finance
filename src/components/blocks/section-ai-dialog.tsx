@@ -24,23 +24,36 @@ import {
   AlertDialogCancel,
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
-import { Sparkles, Square, RefreshCw, Loader2, Save, Trash2, Hash } from 'lucide-react';
+import {
+  Sparkles,
+  Square,
+  RefreshCw,
+  Loader2,
+  Save,
+  Trash2,
+  Hash,
+  Layers,
+  History,
+  ChevronDown,
+  ChevronRight,
+} from 'lucide-react';
 import { InsightCard } from '@/components/unit-economics/ozon-insight-card';
 import { renderInlineMd } from '@/components/unit-economics/inline-md';
 import { useTokenizer } from '@/lib/ai/tokenizer';
 import { getPageSnapshot, subscribePageSnapshot } from '@/lib/blocks/page-snapshot';
+import { SectionContextDialog } from './section-context-dialog';
 import {
   SECTION_TEMPLATES,
   assembleSectionContext,
   extractSectionReport,
-  filterSubgraph,
+  type ExternalSourceContext,
+  type ExternalSourceSelection,
   type SectionBlockSnapshot,
+  type SectionContextSourceDto,
   type SectionInsight,
   type SectionInsightKind,
   type SectionReport,
 } from '@/lib/ai/section-insights';
-
-type SectionAiScope = 'all' | 'subgraph';
 
 type SectionAiDialogProps = {
   open: boolean;
@@ -79,6 +92,22 @@ function fmtDate(iso: string): string {
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleString('ru-RU');
 }
 
+/** Резюме + карточки инсайтов (переиспользуется для сохранённых отчётов). */
+function ReportBody({ report }: { report: { summary: string; insights: SectionInsight[] } }) {
+  return (
+    <>
+      {report.summary && (
+        <div className="rounded-md border border-primary/30 bg-primary/5 p-2 text-[11px] leading-relaxed">
+          {renderInlineMd(report.summary)}
+        </div>
+      )}
+      {report.insights.map((ins, i) => (
+        <InsightCard key={`${ins.category ?? ''}-${i}`} insight={ins} />
+      ))}
+    </>
+  );
+}
+
 export function SectionAiDialog({
   open,
   onOpenChange,
@@ -87,7 +116,6 @@ export function SectionAiDialog({
 }: SectionAiDialogProps) {
   const [query, setQuery] = useState('');
   const [activeTemplate, setActiveTemplate] = useState<string | null>(null);
-  const [scope, setScope] = useState<SectionAiScope>('all');
   const [streaming, setStreaming] = useState(false);
   const [raw, setRaw] = useState('');
   const [parsed, setParsed] = useState<SectionReport | null>(null);
@@ -97,7 +125,15 @@ export function SectionAiDialog({
 
   const [snapshot, setSnapshot] = useState<SectionBlockSnapshot[]>([]);
   const [reports, setReports] = useState<SavedReport[]>([]);
-  const [selectedReportIds, setSelectedReportIds] = useState<Set<string>>(new Set());
+  const [historyOpen, setHistoryOpen] = useState(true);
+  const [openReports, setOpenReports] = useState<Set<string>>(new Set());
+
+  // Кросс-раздельный контекст (мини-модалка «Контекст»).
+  const [externalSources, setExternalSources] = useState<ExternalSourceSelection[]>([]);
+  const [contextOpen, setContextOpen] = useState(false);
+  const [contextSources, setContextSources] = useState<SectionContextSourceDto[]>([]);
+  const [contextLoading, setContextLoading] = useState(false);
+  const [contextError, setContextError] = useState<string | null>(null);
 
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -132,6 +168,45 @@ export function SectionAiDialog({
     if (open) void loadReports();
   }, [open, loadReports]);
 
+  // По умолчанию раскрываем последний (самый свежий) отчёт.
+  useEffect(() => {
+    if (reports.length > 0) {
+      setOpenReports((prev) => (prev.size === 0 ? new Set([reports[0].id]) : prev));
+    }
+  }, [reports]);
+
+  // Разделы-источники для кросс-раздельного контекста — грузим при открытии модалки.
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    setContextLoading(true);
+    setContextError(null);
+    void (async () => {
+      try {
+        const res = await fetch(`/api/ai/context-sources?pageKey=${encodeURIComponent(pageKey)}`);
+        const data = (await res.json()) as {
+          ok?: boolean;
+          sources?: SectionContextSourceDto[];
+          error?: string;
+        };
+        if (!active) return;
+        if (!res.ok || !data.ok) {
+          setContextError(data.error ?? `HTTP ${res.status}`);
+          setContextSources([]);
+        } else {
+          setContextSources(data.sources ?? []);
+        }
+      } catch (e) {
+        if (active) setContextError(e instanceof Error ? e.message : 'Ошибка загрузки');
+      } finally {
+        if (active) setContextLoading(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [open, pageKey]);
+
   const stop = useCallback(() => {
     abortRef.current?.abort();
     abortRef.current = null;
@@ -148,29 +223,40 @@ export function SectionAiDialog({
     };
   }, []);
 
-  const scopedBlocks = useMemo(
-    () => (scope === 'subgraph' ? filterSubgraph(snapshot) : snapshot),
-    [scope, snapshot],
-  );
-
-  const selectedReports = useMemo(
-    () =>
-      reports
-        .filter((r) => selectedReportIds.has(r.id))
-        .map((r) => ({ createdAt: r.createdAt, summary: r.summary, insights: r.insights })),
-    [reports, selectedReportIds],
-  );
+  // Собрать extraSections из выбранных разделов (для счётчика и отображения).
+  const extraSections = useMemo<ExternalSourceContext[]>(() => {
+    const byKey = new Map(externalSources.map((s) => [s.pageKey, s.mode]));
+    const out: ExternalSourceContext[] = [];
+    for (const s of contextSources) {
+      const mode = byKey.get(s.pageKey);
+      if (!mode) continue;
+      if (mode === 'report' && s.lastReport) {
+        out.push({
+          label: s.label,
+          mode: 'report',
+          report: {
+            createdAt: s.lastReport.createdAt,
+            summary: s.lastReport.summary,
+            insights: s.lastReport.insights,
+          },
+        });
+      } else if (mode === 'blocks' && s.blocks.length > 0) {
+        out.push({ label: s.label, mode: 'blocks', blocks: s.blocks });
+      }
+    }
+    return out;
+  }, [externalSources, contextSources]);
 
   // Контекст, который реально уйдёт в модель (та же сборка, что на сервере).
   const contextText = useMemo(
     () =>
       assembleSectionContext({
         pageLabel,
-        blocks: scopedBlocks,
-        reports: selectedReports,
+        blocks: snapshot,
+        extraSections,
         userQuery: query.trim() || undefined,
       }),
-    [pageLabel, scopedBlocks, selectedReports, query],
+    [pageLabel, snapshot, extraSections, query],
   );
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -198,9 +284,9 @@ export function SectionAiDialog({
         body: JSON.stringify({
           pageKey,
           pageLabel,
-          blocks: scopedBlocks,
+          blocks: snapshot,
           userQuery: query.trim() || undefined,
-          includeReportIds: selectedReportIds.size > 0 ? Array.from(selectedReportIds) : undefined,
+          externalSources: externalSources.length > 0 ? externalSources : undefined,
         }),
         signal: ctrl.signal,
       });
@@ -262,7 +348,7 @@ export function SectionAiDialog({
       if (e instanceof Error && e.name !== 'AbortError') setError(e.message);
       setStreaming(false);
     }
-  }, [streaming, stop, pageKey, pageLabel, scopedBlocks, query, selectedReportIds]);
+  }, [streaming, stop, pageKey, pageLabel, snapshot, query, externalSources]);
 
   const persist = useCallback(
     async (overwriteOldest: boolean) => {
@@ -279,7 +365,7 @@ export function SectionAiDialog({
             model,
             summary: parsed.summary,
             insights: parsed.insights,
-            meta: { tokens: tokenInfo.tokens, chars: tokenInfo.chars, blocks: scopedBlocks.length },
+            meta: { tokens: tokenInfo.tokens, chars: tokenInfo.chars, blocks: snapshot.length },
             overwriteOldest,
           }),
         });
@@ -304,7 +390,7 @@ export function SectionAiDialog({
         setSaving(false);
       }
     },
-    [parsed, pageKey, pageLabel, model, tokenInfo, scopedBlocks.length, loadReports],
+    [parsed, pageKey, pageLabel, model, tokenInfo, snapshot.length, loadReports],
   );
 
   const deleteReport = useCallback(
@@ -313,7 +399,7 @@ export function SectionAiDialog({
         const res = await fetch(`/api/ai/section-reports/${id}`, { method: 'DELETE' });
         if (res.ok) {
           setReports((prev) => prev.filter((r) => r.id !== id));
-          setSelectedReportIds((prev) => {
+          setOpenReports((prev) => {
             const next = new Set(prev);
             next.delete(id);
             return next;
@@ -325,6 +411,15 @@ export function SectionAiDialog({
     },
     [],
   );
+
+  const toggleReportOpen = useCallback((id: string) => {
+    setOpenReports((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
 
   const applyTemplate = useCallback((id: string, prompt: string) => {
     setActiveTemplate(id);
@@ -373,27 +468,23 @@ export function SectionAiDialog({
           </DialogHeader>
 
           <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-contain p-4">
-            {/* Scope + счётчик токенов */}
+            {/* Контекст-меню + счётчик токенов */}
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] text-muted-foreground">Контекст:</span>
-                <div className="flex rounded-md border text-[11px]">
-                  <button
-                    type="button"
-                    onClick={() => setScope('all')}
-                    className={`px-2.5 py-1 transition-colors ${scope === 'all' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-                  >
-                    Все блоки
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setScope('subgraph')}
-                    className={`border-l px-2.5 py-1 transition-colors ${scope === 'subgraph' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-                  >
-                    Только связанные
-                  </button>
-                </div>
-              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setContextOpen(true)}
+                className="gap-1.5"
+              >
+                <Layers className="h-3.5 w-3.5" />
+                Контекст
+                {externalSources.length > 0 && (
+                  <span className="rounded-full bg-primary px-1.5 text-[10px] font-medium text-primary-foreground tabular-nums">
+                    {externalSources.length}
+                  </span>
+                )}
+              </Button>
               <span
                 className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium tabular-nums ${overBudget ? 'bg-rose-100 text-rose-700 dark:bg-rose-900/50 dark:text-rose-300' : 'bg-muted text-muted-foreground'}`}
                 title="Оценка размера контекста, который уйдёт в модель"
@@ -401,7 +492,8 @@ export function SectionAiDialog({
                 <Hash className="h-3 w-3" />
                 {tokenInfo.exact ? '' : '≈'}
                 {tokenInfo.tokens.toLocaleString('ru-RU')} токенов ·{' '}
-                {tokenInfo.chars.toLocaleString('ru-RU')} символов · {scopedBlocks.length} бл.
+                {tokenInfo.chars.toLocaleString('ru-RU')} символов · {snapshot.length} бл.
+                {externalSources.length > 0 ? ` +${externalSources.length} разд.` : ''}
               </span>
             </div>
 
@@ -437,45 +529,6 @@ export function SectionAiDialog({
                 disabled={streaming}
               />
             </div>
-
-            {/* История отчётов раздела + чекбоксы «в контекст» */}
-            {reports.length > 0 && (
-              <div className="space-y-1 rounded-md border border-border/60 p-2">
-                <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  Сохранённые отчёты ({reports.length}/10) — отметьте для добавления в контекст
-                </div>
-                <div className="max-h-[140px] space-y-1 overflow-y-auto overscroll-contain">
-                  {reports.map((r) => (
-                    <div key={r.id} className="flex items-center gap-2 text-[11px]">
-                      <input
-                        type="checkbox"
-                        checked={selectedReportIds.has(r.id)}
-                        onChange={(e) => {
-                          setSelectedReportIds((prev) => {
-                            const next = new Set(prev);
-                            if (e.target.checked) next.add(r.id);
-                            else next.delete(r.id);
-                            return next;
-                          });
-                        }}
-                        className="h-3.5 w-3.5 shrink-0 accent-primary"
-                      />
-                      <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                        {fmtDate(r.createdAt)} · {r.insights.length} инсайтов
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => void deleteReport(r.id)}
-                        className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-                        title="Удалить отчёт"
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
 
             {error && <p className="text-xs text-destructive">{error}</p>}
 
@@ -530,6 +583,79 @@ export function SectionAiDialog({
                 {saved ? ' · отчёт сохранён' : ''}
               </p>
             )}
+
+            {/* История ИИ-отчётов: последний раскрыт по умолчанию, остальные сворачиваемы */}
+            {reports.length > 0 && (
+              <div className="rounded-md border border-border/60">
+                <button
+                  type="button"
+                  onClick={() => setHistoryOpen((o) => !o)}
+                  className="flex w-full items-center gap-1.5 px-2.5 py-2 text-left"
+                >
+                  {historyOpen ? (
+                    <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  ) : (
+                    <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  )}
+                  <History className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    ИИ-отчёты
+                  </span>
+                  <span className="ml-auto shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground">
+                    {reports.length}
+                  </span>
+                </button>
+                {historyOpen && (
+                  <div className="space-y-1 border-t border-border/60 p-2">
+                    {reports.map((r) => {
+                      const rOpen = openReports.has(r.id);
+                      return (
+                        <div key={r.id} className="rounded-md border border-border/50">
+                          <div className="flex items-center gap-1.5 px-2 py-1.5">
+                            <button
+                              type="button"
+                              onClick={() => toggleReportOpen(r.id)}
+                              className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+                            >
+                              {rOpen ? (
+                                <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                              ) : (
+                                <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                              )}
+                              <Sparkles className="h-3.5 w-3.5 shrink-0 text-primary" />
+                              <span className="truncate text-[11px] font-medium">
+                                {fmtDate(r.createdAt)}
+                              </span>
+                              {r.model && (
+                                <span className="hidden truncate text-[10px] text-muted-foreground sm:inline">
+                                  {r.model}
+                                </span>
+                              )}
+                              <span className="ml-auto shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground">
+                                {r.insights.length}
+                              </span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void deleteReport(r.id)}
+                              className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                              title="Удалить отчёт"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                          {rOpen && (
+                            <div className="space-y-2 border-t border-border/50 p-2">
+                              <ReportBody report={r} />
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Footer */}
@@ -578,6 +704,16 @@ export function SectionAiDialog({
           </div>
         </DialogContent>
       </Dialog>
+
+      <SectionContextDialog
+        open={contextOpen}
+        onOpenChange={setContextOpen}
+        sources={contextSources}
+        loading={contextLoading}
+        error={contextError}
+        selected={externalSources}
+        onChange={setExternalSources}
+      />
 
       <AlertDialog
         open={confirmOverwrite !== null}
