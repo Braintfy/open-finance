@@ -119,12 +119,26 @@ function exportXlsx(
         tuple.push(row.name ?? '');
         continue;
       }
-      // Для formula-колонок берётся col.formula (общая для всех строк)
-      if (col.type === 'formula' && typeof col.formula === 'string' && col.formula.trim() !== '') {
-        const body = col.formula.startsWith('=') ? col.formula.slice(1) : col.formula;
-        // Подставляем @-refs (формула может содержать `@blockId.field`).
-        const out = containsAtRef(body) ? substituteAtRefs(body, liveValues).result : body;
-        tuple.push({ __formula: out });
+      // Formula-колонка: per-cell override в row.values (Excel-режим, v0.39.0)
+      // ИМЕЕТ приоритет над общей col.formula. Без override — берём col.formula.
+      if (col.type === 'formula') {
+        const override = row.values?.[col.id];
+        if (typeof override === 'string' && override.startsWith('=')) {
+          const body = override.slice(1);
+          const out = containsAtRef(body) ? substituteAtRefs(body, liveValues).result : body;
+          tuple.push({ __formula: out });
+        } else if (typeof override === 'number') {
+          tuple.push(override); // жёсткий литерал-override ячейки
+        } else if (typeof override === 'string' && override.trim() !== '') {
+          tuple.push(override);
+        } else if (typeof col.formula === 'string' && col.formula.trim() !== '') {
+          const body = col.formula.startsWith('=') ? col.formula.slice(1) : col.formula;
+          // Подставляем @-refs (формула может содержать `@blockId.field`).
+          const out = containsAtRef(body) ? substituteAtRefs(body, liveValues).result : body;
+          tuple.push({ __formula: out });
+        } else {
+          tuple.push('');
+        }
         continue;
       }
       // 1) Если у ячейки есть binding на другой блок — берём resolved value

@@ -288,10 +288,6 @@ function isCellFormulaValue(v: unknown): boolean {
   return typeof v === 'string' && v.trim().startsWith('=');
 }
 
-/** Ячейка может быть активирована в Excel-режиме? Формульные колонки — нет. */
-function isExcelEditableCol(col: Column): boolean {
-  return col.type !== 'formula';
-}
 
 function formatNumber(value: number, col: Column, showKopecks: boolean): string {
   if (!Number.isFinite(value)) return '—';
@@ -327,20 +323,35 @@ function computeRowValues(
 ): Record<string, number | string> {
   const manual: Record<string, number | string> = { vatPct, taxRatePct };
   // Per-cell формулы этой строки (Excel-режим): colId → формула. Накладываются
-  // поверх column-formula в `formulasMap` через `evalRowFormulas`.
+  // поверх column-formula в `formulasMap` через `evalRowFormulas`. Работают и
+  // для НЕ-формульных колонок (импортированное число → формула), и для
+  // формульных (переопределение column-formula в одной строке).
   let cellFormulas: Record<string, string> | null = null;
+  // Формульные колонки, переопределённые per-cell ЛИТЕРАЛОМ (жёстким числом):
+  // их column-formula убираем из effectiveFormulas, чтобы победил литерал.
+  let literalOverrides: Set<string> | null = null;
   for (const col of columns) {
-    if (col.type === 'formula' || col.type === 'identity') continue;
-    const bound = boundForRow?.[col.id];
-    if (bound !== undefined) {
-      manual[col.id] = bound;
-      continue;
-    }
+    if (col.type === 'identity') continue;
     const raw = row.values[col.id];
     // Per-cell формула: значение-строка с `=`. Уходит в formulas, не в manual,
     // чтобы движок её вычислил (а не трактовал как литерал → NaN → 0).
+    // Переопределяет column-formula для формульных колонок в этой строке.
     if (isCellFormulaValue(raw)) {
       (cellFormulas ??= {})[col.id] = String(raw).trim();
+      continue;
+    }
+    if (col.type === 'formula') {
+      // Формульная колонка: per-cell ЛИТЕРАЛ-override (жёстко заданное значение).
+      if (raw !== undefined && raw !== null && raw !== '') {
+        manual[col.id] = raw;
+        (literalOverrides ??= new Set()).add(col.id);
+      }
+      // иначе — column-formula (она в formulasMap), manual не трогаем.
+      continue;
+    }
+    const bound = boundForRow?.[col.id];
+    if (bound !== undefined) {
+      manual[col.id] = bound;
       continue;
     }
     if (raw === undefined || raw === null || raw === '') {
@@ -349,7 +360,12 @@ function computeRowValues(
       manual[col.id] = raw;
     }
   }
-  const effectiveFormulas = cellFormulas ? { ...formulasMap, ...cellFormulas } : formulasMap;
+  let effectiveFormulas = formulasMap;
+  if (cellFormulas || literalOverrides) {
+    effectiveFormulas = { ...formulasMap };
+    if (cellFormulas) Object.assign(effectiveFormulas, cellFormulas);
+    if (literalOverrides) for (const id of literalOverrides) delete effectiveFormulas[id];
+  }
   const computed = evalRowFormulas(manual, effectiveFormulas);
   const merged: Record<string, number | string> = { ...manual };
   for (const [k, v] of Object.entries(computed)) merged[k] = v;
@@ -398,10 +414,20 @@ function draftForCell(row: Row, col: Column): string {
   if (col.type === 'identity') {
     return col.id === IDENTITY_ARTICLE_ID ? row.article : row.name;
   }
-  if (isBindingActive(row.bindings[col.id] as UnitCellBinding | undefined)) return '';
+  // Формульные колонки не биндятся; для остальных привязанная ячейка → пустой
+  // draft (печать переопределит привязку).
+  if (
+    col.type !== 'formula' &&
+    isBindingActive(row.bindings[col.id] as UnitCellBinding | undefined)
+  ) {
+    return '';
+  }
   const raw = row.values[col.id];
-  if (typeof raw === 'string') return raw;
-  if (typeof raw === 'number' && Number.isFinite(raw)) return String(raw);
+  if (typeof raw === 'string') return raw; // per-cell формула / текст / литерал-строка
+  if (typeof raw === 'number' && Number.isFinite(raw)) return String(raw); // per-cell литерал
+  // Формульная колонка без per-cell override → показываем column-formula для правки
+  // (чтобы пользователь видел и мог отредактировать действующую формулу).
+  if (col.type === 'formula' && col.formula) return col.formula;
   return '';
 }
 
@@ -1297,11 +1323,9 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
   const fillTo = fillState?.hoverIdx ?? null;
 
   // ── Excel-режим: контроллер сессии редактирования ─────────────────────────
-  // id видимых колонок, доступных для активации (всё, кроме формульных).
-  const editableColIds = useMemo(
-    () => visibleColumns.filter(isExcelEditableCol).map((c) => c.id),
-    [visibleColumns],
-  );
+  // id видимых колонок для навигации Tab/Enter — ВСЕ (включая формульные:
+  // per-cell override) и identity (артикул/название).
+  const editableColIds = useMemo(() => visibleColumns.map((c) => c.id), [visibleColumns]);
   const editableColsRef = useRef<string[]>(editableColIds);
   editableColsRef.current = editableColIds;
 
@@ -1319,6 +1343,26 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
         return;
       }
       const trimmed = s.draft.trim();
+
+      // Формульная КОЛОНКА: правка ячейки создаёт per-cell override (только эта
+      // строка). Привязок у формульных колонок нет (не трогаем bindings).
+      if (col.type === 'formula') {
+        const nextValues = { ...row.values };
+        const colFormula = (col.formula ?? '').trim();
+        if (!trimmed || trimmed === '=' || trimmed === colFormula) {
+          // Пусто / совпало с column-formula → убираем override (вернётся колоночная).
+          delete nextValues[col.id];
+        } else if (trimmed.startsWith('=')) {
+          nextValues[col.id] = trimmed; // per-cell формула-override
+        } else {
+          nextValues[col.id] = parseCellInput(trimmed); // жёсткий литерал-override
+        }
+        persist({
+          rows: rows.map((r) => (r.id === s.rowId ? { ...r, values: nextValues } : r)),
+        });
+        return;
+      }
+
       const nextValues = { ...row.values };
       const nextBindings = { ...row.bindings };
       // Любой ручной ввод значения/формулы снимает привязку этой ячейки.
@@ -1360,7 +1404,7 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
       }
       const row = configRef.current.rows.find((r) => r.id === rowId);
       const col = configRef.current.columns.find((c) => c.id === colId);
-      if (!row || !col || !isExcelEditableCol(col)) {
+      if (!row || !col) {
         setSession(null);
         return;
       }
@@ -1704,6 +1748,9 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
   const activeRowEntry = session ? computedRows.find((e) => e.row.id === session.rowId) ?? null : null;
   const activeIsFormula = session ? isFormulaDraft(session.draft) : false;
   const activeIsIdentity = activeColumn?.type === 'identity';
+  // Привязка к блоку доступна только для НЕ-identity и НЕ-формульных колонок.
+  const activeAllowsBinding =
+    !!activeColumn && activeColumn.type !== 'identity' && activeColumn.type !== 'formula';
   const activeIsLinked =
     session && activeRowEntry
       ? isBindingActive(activeRowEntry.row.bindings[session.columnId] as UnitCellBinding | undefined)
@@ -1963,7 +2010,7 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
                     <Unlink className="h-2.5 w-2.5" /> отвязать
                   </button>
                 )}
-                {!activeIsIdentity && (
+                {activeAllowsBinding && (
                   <button
                     type="button"
                     onMouseDown={(e) => e.preventDefault()}
@@ -2612,6 +2659,7 @@ function MyStoreExcelCell({
   dataCellInput,
   inputRef,
   placeholder,
+  tone,
   onActivate,
   onDraftChange,
   onInlineFocus,
@@ -2629,6 +2677,8 @@ function MyStoreExcelCell({
   dataCellInput: string;
   inputRef?: React.MutableRefObject<HTMLInputElement | null>;
   placeholder?: string;
+  /** Подсветка значения (для колонок с `positive` — +/−). */
+  tone?: 'positive' | 'negative';
   onActivate: () => void;
   onDraftChange: (draft: string, caret: number | null) => void;
   onInlineFocus: () => void;
@@ -2701,7 +2751,15 @@ function MyStoreExcelCell({
       {isLinked && <Link2 className="h-2.5 w-2.5 shrink-0 text-amber-600 dark:text-amber-400" />}
       {hasFormula && !isLinked && <FunctionSquare className="h-2.5 w-2.5 shrink-0 text-sky-500" />}
       {displayText ? (
-        <span className="truncate">{displayText}</span>
+        <span
+          className={cn(
+            'truncate',
+            !isErr && tone === 'positive' && 'text-emerald-600 dark:text-emerald-400',
+            !isErr && tone === 'negative' && 'text-red-600 dark:text-red-400',
+          )}
+        >
+          {displayText}
+        </span>
       ) : (
         <span className="text-muted-foreground/40">—</span>
       )}
@@ -2820,27 +2878,40 @@ const MyStoreRow = memo(function MyStoreRow({
           fillColId === col.id && fillLo !== null && rowIdx >= fillLo && rowIdx <= (fillHi as number);
         const fillCls = inFill ? 'bg-primary/5 ring-1 ring-inset ring-primary/40' : '';
 
-        // ── Excel-режим: единый sheet-style редактор для identity/text/number/
-        //    money/percent. Формульные КОЛОНКИ остаются read-only (ветка ниже). ──
-        if (excelMode && col.type !== 'formula') {
+        // ── Excel-режим: единый sheet-style редактор для ЛЮБОЙ ячейки —
+        //    identity / text / number / money / percent / formula (per-cell
+        //    override колоночной формулы для одной строки). ──
+        if (excelMode) {
           const isActive = activeColId === col.id;
           const isIdentity = col.type === 'identity';
-          const binding = isIdentity
-            ? undefined
-            : (row.bindings[col.id] as UnitCellBinding | undefined);
-          const linked = !isIdentity && isBindingActive(binding);
-          const cellFormula = !isIdentity && isCellFormulaValue(row.values[col.id]);
+          const isFormulaCol = col.type === 'formula';
+          const binding =
+            isIdentity || isFormulaCol
+              ? undefined
+              : (row.bindings[col.id] as UnitCellBinding | undefined);
+          const linked = isBindingActive(binding);
+          const rawVal = row.values[col.id];
+          const hasOverride = rawVal !== undefined && rawVal !== null && rawVal !== '';
+          // fx-бейдж: per-cell формула ИЛИ формульная колонка без литерал-override.
+          const cellFormula = isCellFormulaValue(rawVal) || (isFormulaCol && !hasOverride);
           const computed = values[col.id];
+          const isErr = computed === '#CYCLE' || computed === '#ERR';
           let displayText: string;
           if (isIdentity) {
             displayText = col.id === IDENTITY_ARTICLE_ID ? row.article : row.name;
-          } else if (computed === '#CYCLE' || computed === '#ERR') {
+          } else if (isErr) {
             displayText = String(computed);
           } else if (col.type === 'text') {
             displayText = typeof computed === 'string' ? computed : String(computed ?? '');
           } else {
             const n = Number(computed);
             displayText = Number.isFinite(n) ? formatCellValue(n, isMoneyCol(col), showKopecks) : '';
+          }
+          let tone: 'positive' | 'negative' | undefined;
+          if (!isErr && col.positive && !isIdentity && col.type !== 'text') {
+            const n = Number(computed);
+            if (n > 0) tone = 'positive';
+            else if (n < 0) tone = 'negative';
           }
           return (
             <BodyCell
@@ -2861,6 +2932,7 @@ const MyStoreRow = memo(function MyStoreRow({
                 dataCellInput={`${row.id}|${col.id}`}
                 inputRef={isActive ? inlineInputRef : undefined}
                 placeholder={isIdentity || col.type === 'text' ? col.label : '0'}
+                tone={tone}
                 onActivate={() => onCellActivate(row.id, col.id)}
                 onDraftChange={onCellDraftChange}
                 onInlineFocus={onCellInlineFocus}
