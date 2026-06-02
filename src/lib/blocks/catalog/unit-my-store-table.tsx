@@ -4,9 +4,30 @@
 // формулами с защитой от циклов. Большие таблицы виртуализируются (окно строк),
 // строки мемоизируются, ввод держит локальный draft (commit на blur) + Excel-протяжка.
 // Базируется на структуре unit.ozon-multi-table (sticky шапка/колонки/итоги).
+//
+// Excel-режим (v0.39.0): тоггл `config.excelMode` включает sheet-style
+// редактирование ЛЮБОЙ ячейки (как в блоках «Данные»/«Эксель ячейка»).
+//   - per-cell формула = строка `row.values[colId]`, начинающаяся с `=`
+//     (тот же контракт, что и `cell.v` в custom.data; XLSX-адаптер уже её
+//     сохраняет/читает). Переменные формулы — id колонок ТОЙ ЖЕ строки +
+//     `vatPct`/`taxRatePct` (как у колонок-формул), движок — `evalRowFormulas`.
+//   - единый `EditSession` (один draft на активную ячейку) между inline-input
+//     и formula bar; commit на blur/Enter/Tab, отмена на Escape.
+//   - в обычном режиме блок работает как раньше; ячейка с per-cell формулой
+//     рендерится read-only (computed + бейдж fx). Формулы редактируются только
+//     в Excel-режиме. Формульные КОЛОНКИ остаются column-driven (read-only).
 'use client';
 
-import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   Plus,
   Trash2,
@@ -27,6 +48,10 @@ import {
   Check,
   Link2,
   Link2Off,
+  FunctionSquare,
+  Unlink,
+  Table2,
+  X,
 } from 'lucide-react';
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { cn } from '@/lib/utils';
@@ -57,7 +82,7 @@ import type { UnitCellBinding } from '@/lib/unit-economics/types';
 import { rublesToKopecks } from '@/lib/unit-economics/types';
 import { useBlockValuePublisher } from '@/lib/blocks/values';
 import { useFormatSettings, formatRublesWithSettings } from '@/lib/format-settings';
-import { evalRowFormulas } from '@/lib/unit-economics/store-formula';
+import { evalRowFormulas, evalSingleFormula } from '@/lib/unit-economics/store-formula';
 import {
   OzonImportFromAnalyticsDialog,
   type OzonImportSettings,
@@ -204,6 +229,12 @@ const ConfigSchema = z.object({
    * По умолчанию закреплены `article` и `name` — самые важные для идентификации.
    */
   pinnedColumns: z.array(z.string()).default([IDENTITY_ARTICLE_ID, IDENTITY_NAME_ID]),
+  /**
+   * Excel-режим: sheet-style редактирование любой ячейки (значение/формула)
+   * через единый formula bar. Персистится, чтобы «точечная» сессия работы с
+   * таблицей переживала перезагрузку. Дефолт `false` — обычный режим.
+   */
+  excelMode: z.boolean().default(false),
 });
 
 type Config = z.infer<typeof ConfigSchema>;
@@ -247,6 +278,21 @@ function isMoneyCol(col: Column): boolean {
   return col.type === 'money' || (col.type === 'formula' && (col.unit === '₽' || /руб|rub/i.test(col.unit ?? '')));
 }
 
+/**
+ * Per-cell формула (Excel-режим) — строковое значение `row.values[colId]`,
+ * начинающееся с `=`. Тот же контракт, что и `cell.v` в блоке «Данные»;
+ * именно так формулы сохраняет/читает XLSX-адаптер (`my-store-table.ts`).
+ * Применяется только к НЕ-формульным колонкам (формульные column-driven).
+ */
+function isCellFormulaValue(v: unknown): boolean {
+  return typeof v === 'string' && v.trim().startsWith('=');
+}
+
+/** Ячейка может быть активирована в Excel-режиме? Формульные колонки — нет. */
+function isExcelEditableCol(col: Column): boolean {
+  return col.type !== 'formula';
+}
+
 function formatNumber(value: number, col: Column, showKopecks: boolean): string {
   if (!Number.isFinite(value)) return '—';
   if (isMoneyCol(col)) return formatRublesWithSettings(rublesToKopecks(value), showKopecks);
@@ -280,6 +326,9 @@ function computeRowValues(
   boundForRow: Record<string, number> | undefined,
 ): Record<string, number | string> {
   const manual: Record<string, number | string> = { vatPct, taxRatePct };
+  // Per-cell формулы этой строки (Excel-режим): colId → формула. Накладываются
+  // поверх column-formula в `formulasMap` через `evalRowFormulas`.
+  let cellFormulas: Record<string, string> | null = null;
   for (const col of columns) {
     if (col.type === 'formula' || col.type === 'identity') continue;
     const bound = boundForRow?.[col.id];
@@ -288,13 +337,20 @@ function computeRowValues(
       continue;
     }
     const raw = row.values[col.id];
+    // Per-cell формула: значение-строка с `=`. Уходит в formulas, не в manual,
+    // чтобы движок её вычислил (а не трактовал как литерал → NaN → 0).
+    if (isCellFormulaValue(raw)) {
+      (cellFormulas ??= {})[col.id] = String(raw).trim();
+      continue;
+    }
     if (raw === undefined || raw === null || raw === '') {
       manual[col.id] = (col.default as number | string | undefined) ?? (col.type === 'text' ? '' : 0);
     } else {
       manual[col.id] = raw;
     }
   }
-  const computed = evalRowFormulas(manual, formulasMap);
+  const effectiveFormulas = cellFormulas ? { ...formulasMap, ...cellFormulas } : formulasMap;
+  const computed = evalRowFormulas(manual, effectiveFormulas);
   const merged: Record<string, number | string> = { ...manual };
   for (const [k, v] of Object.entries(computed)) merged[k] = v;
   return merged;
@@ -312,6 +368,64 @@ function parseCellInput(text: string): number {
   const normalized = text.replace(/\s/g, '').replace(',', '.');
   const parsed = Number.parseFloat(normalized);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/**
+ * Единая сессия редактирования (Excel-режим). Один `draft` шарится между
+ * inline-input активной ячейки и formula bar. `isFormula(draft)` = начинается
+ * с `=`. `dirty` — был ли draft изменён пользователем (если нет, commit не
+ * перезаписывает ячейку → не ломает binding при простом проходе Tab'ом).
+ * Зеркалит `EditSession` из custom.data (тот же проверенный паттерн).
+ */
+type EditSession = {
+  rowId: string;
+  columnId: string;
+  draft: string;
+  caretPos: number | null;
+  lastFocused: 'inline' | 'bar';
+  dirty: boolean;
+};
+
+function isFormulaDraft(draft: string): boolean {
+  return draft.trim().startsWith('=');
+}
+
+/**
+ * Стартовый draft ячейки: формула/текст как есть, число → строкой, привязанная
+ * ячейка → пусто (печать переопределит привязку). Identity → article/name.
+ */
+function draftForCell(row: Row, col: Column): string {
+  if (col.type === 'identity') {
+    return col.id === IDENTITY_ARTICLE_ID ? row.article : row.name;
+  }
+  if (isBindingActive(row.bindings[col.id] as UnitCellBinding | undefined)) return '';
+  const raw = row.values[col.id];
+  if (typeof raw === 'string') return raw;
+  if (typeof raw === 'number' && Number.isFinite(raw)) return String(raw);
+  return '';
+}
+
+/**
+ * Вставка `text` в draft на позиции каретки. forceFormula добавляет ведущий `=`
+ * (вставка переменной/оператора переводит ячейку в режим формулы). Pure.
+ */
+function insertIntoDraft(
+  prev: { draft: string; caretPos: number | null },
+  text: string,
+  forceFormula = false,
+): { draft: string; caretPos: number } {
+  let draft = prev.draft;
+  let pos = prev.caretPos ?? draft.length;
+  if (forceFormula && draft === '') {
+    return { draft: `=${text}`, caretPos: text.length + 1 };
+  }
+  if (forceFormula && !draft.startsWith('=')) {
+    draft = `=${draft}`;
+    pos += 1;
+  }
+  pos = Math.max(0, Math.min(pos, draft.length));
+  const next = draft.slice(0, pos) + text + draft.slice(pos);
+  return { draft: next, caretPos: pos + text.length };
 }
 
 /** Высота строки/окна виртуализации. Виртуализируем только большие таблицы. */
@@ -408,6 +522,24 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
   const [fillState, setFillState] = useState<{ colId: string; sourceIdx: number; hoverIdx: number } | null>(null);
   const fillStateRef = useRef(fillState);
   fillStateRef.current = fillState;
+
+  // ── Excel-режим: единая сессия редактирования ─────────────────────────────
+  const excelMode = config.excelMode;
+  const [session, setSession] = useState<EditSession | null>(null);
+  const sessionRef = useRef(session);
+  sessionRef.current = session;
+  // Refs на активный inline-input ячейки + на input formula bar (куда вернуть
+  // focus/каретку после вставки переменной/оператора).
+  const inlineInputRef = useRef<HTMLInputElement | null>(null);
+  const formulaBarRef = useRef<HTMLInputElement | null>(null);
+  // Ref на корневую Card — smart-blur: focus ушёл ВНУТРИ блока → не коммитим.
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  // Восстановление каретки после programmatic-вставки (useLayoutEffect, до paint).
+  const pendingCaretRef = useRef<{ target: 'inline' | 'bar'; caret: number } | null>(null);
+  // Намерение клавиатурной навигации (Tab/Enter) — focus-эффект сфокусирует
+  // целевую ячейку; при прямом клике namerenie=null → эффект не вмешивается.
+  const navFocusRef = useRef<{ rowId: string; colId: string } | null>(null);
+
   // Стабильный id для DndContext — `useId()` SSR-safe, предотвращает
   // hydration mismatch на ARIA-описании (DndDescribedBy-N).
   const dndId = useId();
@@ -725,6 +857,10 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
 
   /** Открыть модалку привязки для конкретной ячейки (единая на всю таблицу). */
   const [pickerCell, setPickerCell] = useState<{ rowId: string; colId: string } | null>(null);
+  // Ref на pickerCell — smart-blur читает актуальное значение, оставаясь стабильным
+  // колбэком (иначе открытие пикера ре-рендерит все строки).
+  const pickerCellRef = useRef(pickerCell);
+  pickerCellRef.current = pickerCell;
   const openPicker = useCallback((rowId: string, colId: string) => {
     setPickerCell({ rowId, colId });
   }, []);
@@ -740,7 +876,9 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
       let applied = 0;
       let skipped = 0;
       const nextRows = config.rows.map((r) => {
-        if (r.bindings[colId]) {
+        // Пропускаем привязанные ячейки И ячейки с per-cell формулой (`=…`) —
+        // массовая заливка значением не должна молча затирать ни то, ни другое.
+        if (r.bindings[colId] || isCellFormulaValue(r.values[colId])) {
           skipped += 1;
           return r;
         }
@@ -1158,6 +1296,273 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
   const fillFrom = fillState?.sourceIdx ?? null;
   const fillTo = fillState?.hoverIdx ?? null;
 
+  // ── Excel-режим: контроллер сессии редактирования ─────────────────────────
+  // id видимых колонок, доступных для активации (всё, кроме формульных).
+  const editableColIds = useMemo(
+    () => visibleColumns.filter(isExcelEditableCol).map((c) => c.id),
+    [visibleColumns],
+  );
+  const editableColsRef = useRef<string[]>(editableColIds);
+  editableColsRef.current = editableColIds;
+
+  /** Записать draft активной ячейки в config (без setState). */
+  const writeSession = useCallback(
+    (s: EditSession) => {
+      const rows = configRef.current.rows;
+      const row = rows.find((r) => r.id === s.rowId);
+      const col = configRef.current.columns.find((c) => c.id === s.columnId);
+      if (!row || !col) return;
+      if (col.type === 'identity') {
+        const patch =
+          col.id === IDENTITY_ARTICLE_ID ? { article: s.draft } : { name: s.draft };
+        persist({ rows: rows.map((r) => (r.id === s.rowId ? { ...r, ...patch } : r)) });
+        return;
+      }
+      const trimmed = s.draft.trim();
+      const nextValues = { ...row.values };
+      const nextBindings = { ...row.bindings };
+      // Любой ручной ввод значения/формулы снимает привязку этой ячейки.
+      delete nextBindings[col.id];
+      if (!trimmed || trimmed === '=') {
+        delete nextValues[col.id];
+      } else if (trimmed.startsWith('=')) {
+        nextValues[col.id] = trimmed; // per-cell формула (строка с `=`)
+      } else if (col.type === 'text') {
+        nextValues[col.id] = trimmed;
+      } else {
+        nextValues[col.id] = parseCellInput(trimmed);
+      }
+      persist({
+        rows: rows.map((r) =>
+          r.id === s.rowId ? { ...r, values: nextValues, bindings: nextBindings } : r,
+        ),
+      });
+    },
+    [persist],
+  );
+
+  /** Commit активной сессии (пишет, только если был ввод) + закрыть редактор. */
+  const commitSession = useCallback(() => {
+    const s = sessionRef.current;
+    if (!s) return;
+    if (s.dirty) writeSession(s);
+    setSession(null);
+  }, [writeSession]);
+
+  const cancelEdit = useCallback(() => setSession(null), []);
+
+  /** Активировать ячейку: закоммитить предыдущую и открыть новую сессию. */
+  const activateCell = useCallback(
+    (rowId: string, colId: string) => {
+      const prev = sessionRef.current;
+      if (prev && prev.dirty && (prev.rowId !== rowId || prev.columnId !== colId)) {
+        writeSession(prev);
+      }
+      const row = configRef.current.rows.find((r) => r.id === rowId);
+      const col = configRef.current.columns.find((c) => c.id === colId);
+      if (!row || !col || !isExcelEditableCol(col)) {
+        setSession(null);
+        return;
+      }
+      setSession({
+        rowId,
+        columnId: colId,
+        draft: draftForCell(row, col),
+        caretPos: null,
+        lastFocused: 'inline',
+        dirty: false,
+      });
+    },
+    [writeSession],
+  );
+
+  /**
+   * Smart-blur: коммитим, ТОЛЬКО если focus уходит из блока полностью. Если
+   * остаётся внутри (formula bar, operator toolbar, другая ячейка, picker) —
+   * сессию сохраняем. Picker — Radix-портал вне cardRef → отдельная проверка.
+   */
+  const handleInputBlur = useCallback(
+    (e: React.FocusEvent<HTMLInputElement>) => {
+      if (pickerCellRef.current) return;
+      const related = e.relatedTarget as HTMLElement | null;
+      if (related && cardRef.current?.contains(related)) return;
+      commitSession();
+    },
+    [commitSession],
+  );
+
+  /** Вставка текста в draft с восстановлением каретки после commit (useLayoutEffect). */
+  const insertIntoDraftWithSession = useCallback((text: string, forceFormula = false) => {
+    setSession((prev) => {
+      if (!prev) return prev;
+      const target = prev.lastFocused;
+      const input = target === 'bar' ? formulaBarRef.current : inlineInputRef.current;
+      const domCaret = input?.selectionStart;
+      const caretPos =
+        typeof domCaret === 'number' ? domCaret : prev.caretPos ?? prev.draft.length;
+      const result = insertIntoDraft({ draft: prev.draft, caretPos }, text, forceFormula);
+      pendingCaretRef.current = { target, caret: result.caretPos };
+      return { ...prev, draft: result.draft, caretPos: result.caretPos, dirty: true };
+    });
+  }, []);
+
+  const insertToken = useCallback(
+    (token: string) => insertIntoDraftWithSession(token, true),
+    [insertIntoDraftWithSession],
+  );
+
+  /** Открыть picker привязки для активной ячейки. */
+  const openBindingPickerForActive = useCallback(() => {
+    const s = sessionRef.current;
+    if (!s) return;
+    setPickerCell({ rowId: s.rowId, colId: s.columnId });
+  }, []);
+
+  /** Очистить активную ячейку (значение + привязка). */
+  const clearActiveCell = useCallback(() => {
+    const s = sessionRef.current;
+    if (!s) return;
+    writeSession({ ...s, draft: '', dirty: true });
+    setSession(null);
+  }, [writeSession]);
+
+  /** Снять привязку активной ячейки, не закрывая редактор. */
+  const unlinkActiveCell = useCallback(() => {
+    const s = sessionRef.current;
+    if (!s) return;
+    const rows = configRef.current.rows;
+    const row = rows.find((r) => r.id === s.rowId);
+    if (!row) return;
+    const nextBindings = { ...row.bindings };
+    delete nextBindings[s.columnId];
+    persist({ rows: rows.map((r) => (r.id === s.rowId ? { ...r, bindings: nextBindings } : r)) });
+  }, [persist]);
+
+  /** Навигация Tab/Enter: commit + перейти на ячейку по видимому порядку. */
+  const moveActive = useCallback(
+    (dRow: number, dCol: number) => {
+      const s = sessionRef.current;
+      if (!s) return;
+      if (s.dirty) writeSession(s);
+      const rows = sortedRowsRef.current;
+      const cols = editableColsRef.current;
+      const rIdx = rows.findIndex((e) => e.row.id === s.rowId);
+      const cIdx = cols.indexOf(s.columnId);
+      if (rIdx < 0 || cIdx < 0) return;
+      let rNext = rIdx;
+      let cNext = cIdx;
+      if (dCol !== 0) {
+        cNext = cIdx + dCol;
+        if (cNext >= cols.length) {
+          cNext = 0;
+          rNext = Math.min(rows.length - 1, rIdx + 1);
+        } else if (cNext < 0) {
+          cNext = cols.length - 1;
+          rNext = Math.max(0, rIdx - 1);
+        }
+      }
+      if (dRow !== 0) rNext = Math.max(0, Math.min(rows.length - 1, rIdx + dRow));
+      const targetRow = rows[rNext];
+      const targetColId = cols[cNext];
+      if (!targetRow || !targetColId) return;
+      navFocusRef.current = { rowId: targetRow.row.id, colId: targetColId };
+      activateCell(targetRow.row.id, targetColId);
+    },
+    [writeSession, activateCell],
+  );
+
+  /** Общий keydown для inline-input и formula bar. */
+  const handleInputKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        moveActive(e.shiftKey ? -1 : 1, 0);
+      } else if (e.key === 'Tab') {
+        e.preventDefault();
+        moveActive(0, e.shiftKey ? -1 : 1);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        cancelEdit();
+      }
+    },
+    [moveActive, cancelEdit],
+  );
+
+  const toggleExcelMode = useCallback(() => {
+    const next = !configRef.current.excelMode;
+    if (!next) {
+      const s = sessionRef.current;
+      if (s?.dirty) writeSession(s);
+      setSession(null);
+    }
+    persist({ excelMode: next });
+  }, [persist, writeSession]);
+
+  // Стабильные row-колбэки активации/ввода (для React.memo строк).
+  const handleCellDraftChange = useCallback((draft: string, caret: number | null) => {
+    setSession((prev) =>
+      prev ? { ...prev, draft, caretPos: caret, lastFocused: 'inline', dirty: true } : prev,
+    );
+  }, []);
+  const handleCellInlineFocus = useCallback(() => {
+    setSession((prev) => (prev ? { ...prev, lastFocused: 'inline' } : prev));
+  }, []);
+
+  // Восстановление каретки СИНХРОННО после programmatic-вставки (до paint).
+  useLayoutEffect(() => {
+    const pending = pendingCaretRef.current;
+    if (!pending) return;
+    pendingCaretRef.current = null;
+    const input = pending.target === 'bar' ? formulaBarRef.current : inlineInputRef.current;
+    if (!input) return;
+    if (typeof document !== 'undefined' && document.activeElement !== input) input.focus();
+    try {
+      input.setSelectionRange(pending.caret, pending.caret);
+    } catch {
+      // ignore
+    }
+  });
+
+  // Фокус на целевую ячейку после клавиатурной навигации (+ scroll-into-view
+  // для виртуализированных таблиц). Прямой клик не ставит navFocusRef → пропуск.
+  useEffect(() => {
+    const target = navFocusRef.current;
+    if (!target) return;
+    navFocusRef.current = null;
+    const sc = scrollRef.current;
+    const idx = sortedRowsRef.current.findIndex((e) => e.row.id === target.rowId);
+    if (sc && idx >= 0) {
+      const top = HEADER_H + idx * ROW_H;
+      const bottom = top + ROW_H;
+      if (top - HEADER_H < sc.scrollTop) sc.scrollTop = Math.max(0, top - HEADER_H);
+      else if (bottom > sc.scrollTop + sc.clientHeight) sc.scrollTop = bottom - sc.clientHeight;
+    }
+    let raf = 0;
+    let tries = 0;
+    const tryFocus = () => {
+      const el = sc?.querySelector(
+        `[data-cell-input="${target.rowId}|${target.colId}"]`,
+      ) as HTMLInputElement | null;
+      if (el) {
+        el.focus();
+        el.select?.();
+        return;
+      }
+      if (tries++ < 6) raf = requestAnimationFrame(tryFocus);
+    };
+    raf = requestAnimationFrame(tryFocus);
+    return () => cancelAnimationFrame(raf);
+  }, [session?.rowId, session?.columnId]);
+
+  // Флаш недокоммиченной сессии при размонтировании блока.
+  useEffect(
+    () => () => {
+      const s = sessionRef.current;
+      if (s?.dirty) writeSession(s);
+    },
+    [writeSession],
+  );
+
   const totals = useMemo(() => {
     let totalRevenue = 0;
     let totalProfit = 0;
@@ -1294,8 +1699,53 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
   const totalRowWidth =
     STICKY_INDEX_W + visibleColumns.reduce((acc, c) => acc + widthOf(c), 0) + ACTIONS_W;
 
+  // ── Formula bar: данные активной ячейки (Excel-режим) ─────────────────────
+  const activeColumn = session ? config.columns.find((c) => c.id === session.columnId) ?? null : null;
+  const activeRowEntry = session ? computedRows.find((e) => e.row.id === session.rowId) ?? null : null;
+  const activeIsFormula = session ? isFormulaDraft(session.draft) : false;
+  const activeIsIdentity = activeColumn?.type === 'identity';
+  const activeIsLinked =
+    session && activeRowEntry
+      ? isBindingActive(activeRowEntry.row.bindings[session.columnId] as UnitCellBinding | undefined)
+      : false;
+  // Адрес ячейки для бара: «<артикул|название|#N> · <колонка>».
+  const activeAddr = (() => {
+    if (!session || !activeColumn || !activeRowEntry) return '';
+    const row = activeRowEntry.row;
+    const ord = sortedComputedRows.findIndex((e) => e.row.id === session.rowId);
+    const rowLabel = row.article || row.name || (ord >= 0 ? `#${ord + 1}` : '#');
+    return `${rowLabel} · ${activeColumn.label}`;
+  })();
+  // Живой предпросмотр результата draft (без коммита) — для «точечной» работы.
+  const activePreview: { value: number | string; error: boolean } | null = (() => {
+    if (!session || !activeColumn || activeIsIdentity) return null;
+    const draft = session.draft.trim();
+    if (!draft || draft === '=') return null;
+    if (!draft.startsWith('=')) {
+      return activeColumn.type === 'text'
+        ? { value: draft, error: false }
+        : { value: parseCellInput(draft), error: false };
+    }
+    const scope: Record<string, number | string> = { ...(activeRowEntry?.values ?? {}) };
+    delete scope[session.columnId]; // избегаем мнимого self-ref в предпросмотре
+    scope.vatPct = config.global.vatPct;
+    scope.taxRatePct = config.global.taxRatePct;
+    const res = evalSingleFormula(draft, scope);
+    return typeof res === 'number'
+      ? { value: res, error: false }
+      : { value: res, error: true };
+  })();
+  // Переменные для подсказок formula bar: id колонок (кроме identity) + глобальные.
+  const formulaVars = useMemo(() => {
+    const vars = config.columns
+      .filter((c) => c.type !== 'identity')
+      .map((c) => ({ id: c.id, label: c.label }));
+    vars.push({ id: 'vatPct', label: 'НДС %' }, { id: 'taxRatePct', label: 'Налог %' });
+    return vars;
+  }, [config.columns]);
+
   return (
-    <Card className="flex h-full flex-col overflow-hidden">
+    <Card ref={cardRef} className="flex h-full flex-col overflow-hidden">
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 px-3 py-2">
         <div className="flex min-w-0 items-center gap-2">
@@ -1349,6 +1799,19 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
           ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
+          <Button
+            variant={excelMode ? 'default' : 'outline'}
+            size="sm"
+            onClick={toggleExcelMode}
+            title={
+              excelMode
+                ? 'Excel-режим включён: кликните ячейку и введите значение или = для формулы. Выключить.'
+                : 'Excel-режим: точечное редактирование значений и формул в любой ячейке (как в блоках «Данные» / «Эксель ячейка»)'
+            }
+            aria-pressed={excelMode}
+          >
+            <Table2 /> Excel
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -1412,6 +1875,171 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
       </div>
 
       {/* Import notice + live-sync indicator перенесены в шапку (тихий чип). */}
+
+      {/* Formula bar (Excel-режим) — единый input активной ячейки + operator/
+          variable toolbar; зеркалит UX блока «Данные». Вне excelMode не виден. */}
+      {excelMode && (
+        <div className="flex shrink-0 flex-col gap-1 border-b border-border/60 bg-muted/30 px-3 py-1.5">
+          {session && activeColumn ? (
+            <>
+              <div className="flex items-center gap-2">
+                <span
+                  className="inline-flex h-5 shrink-0 items-center rounded bg-background px-1.5 font-mono text-[10px] font-semibold text-muted-foreground ring-1 ring-border/60"
+                  title={activeAddr}
+                >
+                  <span className="max-w-[180px] truncate">{activeAddr}</span>
+                </span>
+                {activeIsIdentity ? (
+                  <span className="shrink-0 text-[10px] font-semibold text-muted-foreground">Aa</span>
+                ) : (
+                  <FunctionSquare className="h-3 w-3 shrink-0 text-muted-foreground" />
+                )}
+                <input
+                  ref={formulaBarRef}
+                  value={session.draft}
+                  onFocus={() =>
+                    setSession((prev) => (prev ? { ...prev, lastFocused: 'bar' } : prev))
+                  }
+                  onChange={(e) =>
+                    setSession((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            draft: e.target.value,
+                            caretPos: e.target.selectionStart,
+                            lastFocused: 'bar',
+                            dirty: true,
+                          }
+                        : prev,
+                    )
+                  }
+                  onSelect={(e) =>
+                    setSession((prev) =>
+                      prev
+                        ? { ...prev, caretPos: (e.target as HTMLInputElement).selectionStart }
+                        : prev,
+                    )
+                  }
+                  onKeyDown={handleInputKeyDown}
+                  onBlur={handleInputBlur}
+                  placeholder={
+                    activeIsIdentity
+                      ? 'Текст'
+                      : activeIsFormula
+                        ? 'Формула: id колонок, vatPct, taxRatePct'
+                        : 'Значение, или начните с = для формулы'
+                  }
+                  className="h-6 min-w-0 flex-1 border-0 bg-transparent p-0 font-mono text-[11px] outline-none focus:ring-0"
+                />
+                {activePreview && (
+                  <span
+                    className={cn(
+                      'inline-flex h-5 shrink-0 items-center gap-1 rounded px-1.5 font-mono text-[10px] font-semibold',
+                      activePreview.error
+                        ? 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300'
+                        : 'bg-background text-muted-foreground ring-1 ring-border/60',
+                    )}
+                    title="Предпросмотр результата"
+                  >
+                    {!activePreview.error && <span className="text-muted-foreground/60">=</span>}
+                    {typeof activePreview.value === 'number'
+                      ? formatNumber(activePreview.value, activeColumn, showKopecks)
+                      : String(activePreview.value)}
+                  </span>
+                )}
+                {activeIsFormula && !activeIsIdentity && (
+                  <span className="inline-flex h-5 shrink-0 items-center rounded bg-sky-100 px-1.5 text-[10px] font-semibold text-sky-700 dark:bg-sky-950 dark:text-sky-300">
+                    fx
+                  </span>
+                )}
+                {activeIsLinked && (
+                  <button
+                    type="button"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={unlinkActiveCell}
+                    className="inline-flex h-5 shrink-0 items-center gap-1 rounded bg-muted px-1.5 text-[10px] font-semibold text-muted-foreground transition hover:bg-accent"
+                    title="Отвязать ячейку от источника"
+                  >
+                    <Unlink className="h-2.5 w-2.5" /> отвязать
+                  </button>
+                )}
+                {!activeIsIdentity && (
+                  <button
+                    type="button"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={openBindingPickerForActive}
+                    className="inline-flex h-5 shrink-0 items-center gap-1 rounded bg-amber-50 px-1.5 text-[10px] font-semibold text-amber-700 transition hover:bg-amber-100 dark:bg-amber-950 dark:text-amber-300"
+                    title="Привязать ячейку к источнику (другой блок)"
+                  >
+                    <Link2 className="h-2.5 w-2.5" /> привязать
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={clearActiveCell}
+                  className="shrink-0 text-muted-foreground transition-colors hover:text-red-500"
+                  title="Очистить ячейку"
+                >
+                  <Trash2 className="h-3 w-3" />
+                </button>
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={commitSession}
+                  className="shrink-0 text-muted-foreground transition-colors hover:text-foreground"
+                  title="Готово (Enter)"
+                  aria-label="Сохранить и закрыть редактор"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+              {/* Operator + variable toolbar — только в режиме формулы для не-identity. */}
+              {activeIsFormula && !activeIsIdentity && (
+                <div className="flex items-center gap-1 overflow-x-auto">
+                  <span className="shrink-0 text-[10px] text-muted-foreground">Вставить:</span>
+                  {['+', '-', '*', '/', '(', ')'].map((op) => (
+                    <button
+                      key={op}
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => insertToken(op)}
+                      className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-background font-mono text-[11px] ring-1 ring-border/60 transition hover:bg-accent"
+                      title={`Вставить «${op}»`}
+                    >
+                      {op}
+                    </button>
+                  ))}
+                  <div className="mx-0.5 h-3 w-px shrink-0 bg-border/50" />
+                  {formulaVars.map((v) => (
+                    <button
+                      key={v.id}
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => insertToken(v.id)}
+                      className="flex h-5 shrink-0 items-center rounded bg-sky-50 px-1.5 text-[10px] font-medium text-sky-700 transition hover:bg-sky-100 dark:bg-sky-950 dark:text-sky-300 dark:hover:bg-sky-900"
+                      title={`Вставить переменную «${v.id}»`}
+                    >
+                      {v.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+              <Table2 className="h-3.5 w-3.5 shrink-0" />
+              <span className="min-w-0">
+                Excel-режим. Кликните любую ячейку и введите значение или{' '}
+                <code className="rounded bg-background px-1 ring-1 ring-border/50">=</code> для
+                формулы (id колонок, <code className="rounded bg-background px-1 ring-1 ring-border/50">vatPct</code>,{' '}
+                <code className="rounded bg-background px-1 ring-1 ring-border/50">taxRatePct</code>). Enter/Tab — переход,
+                Esc — отмена.
+              </span>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Table */}
       <div ref={scrollRef} onScroll={onBodyScroll} className="flex-1 overflow-auto">
@@ -1515,6 +2143,15 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
                 fillColId={fillColId}
                 fillFrom={fillFrom}
                 fillTo={fillTo}
+                excelMode={excelMode}
+                activeColId={session?.rowId === row.id ? session.columnId : null}
+                sessionDraft={session?.rowId === row.id ? session.draft : null}
+                inlineInputRef={inlineInputRef}
+                onCellActivate={activateCell}
+                onCellDraftChange={handleCellDraftChange}
+                onCellInlineFocus={handleCellInlineFocus}
+                onCellKeyDown={handleInputKeyDown}
+                onCellBlur={handleInputBlur}
               />
             ))}
             {bottomSpacer > 0 && <div aria-hidden style={{ height: bottomSpacer }} />}
@@ -1720,6 +2357,12 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
               onSave={(b) => {
                 updateRowBinding(row.id, col.id, b);
                 setPickerCell(null);
+                // Закрываем активную Excel-сессию этой ячейки: значение теперь
+                // определяется привязкой, а не draft'ом (иначе commit мог бы
+                // перетереть свежую привязку пустым/старым черновиком).
+                setSession((prev) =>
+                  prev && prev.rowId === row.id && prev.columnId === col.id ? null : prev,
+                );
               }}
             />
           );
@@ -1946,6 +2589,126 @@ function MyStoreNumberCell({
   );
 }
 
+/**
+ * Ячейка Excel-режима (sheet-style). Когда активна — controlled `<input>`,
+ * привязанный к общему `draft` сессии (родитель). Когда нет — кликабельный
+ * дисплей (computed-значение / артикул-название) с бейджами fx (per-cell
+ * формула) и Link2 (привязка). Зеркалит `CellTriggerButton`/inline-input из
+ * блока «Данные», адаптировано под модель «Моего магазина».
+ *
+ * `onMouseDown preventDefault` на дисплее — чтобы клик по ячейке не уводил
+ * focus с активного input'а раньше времени (commit при переключении делает
+ * `activateCell`).
+ */
+function MyStoreExcelCell({
+  col,
+  isActive,
+  draft,
+  displayText,
+  isIdentity,
+  isLinked,
+  hasFormula,
+  bindingLabel,
+  dataCellInput,
+  inputRef,
+  placeholder,
+  onActivate,
+  onDraftChange,
+  onInlineFocus,
+  onKeyDown,
+  onBlur,
+}: {
+  col: Column;
+  isActive: boolean;
+  draft: string;
+  displayText: string;
+  isIdentity: boolean;
+  isLinked: boolean;
+  hasFormula: boolean;
+  bindingLabel?: string;
+  dataCellInput: string;
+  inputRef?: React.MutableRefObject<HTMLInputElement | null>;
+  placeholder?: string;
+  onActivate: () => void;
+  onDraftChange: (draft: string, caret: number | null) => void;
+  onInlineFocus: () => void;
+  onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void;
+  onBlur: (e: React.FocusEvent<HTMLInputElement>) => void;
+}) {
+  const leftAlign = isIdentity || col.type === 'text';
+
+  if (isActive) {
+    return (
+      <div className="relative flex h-full items-stretch overflow-hidden rounded border border-primary bg-background ring-1 ring-primary/40">
+        <input
+          ref={inputRef}
+          data-cell-input={dataCellInput}
+          type="text"
+          inputMode={leftAlign ? undefined : 'decimal'}
+          value={draft}
+          autoFocus
+          onFocus={onInlineFocus}
+          onChange={(e) => onDraftChange(e.target.value, e.target.selectionStart)}
+          onSelect={(e) =>
+            onDraftChange(
+              (e.target as HTMLInputElement).value,
+              (e.target as HTMLInputElement).selectionStart,
+            )
+          }
+          onKeyDown={onKeyDown}
+          onBlur={onBlur}
+          placeholder={placeholder}
+          className={cn(
+            'h-full w-full min-w-0 border-0 bg-transparent px-1.5 font-mono text-[12px] tabular-nums outline-none placeholder:text-muted-foreground/50',
+            leftAlign ? 'text-left' : 'text-right',
+          )}
+        />
+      </div>
+    );
+  }
+
+  const isErr = displayText === '#CYCLE' || displayText === '#ERR';
+  return (
+    <button
+      type="button"
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={onActivate}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ' || e.key === 'F2') {
+          e.preventDefault();
+          onActivate();
+        }
+      }}
+      title={
+        hasFormula
+          ? 'Формула — кликните для правки'
+          : isLinked
+            ? `Привязано: ${bindingLabel ?? 'блок'}`
+            : 'Кликните, чтобы редактировать'
+      }
+      className={cn(
+        'flex h-full w-full min-w-0 items-center gap-1 rounded border border-transparent px-1.5 text-[12px] tabular-nums transition hover:border-border/70',
+        leftAlign ? 'justify-start' : 'justify-end',
+        isErr
+          ? 'text-amber-600 dark:text-amber-400'
+          : isLinked
+            ? 'bg-amber-50/60 dark:bg-amber-950/30'
+            : hasFormula
+              ? 'bg-sky-50/50 dark:bg-sky-950/30'
+              : '',
+      )}
+    >
+      {isLinked && <Link2 className="h-2.5 w-2.5 shrink-0 text-amber-600 dark:text-amber-400" />}
+      {hasFormula && !isLinked && <FunctionSquare className="h-2.5 w-2.5 shrink-0 text-sky-500" />}
+      {displayText ? (
+        <span className="truncate">{displayText}</span>
+      ) : (
+        <span className="text-muted-foreground/40">—</span>
+      )}
+    </button>
+  );
+}
+
 type MyStoreRowProps = {
   row: Row;
   /** Абсолютный индекс в видимом (sorted) порядке — для `#`, data-fill-row и подсветки. */
@@ -1970,6 +2733,19 @@ type MyStoreRowProps = {
   fillColId: string | null;
   fillFrom: number | null;
   fillTo: number | null;
+  /** Excel-режим (sheet-style редактирование любой ячейки). */
+  excelMode: boolean;
+  /** colId активной ячейки ЭТОЙ строки (или null) — стабилен для мемо. */
+  activeColId: string | null;
+  /** Draft активной ячейки ЭТОЙ строки (или null). Меняется только у активной строки. */
+  sessionDraft: string | null;
+  /** Общий ref на активный inline-input (родитель восстанавливает каретку/фокус). */
+  inlineInputRef: React.MutableRefObject<HTMLInputElement | null>;
+  onCellActivate: (rowId: string, colId: string) => void;
+  onCellDraftChange: (draft: string, caret: number | null) => void;
+  onCellInlineFocus: () => void;
+  onCellKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void;
+  onCellBlur: (e: React.FocusEvent<HTMLInputElement>) => void;
 };
 
 /**
@@ -2001,6 +2777,15 @@ const MyStoreRow = memo(function MyStoreRow({
   fillColId,
   fillFrom,
   fillTo,
+  excelMode,
+  activeColId,
+  sessionDraft,
+  inlineInputRef,
+  onCellActivate,
+  onCellDraftChange,
+  onCellInlineFocus,
+  onCellKeyDown,
+  onCellBlur,
 }: MyStoreRowProps) {
   // Мемо: при drag-fill меняются только fill*-пропсы — формулы не пересчитываем.
   const values = useMemo(
@@ -2034,6 +2819,60 @@ const MyStoreRow = memo(function MyStoreRow({
         const inFill =
           fillColId === col.id && fillLo !== null && rowIdx >= fillLo && rowIdx <= (fillHi as number);
         const fillCls = inFill ? 'bg-primary/5 ring-1 ring-inset ring-primary/40' : '';
+
+        // ── Excel-режим: единый sheet-style редактор для identity/text/number/
+        //    money/percent. Формульные КОЛОНКИ остаются read-only (ветка ниже). ──
+        if (excelMode && col.type !== 'formula') {
+          const isActive = activeColId === col.id;
+          const isIdentity = col.type === 'identity';
+          const binding = isIdentity
+            ? undefined
+            : (row.bindings[col.id] as UnitCellBinding | undefined);
+          const linked = !isIdentity && isBindingActive(binding);
+          const cellFormula = !isIdentity && isCellFormulaValue(row.values[col.id]);
+          const computed = values[col.id];
+          let displayText: string;
+          if (isIdentity) {
+            displayText = col.id === IDENTITY_ARTICLE_ID ? row.article : row.name;
+          } else if (computed === '#CYCLE' || computed === '#ERR') {
+            displayText = String(computed);
+          } else if (col.type === 'text') {
+            displayText = typeof computed === 'string' ? computed : String(computed ?? '');
+          } else {
+            const n = Number(computed);
+            displayText = Number.isFinite(n) ? formatCellValue(n, isMoneyCol(col), showKopecks) : '';
+          }
+          return (
+            <BodyCell
+              key={col.id}
+              width={w}
+              {...stickyProps}
+              className={cn('group/cell relative p-0.5', fillCls)}
+            >
+              <MyStoreExcelCell
+                col={col}
+                isActive={isActive}
+                draft={isActive ? sessionDraft ?? '' : ''}
+                displayText={displayText}
+                isIdentity={isIdentity}
+                isLinked={linked}
+                hasFormula={cellFormula}
+                bindingLabel={binding?.ref?.label}
+                dataCellInput={`${row.id}|${col.id}`}
+                inputRef={isActive ? inlineInputRef : undefined}
+                placeholder={isIdentity || col.type === 'text' ? col.label : '0'}
+                onActivate={() => onCellActivate(row.id, col.id)}
+                onDraftChange={onCellDraftChange}
+                onInlineFocus={onCellInlineFocus}
+                onKeyDown={onCellKeyDown}
+                onBlur={onCellBlur}
+              />
+              {!isIdentity && (
+                <FillHandle onPointerDown={(e) => onFillStart(rowIdx, col.id, e)} active={fillActive} />
+              )}
+            </BodyCell>
+          );
+        }
 
         if (col.type === 'identity') {
           const isArticle = col.id === IDENTITY_ARTICLE_ID;
@@ -2078,6 +2917,52 @@ const MyStoreRow = memo(function MyStoreRow({
                   {formatNumber(num, col, showKopecks)}
                 </span>
               )}
+            </BodyCell>
+          );
+        }
+
+        // ── Обычный режим: ячейка с per-cell формулой (`=…`) → read-only computed
+        //    + бейдж fx. Правка формулы доступна только в Excel-режиме. ──
+        if (isCellFormulaValue(row.values[col.id])) {
+          const isErr = raw === '#CYCLE' || raw === '#ERR';
+          const num = Number(raw);
+          const positive = col.positive && num > 0;
+          const negative = col.positive && num < 0;
+          const display = isErr
+            ? String(raw)
+            : col.type === 'text'
+              ? typeof raw === 'string'
+                ? raw
+                : String(raw ?? '')
+              : formatNumber(num, col, showKopecks);
+          return (
+            <BodyCell
+              key={col.id}
+              width={w}
+              {...stickyProps}
+              className={cn('group/cell relative justify-end px-1.5 tabular-nums', fillCls)}
+            >
+              <span
+                className="flex min-w-0 items-center gap-1"
+                title={`Формула: ${String(row.values[col.id])} · включите Excel-режим для правки`}
+              >
+                <FunctionSquare className="h-2.5 w-2.5 shrink-0 text-sky-500" />
+                <span
+                  className={cn(
+                    'truncate',
+                    isErr
+                      ? 'text-amber-600 dark:text-amber-400'
+                      : positive
+                        ? 'text-emerald-600 dark:text-emerald-400'
+                        : negative
+                          ? 'text-red-600 dark:text-red-400'
+                          : '',
+                  )}
+                >
+                  {display}
+                </span>
+              </span>
+              <FillHandle onPointerDown={(e) => onFillStart(rowIdx, col.id, e)} active={fillActive} />
             </BodyCell>
           );
         }
