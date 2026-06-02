@@ -137,6 +137,12 @@ const ColumnSchema = z.object({
   formula: z.string().optional(),
   positive: z.boolean().optional(),
   hidden: z.boolean().optional(),
+  /**
+   * Знаков после запятой для отображения (Excel-style). `undefined` —
+   * наследовать блочную настройку `config.decimals`; число — показывать ДО N
+   * знаков (без лишних нулей), переопределяя округление «копеек».
+   */
+  decimals: z.number().int().min(0).max(6).optional(),
 });
 
 type Column = z.infer<typeof ColumnSchema>;
@@ -235,6 +241,13 @@ const ConfigSchema = z.object({
    * таблицей переживала перезагрузку. Дефолт `false` — обычный режим.
    */
   excelMode: z.boolean().default(false),
+  /**
+   * Блочная настройка знаков после запятой (Excel-style, упрощённо).
+   * `null`/`undefined` — «Авто» (деньги уважают глобальную настройку «копейки»,
+   * прочие — до 2 знаков). Число N — показывать ДО N знаков во всех ячейках
+   * (целые остаются без дробной части). Перекрывается per-column `Column.decimals`.
+   */
+  decimals: z.number().int().min(0).max(6).nullable().optional(),
 });
 
 type Config = z.infer<typeof ConfigSchema>;
@@ -288,9 +301,35 @@ function isCellFormulaValue(v: unknown): boolean {
   return typeof v === 'string' && v.trim().startsWith('=');
 }
 
+/**
+ * Разрешение числа знаков после запятой для колонки: per-column override →
+ * блочная настройка → `null` («Авто»). `null` означает дефолтное поведение
+ * (деньги — глобальные «копейки», прочее — до 2 знаков).
+ */
+function resolveDecimals(col: Column, blockDecimals: number | null | undefined): number | null {
+  if (typeof col.decimals === 'number') return col.decimals;
+  if (typeof blockDecimals === 'number') return blockDecimals;
+  return null;
+}
 
-function formatNumber(value: number, col: Column, showKopecks: boolean): string {
+/**
+ * `decimals`:
+ *  - `null` — дефолт: деньги через глобальные «копейки», процент до 1, прочее до 2;
+ *  - число N — показывать ДО N знаков (целые без дробной части), перекрывая округление.
+ */
+function formatNumber(
+  value: number,
+  col: Column,
+  showKopecks: boolean,
+  decimals: number | null,
+): string {
   if (!Number.isFinite(value)) return '—';
+  if (decimals !== null) {
+    const s = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: decimals }).format(value);
+    if (isMoneyCol(col)) return `${s} ₽`;
+    if (col.type === 'percent') return `${s}%`;
+    return s;
+  }
   if (isMoneyCol(col)) return formatRublesWithSettings(rublesToKopecks(value), showKopecks);
   if (col.type === 'percent') return `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 1 }).format(value)}%`;
   return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(value);
@@ -372,9 +411,20 @@ function computeRowValues(
   return merged;
 }
 
-/** Форматирование значения числовой ячейки (деньги — через настройки, суффикс ₽ срезаем). */
-function formatCellValue(v: number, money: boolean, showKopecks: boolean): string {
+/**
+ * Форматирование значения числовой ячейки (деньги — через настройки, суффикс ₽
+ * срезаем). `decimals` (число) показывает ДО N знаков, перекрывая округление.
+ */
+function formatCellValue(
+  v: number,
+  money: boolean,
+  showKopecks: boolean,
+  decimals: number | null,
+): string {
   if (!Number.isFinite(v)) return '';
+  if (decimals !== null) {
+    return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: decimals }).format(v);
+  }
   if (money) return formatRublesWithSettings(rublesToKopecks(v), showKopecks).replace(/\s?₽$/, '').trim();
   return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(v);
 }
@@ -1913,6 +1963,38 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
                   className="h-7 w-20 rounded border border-border/60 bg-background px-1 text-right tabular-nums"
                 />
               </div>
+              {/* Знаки после запятой (упрощённый Excel-формат). «Авто» — деньги
+                  округляются по глобальной настройке; число N — показывать до N
+                  знаков (целые без дробной части), напр. чтобы видеть 0,5. */}
+              <div className="border-t border-border/40 pt-2">
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <span className="text-muted-foreground">Знаков после запятой</span>
+                  <div className="flex items-center gap-0.5">
+                    {([null, 0, 1, 2, 3] as const).map((d) => {
+                      const active = (config.decimals ?? null) === d;
+                      return (
+                        <button
+                          key={String(d)}
+                          type="button"
+                          onClick={() => persist({ decimals: d })}
+                          className={cn(
+                            'h-6 min-w-[26px] rounded px-1.5 text-[11px] tabular-nums transition-colors',
+                            active
+                              ? 'bg-primary text-primary-foreground'
+                              : 'border border-border/60 bg-background text-muted-foreground hover:bg-accent',
+                          )}
+                        >
+                          {d === null ? 'Авто' : d}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <p className="text-[10px] leading-snug text-muted-foreground">
+                  Дробная часть для всех колонок (напр. 0,5). «Авто» — деньги округляются по
+                  глобальной настройке. Колонку можно переопределить отдельно в её настройках.
+                </p>
+              </div>
               <div className="border-t border-border/40 pt-2 text-[11px] text-muted-foreground">
                 Колонок: {config.columns.length} ({config.columns.filter((c) => c.hidden).length} скрыто)
               </div>
@@ -1990,7 +2072,7 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
                   >
                     {!activePreview.error && <span className="text-muted-foreground/60">=</span>}
                     {typeof activePreview.value === 'number'
-                      ? formatNumber(activePreview.value, activeColumn, showKopecks)
+                      ? formatNumber(activePreview.value, activeColumn, showKopecks, resolveDecimals(activeColumn, config.decimals))
                       : String(activePreview.value)}
                   </span>
                 )}
@@ -2179,6 +2261,7 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
                 stickyOffsets={stickyOffsets}
                 lastPinnedId={lastPinnedId}
                 showKopecks={showKopecks}
+                blockDecimals={config.decimals}
                 onUpdateRow={updateRow}
                 onUpdateRowValue={updateRowValue}
                 onRemoveRow={removeRow}
@@ -2243,14 +2326,14 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
                     if (col.id === 'revenueMonth') {
                       return (
                         <BodyCell key={col.id} width={w} {...stickyProps} className="justify-end px-1.5 tabular-nums text-foreground">
-                          {formatNumber(totals.totalRevenue, col, showKopecks)}
+                          {formatNumber(totals.totalRevenue, col, showKopecks, resolveDecimals(col, config.decimals))}
                         </BodyCell>
                       );
                     }
                     if (col.id === 'profitMonth') {
                       return (
                         <BodyCell key={col.id} width={w} {...stickyProps} className="justify-end px-1.5 tabular-nums text-emerald-700 dark:text-emerald-400">
-                          {formatNumber(totals.totalProfit, col, showKopecks)}
+                          {formatNumber(totals.totalProfit, col, showKopecks, resolveDecimals(col, config.decimals))}
                         </BodyCell>
                       );
                     }
@@ -2264,7 +2347,7 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
                     if (col.id === 'marginRetail') {
                       return (
                         <BodyCell key={col.id} width={w} {...stickyProps} className="justify-end px-1.5 tabular-nums text-muted-foreground">
-                          {formatNumber(totals.avgMargin, col, showKopecks)}
+                          {formatNumber(totals.avgMargin, col, showKopecks, resolveDecimals(col, config.decimals))}
                         </BodyCell>
                       );
                     }
@@ -2536,6 +2619,7 @@ function MyStoreNumberCell({
   resolvedValue,
   money,
   showKopecks,
+  decimals,
   fieldLabel,
   unit,
   bindingLabel,
@@ -2547,6 +2631,7 @@ function MyStoreNumberCell({
   resolvedValue: number | null | undefined;
   money: boolean;
   showKopecks: boolean;
+  decimals: number | null;
   fieldLabel: string;
   unit?: string;
   bindingLabel?: string;
@@ -2571,8 +2656,8 @@ function MyStoreNumberCell({
   const display = isLinked
     ? linkUnavailable
       ? '—'
-      : formatCellValue(resolvedValue as number, money, showKopecks)
-    : formatCellValue(manualValue, money, showKopecks);
+      : formatCellValue(resolvedValue as number, money, showKopecks, decimals)
+    : formatCellValue(manualValue, money, showKopecks, decimals);
 
   return (
     <div
@@ -2780,6 +2865,8 @@ type MyStoreRowProps = {
   stickyOffsets: Map<string, number>;
   lastPinnedId: string | null;
   showKopecks: boolean;
+  /** Блочная настройка знаков после запятой (per-column перекрывает). */
+  blockDecimals: number | null | undefined;
   onUpdateRow: (rowId: string, patch: Partial<Row>) => void;
   onUpdateRowValue: (rowId: string, colId: string, value: number | string) => void;
   onRemoveRow: (rowId: string) => void;
@@ -2824,6 +2911,7 @@ const MyStoreRow = memo(function MyStoreRow({
   stickyOffsets,
   lastPinnedId,
   showKopecks,
+  blockDecimals,
   onUpdateRow,
   onUpdateRowValue,
   onRemoveRow,
@@ -2905,7 +2993,9 @@ const MyStoreRow = memo(function MyStoreRow({
             displayText = typeof computed === 'string' ? computed : String(computed ?? '');
           } else {
             const n = Number(computed);
-            displayText = Number.isFinite(n) ? formatCellValue(n, isMoneyCol(col), showKopecks) : '';
+            displayText = Number.isFinite(n)
+              ? formatCellValue(n, isMoneyCol(col), showKopecks, resolveDecimals(col, blockDecimals))
+              : '';
           }
           let tone: 'positive' | 'negative' | undefined;
           if (!isErr && col.positive && !isIdentity && col.type !== 'text') {
@@ -2986,7 +3076,7 @@ const MyStoreRow = memo(function MyStoreRow({
                         : 'truncate'
                   }
                 >
-                  {formatNumber(num, col, showKopecks)}
+                  {formatNumber(num, col, showKopecks, resolveDecimals(col, blockDecimals))}
                 </span>
               )}
             </BodyCell>
@@ -3006,7 +3096,7 @@ const MyStoreRow = memo(function MyStoreRow({
               ? typeof raw === 'string'
                 ? raw
                 : String(raw ?? '')
-              : formatNumber(num, col, showKopecks);
+              : formatNumber(num, col, showKopecks, resolveDecimals(col, blockDecimals));
           return (
             <BodyCell
               key={col.id}
@@ -3067,6 +3157,7 @@ const MyStoreRow = memo(function MyStoreRow({
               resolvedValue={linked ? (boundForRow?.[col.id] ?? null) : undefined}
               money={isMoneyCol(col)}
               showKopecks={showKopecks}
+              decimals={resolveDecimals(col, blockDecimals)}
               fieldLabel={col.label}
               unit={col.unit}
               bindingLabel={binding?.ref?.label}
@@ -3569,6 +3660,34 @@ function ColumnEditDialog({
               onChange={(e) => setDraft({ ...draft, width: Math.max(40, Number(e.target.value) || 96) })}
             />
           </Field>
+          {!isIdentity && (
+            <Field label="Знаков после запятой">
+              <div className="flex items-center gap-0.5">
+                {([undefined, 0, 1, 2, 3] as const).map((d) => {
+                  const active = draft.decimals === d;
+                  return (
+                    <button
+                      key={String(d)}
+                      type="button"
+                      onClick={() => setDraft({ ...draft, decimals: d })}
+                      className={cn(
+                        'h-8 rounded px-2 text-xs tabular-nums transition-colors',
+                        active
+                          ? 'bg-primary text-primary-foreground'
+                          : 'border border-border/60 bg-background text-muted-foreground hover:bg-accent',
+                      )}
+                    >
+                      {d === undefined ? 'По умолч.' : d}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Переопределяет блочную настройку. «По умолч.» — наследовать. Число — показывать
+                до N знаков (напр. 0,5).
+              </p>
+            </Field>
+          )}
           {!isIdentity && (
             <label className="flex items-center gap-2 text-sm">
               <input

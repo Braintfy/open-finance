@@ -70,6 +70,7 @@ type RawColumn = {
   width?: number;
   formula?: string;
   hidden?: boolean;
+  decimals?: number;
 };
 
 type RawRow = {
@@ -199,6 +200,7 @@ function exportXlsx(
   const meta: Record<string, unknown> = {
     title: cfg.title ?? 'Мой магазин',
     global: cfg.global ?? { vatPct: 0 },
+    decimals: cfg.decimals ?? null,
     columns: visibleColumns.map((c) => ({
       id: c.id,
       label: c.label,
@@ -207,6 +209,7 @@ function exportXlsx(
       width: c.width,
       formula: c.formula,
       default: c.default,
+      decimals: c.decimals,
     })),
     pinnedColumns: cfg.pinnedColumns ?? [IDENTITY_ARTICLE_ID, IDENTITY_NAME_ID],
   };
@@ -291,6 +294,7 @@ function importXlsx(buffer: ArrayBuffer, current: BlockInstance): ImportPreview 
     if (metaMatch && (typeof metaMatch.default === 'number' || typeof metaMatch.default === 'string')) {
       col.default = metaMatch.default;
     }
+    if (metaMatch && typeof metaMatch.decimals === 'number') col.decimals = metaMatch.decimals;
     columns.push(col);
   }
 
@@ -350,6 +354,7 @@ function importXlsx(buffer: ArrayBuffer, current: BlockInstance): ImportPreview 
   const newCfg: Record<string, unknown> = {
     title: typeof meta.title === 'string' ? meta.title : 'Мой магазин',
     global: typeof meta.global === 'object' && meta.global !== null ? meta.global : { vatPct: 0 },
+    decimals: typeof meta.decimals === 'number' ? meta.decimals : null,
     columns,
     rows,
     pinnedColumns: Array.isArray(meta.pinnedColumns)
