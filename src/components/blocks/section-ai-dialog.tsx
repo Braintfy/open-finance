@@ -24,6 +24,7 @@ import {
   AlertDialogCancel,
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
+import { Switch } from '@/components/ui/switch';
 import {
   Sparkles,
   Square,
@@ -45,10 +46,13 @@ import { SectionContextDialog } from './section-context-dialog';
 import {
   SECTION_TEMPLATES,
   assembleSectionContext,
+  applyBlockReports,
   extractSectionReport,
+  type BlockReportLite,
   type ExternalSourceContext,
   type ExternalSourceSelection,
   type SectionBlockSnapshot,
+  type SectionBlockSource,
   type SectionContextSourceDto,
   type SectionInsight,
   type SectionInsightKind,
@@ -128,6 +132,10 @@ export function SectionAiDialog({
   const [historyOpen, setHistoryOpen] = useState(true);
   const [openReports, setOpenReports] = useState<Set<string>>(new Set());
 
+  // Источник по блокам: отчёты блоков (по умолчанию) vs сырые данные.
+  const [blockSource, setBlockSource] = useState<SectionBlockSource>('reports');
+  const [blockReportsMap, setBlockReportsMap] = useState<Record<string, BlockReportLite>>({});
+
   // Кросс-раздельный контекст (мини-модалка «Контекст»).
   const [externalSources, setExternalSources] = useState<ExternalSourceSelection[]>([]);
   const [contextOpen, setContextOpen] = useState(false);
@@ -174,6 +182,32 @@ export function SectionAiDialog({
       setOpenReports((prev) => (prev.size === 0 ? new Set([reports[0].id]) : prev));
     }
   }, [reports]);
+
+  // Карта последних отчётов блоков раздела (для подмешивания + паритета токенов).
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/ai/block-reports?pageKey=${encodeURIComponent(pageKey)}`);
+        if (!res.ok) return;
+        const data = (await res.json()) as {
+          latest?: Record<string, { summary: string; insights: SectionInsight[] }>;
+        };
+        if (!active) return;
+        const map: Record<string, BlockReportLite> = {};
+        for (const [id, r] of Object.entries(data.latest ?? {})) {
+          map[id] = { summary: r.summary, insights: r.insights };
+        }
+        setBlockReportsMap(map);
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [open, pageKey]);
 
   // Разделы-источники для кросс-раздельного контекста — грузим при открытии модалки.
   useEffect(() => {
@@ -247,16 +281,22 @@ export function SectionAiDialog({
     return out;
   }, [externalSources, contextSources]);
 
+  // Блоки с учётом источника: отчёты блоков подмешиваются вместо сырых данных.
+  const effectiveBlocks = useMemo(
+    () => applyBlockReports(snapshot, blockReportsMap, blockSource),
+    [snapshot, blockReportsMap, blockSource],
+  );
+
   // Контекст, который реально уйдёт в модель (та же сборка, что на сервере).
   const contextText = useMemo(
     () =>
       assembleSectionContext({
         pageLabel,
-        blocks: snapshot,
+        blocks: effectiveBlocks,
         extraSections,
         userQuery: query.trim() || undefined,
       }),
-    [pageLabel, snapshot, extraSections, query],
+    [pageLabel, effectiveBlocks, extraSections, query],
   );
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -287,6 +327,7 @@ export function SectionAiDialog({
           blocks: snapshot,
           userQuery: query.trim() || undefined,
           externalSources: externalSources.length > 0 ? externalSources : undefined,
+          blockSource,
         }),
         signal: ctrl.signal,
       });
@@ -348,7 +389,7 @@ export function SectionAiDialog({
       if (e instanceof Error && e.name !== 'AbortError') setError(e.message);
       setStreaming(false);
     }
-  }, [streaming, stop, pageKey, pageLabel, snapshot, query, externalSources]);
+  }, [streaming, stop, pageKey, pageLabel, snapshot, query, externalSources, blockSource]);
 
   const persist = useCallback(
     async (overwriteOldest: boolean) => {
@@ -470,21 +511,35 @@ export function SectionAiDialog({
           <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-contain p-4">
             {/* Контекст-меню + счётчик токенов */}
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setContextOpen(true)}
-                className="gap-1.5"
-              >
-                <Layers className="h-3.5 w-3.5" />
-                Контекст
-                {externalSources.length > 0 && (
-                  <span className="rounded-full bg-primary px-1.5 text-[10px] font-medium text-primary-foreground tabular-nums">
-                    {externalSources.length}
-                  </span>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setContextOpen(true)}
+                  className="gap-1.5"
+                >
+                  <Layers className="h-3.5 w-3.5" />
+                  Контекст
+                  {externalSources.length > 0 && (
+                    <span className="rounded-full bg-primary px-1.5 text-[10px] font-medium text-primary-foreground tabular-nums">
+                      {externalSources.length}
+                    </span>
+                  )}
+                </Button>
+                {Object.keys(blockReportsMap).length > 0 && (
+                  <label
+                    className="flex items-center gap-1 text-[10px] text-muted-foreground"
+                    title="По блокам с сохранённым ИИ-отчётом подмешивать отчёт вместо сырых данных"
+                  >
+                    <Switch
+                      checked={blockSource === 'reports'}
+                      onCheckedChange={(v) => setBlockSource(v ? 'reports' : 'raw')}
+                    />
+                    Из отчётов блоков
+                  </label>
                 )}
-              </Button>
+              </div>
               <span
                 className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium tabular-nums ${overBudget ? 'bg-rose-100 text-rose-700 dark:bg-rose-900/50 dark:text-rose-300' : 'bg-muted text-muted-foreground'}`}
                 title="Оценка размера контекста, который уйдёт в модель"

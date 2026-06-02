@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.36.0] - 2026-06-02
+
+### Added
+- **«AI Анализ блока» (ИИ Микроагент v2)** — кнопка блока теперь двухрежимная модалка (`MicroAgentDialog` → shell): вкладка **«Анализ»** (`BlockAnalysisPanel`) — точечный отчёт по блоку (резюме + `InsightCard` с tabs по kind, счётчик токенов, шаблоны `BLOCK_ANALYSIS_TEMPLATES`) + вкладка **«Микроагент»** (`BlockMutatePanel`) — прежняя мутация данных (заполнить/структурировать/создать блок). По умолчанию — «Анализ».
+- **Хранение отчётов по блоку** — таблица `block_ai_reports` (`drizzle/init/14-block-ai-reports.sql`), скоуп tenant×user×pageKey×blockId, **лимит 10 на блок** с перезаписью старого (AlertDialog). API `GET/POST /api/ai/block-reports`, `DELETE .../[reportId]`. Queries — `src/lib/ai/block-reports-queries.ts`. История блока — раскрываемый модуль (последний раскрыт), тоггл «Прошлый отчёт» подмешивает последний отчёт блока в контекст по умолчанию.
+- **Контекст из блоков всего проекта** — кнопка «Контекст» в анализе блока → мини-модалка `BlockContextDialog` (дерево: текущий раздел live + блоки других разделов из БД). `Switch` + умный режим (есть отчёт блока → отчёт, иначе данные) + превью токенов. Endpoint `GET /api/ai/block-context-sources` (`listBlockContextSources`/`resolveBlockContextSelections`).
+- **Кнопка «Все блоки»** рядом с «AI Анализ» сверху раздела (`SectionAiButton` → `AnalyzeAllBlocksDialog`) — быстрый прогон: каждый значимый блок анализируется со своим дефолтным промптом (concurrency 3), отчёт сохраняется в блок; прогресс-список со статусами и кратким резюме.
+- **`POST /api/ai/analyze-block`** — строгий NDJSON-отчёт (summary + insights) по одному блоку; промпт = `getBlockSkill(blockType)` + строгий JSON-контракт. Контекст: live-снапшот блока + live-блоки текущего раздела (доверяем) + ref-ы блоков других разделов (резолв из БД) + опц. последний отчёт блока.
+
+### Changed
+- **Анализ раздела подтягивает отчёты блоков по умолчанию** — `analyze-section` принимает `blockSource: 'reports' | 'raw'` (дефолт `reports`): для блоков с сохранённым ИИ-отчётом подмешивает отчёт вместо сырых данных (`applyBlockReports`). Тоггл «Из отчётов блоков» в шапке модалки; паритет токенов через общий `GET /api/ai/block-reports?pageKey=` (карта blockId→последний отчёт).
+- **`section-insights.ts`** — добавлены `assembleBlockContext`, `buildTargetBlockContext`, `applyBlockReports`, `BLOCK_ANALYSIS_TEMPLATES`, типы/zod `BlockContextSelection`, `BlockContextSourceDto`, `SectionBlockSource` (переиспользование типов/парсера инсайтов для scope блока).
+- **`micro-agent-dialog.tsx`** переработан в тонкий shell; прежняя логика мутации вынесена в `block-mutate-panel.tsx` без изменения поведения.
+
 ## [0.35.0] - 2026-06-02
 
 ### Added

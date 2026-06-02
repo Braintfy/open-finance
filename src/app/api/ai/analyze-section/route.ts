@@ -18,9 +18,12 @@ import {
   SectionBlockSnapshotSchema,
   ExternalSourceSelectionSchema,
   assembleSectionContext,
+  applyBlockReports,
   type ExternalSourceContext,
+  type BlockReportLite,
 } from '@/lib/ai/section-insights';
 import { resolveExternalSources } from '@/lib/ai/context-sources-queries';
+import { getLatestBlockReportsForPage } from '@/lib/ai/block-reports-queries';
 
 export const runtime = 'nodejs';
 export const maxDuration = 120;
@@ -34,6 +37,8 @@ const RequestSchema = z.object({
   userQuery: z.string().max(2000).optional(),
   /** Выбранные кросс-раздельные источники (резолвятся сервером из БД). */
   externalSources: z.array(ExternalSourceSelectionSchema).max(10).optional(),
+  /** Источник по блокам: 'reports' — подмешивать отчёты блоков, 'raw' — сырые данные. */
+  blockSource: z.enum(['reports', 'raw']).optional().default('reports'),
 });
 
 const OLLAMA_BASE = env.OLLAMA_BASE_URL;
@@ -97,7 +102,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { pageLabel, blocks, userQuery, externalSources } = body.data;
+    const { pageKey, pageLabel, blocks, userQuery, externalSources, blockSource } = body.data;
 
     // Загрузить tenant settings.
     const [tenant] = await db
@@ -117,9 +122,25 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // По умолчанию подмешиваем последний ИИ-отчёт каждого блока вместо сырых данных.
+    let effectiveBlocks = blocks;
+    if (blockSource === 'reports' && blocks.length > 0) {
+      const reportMap = await getLatestBlockReportsForPage({
+        tenantId: session.tenantId,
+        userId: session.userId,
+        pageKey,
+        blockIds: blocks.map((b) => b.blockId),
+      }).catch(() => ({}));
+      const lite: Record<string, BlockReportLite> = {};
+      for (const [id, r] of Object.entries(reportMap)) {
+        lite[id] = { summary: r.summary, insights: r.insights };
+      }
+      effectiveBlocks = applyBlockReports(blocks, lite, 'reports');
+    }
+
     const contextMessage = assembleSectionContext({
       pageLabel,
-      blocks,
+      blocks: effectiveBlocks,
       extraSections,
       userQuery,
     });

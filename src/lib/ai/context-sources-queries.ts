@@ -37,7 +37,7 @@ function toSnapshot(b: BlockInstance): SectionBlockSnapshot {
 }
 
 /** Карта pageKey → человекочитаемая метка (UE-вкладки + доски). */
-async function buildCustomLabels(args: {
+export async function buildCustomLabels(args: {
   tenantId: string;
   userId: string;
 }): Promise<Record<string, string>> {

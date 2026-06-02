@@ -57,6 +57,13 @@
       "when": 1780342011781,
       "tag": "0007_boring_kingpin",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1780389820981,
+      "tag": "0008_violet_leper_queen",
+      "breakpoints": true
     }
   ]
 }

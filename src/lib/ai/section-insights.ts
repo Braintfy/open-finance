@@ -115,6 +115,48 @@ export const ExternalSourceSelectionSchema = z.object({
   mode: z.enum(['report', 'blocks']),
 });
 
+// ───────────────────────────────────────────────────────────────
+// Контекст по блокам (для «AI Анализ блока» — пикер блоков всего проекта)
+// ───────────────────────────────────────────────────────────────
+
+/** Один блок-источник в пикере контекста анализа блока. */
+export type BlockContextBlockDto = {
+  blockId: string;
+  type: string;
+  title: string;
+  /** Config блока (для режима «данные»; у текущего раздела клиент берёт live). */
+  config?: Record<string, unknown>;
+  /** Последний сохранённый отчёт блока (или null). */
+  lastReport: {
+    id: string;
+    createdAt: string;
+    summary: string;
+    insights: SectionInsight[];
+  } | null;
+};
+
+/** Раздел с блоками для пикера контекста анализа блока. */
+export type BlockContextSourceDto = {
+  pageKey: string;
+  label: string;
+  isCurrent: boolean;
+  blocks: BlockContextBlockDto[];
+};
+
+/** Выбор одного блока-источника для подмешивания (ref — тело резолвится сервером). */
+export type BlockContextSelection = {
+  pageKey: string;
+  blockId: string;
+  /** report — последний отчёт блока; data — config/данные блока. */
+  mode: 'report' | 'data';
+};
+
+export const BlockContextSelectionSchema = z.object({
+  pageKey: z.string().min(1).max(64),
+  blockId: z.string().min(1).max(64),
+  mode: z.enum(['report', 'data']),
+});
+
 /** Отфильтровать снапшот до «связанных» блоков (есть зависимости или сами источники). */
 export function filterSubgraph(blocks: SectionBlockSnapshot[]): SectionBlockSnapshot[] {
   const sourceIds = new Set<string>();
@@ -161,6 +203,36 @@ export const SECTION_TEMPLATES: SectionTemplate[] = [
     label: 'Что изменилось',
     prompt:
       'Сравни текущее состояние с прошлыми сохранёнными отчётами (если добавлены в контекст): что изменилось, стало лучше или хуже.',
+  },
+];
+
+/** Шаблоны быстрого старта для анализа отдельного блока. */
+export const BLOCK_ANALYSIS_TEMPLATES: SectionTemplate[] = [
+  {
+    id: 'overview',
+    label: 'Разбор блока',
+    prompt:
+      'Разбери данные этого блока: ключевые наблюдения, что важно и на что обратить внимание.',
+  },
+  {
+    id: 'anomalies',
+    label: 'Аномалии',
+    prompt: 'Найди аномалии и отклонения в данных блока. Что выбивается из нормы и почему.',
+  },
+  {
+    id: 'risks',
+    label: 'Проблемы',
+    prompt: 'Выяви проблемы и риски по данным блока. Для каждого — критичность и что предпринять.',
+  },
+  {
+    id: 'growth',
+    label: 'Точки роста',
+    prompt: 'Где точки роста по данным блока? Предложи конкретные действия с ожидаемым эффектом.',
+  },
+  {
+    id: 'explain',
+    label: 'Объяснить',
+    prompt: 'Объясни простыми словами что показывают данные блока и какой из них вывод.',
   },
 ];
 
@@ -315,6 +387,99 @@ export function assembleSectionContext(args: {
   }
   const full = parts.join('\n\n');
   return full.length > maxChars ? full.slice(0, maxChars) + '\n…(контекст обрезан)' : full;
+}
+
+/** Данные целевого блока (markdown) — для анализа одного блока. */
+export function buildTargetBlockContext(
+  snapshot: SectionBlockSnapshot,
+  opts: { maxAiContext?: number; maxConfig?: number } = {},
+): string {
+  const maxAiContext = opts.maxAiContext ?? 3500;
+  const maxConfig = opts.maxConfig ?? 1200;
+  const parts: string[] = [`## Данные блока «${snapshot.title}» (${snapshot.type})`];
+  if (snapshot.aiContext && snapshot.aiContext.trim()) {
+    parts.push(trimText(snapshot.aiContext.trim(), maxAiContext));
+  } else {
+    const fields = formatOutputFields(snapshot.output);
+    if (fields.length) parts.push('Значения: ' + fields.join('; '));
+    if (snapshot.config && Object.keys(snapshot.config).length > 0) {
+      parts.push('Настройки: ' + trimText(JSON.stringify(snapshot.config), maxConfig));
+    }
+    if (fields.length === 0 && (!snapshot.config || Object.keys(snapshot.config).length === 0)) {
+      parts.push('(нет опубликованных данных)');
+    }
+  }
+  return parts.join('\n');
+}
+
+/**
+ * Полный контекст для анализа ОДНОГО блока (целевой блок + опц. прошлый отчёт
+ * блока + выбранный контекст других блоков + фокус-вопрос).
+ * Единая сборка для клиент-счётчика и сервер-промпта.
+ */
+export function assembleBlockContext(args: {
+  snapshot: SectionBlockSnapshot;
+  /** Последний отчёт самого блока (подмешивается по умолчанию). */
+  lastReport?: { createdAt: string; summary: string; insights: SectionInsight[] } | null;
+  /** Подмешанный контекст из других блоков (резолв из БД / live). */
+  extraBlocks?: ExternalSourceContext[];
+  userQuery?: string;
+  maxChars?: number;
+}): string {
+  const { snapshot, lastReport, extraBlocks = [], userQuery, maxChars = 24000 } = args;
+  const parts: string[] = [`# Блок: ${snapshot.title}`];
+  parts.push(buildTargetBlockContext(snapshot));
+  if (lastReport) {
+    const ctx = buildReportsContext([lastReport]);
+    if (ctx) parts.push(ctx.replace('## Прошлые отчёты (для сравнения)', '## Прошлый отчёт этого блока'));
+  }
+  const extraCtx = buildExternalSourcesContext(extraBlocks);
+  if (extraCtx) parts.push(extraCtx.replace('## Контекст из других разделов', '## Контекст из других блоков'));
+  if (userQuery && userQuery.trim()) {
+    parts.push(`## Фокус-вопрос пользователя\n${userQuery.trim()}`);
+  } else {
+    parts.push(
+      '## Задача\nПроанализируй данные блока: дай краткое резюме и набор инсайтов (наблюдения, аномалии, проблемы, точки роста).',
+    );
+  }
+  const full = parts.join('\n\n');
+  return full.length > maxChars ? full.slice(0, maxChars) + '\n…(контекст обрезан)' : full;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Источник по блокам для анализа раздела: отчёты блоков vs сырые данные
+// ─────────────────────────────────────────────────────────────────────────
+
+export type SectionBlockSource = 'reports' | 'raw';
+
+export type BlockReportLite = { summary: string; insights: SectionInsight[] };
+
+/** Компактный текст ИИ-отчёта блока (для подмешивания вместо сырых данных). */
+function buildBlockReportText(r: BlockReportLite): string {
+  const lines: string[] = [];
+  if (r.summary) lines.push(`ИИ-отчёт блока: ${trimText(r.summary, 600)}`);
+  for (const ins of r.insights.slice(0, 6)) {
+    lines.push(`- [${ins.type}] ${ins.title}: ${trimText(ins.description, 200)}`);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Для mode='reports' заменяет у блоков, по которым есть сохранённый ИИ-отчёт,
+ * сырой контент (aiContext/output) на текст отчёта. Единая логика для
+ * клиент-счётчика и сервер-промпта — держит паритет токенов.
+ */
+export function applyBlockReports(
+  blocks: SectionBlockSnapshot[],
+  reportMap: Record<string, BlockReportLite>,
+  mode: SectionBlockSource,
+): SectionBlockSnapshot[] {
+  if (mode === 'raw') return blocks;
+  return blocks.map((b) => {
+    const r = reportMap[b.blockId];
+    if (!r || (!r.summary && r.insights.length === 0)) return b;
+    return { ...b, aiContext: buildBlockReportText(r), output: undefined };
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────
