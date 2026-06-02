@@ -248,7 +248,7 @@ export function SmartImportDialog({
 
         {/* ---------- STEP: SOURCE ---------- */}
         {step === 'source' && picker === 'none' && (
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-3">
             <input
               ref={fileRef}
               type="file"
@@ -287,7 +287,7 @@ export function SmartImportDialog({
 
         {/* ---------- STEP: SOURCE → BLOCK PICKER ---------- */}
         {step === 'source' && picker === 'block' && (
-          <div className="space-y-2">
+          <div className="min-w-0 space-y-2">
             <div className="max-h-[360px] overflow-y-auto rounded-md border border-border/60">
               {loadingSources ? (
                 <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
@@ -326,7 +326,7 @@ export function SmartImportDialog({
 
         {/* ---------- STEP: MAP ---------- */}
         {step === 'map' && table && (
-          <div className="space-y-3">
+          <div className="min-w-0 space-y-3">
             <div className="flex flex-wrap items-center gap-2 rounded-md border border-border/40 bg-muted/30 px-3 py-2 text-xs">
               <span className="text-muted-foreground">Источник:</span>
               <span className="font-medium">{table.source.label}</span>
@@ -375,7 +375,7 @@ export function SmartImportDialog({
                           <Plus className="h-2.5 w-2.5" /> новая
                         </span>
                       ) : (
-                        <span className="truncate rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:bg-sky-950/40 dark:text-sky-300">
+                        <span className="min-w-0 truncate rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:bg-sky-950/40 dark:text-sky-300">
                           {m.matchedLabel}
                         </span>
                       )}
@@ -415,7 +415,7 @@ export function SmartImportDialog({
 
         {/* ---------- STEP: OPTIONS ---------- */}
         {step === 'options' && table && (
-          <div className="space-y-3">
+          <div className="min-w-0 space-y-3">
             <div className="space-y-1.5">
               <Label>Ключ объединения строк</Label>
               <div className="flex gap-2">

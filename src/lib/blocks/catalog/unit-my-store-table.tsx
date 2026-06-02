@@ -1,10 +1,12 @@
 // PURPOSE: Блок «Мой магазин» — кастомизируемая таблица товаров с
 // настраиваемыми колонками (число/процент/деньги/текст/формула),
-// привязками через LinkableNumberCell и формулами с защитой от циклов.
+// привязками через MyStoreNumberCell (dumb-ячейка без подписки на стор) и
+// формулами с защитой от циклов. Большие таблицы виртуализируются (окно строк),
+// строки мемоизируются, ввод держит локальный draft (commit на blur) + Excel-протяжка.
 // Базируется на структуре unit.ozon-multi-table (sticky шапка/колонки/итоги).
 'use client';
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   Plus,
   Trash2,
@@ -22,6 +24,9 @@ import {
   Pin,
   PinOff,
   SlidersHorizontal,
+  Check,
+  Link2,
+  Link2Off,
 } from 'lucide-react';
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { cn } from '@/lib/utils';
@@ -45,9 +50,9 @@ import type { BlockDef, BlockRenderProps } from '../types';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { LinkableNumberCell } from '@/components/unit-economics/linkable-number-cell';
+import { UnitCellBindingDialog } from '@/components/unit-economics/unit-cell-binding-dialog';
 import { useAllBlockValuesFlat } from '@/lib/unit-economics/use-live-block-values';
-import { resolveBindingValue } from '@/lib/unit-economics/bindings';
+import { resolveBindingValue, isBindingActive } from '@/lib/unit-economics/bindings';
 import type { UnitCellBinding } from '@/lib/unit-economics/types';
 import { rublesToKopecks } from '@/lib/unit-economics/types';
 import { useBlockValuePublisher } from '@/lib/blocks/values';
@@ -249,6 +254,70 @@ function formatNumber(value: number, col: Column, showKopecks: boolean): string 
   return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(value);
 }
 
+/** Краткое относительное время для чипа импорта: «сегодня» / «вчера» / «N дн. назад» / дата. */
+function formatRelativeTime(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return '';
+  const days = Math.floor((Date.now() - then) / 86_400_000);
+  if (days <= 0) return 'сегодня';
+  if (days === 1) return 'вчера';
+  if (days < 7) return `${days} дн. назад`;
+  return new Date(iso).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
+}
+
+/**
+ * Вычисляет значения строки: manual-скоуп (значения/привязки/дефолты) + формулы.
+ * ЕДИНЫЙ источник правды для рендера строки (MyStoreRow) и агрегатов (computedRows).
+ * `boundForRow` — заранее разрешённые block_ref-привязки строки (colId → число),
+ * чтобы per-row компонент не подписывался на стор сам.
+ */
+function computeRowValues(
+  row: Row,
+  columns: Column[],
+  vatPct: number,
+  taxRatePct: number,
+  formulasMap: Record<string, string | undefined>,
+  boundForRow: Record<string, number> | undefined,
+): Record<string, number | string> {
+  const manual: Record<string, number | string> = { vatPct, taxRatePct };
+  for (const col of columns) {
+    if (col.type === 'formula' || col.type === 'identity') continue;
+    const bound = boundForRow?.[col.id];
+    if (bound !== undefined) {
+      manual[col.id] = bound;
+      continue;
+    }
+    const raw = row.values[col.id];
+    if (raw === undefined || raw === null || raw === '') {
+      manual[col.id] = (col.default as number | string | undefined) ?? (col.type === 'text' ? '' : 0);
+    } else {
+      manual[col.id] = raw;
+    }
+  }
+  const computed = evalRowFormulas(manual, formulasMap);
+  const merged: Record<string, number | string> = { ...manual };
+  for (const [k, v] of Object.entries(computed)) merged[k] = v;
+  return merged;
+}
+
+/** Форматирование значения числовой ячейки (деньги — через настройки, суффикс ₽ срезаем). */
+function formatCellValue(v: number, money: boolean, showKopecks: boolean): string {
+  if (!Number.isFinite(v)) return '';
+  if (money) return formatRublesWithSettings(rublesToKopecks(v), showKopecks).replace(/\s?₽$/, '').trim();
+  return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(v);
+}
+
+/** Парсинг ручного ввода числа ('1 000,5' → 1000.5). */
+function parseCellInput(text: string): number {
+  const normalized = text.replace(/\s/g, '').replace(',', '.');
+  const parsed = Number.parseFloat(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/** Высота строки/окна виртуализации. Виртуализируем только большие таблицы. */
+const VIRTUALIZE_THRESHOLD = 60;
+const ROW_OVERSCAN = 10;
+
 const STICKY_INDEX_W = 32;
 const ACTIONS_W = 80;
 const HEADER_H = 32;
@@ -318,6 +387,8 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
   const [smartImportOpen, setSmartImportOpen] = useState(false);
   const [importInProgress, setImportInProgress] = useState(false);
   const [importNotice, setImportNotice] = useState<string | null>(null);
+  /** Controlled popover «Параметры» — открывается также по клику на чип НДС. */
+  const [paramsOpen, setParamsOpen] = useState(false);
   const lastSyncRef = useRef<number>(0);
   /** Локальный transient sort state — НЕ персистится в config. */
   const [sort, setSort] = useState<SortState>(null);
@@ -330,6 +401,13 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
    */
   const [widthOverrides, setWidthOverrides] = useState<Record<string, number>>({});
   const resizingRef = useRef<{ key: string; startX: number; startW: number; minW: number } | null>(null);
+  // Виртуализация: ref на скролл-контейнер тела + измерения вьюпорта.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [viewport, setViewport] = useState({ scrollTop: 0, height: 0 });
+  // Excel-протяжка (task 2): { colId, sourceIdx, hoverIdx } в индексах ВИДИМОГО порядка строк.
+  const [fillState, setFillState] = useState<{ colId: string; sourceIdx: number; hoverIdx: number } | null>(null);
+  const fillStateRef = useRef(fillState);
+  fillStateRef.current = fillState;
   // Стабильный id для DndContext — `useId()` SSR-safe, предотвращает
   // hydration mismatch на ARIA-описании (DndDescribedBy-N).
   const dndId = useId();
@@ -337,12 +415,17 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
 
-  const persist = useCallback(
-    (patch: Partial<Config>) => {
-      onConfigChange?.({ ...config, ...patch } as unknown as Record<string, unknown>);
-    },
-    [config, onConfigChange],
-  );
+  // Стабильные refs на актуальный config / onConfigChange — чтобы row-колбэки
+  // не меняли идентичность на каждый рендер (нужно для React.memo строк и
+  // отсутствия лишних ре-рендеров при печати в большой таблице).
+  const configRef = useRef(config);
+  configRef.current = config;
+  const onConfigChangeRef = useRef(onConfigChange);
+  onConfigChangeRef.current = onConfigChange;
+
+  const persist = useCallback((patch: Partial<Config>) => {
+    onConfigChangeRef.current?.({ ...configRef.current, ...patch } as unknown as Record<string, unknown>);
+  }, []);
 
   /**
    * Merge Ozon-аналитики в текущие columns/rows.
@@ -572,70 +655,79 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
     setEditingCol(id);
   }, [config.columns, persist]);
 
+  // Row-колбэки читают актуальный config через configRef → стабильны (deps [persist]).
+  // Это позволяет React.memo строк не сбрасываться при печати и убирает лаги.
   const updateRow = useCallback(
     (rowId: string, patch: Partial<Row>) => {
-      persist({ rows: config.rows.map((r) => (r.id === rowId ? { ...r, ...patch } : r)) });
+      persist({ rows: configRef.current.rows.map((r) => (r.id === rowId ? { ...r, ...patch } : r)) });
     },
-    [config.rows, persist],
+    [persist],
   );
 
   const updateRowValue = useCallback(
     (rowId: string, colId: string, value: number | string) => {
-      const row = config.rows.find((r) => r.id === rowId);
+      const row = configRef.current.rows.find((r) => r.id === rowId);
       if (!row) return;
       updateRow(rowId, { values: { ...row.values, [colId]: value } });
     },
-    [config.rows, updateRow],
+    [updateRow],
   );
 
   const updateRowBinding = useCallback(
     (rowId: string, colId: string, binding: UnitCellBinding | undefined) => {
-      const row = config.rows.find((r) => r.id === rowId);
+      const row = configRef.current.rows.find((r) => r.id === rowId);
       if (!row) return;
       const next = { ...row.bindings };
       if (binding) next[colId] = binding;
       else delete next[colId];
       updateRow(rowId, { bindings: next });
     },
-    [config.rows, updateRow],
+    [updateRow],
   );
 
   const addRows = useCallback(
     (count: number) => {
       const additions = Array.from({ length: count }, () => emptyRow());
-      persist({ rows: [...config.rows, ...additions] });
+      persist({ rows: [...configRef.current.rows, ...additions] });
     },
-    [config.rows, persist],
+    [persist],
   );
 
   const removeRow = useCallback(
     (rowId: string) => {
-      persist({ rows: config.rows.filter((r) => r.id !== rowId) });
+      persist({ rows: configRef.current.rows.filter((r) => r.id !== rowId) });
     },
-    [config.rows, persist],
+    [persist],
   );
 
   const duplicateRow = useCallback(
     (rowId: string) => {
-      const idx = config.rows.findIndex((r) => r.id === rowId);
+      const rows = configRef.current.rows;
+      const idx = rows.findIndex((r) => r.id === rowId);
       if (idx < 0) return;
       const copy: Row = {
-        ...config.rows[idx],
+        ...rows[idx],
         id: makeId('r'),
-        values: { ...config.rows[idx].values },
-        bindings: { ...config.rows[idx].bindings },
+        values: { ...rows[idx].values },
+        bindings: { ...rows[idx].bindings },
       };
-      const next = [...config.rows];
+      const next = [...rows];
       next.splice(idx + 1, 0, copy);
       persist({ rows: next });
     },
-    [config.rows, persist],
+    [persist],
   );
 
   const resetBindings = useCallback(
     (rowId: string) => updateRow(rowId, { bindings: {} }),
     [updateRow],
   );
+
+  /** Открыть модалку привязки для конкретной ячейки (единая на всю таблицу). */
+  const [pickerCell, setPickerCell] = useState<{ rowId: string; colId: string } | null>(null);
+  const openPicker = useCallback((rowId: string, colId: string) => {
+    setPickerCell({ rowId, colId });
+  }, []);
 
   /**
    * Массовое заполнение колонки одинаковым значением во всех строках.
@@ -814,47 +906,71 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
     return last;
   }, [visibleColumns, pinnedSet]);
 
+  /** Стабильная карта ширин видимых колонок (меняется только при resize/правке колонок). */
+  const colWidths = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const c of visibleColumns) m[c.id] = widthOf(c);
+    return m;
+  }, [visibleColumns, widthOf]);
+
   const formulasMap = useMemo(() => {
     const m: Record<string, string | undefined> = {};
     for (const c of config.columns) if (c.type === 'formula') m[c.id] = c.formula;
     return m;
   }, [config.columns]);
 
-  const computedRows = useMemo(() => {
-    return config.rows.map((row) => {
-      const manual: Record<string, number | string> = {
-        vatPct: config.global.vatPct,
-        taxRatePct: config.global.taxRatePct,
-      };
-      for (const col of config.columns) {
-        if (col.type === 'formula') continue;
-        // Identity-колонки берутся напрямую из row.article/row.name при рендере
-        // и публикации; в `manual` (вход для формул) они не нужны.
-        if (col.type === 'identity') continue;
-        const binding = row.bindings[col.id] as UnitCellBinding | undefined;
+  /**
+   * Сигнатура разрешённых block_ref-привязок (`rowId:colId=value;…`). Меняется
+   * ТОЛЬКО когда добавили/убрали привязку или изменилось значение источника —
+   * не на каждый чужой publish стора и не на каждый keystroke. На неё завязаны
+   * `boundByRow`/`computedRows`, поэтому печать в ячейке (или публикации других
+   * блоков) не пересчитывают формулы всей таблицы → главный фикс лагов.
+   */
+  const boundSig = useMemo(() => {
+    let sig = '';
+    for (const row of config.rows) {
+      for (const colId in row.bindings) {
+        const binding = row.bindings[colId] as UnitCellBinding | undefined;
         if (binding && binding.mode === 'block_ref') {
-          const resolved = resolveBindingValue(binding, liveValues);
-          if (resolved !== null) {
-            manual[col.id] = resolved;
-            continue;
-          }
-        }
-        const raw = row.values[col.id];
-        if (raw === undefined || raw === null || raw === '') {
-          manual[col.id] = (col.default as number | string | undefined) ?? (col.type === 'text' ? '' : 0);
-        } else {
-          manual[col.id] = raw;
+          sig += `${row.id}:${colId}=${resolveBindingValue(binding, liveValues)};`;
         }
       }
-      const computed = evalRowFormulas(manual, formulasMap);
-      const merged: Record<string, number | string> = { ...manual };
-      for (const [k, v] of Object.entries(computed)) {
-        if (v === '#CYCLE' || v === '#ERR') merged[k] = v;
-        else merged[k] = v;
+    }
+    return sig;
+  }, [config.rows, liveValues]);
+
+  /** rowId → { colId → разрешённое значение привязки }. Стабилен пока стабилен boundSig. */
+  const boundByRow = useMemo(() => {
+    const m = new Map<string, Record<string, number>>();
+    for (const row of configRef.current.rows) {
+      let obj: Record<string, number> | undefined;
+      for (const colId in row.bindings) {
+        const binding = row.bindings[colId] as UnitCellBinding | undefined;
+        if (binding && binding.mode === 'block_ref') {
+          const v = resolveBindingValue(binding, liveValues);
+          if (v !== null) (obj ??= {})[colId] = v;
+        }
       }
-      return { row, values: merged };
-    });
-  }, [config.rows, config.columns, config.global.vatPct, config.global.taxRatePct, liveValues, formulasMap]);
+      if (obj) m.set(row.id, obj);
+    }
+    return m;
+    // boundSig инкапсулирует config.rows-привязки + liveValues; этого достаточно.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boundSig]);
+
+  const computedRows = useMemo(() => {
+    return config.rows.map((row) => ({
+      row,
+      values: computeRowValues(
+        row,
+        config.columns,
+        config.global.vatPct,
+        config.global.taxRatePct,
+        formulasMap,
+        boundByRow.get(row.id),
+      ),
+    }));
+  }, [config.rows, config.columns, config.global.vatPct, config.global.taxRatePct, formulasMap, boundByRow]);
 
   /**
    * Сортированные строки. Если `sort=null` — отдаём `computedRows` в исходном
@@ -911,6 +1027,136 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
     });
     return next;
   }, [computedRows, sort, config.columns]);
+
+  // ── Виртуализация строк (только для больших таблиц) + drag-fill ──────────
+  const sortedRowsRef = useRef(sortedComputedRows);
+  sortedRowsRef.current = sortedComputedRows;
+
+  // Измерение высоты вьюпорта тела (ResizeObserver) + слежение за скроллом.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const measure = () =>
+      setViewport((v) =>
+        v.scrollTop === el.scrollTop && v.height === el.clientHeight
+          ? v
+          : { scrollTop: el.scrollTop, height: el.clientHeight },
+      );
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const onBodyScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    setViewport((v) =>
+      v.scrollTop === el.scrollTop && v.height === el.clientHeight
+        ? v
+        : { scrollTop: el.scrollTop, height: el.clientHeight },
+    );
+  }, []);
+
+  const totalRows = sortedComputedRows.length;
+  const virtualize = totalRows > VIRTUALIZE_THRESHOLD;
+  const { startIdx, endIdx } = useMemo(() => {
+    if (!virtualize || viewport.height === 0) return { startIdx: 0, endIdx: totalRows };
+    // Шапка (HEADER_H) sticky сверху скролл-контейнера → вычитаем из scrollTop.
+    const first = Math.max(0, Math.floor((viewport.scrollTop - HEADER_H) / ROW_H) - ROW_OVERSCAN);
+    const count = Math.ceil(viewport.height / ROW_H) + ROW_OVERSCAN * 2;
+    return { startIdx: first, endIdx: Math.min(totalRows, first + count) };
+  }, [virtualize, viewport.scrollTop, viewport.height, totalRows]);
+  const topSpacer = startIdx * ROW_H;
+  const bottomSpacer = Math.max(0, (totalRows - endIdx) * ROW_H);
+  const windowRows = virtualize ? sortedComputedRows.slice(startIdx, endIdx) : sortedComputedRows;
+
+  // Excel-протяжка: копирование значения/привязки исходной ячейки вниз/вверх
+  // по колонке (видимый порядок). Формульные/identity-колонки — без хэндла.
+  const applyFill = useCallback(
+    (fs: { colId: string; sourceIdx: number; hoverIdx: number }) => {
+      const rows = sortedRowsRef.current;
+      const src = rows[fs.sourceIdx];
+      if (!src) return;
+      const lo = Math.min(fs.sourceIdx, fs.hoverIdx);
+      const hi = Math.max(fs.sourceIdx, fs.hoverIdx);
+      if (lo === hi) return;
+      const targetIds = new Set<string>();
+      for (let i = lo; i <= hi; i++) {
+        if (i === fs.sourceIdx) continue;
+        const r = rows[i]?.row;
+        if (r) targetIds.add(r.id);
+      }
+      if (targetIds.size === 0) return;
+      const srcValue = src.row.values[fs.colId];
+      const srcBinding = src.row.bindings[fs.colId];
+      const nextRows = configRef.current.rows.map((r) => {
+        if (!targetIds.has(r.id)) return r;
+        const values = { ...r.values };
+        const bindings = { ...r.bindings };
+        if (srcBinding) {
+          // Привязка — абсолютная ссылка на блок, копируется как есть.
+          bindings[fs.colId] = srcBinding;
+        } else {
+          delete bindings[fs.colId];
+          if (srcValue === undefined || srcValue === '') delete values[fs.colId];
+          else values[fs.colId] = srcValue;
+        }
+        return { ...r, values, bindings };
+      });
+      persist({ rows: nextRows });
+    },
+    [persist],
+  );
+
+  /**
+   * Старт протяжки. Document-level listeners (не pointer-capture на хэндле):
+   * source-строка может уйти из окна виртуализации при авто-скролле, а хэндл
+   * размонтироваться — глобальные слушатели это переживают.
+   */
+  const startFill = useCallback(
+    (sourceIdx: number, colId: string, e: React.PointerEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const initial = { colId, sourceIdx, hoverIdx: sourceIdx };
+      fillStateRef.current = initial;
+      setFillState(initial);
+
+      const onMove = (ev: PointerEvent) => {
+        const fs = fillStateRef.current;
+        if (!fs) return;
+        // Авто-скролл у кромок — тянуть за пределы вьюпорта.
+        const sc = scrollRef.current;
+        if (sc) {
+          const r = sc.getBoundingClientRect();
+          if (ev.clientY < r.top + HEADER_H + 24) sc.scrollTop -= 14;
+          else if (ev.clientY > r.bottom - 24) sc.scrollTop += 14;
+        }
+        let el = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null;
+        while (el && !el.hasAttribute('data-fill-row') && el !== scrollRef.current) el = el.parentElement;
+        if (!el || !el.hasAttribute('data-fill-row')) return;
+        const idx = Number.parseInt(el.getAttribute('data-fill-row') || '', 10);
+        if (!Number.isFinite(idx) || idx === fs.hoverIdx) return;
+        const next = { ...fs, hoverIdx: idx };
+        fillStateRef.current = next;
+        setFillState(next);
+      };
+      const onUp = () => {
+        document.removeEventListener('pointermove', onMove);
+        document.removeEventListener('pointerup', onUp);
+        const fs = fillStateRef.current;
+        if (fs) applyFill(fs);
+        fillStateRef.current = null;
+        setFillState(null);
+      };
+      document.addEventListener('pointermove', onMove);
+      document.addEventListener('pointerup', onUp);
+    },
+    [applyFill],
+  );
+
+  const fillColId = fillState?.colId ?? null;
+  const fillFrom = fillState?.sourceIdx ?? null;
+  const fillTo = fillState?.hoverIdx ?? null;
 
   const totals = useMemo(() => {
     let totalRevenue = 0;
@@ -1052,18 +1298,55 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
     <Card className="flex h-full flex-col overflow-hidden">
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 px-3 py-2">
-        <div className="flex items-center gap-2">
-          <Store className="h-4 w-4 text-muted-foreground" />
+        <div className="flex min-w-0 items-center gap-2">
+          <Store className="h-4 w-4 shrink-0 text-muted-foreground" />
           <Input
             value={config.title}
             onChange={(e) => persist({ title: e.target.value })}
-            className="h-7 w-64 border-0 bg-transparent px-0 text-sm font-semibold tracking-tight shadow-none focus-visible:ring-0"
+            className="h-7 w-44 min-w-0 border-0 bg-transparent px-0 text-sm font-semibold tracking-tight shadow-none focus-visible:ring-0"
           />
-          {config.global.vatPct > 0 && (
-            <span className="inline-flex items-center rounded border border-border/60 bg-background px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
-              НДС {config.global.vatPct}%
+          {/* Тихий чип импорта: transient-уведомление, иначе дата последнего импорта. */}
+          {importNotice ? (
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
+              <Check className="h-3 w-3" /> {importNotice}
             </span>
-          )}
+          ) : config.importSource?.lastImportedAt ? (
+            <Popover>
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  title="Импорт из Ozon Аналитики"
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border/50 bg-background px-2 py-0.5 text-[10px] text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  <RotateCcw className="h-2.5 w-2.5" />
+                  {formatRelativeTime(config.importSource.lastImportedAt)}
+                  {config.importSource.syncOnMount && (
+                    <span className="h-1.5 w-1.5 rounded-full bg-sky-400" />
+                  )}
+                </button>
+              </PopoverTrigger>
+              <PopoverContent align="start" className="w-60 space-y-2 p-3 text-[12px]">
+                <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                  Импорт из Ozon Аналитики
+                </div>
+                <div className="text-muted-foreground">
+                  {new Date(config.importSource.lastImportedAt).toLocaleString('ru-RU')}
+                </div>
+                {config.importSource.syncOnMount && (
+                  <div className="text-[11px] text-sky-600 dark:text-sky-400">
+                    Авто-синхронизация включена
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => persist({ importSource: undefined })}
+                  className="text-[11px] text-muted-foreground hover:text-red-500"
+                >
+                  Отключить
+                </button>
+              </PopoverContent>
+            </Popover>
+          ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           <Button
@@ -1078,12 +1361,24 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
           <Button variant="outline" size="sm" onClick={() => addColumn()}>
             <Plus /> Колонка
           </Button>
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-8 w-8" title="Параметры таблицы">
-                <SlidersHorizontal className="h-4 w-4" />
-              </Button>
-            </PopoverTrigger>
+          <Popover open={paramsOpen} onOpenChange={setParamsOpen}>
+            <div className="flex items-center gap-1">
+              {config.global.vatPct > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setParamsOpen(true)}
+                  title="Параметры: НДС / налог"
+                  className="inline-flex items-center rounded border border-border/50 bg-background px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  НДС {config.global.vatPct}%
+                </button>
+              )}
+              <PopoverTrigger asChild>
+                <Button variant="ghost" size="icon" className="h-8 w-8" title="Параметры таблицы">
+                  <SlidersHorizontal className="h-4 w-4" />
+                </Button>
+              </PopoverTrigger>
+            </div>
             <PopoverContent align="end" className="w-60 space-y-3 p-3 text-[12px]">
               <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
                 Параметры
@@ -1116,32 +1411,10 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
         </div>
       </div>
 
-      {/* Import notice + live-sync indicator */}
-      {(importNotice || config.importSource?.lastImportedAt) && (
-        <div className="flex items-center justify-between gap-2 border-b border-border/40 bg-sky-50/40 px-3 py-1 text-[11px] dark:bg-sky-950/30">
-          {importNotice ? (
-            <span className="text-sky-800 dark:text-sky-300">{importNotice}</span>
-          ) : (
-            <span className="text-muted-foreground">
-              Импорт из Ozon Аналитики:{' '}
-              {new Date(config.importSource!.lastImportedAt!).toLocaleString('ru-RU')}
-              {config.importSource?.syncOnMount && ' · авто-синхронизация'}
-            </span>
-          )}
-          {config.importSource && (
-            <button
-              type="button"
-              onClick={() => persist({ importSource: undefined })}
-              className="text-[10px] text-muted-foreground hover:text-red-500"
-            >
-              Отключить
-            </button>
-          )}
-        </div>
-      )}
+      {/* Import notice + live-sync indicator перенесены в шапку (тихий чип). */}
 
       {/* Table */}
-      <div className="flex-1 overflow-auto">
+      <div ref={scrollRef} onScroll={onBodyScroll} className="flex-1 overflow-auto">
         {computedRows.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 p-12 text-center text-xs text-muted-foreground">
             <p>Здесь будут товары вашего магазина с настраиваемыми формулами.</p>
@@ -1214,129 +1487,37 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
               </HeaderCell>
             </div>
 
-            {sortedComputedRows.map(({ row, values }, idx) => (
-              <div
+            {/* Виртуализация: спейсер сверху + окно строк + спейсер снизу.
+                Для таблиц ≤ VIRTUALIZE_THRESHOLD спейсеры = 0 и рендерятся все строки. */}
+            {topSpacer > 0 && <div aria-hidden style={{ height: topSpacer }} />}
+            {windowRows.map(({ row }, i) => (
+              <MyStoreRow
                 key={row.id}
-                className="group flex border-b border-border/40 transition-colors hover:bg-accent/5"
-              >
-                <BodyCell width={STICKY_INDEX_W} sticky stickyLeft={0} className="justify-center text-center text-muted-foreground tabular-nums">
-                  {idx + 1}
-                </BodyCell>
-                {visibleColumns.map((col) => {
-                  const w = widthOf(col);
-                  const stickyLeft = stickyOffsets.get(col.id);
-                  const isPinned = stickyLeft !== undefined;
-                  const isLastPinned = isPinned && col.id === lastPinnedId;
-                  const stickyProps = isPinned
-                    ? { sticky: true, stickyLeft, stickyEdge: isLastPinned }
-                    : {};
-                  // Identity-колонки рендерим как editable input на row.article/name.
-                  if (col.type === 'identity') {
-                    const isArticle = col.id === IDENTITY_ARTICLE_ID;
-                    const value = isArticle ? row.article : row.name;
-                    return (
-                      <BodyCell key={col.id} width={w} {...stickyProps} className="p-0">
-                        <input
-                          type="text"
-                          value={value}
-                          onChange={(e) =>
-                            updateRow(
-                              row.id,
-                              isArticle ? { article: e.target.value } : { name: e.target.value },
-                            )
-                          }
-                          placeholder={col.label}
-                          className="h-full w-full min-w-0 truncate border-0 bg-transparent px-1.5 text-[11px] outline-none placeholder:text-muted-foreground/60"
-                        />
-                      </BodyCell>
-                    );
-                  }
-                  const raw = values[col.id];
-                  if (col.type === 'formula') {
-                    const isErr = raw === '#CYCLE' || raw === '#ERR';
-                    const num = Number(raw);
-                    const positive = col.positive && num > 0;
-                    const negative = col.positive && num < 0;
-                    return (
-                      <BodyCell
-                        key={col.id}
-                        width={w}
-                        {...stickyProps}
-                        className="justify-end px-1.5 tabular-nums"
-                      >
-                        {isErr ? (
-                          <span className="truncate text-amber-600 dark:text-amber-400" title={String(raw)}>
-                            {String(raw)}
-                          </span>
-                        ) : (
-                          <span
-                            className={
-                              positive
-                                ? 'truncate text-emerald-600 dark:text-emerald-400'
-                                : negative
-                                  ? 'truncate text-red-600 dark:text-red-400'
-                                  : 'truncate'
-                            }
-                          >
-                            {formatNumber(num, col, showKopecks)}
-                          </span>
-                        )}
-                      </BodyCell>
-                    );
-                  }
-                  if (col.type === 'text') {
-                    const text = typeof raw === 'string' ? raw : String(raw ?? '');
-                    return (
-                      <BodyCell key={col.id} width={w} {...stickyProps} className="p-0">
-                        <input
-                          type="text"
-                          value={text}
-                          onChange={(e) => updateRowValue(row.id, col.id, e.target.value)}
-                          placeholder={col.label}
-                          className="h-full w-full min-w-0 truncate border-0 bg-transparent px-1.5 text-[11px] outline-none placeholder:text-muted-foreground/60"
-                        />
-                      </BodyCell>
-                    );
-                  }
-                  const num = Number(raw);
-                  const binding = row.bindings[col.id] as UnitCellBinding | undefined;
-                  return (
-                    <BodyCell key={col.id} width={w} {...stickyProps} className="p-0.5">
-                      <LinkableNumberCell
-                        selfBlockId={instance.id}
-                        fieldLabel={col.label}
-                        value={Number.isFinite(num) ? num : 0}
-                        onValueChange={(v) => updateRowValue(row.id, col.id, v)}
-                        binding={binding}
-                        onBindingChange={(b) => updateRowBinding(row.id, col.id, b)}
-                        unit={col.unit}
-                        money={isMoneyCol(col)}
-                        className="h-full"
-                      />
-                    </BodyCell>
-                  );
-                })}
-                <BodyCell width={ACTIONS_W} className="justify-center">
-                  <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-                    <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => duplicateRow(row.id)} title="Дублировать">
-                      <Copy className="h-3 w-3" />
-                    </Button>
-                    <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => resetBindings(row.id)} title="Сбросить привязки">
-                      <RotateCcw className="h-3 w-3" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-6 w-6 text-red-600 hover:text-red-700"
-                      onClick={() => removeRow(row.id)}
-                      title="Удалить"
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </Button>
-                  </div>
-                </BodyCell>
-              </div>
+                row={row}
+                rowIdx={startIdx + i}
+                columns={visibleColumns}
+                vatPct={config.global.vatPct}
+                taxRatePct={config.global.taxRatePct}
+                formulasMap={formulasMap}
+                boundForRow={boundByRow.get(row.id)}
+                widths={colWidths}
+                stickyOffsets={stickyOffsets}
+                lastPinnedId={lastPinnedId}
+                showKopecks={showKopecks}
+                onUpdateRow={updateRow}
+                onUpdateRowValue={updateRowValue}
+                onRemoveRow={removeRow}
+                onDuplicateRow={duplicateRow}
+                onResetBindings={resetBindings}
+                onOpenPicker={openPicker}
+                onFillStart={startFill}
+                fillActive={fillState !== null}
+                fillColId={fillColId}
+                fillFrom={fillFrom}
+                fillTo={fillTo}
+              />
             ))}
+            {bottomSpacer > 0 && <div aria-hidden style={{ height: bottomSpacer }} />}
 
             {/* Totals row.
                 Лейбл «Итого по N товарам» рендерится в первой видимой identity-
@@ -1516,6 +1697,33 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
             : undefined
         }
       />
+
+      {/* Единая модалка привязки ячейки (lifted из ячеек ради перформанса —
+          ячейки больше не подписываются на стор сами). */}
+      {pickerCell &&
+        (() => {
+          const row = config.rows.find((r) => r.id === pickerCell.rowId);
+          const col = config.columns.find((c) => c.id === pickerCell.colId);
+          if (!row || !col) return null;
+          const binding = row.bindings[col.id] as UnitCellBinding | undefined;
+          return (
+            <UnitCellBindingDialog
+              open
+              onOpenChange={(o) => {
+                if (!o) setPickerCell(null);
+              }}
+              selfBlockId={instance.id}
+              fieldLabel={col.label}
+              binding={binding}
+              money={isMoneyCol(col)}
+              currentManualValue={Number(row.values[col.id] ?? 0)}
+              onSave={(b) => {
+                updateRowBinding(row.id, col.id, b);
+                setPickerCell(null);
+              }}
+            />
+          );
+        })()}
     </Card>
   );
 }
@@ -1603,6 +1811,337 @@ function BodyCell({
     </div>
   );
 }
+
+/** Excel-хэндл протяжки в правом-нижнем углу ячейки. Pointer-capture стартует в startFill. */
+function FillHandle({
+  onPointerDown,
+  active,
+}: {
+  onPointerDown: (e: React.PointerEvent) => void;
+  active: boolean;
+}) {
+  return (
+    <span
+      data-fill-handle
+      onPointerDown={onPointerDown}
+      title="Протянуть значение вниз/вверх по колонке"
+      className={cn(
+        'absolute bottom-[1px] right-[1px] z-20 h-2 w-2 cursor-crosshair rounded-[1px] bg-primary ring-1 ring-background transition-opacity',
+        active ? 'opacity-100' : 'opacity-0 group-hover/cell:opacity-100',
+      )}
+    />
+  );
+}
+
+/**
+ * Лёгкая числовая ячейка «Моего магазина». В ОТЛИЧИЕ от LinkableNumberCell
+ * НЕ подписывается на стор (значение/формат приходят пропсами от родителя —
+ * один подписчик на блок) и держит ЛОКАЛЬНЫЙ draft при редактировании: печать
+ * не дёргает persist/ре-рендер таблицы, commit — на blur/Enter. Это и есть
+ * главный фикс лагов ввода на больших таблицах.
+ */
+function MyStoreNumberCell({
+  manualValue,
+  isLinked,
+  resolvedValue,
+  money,
+  showKopecks,
+  fieldLabel,
+  unit,
+  bindingLabel,
+  onCommit,
+  onOpenPicker,
+}: {
+  manualValue: number;
+  isLinked: boolean;
+  resolvedValue: number | null | undefined;
+  money: boolean;
+  showKopecks: boolean;
+  fieldLabel: string;
+  unit?: string;
+  bindingLabel?: string;
+  onCommit: (v: number) => void;
+  onOpenPicker: () => void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const draftRef = useRef<string | null>(null);
+  draftRef.current = draft;
+  const onCommitRef = useRef(onCommit);
+  onCommitRef.current = onCommit;
+  // Флаш недокоммиченного draft при размонтировании (напр. строка ушла из окна
+  // виртуализации во время редактирования) — чтобы не потерять ввод.
+  useEffect(
+    () => () => {
+      if (draftRef.current !== null) onCommitRef.current(parseCellInput(draftRef.current));
+    },
+    [],
+  );
+
+  const linkUnavailable = isLinked && (resolvedValue === null || resolvedValue === undefined);
+  const display = isLinked
+    ? linkUnavailable
+      ? '—'
+      : formatCellValue(resolvedValue as number, money, showKopecks)
+    : formatCellValue(manualValue, money, showKopecks);
+
+  return (
+    <div
+      className={cn(
+        'group/cellnum relative flex h-full items-stretch overflow-hidden rounded border border-transparent text-[12px] transition-colors',
+        isLinked ? 'bg-amber-50/60 dark:bg-amber-950/30' : 'bg-transparent',
+        'focus-within:border-primary/60 hover:border-border/70',
+      )}
+      title={
+        isLinked
+          ? `Привязано: ${bindingLabel ?? 'блок'}${linkUnavailable ? ' (источник недоступен)' : ''}`
+          : `Введите ${fieldLabel}${unit ? ', ' + unit : ''}`
+      }
+    >
+      <input
+        type="text"
+        inputMode={isLinked ? undefined : 'decimal'}
+        readOnly={isLinked}
+        tabIndex={isLinked ? -1 : 0}
+        value={draft !== null ? draft : display}
+        onClick={isLinked ? onOpenPicker : undefined}
+        onFocus={isLinked ? undefined : () => setDraft(String(manualValue))}
+        onChange={isLinked ? undefined : (e) => setDraft(e.target.value)}
+        onBlur={
+          isLinked
+            ? undefined
+            : () => {
+                if (draftRef.current !== null) onCommit(parseCellInput(draftRef.current));
+                setDraft(null);
+              }
+        }
+        onKeyDown={
+          isLinked
+            ? undefined
+            : (e) => {
+                if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
+                else if (e.key === 'Escape') {
+                  setDraft(null);
+                  (e.currentTarget as HTMLInputElement).blur();
+                }
+              }
+        }
+        className={cn(
+          'h-full flex-1 min-w-0 border-0 bg-transparent px-1.5 text-right tabular-nums outline-none placeholder:text-muted-foreground/60',
+          isLinked && 'cursor-pointer select-none',
+          linkUnavailable && 'text-amber-700 dark:text-amber-400',
+        )}
+      />
+      <button
+        type="button"
+        onClick={onOpenPicker}
+        title={isLinked ? 'Изменить или отменить привязку' : 'Привязать к блоку'}
+        className={cn(
+          'flex h-full w-5 shrink-0 items-center justify-center text-muted-foreground transition-colors hover:text-primary',
+          isLinked ? 'opacity-100 text-amber-600 dark:text-amber-400' : 'opacity-0 group-hover/cellnum:opacity-100',
+        )}
+      >
+        {isLinked ? <Link2 className="h-3 w-3" /> : <Link2Off className="h-3 w-3" />}
+      </button>
+    </div>
+  );
+}
+
+type MyStoreRowProps = {
+  row: Row;
+  /** Абсолютный индекс в видимом (sorted) порядке — для `#`, data-fill-row и подсветки. */
+  rowIdx: number;
+  columns: Column[];
+  vatPct: number;
+  taxRatePct: number;
+  formulasMap: Record<string, string | undefined>;
+  boundForRow: Record<string, number> | undefined;
+  widths: Record<string, number>;
+  stickyOffsets: Map<string, number>;
+  lastPinnedId: string | null;
+  showKopecks: boolean;
+  onUpdateRow: (rowId: string, patch: Partial<Row>) => void;
+  onUpdateRowValue: (rowId: string, colId: string, value: number | string) => void;
+  onRemoveRow: (rowId: string) => void;
+  onDuplicateRow: (rowId: string) => void;
+  onResetBindings: (rowId: string) => void;
+  onOpenPicker: (rowId: string, colId: string) => void;
+  onFillStart: (sourceIdx: number, colId: string, e: React.PointerEvent) => void;
+  fillActive: boolean;
+  fillColId: string | null;
+  fillFrom: number | null;
+  fillTo: number | null;
+};
+
+/**
+ * Мемоизированная строка таблицы. Вычисляет свои значения через
+ * `computeRowValues` (тот же helper, что и агрегаты) → ре-рендерится ТОЛЬКО
+ * когда меняется её `row` (или колонки/привязки), а не на каждый keystroke
+ * соседней строки или чужую публикацию стора.
+ */
+const MyStoreRow = memo(function MyStoreRow({
+  row,
+  rowIdx,
+  columns,
+  vatPct,
+  taxRatePct,
+  formulasMap,
+  boundForRow,
+  widths,
+  stickyOffsets,
+  lastPinnedId,
+  showKopecks,
+  onUpdateRow,
+  onUpdateRowValue,
+  onRemoveRow,
+  onDuplicateRow,
+  onResetBindings,
+  onOpenPicker,
+  onFillStart,
+  fillActive,
+  fillColId,
+  fillFrom,
+  fillTo,
+}: MyStoreRowProps) {
+  // Мемо: при drag-fill меняются только fill*-пропсы — формулы не пересчитываем.
+  const values = useMemo(
+    () => computeRowValues(row, columns, vatPct, taxRatePct, formulasMap, boundForRow),
+    [row, columns, vatPct, taxRatePct, formulasMap, boundForRow],
+  );
+  const fillLo =
+    fillColId !== null && fillFrom !== null && fillTo !== null ? Math.min(fillFrom, fillTo) : null;
+  const fillHi = fillLo !== null ? Math.max(fillFrom as number, fillTo as number) : null;
+
+  return (
+    <div
+      data-fill-row={rowIdx}
+      className="group flex border-b border-border/40 transition-colors hover:bg-accent/5"
+      style={{ height: ROW_H }}
+    >
+      <BodyCell
+        width={STICKY_INDEX_W}
+        sticky
+        stickyLeft={0}
+        className="justify-center text-center text-muted-foreground tabular-nums"
+      >
+        {rowIdx + 1}
+      </BodyCell>
+      {columns.map((col) => {
+        const w = widths[col.id] ?? 96;
+        const stickyLeft = stickyOffsets.get(col.id);
+        const isPinned = stickyLeft !== undefined;
+        const isLastPinned = isPinned && col.id === lastPinnedId;
+        const stickyProps = isPinned ? { sticky: true, stickyLeft, stickyEdge: isLastPinned } : {};
+        const inFill =
+          fillColId === col.id && fillLo !== null && rowIdx >= fillLo && rowIdx <= (fillHi as number);
+        const fillCls = inFill ? 'bg-primary/5 ring-1 ring-inset ring-primary/40' : '';
+
+        if (col.type === 'identity') {
+          const isArticle = col.id === IDENTITY_ARTICLE_ID;
+          const value = isArticle ? row.article : row.name;
+          return (
+            <BodyCell key={col.id} width={w} {...stickyProps} className="p-0">
+              <input
+                type="text"
+                value={value}
+                onChange={(e) =>
+                  onUpdateRow(row.id, isArticle ? { article: e.target.value } : { name: e.target.value })
+                }
+                placeholder={col.label}
+                className="h-full w-full min-w-0 truncate border-0 bg-transparent px-1.5 text-[11px] outline-none placeholder:text-muted-foreground/60"
+              />
+            </BodyCell>
+          );
+        }
+
+        const raw = values[col.id];
+        if (col.type === 'formula') {
+          const isErr = raw === '#CYCLE' || raw === '#ERR';
+          const num = Number(raw);
+          const positive = col.positive && num > 0;
+          const negative = col.positive && num < 0;
+          return (
+            <BodyCell key={col.id} width={w} {...stickyProps} className="justify-end px-1.5 tabular-nums">
+              {isErr ? (
+                <span className="truncate text-amber-600 dark:text-amber-400" title={String(raw)}>
+                  {String(raw)}
+                </span>
+              ) : (
+                <span
+                  className={
+                    positive
+                      ? 'truncate text-emerald-600 dark:text-emerald-400'
+                      : negative
+                        ? 'truncate text-red-600 dark:text-red-400'
+                        : 'truncate'
+                  }
+                >
+                  {formatNumber(num, col, showKopecks)}
+                </span>
+              )}
+            </BodyCell>
+          );
+        }
+
+        if (col.type === 'text') {
+          const text = typeof raw === 'string' ? raw : String(raw ?? '');
+          return (
+            <BodyCell key={col.id} width={w} {...stickyProps} className={cn('group/cell relative p-0', fillCls)}>
+              <input
+                type="text"
+                value={text}
+                onChange={(e) => onUpdateRowValue(row.id, col.id, e.target.value)}
+                placeholder={col.label}
+                className="h-full w-full min-w-0 truncate border-0 bg-transparent px-1.5 text-[11px] outline-none placeholder:text-muted-foreground/60"
+              />
+              <FillHandle onPointerDown={(e) => onFillStart(rowIdx, col.id, e)} active={fillActive} />
+            </BodyCell>
+          );
+        }
+
+        // number / money / percent
+        const binding = row.bindings[col.id] as UnitCellBinding | undefined;
+        const linked = isBindingActive(binding);
+        const manualNum = Number(row.values[col.id]);
+        return (
+          <BodyCell key={col.id} width={w} {...stickyProps} className={cn('group/cell relative p-0.5', fillCls)}>
+            <MyStoreNumberCell
+              manualValue={Number.isFinite(manualNum) ? manualNum : 0}
+              isLinked={linked}
+              resolvedValue={linked ? (boundForRow?.[col.id] ?? null) : undefined}
+              money={isMoneyCol(col)}
+              showKopecks={showKopecks}
+              fieldLabel={col.label}
+              unit={col.unit}
+              bindingLabel={binding?.ref?.label}
+              onCommit={(v) => onUpdateRowValue(row.id, col.id, v)}
+              onOpenPicker={() => onOpenPicker(row.id, col.id)}
+            />
+            <FillHandle onPointerDown={(e) => onFillStart(rowIdx, col.id, e)} active={fillActive} />
+          </BodyCell>
+        );
+      })}
+      <BodyCell width={ACTIONS_W} className="justify-center">
+        <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => onDuplicateRow(row.id)} title="Дублировать">
+            <Copy className="h-3 w-3" />
+          </Button>
+          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => onResetBindings(row.id)} title="Сбросить привязки">
+            <RotateCcw className="h-3 w-3" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 text-red-600 hover:text-red-700"
+            onClick={() => onRemoveRow(row.id)}
+            title="Удалить"
+          >
+            <Trash2 className="h-3 w-3" />
+          </Button>
+        </div>
+      </BodyCell>
+    </div>
+  );
+});
 
 /**
  * Меню действий с колонкой. Открывается кликом или ховером (400ms) на иконку
