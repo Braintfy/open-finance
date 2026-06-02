@@ -21,8 +21,9 @@ import {
   ArrowDownUp,
   Pin,
   PinOff,
+  SlidersHorizontal,
 } from 'lucide-react';
-import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover';
+import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { cn } from '@/lib/utils';
 import { z } from 'zod';
 import {
@@ -60,6 +61,12 @@ import {
   OZON_TO_MY_STORE_COLUMN_MAP,
   extractOzonValue,
 } from '@/lib/unit-economics/ozon-to-my-store';
+import { SmartImportDialog } from '@/components/unit-economics/smart-import-dialog';
+import type {
+  ApplyResult,
+  TargetColumn,
+  TargetRow,
+} from '@/lib/unit-economics/table-import';
 import type { OzonAnalyticsRow } from '@/lib/blocks/catalog/unit-ozon-analytics-types';
 import type { TableColumnKey } from '@/components/unit-economics/ozon-analytics-table';
 import {
@@ -306,9 +313,9 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
   const liveValues = useAllBlockValuesFlat();
   const { settings } = useFormatSettings();
   const showKopecks = settings.showKopecks;
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const [editingCol, setEditingCol] = useState<string | null>(null);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
+  const [smartImportOpen, setSmartImportOpen] = useState(false);
   const [importInProgress, setImportInProgress] = useState(false);
   const [importNotice, setImportNotice] = useState<string | null>(null);
   const lastSyncRef = useRef<number>(0);
@@ -529,6 +536,29 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
     }
     removeColumn(colId);
   }, [config.columns, formulaUsages, removeColumn]);
+
+  /**
+   * Применение результата умного импорта (XLSX / другой блок).
+   * `applyImportPlan` уже посчитал новые columns/rows на клиенте — просто
+   * персистим и показываем сводку. Identity-колонки и не затронутые данные
+   * сохраняются (план строится поверх текущего config).
+   */
+  const handleSmartImport = useCallback(
+    (result: ApplyResult, meta: { sourceLabel: string; sourceKind: 'xlsx' | 'block' }) => {
+      persist({
+        columns: result.columns as unknown as Column[],
+        rows: result.rows as unknown as Row[],
+      });
+      const { columnsAdded, rowsAdded, rowsUpdated } = result.stats;
+      setImportNotice(
+        `Импорт из «${meta.sourceLabel}»: +${rowsAdded} строк` +
+          (rowsUpdated > 0 ? `, обновлено ${rowsUpdated}` : '') +
+          (columnsAdded > 0 ? `, +${columnsAdded} колонок` : ''),
+      );
+      setTimeout(() => setImportNotice(null), 4000);
+    },
+    [persist],
+  );
 
   const addColumn = useCallback(() => {
     const id = makeId('c');
@@ -1036,34 +1066,53 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
           )}
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".xlsx,.xls"
-            className="hidden"
-            disabled
-          />
           <Button
             variant="outline"
             size="sm"
-            onClick={() => setImportDialogOpen(true)}
+            onClick={() => setSmartImportOpen(true)}
             disabled={importInProgress}
-            title="Импортировать данные из блока «Ozon · Аналитика»"
+            title="Умный импорт: XLSX-файл, другая таблица или Ozon Аналитика"
           >
-            <Download /> Из Ozon Аналитики
+            <Download /> Импорт
           </Button>
           <Button variant="outline" size="sm" onClick={() => addColumn()}>
             <Plus /> Колонка
           </Button>
-          <Button variant="outline" size="sm" onClick={() => addRows(1)}>
-            <Plus /> 1
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => addRows(5)}>
-            <Plus /> 5
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => addRows(10)}>
-            <Plus /> 10
-          </Button>
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="ghost" size="icon" className="h-8 w-8" title="Параметры таблицы">
+                <SlidersHorizontal className="h-4 w-4" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-60 space-y-3 p-3 text-[12px]">
+              <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                Параметры
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-muted-foreground">НДС, %</span>
+                <input
+                  type="number"
+                  value={config.global.vatPct}
+                  step={1}
+                  onChange={(e) => updateGlobal('vatPct', Number(e.target.value))}
+                  className="h-7 w-20 rounded border border-border/60 bg-background px-1 text-right tabular-nums"
+                />
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-muted-foreground">Налог, %</span>
+                <input
+                  type="number"
+                  value={config.global.taxRatePct}
+                  step={1}
+                  onChange={(e) => updateGlobal('taxRatePct', Number(e.target.value))}
+                  className="h-7 w-20 rounded border border-border/60 bg-background px-1 text-right tabular-nums"
+                />
+              </div>
+              <div className="border-t border-border/40 pt-2 text-[11px] text-muted-foreground">
+                Колонок: {config.columns.length} ({config.columns.filter((c) => c.hidden).length} скрыто)
+              </div>
+            </PopoverContent>
+          </Popover>
         </div>
       </div>
 
@@ -1090,35 +1139,6 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
           )}
         </div>
       )}
-
-      {/* Global params */}
-      <div className="flex flex-wrap items-center gap-3 border-b border-border/60 bg-muted/20 px-3 py-2 text-[11px]">
-        <div className="flex items-center gap-1.5">
-          <span className="text-muted-foreground">НДС:</span>
-          <input
-            type="number"
-            value={config.global.vatPct}
-            step={1}
-            onChange={(e) => updateGlobal('vatPct', Number(e.target.value))}
-            className="h-6 w-16 rounded border border-border/60 bg-background px-1 text-right text-[11px] tabular-nums"
-          />
-          <span className="text-muted-foreground">%</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="text-muted-foreground">Налог:</span>
-          <input
-            type="number"
-            value={config.global.taxRatePct}
-            step={1}
-            onChange={(e) => updateGlobal('taxRatePct', Number(e.target.value))}
-            className="h-6 w-16 rounded border border-border/60 bg-background px-1 text-right text-[11px] tabular-nums"
-          />
-          <span className="text-muted-foreground">%</span>
-        </div>
-        <span className="ml-auto text-[10px] text-muted-foreground">
-          Колонок: {config.columns.length} ({config.columns.filter((c) => c.hidden).length} скрыто)
-        </span>
-      </div>
 
       {/* Table */}
       <div className="flex-1 overflow-auto">
@@ -1393,6 +1413,28 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
         )}
       </div>
 
+      {/*
+        Нижняя панель действий. Левый отступ `pl-[76px]` зарезервирован под
+        плавающие круглые кнопки блока (ИИ + Настройки из BlockChrome, которые
+        рендерятся в `bottom-1 left-1`) — раньше они перекрывали sticky-футер
+        «Итого». Теперь они ложатся в пустую левую зону панели.
+      */}
+      <div className="flex items-center gap-1.5 border-t border-border/60 bg-muted/20 py-1.5 pl-[76px] pr-3 text-[11px]">
+        <span className="mr-0.5 text-muted-foreground">Добавить:</span>
+        <Button variant="outline" size="sm" className="h-6 px-2" onClick={() => addRows(1)}>
+          <Plus /> 1
+        </Button>
+        <Button variant="outline" size="sm" className="h-6 px-2" onClick={() => addRows(5)}>
+          <Plus /> 5
+        </Button>
+        <Button variant="outline" size="sm" className="h-6 px-2" onClick={() => addRows(10)}>
+          <Plus /> 10
+        </Button>
+        <span className="ml-auto text-[10px] tabular-nums text-muted-foreground">
+          {totals.rowsCount} строк · {visibleColumns.length} колонок
+        </span>
+      </div>
+
       {editingColumn && (
         <ColumnEditDialog
           column={editingColumn}
@@ -1446,6 +1488,16 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
           </DialogContent>
         </Dialog>
       )}
+
+      <SmartImportDialog
+        open={smartImportOpen}
+        onClose={() => setSmartImportOpen(false)}
+        existingColumns={config.columns as unknown as TargetColumn[]}
+        existingRows={config.rows as unknown as TargetRow[]}
+        makeId={makeId}
+        onApply={handleSmartImport}
+        onOpenOzon={() => setImportDialogOpen(true)}
+      />
 
       <OzonImportFromAnalyticsDialog
         open={importDialogOpen}
