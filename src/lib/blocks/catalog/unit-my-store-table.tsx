@@ -82,7 +82,8 @@ import type { UnitCellBinding } from '@/lib/unit-economics/types';
 import { rublesToKopecks } from '@/lib/unit-economics/types';
 import { useBlockValuePublisher } from '@/lib/blocks/values';
 import { useFormatSettings, formatRublesWithSettings } from '@/lib/format-settings';
-import { evalRowFormulas, evalSingleFormula } from '@/lib/unit-economics/store-formula';
+import { evalSingleFormula } from '@/lib/unit-economics/store-formula';
+import { computeRowValues, isCellFormulaValue } from '@/lib/unit-economics/my-store-compute';
 import {
   OzonImportFromAnalyticsDialog,
   type OzonImportSettings,
@@ -292,16 +293,6 @@ function isMoneyCol(col: Column): boolean {
 }
 
 /**
- * Per-cell формула (Excel-режим) — строковое значение `row.values[colId]`,
- * начинающееся с `=`. Тот же контракт, что и `cell.v` в блоке «Данные»;
- * именно так формулы сохраняет/читает XLSX-адаптер (`my-store-table.ts`).
- * Применяется только к НЕ-формульным колонкам (формульные column-driven).
- */
-function isCellFormulaValue(v: unknown): boolean {
-  return typeof v === 'string' && v.trim().startsWith('=');
-}
-
-/**
  * Разрешение числа знаков после запятой для колонки: per-column override →
  * блочная настройка → `null` («Авто»). `null` означает дефолтное поведение
  * (деньги — глобальные «копейки», прочее — до 2 знаков).
@@ -346,70 +337,9 @@ function formatRelativeTime(iso: string): string {
   return new Date(iso).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
 }
 
-/**
- * Вычисляет значения строки: manual-скоуп (значения/привязки/дефолты) + формулы.
- * ЕДИНЫЙ источник правды для рендера строки (MyStoreRow) и агрегатов (computedRows).
- * `boundForRow` — заранее разрешённые block_ref-привязки строки (colId → число),
- * чтобы per-row компонент не подписывался на стор сам.
- */
-function computeRowValues(
-  row: Row,
-  columns: Column[],
-  vatPct: number,
-  taxRatePct: number,
-  formulasMap: Record<string, string | undefined>,
-  boundForRow: Record<string, number> | undefined,
-): Record<string, number | string> {
-  const manual: Record<string, number | string> = { vatPct, taxRatePct };
-  // Per-cell формулы этой строки (Excel-режим): colId → формула. Накладываются
-  // поверх column-formula в `formulasMap` через `evalRowFormulas`. Работают и
-  // для НЕ-формульных колонок (импортированное число → формула), и для
-  // формульных (переопределение column-formula в одной строке).
-  let cellFormulas: Record<string, string> | null = null;
-  // Формульные колонки, переопределённые per-cell ЛИТЕРАЛОМ (жёстким числом):
-  // их column-formula убираем из effectiveFormulas, чтобы победил литерал.
-  let literalOverrides: Set<string> | null = null;
-  for (const col of columns) {
-    if (col.type === 'identity') continue;
-    const raw = row.values[col.id];
-    // Per-cell формула: значение-строка с `=`. Уходит в formulas, не в manual,
-    // чтобы движок её вычислил (а не трактовал как литерал → NaN → 0).
-    // Переопределяет column-formula для формульных колонок в этой строке.
-    if (isCellFormulaValue(raw)) {
-      (cellFormulas ??= {})[col.id] = String(raw).trim();
-      continue;
-    }
-    if (col.type === 'formula') {
-      // Формульная колонка: per-cell ЛИТЕРАЛ-override (жёстко заданное значение).
-      if (raw !== undefined && raw !== null && raw !== '') {
-        manual[col.id] = raw;
-        (literalOverrides ??= new Set()).add(col.id);
-      }
-      // иначе — column-formula (она в formulasMap), manual не трогаем.
-      continue;
-    }
-    const bound = boundForRow?.[col.id];
-    if (bound !== undefined) {
-      manual[col.id] = bound;
-      continue;
-    }
-    if (raw === undefined || raw === null || raw === '') {
-      manual[col.id] = (col.default as number | string | undefined) ?? (col.type === 'text' ? '' : 0);
-    } else {
-      manual[col.id] = raw;
-    }
-  }
-  let effectiveFormulas = formulasMap;
-  if (cellFormulas || literalOverrides) {
-    effectiveFormulas = { ...formulasMap };
-    if (cellFormulas) Object.assign(effectiveFormulas, cellFormulas);
-    if (literalOverrides) for (const id of literalOverrides) delete effectiveFormulas[id];
-  }
-  const computed = evalRowFormulas(manual, effectiveFormulas);
-  const merged: Record<string, number | string> = { ...manual };
-  for (const [k, v] of Object.entries(computed)) merged[k] = v;
-  return merged;
-}
+// computeRowValues + isCellFormulaValue вынесены в чистый модуль
+// `@/lib/unit-economics/my-store-compute` (тестируется в
+// scripts/test-my-store-compute.ts). Здесь они импортируются.
 
 /**
  * Форматирование значения числовой ячейки (деньги — через настройки, суффикс ₽
@@ -464,20 +394,18 @@ function draftForCell(row: Row, col: Column): string {
   if (col.type === 'identity') {
     return col.id === IDENTITY_ARTICLE_ID ? row.article : row.name;
   }
-  // Формульные колонки не биндятся; для остальных привязанная ячейка → пустой
-  // draft (печать переопределит привязку).
-  if (
-    col.type !== 'formula' &&
-    isBindingActive(row.bindings[col.id] as UnitCellBinding | undefined)
-  ) {
-    return '';
-  }
   const raw = row.values[col.id];
-  if (typeof raw === 'string') return raw; // per-cell формула / текст / литерал-строка
-  if (typeof raw === 'number' && Number.isFinite(raw)) return String(raw); // per-cell литерал
-  // Формульная колонка без per-cell override → показываем column-formula для правки
-  // (чтобы пользователь видел и мог отредактировать действующую формулу).
-  if (col.type === 'formula' && col.formula) return col.formula;
+  // Формульная колонка: override — ТОЛЬКО `=`-строка; иначе показываем
+  // column-formula для правки. Сырые числа в row.values формульной колонки —
+  // осиротевшие, их игнорируем (не показываем как draft).
+  if (col.type === 'formula') {
+    if (isCellFormulaValue(raw)) return String(raw).trim();
+    return col.formula ?? '';
+  }
+  // Привязанная ячейка → пустой draft (печать переопределит привязку).
+  if (isBindingActive(row.bindings[col.id] as UnitCellBinding | undefined)) return '';
+  if (typeof raw === 'string') return raw; // per-cell формула / текст
+  if (typeof raw === 'number' && Number.isFinite(raw)) return String(raw);
   return '';
 }
 
@@ -1395,17 +1323,22 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
       const trimmed = s.draft.trim();
 
       // Формульная КОЛОНКА: правка ячейки создаёт per-cell override (только эта
-      // строка). Привязок у формульных колонок нет (не трогаем bindings).
+      // строка). Override ВСЕГДА хранится как `=`-строка — иначе сырое число не
+      // отличить от осиротевшего и оно бы игнорировалось (см. computeRowValues).
+      // Привязок у формульных колонок нет (не трогаем bindings).
       if (col.type === 'formula') {
         const nextValues = { ...row.values };
         const colFormula = (col.formula ?? '').trim();
         if (!trimmed || trimmed === '=' || trimmed === colFormula) {
-          // Пусто / совпало с column-formula → убираем override (вернётся колоночная).
+          // Пусто / совпало с column-formula → убираем override (вернётся колоночная)
+          // + заодно чистим осиротевшее число, если оно тут осталось.
           delete nextValues[col.id];
         } else if (trimmed.startsWith('=')) {
           nextValues[col.id] = trimmed; // per-cell формула-override
         } else {
-          nextValues[col.id] = parseCellInput(trimmed); // жёсткий литерал-override
+          // Жёсткий литерал → оборачиваем как формулу `=N` (нормализуем число),
+          // чтобы это был явный override, а не «осиротевшее» число.
+          nextValues[col.id] = `=${parseCellInput(trimmed)}`;
         }
         persist({
           rows: rows.map((r) => (r.id === s.rowId ? { ...r, values: nextValues } : r)),
@@ -1502,6 +1435,18 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
 
   const insertToken = useCallback(
     (token: string) => insertIntoDraftWithSession(token, true),
+    [insertIntoDraftWithSession],
+  );
+
+  /**
+   * Cell-pick (как в Excel/«Данных»): когда редактируется формула, клик по
+   * ДРУГОЙ ячейке вставляет id её колонки в формулу (формулы строки-локальные —
+   * ссылка по id колонки, не по A1). Активный input при этом не теряет фокус
+   * (на ячейке-кнопке `onMouseDown preventDefault`), каретка восстанавливается
+   * через `pendingCaretRef`/`useLayoutEffect`.
+   */
+  const handleCellPick = useCallback(
+    (colId: string) => insertIntoDraftWithSession(colId, true),
     [insertIntoDraftWithSession],
   );
 
@@ -2055,7 +2000,7 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
                     activeIsIdentity
                       ? 'Текст'
                       : activeIsFormula
-                        ? 'Формула: id колонок, vatPct, taxRatePct'
+                        ? 'Формула: id колонок / клик по ячейке вставит её колонку'
                         : 'Значение, или начните с = для формулы'
                   }
                   className="h-6 min-w-0 flex-1 border-0 bg-transparent p-0 font-mono text-[11px] outline-none focus:ring-0"
@@ -2276,8 +2221,10 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
                 excelMode={excelMode}
                 activeColId={session?.rowId === row.id ? session.columnId : null}
                 sessionDraft={session?.rowId === row.id ? session.draft : null}
+                pickMode={activeIsFormula}
                 inlineInputRef={inlineInputRef}
                 onCellActivate={activateCell}
+                onCellPick={handleCellPick}
                 onCellDraftChange={handleCellDraftChange}
                 onCellInlineFocus={handleCellInlineFocus}
                 onCellKeyDown={handleInputKeyDown}
@@ -2745,7 +2692,9 @@ function MyStoreExcelCell({
   inputRef,
   placeholder,
   tone,
+  pickMode,
   onActivate,
+  onPick,
   onDraftChange,
   onInlineFocus,
   onKeyDown,
@@ -2764,13 +2713,20 @@ function MyStoreExcelCell({
   placeholder?: string;
   /** Подсветка значения (для колонок с `positive` — +/−). */
   tone?: 'positive' | 'negative';
+  /** Идёт редактирование формулы → клик по этой ячейке вставит её колонку. */
+  pickMode: boolean;
   onActivate: () => void;
+  onPick: () => void;
   onDraftChange: (draft: string, caret: number | null) => void;
   onInlineFocus: () => void;
   onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void;
   onBlur: (e: React.FocusEvent<HTMLInputElement>) => void;
 }) {
   const leftAlign = isIdentity || col.type === 'text';
+  // В режиме формулы клик по НЕ-identity ячейке вставляет id её колонки в формулу
+  // (cell-pick), а не активирует ячейку. Identity (артикул/название) — обычная
+  // активация (их id не числовые, в формуле бесполезны).
+  const isPickTarget = pickMode && !isIdentity;
 
   if (isActive) {
     return (
@@ -2807,23 +2763,26 @@ function MyStoreExcelCell({
     <button
       type="button"
       onMouseDown={(e) => e.preventDefault()}
-      onClick={onActivate}
+      onClick={isPickTarget ? onPick : onActivate}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ' || e.key === 'F2') {
           e.preventDefault();
-          onActivate();
+          (isPickTarget ? onPick : onActivate)();
         }
       }}
       title={
-        hasFormula
-          ? 'Формула — кликните для правки'
-          : isLinked
-            ? `Привязано: ${bindingLabel ?? 'блок'}`
-            : 'Кликните, чтобы редактировать'
+        isPickTarget
+          ? 'Вставить эту колонку в формулу'
+          : hasFormula
+            ? 'Формула — кликните для правки'
+            : isLinked
+              ? `Привязано: ${bindingLabel ?? 'блок'}`
+              : 'Кликните, чтобы редактировать'
       }
       className={cn(
         'flex h-full w-full min-w-0 items-center gap-1 rounded border border-transparent px-1.5 text-[12px] tabular-nums transition hover:border-border/70',
         leftAlign ? 'justify-start' : 'justify-end',
+        isPickTarget && 'cursor-cell ring-1 ring-sky-400/60 hover:ring-sky-500',
         isErr
           ? 'text-amber-600 dark:text-amber-400'
           : isLinked
@@ -2884,9 +2843,13 @@ type MyStoreRowProps = {
   activeColId: string | null;
   /** Draft активной ячейки ЭТОЙ строки (или null). Меняется только у активной строки. */
   sessionDraft: string | null;
+  /** Идёт редактирование формулы → клик по ячейке вставляет её колонку (cell-pick). */
+  pickMode: boolean;
   /** Общий ref на активный inline-input (родитель восстанавливает каретку/фокус). */
   inlineInputRef: React.MutableRefObject<HTMLInputElement | null>;
   onCellActivate: (rowId: string, colId: string) => void;
+  /** Вставить id колонки в активную формулу (cell-pick). */
+  onCellPick: (colId: string) => void;
   onCellDraftChange: (draft: string, caret: number | null) => void;
   onCellInlineFocus: () => void;
   onCellKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void;
@@ -2926,8 +2889,10 @@ const MyStoreRow = memo(function MyStoreRow({
   excelMode,
   activeColId,
   sessionDraft,
+  pickMode,
   inlineInputRef,
   onCellActivate,
+  onCellPick,
   onCellDraftChange,
   onCellInlineFocus,
   onCellKeyDown,
@@ -2979,9 +2944,9 @@ const MyStoreRow = memo(function MyStoreRow({
               : (row.bindings[col.id] as UnitCellBinding | undefined);
           const linked = isBindingActive(binding);
           const rawVal = row.values[col.id];
-          const hasOverride = rawVal !== undefined && rawVal !== null && rawVal !== '';
-          // fx-бейдж: per-cell формула ИЛИ формульная колонка без литерал-override.
-          const cellFormula = isCellFormulaValue(rawVal) || (isFormulaCol && !hasOverride);
+          // fx-бейдж: per-cell формула (`=…`) ИЛИ формульная колонка (значение
+          // всегда из формулы — колоночной или per-cell override).
+          const cellFormula = isFormulaCol || isCellFormulaValue(rawVal);
           const computed = values[col.id];
           const isErr = computed === '#CYCLE' || computed === '#ERR';
           let displayText: string;
@@ -3023,7 +2988,9 @@ const MyStoreRow = memo(function MyStoreRow({
                 inputRef={isActive ? inlineInputRef : undefined}
                 placeholder={isIdentity || col.type === 'text' ? col.label : '0'}
                 tone={tone}
+                pickMode={pickMode}
                 onActivate={() => onCellActivate(row.id, col.id)}
+                onPick={() => onCellPick(col.id)}
                 onDraftChange={onCellDraftChange}
                 onInlineFocus={onCellInlineFocus}
                 onKeyDown={onCellKeyDown}
