@@ -52,8 +52,15 @@ import {
   Unlink,
   Table2,
   X,
+  AlignLeft,
+  AlignCenter,
+  AlignRight,
+  Sigma,
+  Ban,
 } from 'lucide-react';
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { Switch } from '@/components/ui/switch';
 import { cn } from '@/lib/utils';
 import { z } from 'zod';
 import {
@@ -128,6 +135,20 @@ function isIdentityCol(col: Column): boolean {
   return col.type === 'identity';
 }
 
+/**
+ * Цветовая шкала чисел (условное форматирование v0.40.0). Окрашивает ТЕКСТ
+ * числа градиентом в зависимости от его значения относительно min/max колонки.
+ * `min`/`mid`/`max` — `null`/`undefined` = авто (берётся из реальных данных
+ * колонки); число — ручной якорь. `mid` задаёт точку «середины» палитры.
+ */
+const ColumnScaleSchema = z.object({
+  palette: z.enum(['greenRed', 'redGreen', 'heat']).default('greenRed'),
+  min: z.number().nullable().optional(),
+  mid: z.number().nullable().optional(),
+  max: z.number().nullable().optional(),
+});
+type ColumnScale = z.infer<typeof ColumnScaleSchema>;
+
 const ColumnSchema = z.object({
   id: z.string(),
   label: z.string(),
@@ -144,6 +165,29 @@ const ColumnSchema = z.object({
    * знаков (без лишних нулей), переопределяя округление «копеек».
    */
   decimals: z.number().int().min(0).max(6).optional(),
+  // ── Вид колонки (v0.40.0) ──
+  /** Акцент-цвет колонки (ключ из ACCENT_KEYS). Тинт шапки + обводка + опц. заливка. */
+  color: z.string().optional(),
+  /** Заливать фон ячеек колонки тинтом акцента. */
+  fillCells: z.boolean().optional(),
+  /** Цветная обводка колонки (боковые бордеры в цвет акцента). */
+  outline: z.boolean().optional(),
+  /** Горизонтальное выравнивание содержимого (по умолчанию: число вправо, текст влево). */
+  align: z.enum(['left', 'center', 'right']).optional(),
+  /** Жирный заголовок колонки. */
+  headerBold: z.boolean().optional(),
+  // ── Числа (v0.40.0) ──
+  /** Цветовая шкала текста числа (условное форматирование). */
+  scale: ColumnScaleSchema.optional(),
+  /** Префикс значения (например `$`), показывается в ячейке перед числом. */
+  prefix: z.string().optional(),
+  /** Суффикс значения (например `kg`), показывается в ячейке после числа. */
+  suffix: z.string().optional(),
+  /** Подсказка-тултип к колонке (показывается на заголовке при наведении). */
+  note: z.string().optional(),
+  // ── Итоги (v0.40.0) ──
+  /** Агрегат в строке «Итого». `undefined`/`none` — без итога. */
+  aggregate: z.enum(['none', 'sum', 'avg', 'min', 'max', 'count']).optional(),
 });
 
 type Column = z.infer<typeof ColumnSchema>;
@@ -179,6 +223,7 @@ function defaultColumns(): Column[] {
       unit: '₽',
       width: 110,
       positive: true,
+      aggregate: 'avg',
       formula: '=priceRetail - cost - packaging - delivery',
     },
     {
@@ -191,7 +236,7 @@ function defaultColumns(): Column[] {
       formula: '=priceWholesale - cost - packaging - delivery',
     },
     { id: 'salesPerMonth', label: 'Продаж/мес', type: 'number', unit: 'шт', width: 90 },
-    { id: 'stock', label: 'Остаток', type: 'number', unit: 'шт', width: 80 },
+    { id: 'stock', label: 'Остаток', type: 'number', unit: 'шт', width: 80, aggregate: 'sum' },
     {
       id: 'revenueMonth',
       label: 'Выручка/мес',
@@ -199,6 +244,7 @@ function defaultColumns(): Column[] {
       unit: '₽',
       width: 120,
       positive: true,
+      aggregate: 'sum',
       formula: '=priceRetail * salesPerMonth',
     },
     {
@@ -208,6 +254,7 @@ function defaultColumns(): Column[] {
       unit: '₽',
       width: 120,
       positive: true,
+      aggregate: 'sum',
       formula: '=marginRetail * salesPerMonth',
     },
   ];
@@ -285,8 +332,26 @@ function parseConfig(raw: unknown): Config {
     if (!hasArticleCol && !pinned.includes(IDENTITY_ARTICLE_ID)) pinned.unshift(IDENTITY_ARTICLE_ID);
     cfg.pinnedColumns = pinned;
   }
+
+  // Migration (v0.40.0): итоги стали конфигурируемыми per-column (`aggregate`).
+  // Раньше они были захардкожены под 4 встроенные колонки. Старым конфигам
+  // (где `aggregate` ещё undefined) проставляем legacy-агрегаты, чтобы итоги
+  // не пропали. Уже заданные пользователем агрегаты не трогаем.
+  cfg.columns = cfg.columns.map((c) => {
+    if (c.aggregate !== undefined) return c;
+    const legacy = LEGACY_AGGREGATES[c.id];
+    return legacy ? { ...c, aggregate: legacy } : c;
+  });
   return cfg;
 }
+
+/** Захардкоженные ранее итоги (до v0.40.0) — для миграции старых конфигов. */
+const LEGACY_AGGREGATES: Record<string, Column['aggregate']> = {
+  revenueMonth: 'sum',
+  profitMonth: 'sum',
+  stock: 'sum',
+  marginRetail: 'avg',
+};
 
 function isMoneyCol(col: Column): boolean {
   return col.type === 'money' || (col.type === 'formula' && (col.unit === '₽' || /руб|rub/i.test(col.unit ?? '')));
@@ -365,6 +430,183 @@ function parseCellInput(text: string): number {
   const parsed = Number.parseFloat(normalized);
   return Number.isFinite(parsed) ? parsed : 0;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Внешний вид колонки (v0.40.0): акцент-цвет, цветовая шкала, префикс/суффикс.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Палитра акцент-цветов колонки. Ключи статичны (Tailwind НЕ генерирует классы
+ * из переменных `bg-${key}-50` — их purge'ит, поэтому классы перечислены
+ * литералами). `border` — CSS-цвет для inline-обводки (box-sizing сохраняет
+ * ширину, layout не плывёт). Тинты theme-aware через `dark:`-варианты.
+ */
+const ACCENT_KEYS = [
+  'slate',
+  'red',
+  'orange',
+  'amber',
+  'green',
+  'teal',
+  'sky',
+  'violet',
+  'pink',
+] as const;
+type AccentKey = (typeof ACCENT_KEYS)[number];
+
+type ColumnAccent = {
+  /** Класс кружка-сэмпла в пикере. */
+  swatch: string;
+  /** Фон + текст заголовка. */
+  header: string;
+  /** Класс текста метки заголовка (перекрывает text-foreground). */
+  headerText: string;
+  /** Фон-заливка ячеек (полупрозрачная). */
+  cell: string;
+  /** CSS-цвет обводки (inline border). */
+  border: string;
+};
+
+const ACCENT_STYLES: Record<AccentKey, ColumnAccent> = {
+  slate: { swatch: 'bg-slate-400', header: 'bg-slate-100 dark:bg-slate-800/50', headerText: 'text-slate-700 dark:text-slate-300', cell: 'bg-slate-100/50 dark:bg-slate-800/25', border: 'rgb(148 163 184)' },
+  red: { swatch: 'bg-red-500', header: 'bg-red-50 dark:bg-red-950/40', headerText: 'text-red-700 dark:text-red-300', cell: 'bg-red-50/60 dark:bg-red-950/25', border: 'rgb(248 113 113)' },
+  orange: { swatch: 'bg-orange-500', header: 'bg-orange-50 dark:bg-orange-950/40', headerText: 'text-orange-700 dark:text-orange-300', cell: 'bg-orange-50/60 dark:bg-orange-950/25', border: 'rgb(251 146 60)' },
+  amber: { swatch: 'bg-amber-500', header: 'bg-amber-50 dark:bg-amber-950/40', headerText: 'text-amber-700 dark:text-amber-300', cell: 'bg-amber-50/60 dark:bg-amber-950/25', border: 'rgb(251 191 36)' },
+  green: { swatch: 'bg-green-500', header: 'bg-green-50 dark:bg-green-950/40', headerText: 'text-green-700 dark:text-green-300', cell: 'bg-green-50/60 dark:bg-green-950/25', border: 'rgb(74 222 128)' },
+  teal: { swatch: 'bg-teal-500', header: 'bg-teal-50 dark:bg-teal-950/40', headerText: 'text-teal-700 dark:text-teal-300', cell: 'bg-teal-50/60 dark:bg-teal-950/25', border: 'rgb(45 212 191)' },
+  sky: { swatch: 'bg-sky-500', header: 'bg-sky-50 dark:bg-sky-950/40', headerText: 'text-sky-700 dark:text-sky-300', cell: 'bg-sky-50/60 dark:bg-sky-950/25', border: 'rgb(56 189 248)' },
+  violet: { swatch: 'bg-violet-500', header: 'bg-violet-50 dark:bg-violet-950/40', headerText: 'text-violet-700 dark:text-violet-300', cell: 'bg-violet-50/60 dark:bg-violet-950/25', border: 'rgb(167 139 250)' },
+  pink: { swatch: 'bg-pink-500', header: 'bg-pink-50 dark:bg-pink-950/40', headerText: 'text-pink-700 dark:text-pink-300', cell: 'bg-pink-50/60 dark:bg-pink-950/25', border: 'rgb(244 114 182)' },
+};
+
+function getColumnAccent(col: Column): ColumnAccent | null {
+  if (!col.color) return null;
+  return ACCENT_STYLES[col.color as AccentKey] ?? null;
+}
+
+/**
+ * Inline-стиль цветной обводки колонки. `edge` закрывает рамку сверху (шапка)
+ * или снизу (итоги); тело строки — только боковые линии. box-sizing:border-box
+ * + фиксированная ширина → добавление бордеров НЕ сдвигает layout.
+ */
+function outlineStyleFor(col: Column, edge?: 'top' | 'bottom'): React.CSSProperties | undefined {
+  const accent = col.outline ? getColumnAccent(col) : null;
+  if (!accent) return undefined;
+  const s: React.CSSProperties = {
+    borderLeft: `1px solid ${accent.border}`,
+    borderRight: `1px solid ${accent.border}`,
+  };
+  if (edge === 'top') s.borderTop = `1px solid ${accent.border}`;
+  if (edge === 'bottom') s.borderBottom = `1px solid ${accent.border}`;
+  return s;
+}
+
+/** 3-стоповые палитры цветовой шкалы: [t=0, t=0.5, t=1] как RGB-триплеты. */
+const SCALE_STOPS: Record<ColumnScale['palette'], [number[], number[], number[]]> = {
+  // low=красный → mid=янтарный → high=зелёный
+  greenRed: [[220, 38, 38], [217, 119, 6], [22, 163, 74]],
+  // low=зелёный → mid=янтарный → high=красный
+  redGreen: [[22, 163, 74], [217, 119, 6], [220, 38, 38]],
+  // low=синий → mid=янтарный → high=красный (тепловая)
+  heat: [[37, 99, 235], [217, 119, 6], [220, 38, 38]],
+};
+
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+/**
+ * Цвет ТЕКСТА числа по цветовой шкале. Нормализует значение в [0,1] с якорем
+ * `mid` (→0.5), интерполирует по 3-стоповой палитре. Возвращает `rgb(...)` или
+ * `undefined` (шкала выключена / диапазон вырожден / значение не число).
+ * `stat` — авто-диапазон колонки (min/max реальных данных).
+ */
+function scaleTextColor(
+  value: number,
+  scale: ColumnScale | undefined,
+  stat: { min: number; max: number } | undefined,
+): string | undefined {
+  if (!scale || !Number.isFinite(value)) return undefined;
+  const min = scale.min ?? stat?.min;
+  const max = scale.max ?? stat?.max;
+  if (min == null || max == null || !(max > min)) return undefined;
+  const mid = scale.mid ?? (min + max) / 2;
+  let t: number;
+  if (value <= mid) {
+    const denom = mid - min;
+    t = denom > 0 ? (0.5 * (value - min)) / denom : 0;
+  } else {
+    const denom = max - mid;
+    t = denom > 0 ? 0.5 + (0.5 * (value - mid)) / denom : 1;
+  }
+  t = Math.max(0, Math.min(1, t));
+  const [lo, midC, hi] = SCALE_STOPS[scale.palette];
+  const [c0, c1, k] = t <= 0.5 ? [lo, midC, t / 0.5] : [midC, hi, (t - 0.5) / 0.5];
+  const r = Math.round(lerp(c0[0], c1[0], k));
+  const g = Math.round(lerp(c0[1], c1[1], k));
+  const b = Math.round(lerp(c0[2], c1[2], k));
+  return `rgb(${r}, ${g}, ${b})`;
+}
+
+/** Оборачивает форматированное значение в префикс/суффикс колонки. */
+function applyAffix(s: string, col: Column): string {
+  if (!s) return s;
+  return `${col.prefix ?? ''}${s}${col.suffix ?? ''}`;
+}
+
+/** Класс выравнивания содержимого ячейки (flex justify). */
+function alignJustify(col: Column): string | null {
+  if (col.align === 'left') return 'justify-start';
+  if (col.align === 'center') return 'justify-center';
+  if (col.align === 'right') return 'justify-end';
+  return null;
+}
+
+/** Класс выравнивания текста для `<input>`/`<span>` (text-align). */
+function alignText(col: Column): string | null {
+  if (col.align === 'left') return 'text-left';
+  if (col.align === 'center') return 'text-center';
+  if (col.align === 'right') return 'text-right';
+  return null;
+}
+
+type AggregateKind = NonNullable<Column['aggregate']>;
+
+/** Метаданные агрегатов для строки «Итого» и модалки. */
+const AGG_META: Record<AggregateKind, { label: string; symbol: string }> = {
+  none: { label: 'Нет', symbol: '' },
+  sum: { label: 'Сумма', symbol: 'Σ' },
+  avg: { label: 'Среднее', symbol: '⌀' },
+  min: { label: 'Минимум', symbol: '↓' },
+  max: { label: 'Максимум', symbol: '↑' },
+  count: { label: 'Кол-во', symbol: '#' },
+};
+
+/** Чистое вычисление агрегата по массиву чисел. */
+function aggregateOf(nums: number[], agg: AggregateKind): number {
+  if (agg === 'count') return nums.length;
+  if (nums.length === 0) return 0;
+  switch (agg) {
+    case 'sum':
+      return nums.reduce((a, b) => a + b, 0);
+    case 'avg':
+      return nums.reduce((a, b) => a + b, 0) / nums.length;
+    case 'min':
+      return Math.min(...nums);
+    case 'max':
+      return Math.max(...nums);
+    default:
+      return 0;
+  }
+}
+
+/** Эффективный агрегат колонки (`undefined` → 'none'). */
+function effectiveAggregate(col: Column): AggregateKind {
+  return col.aggregate ?? 'none';
+}
+
+/** Стабильный пустой ref статистики шкал (когда ни у одной колонки нет scale). */
+const EMPTY_SCALE_STATS: Record<string, { min: number; max: number }> = {};
 
 /**
  * Единая сессия редактирования (Excel-режим). Один `draft` шарится между
@@ -1115,6 +1357,33 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
   }, [config.rows, config.columns, config.global.vatPct, config.global.taxRatePct, formulasMap, boundByRow]);
 
   /**
+   * Авто-диапазоны цветовых шкал: colId → {min,max} по реальным данным колонки.
+   * Считается ТОЛЬКО для колонок со `scale` → когда их нет, отдаём стабильный
+   * пустой ref (`EMPTY_SCALE_STATS`), и `React.memo(MyStoreRow)` не страдает.
+   * Когда шкалы есть, пересчёт на правках/публикациях штатен (как у Excel).
+   */
+  const scaleStats = useMemo(() => {
+    const cols = config.columns.filter(
+      (c) => c.scale && c.type !== 'text' && c.type !== 'identity',
+    );
+    if (cols.length === 0) return EMPTY_SCALE_STATS;
+    const stats: Record<string, { min: number; max: number }> = {};
+    for (const c of cols) {
+      let min = Infinity;
+      let max = -Infinity;
+      for (const { values } of computedRows) {
+        const n = Number(values[c.id]);
+        if (Number.isFinite(n)) {
+          if (n < min) min = n;
+          if (n > max) max = n;
+        }
+      }
+      if (min !== Infinity) stats[c.id] = { min, max };
+    }
+    return stats;
+  }, [config.columns, computedRows]);
+
+  /**
    * Сортированные строки. Если `sort=null` — отдаём `computedRows` в исходном
    * порядке. Сортировка применяется ПОСЛЕ расчёта формул и НЕ зависит от
    * totals (агрегаты считаются по `computedRows`).
@@ -1603,32 +1872,38 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
   );
 
   const totals = useMemo(() => {
-    let totalRevenue = 0;
-    let totalProfit = 0;
-    let marginSum = 0;
-    let marginCount = 0;
-    let stockTotal = 0;
-    for (const { values } of computedRows) {
-      const rev = Number(values['revenueMonth']);
-      const prof = Number(values['profitMonth']);
-      const marg = Number(values['marginRetail']);
-      const stock = Number(values['stock']);
-      if (Number.isFinite(rev)) totalRevenue += rev;
-      if (Number.isFinite(prof)) totalProfit += prof;
-      if (Number.isFinite(marg)) {
-        marginSum += marg;
-        marginCount += 1;
+    // Конфигурируемые итоги (v0.40.0): агрегат на колонку (`col.aggregate`).
+    // Текстовые колонки поддерживают только count (непустые значения).
+    const agg: Record<string, number> = {};
+    for (const col of config.columns) {
+      const kind = effectiveAggregate(col);
+      if (kind === 'none') continue;
+      if (col.type === 'text') {
+        let count = 0;
+        for (const { values } of computedRows) {
+          const v = values[col.id];
+          if (typeof v === 'string' ? v.trim() !== '' : v != null) count += 1;
+        }
+        agg[col.id] = count;
+        continue;
       }
-      if (Number.isFinite(stock)) stockTotal += stock;
+      const nums: number[] = [];
+      for (const { values } of computedRows) {
+        const n = Number(values[col.id]);
+        if (Number.isFinite(n)) nums.push(n);
+      }
+      agg[col.id] = aggregateOf(nums, kind);
     }
     return {
       rowsCount: computedRows.length,
-      totalRevenue,
-      totalProfit,
-      avgMargin: marginCount > 0 ? marginSum / marginCount : 0,
-      stockTotal,
+      agg,
+      // Совместимость с паблишером (@-привязки): прежние выходные ключи.
+      totalRevenue: agg['revenueMonth'] ?? 0,
+      totalProfit: agg['profitMonth'] ?? 0,
+      avgMargin: agg['marginRetail'] ?? 0,
+      stockTotal: agg['stock'] ?? 0,
     };
-  }, [computedRows]);
+  }, [computedRows, config.columns]);
 
   /**
    * Output для `useBlockValuePublisher`:
@@ -2207,6 +2482,7 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
                 lastPinnedId={lastPinnedId}
                 showKopecks={showKopecks}
                 blockDecimals={config.decimals}
+                scaleStats={scaleStats}
                 onUpdateRow={updateRow}
                 onUpdateRowValue={updateRowValue}
                 onRemoveRow={removeRow}
@@ -2260,45 +2536,45 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
                     const stickyProps = isPinned
                       ? { sticky: true, stickyLeft, stickyEdge: isLastPinned, zIndex: 36 }
                       : {};
+                    // Акцент (заливка/обводка) тянется и в строку итогов; обводка
+                    // закрывается снизу (edge='bottom').
+                    const accent = getColumnAccent(col);
+                    const accentCellCls = col.fillCells && accent ? accent.cell : '';
+                    const outlineStyle = outlineStyleFor(col, 'bottom');
+                    const justifyCls = alignJustify(col);
                     if (col.type === 'identity') {
                       if (col.id === firstIdentity?.id) {
                         return (
-                          <BodyCell key={col.id} width={w} {...stickyProps} className="justify-end px-3 text-muted-foreground">
+                          <BodyCell key={col.id} width={w} {...stickyProps} className={cn('justify-end px-3 text-muted-foreground', accentCellCls)} accentStyle={outlineStyle}>
                             {totalsLabel}
                           </BodyCell>
                         );
                       }
-                      return <BodyCell key={col.id} width={w} {...stickyProps} className="px-1.5" />;
+                      return <BodyCell key={col.id} width={w} {...stickyProps} className={cn('px-1.5', accentCellCls)} accentStyle={outlineStyle} />;
                     }
-                    if (col.id === 'revenueMonth') {
-                      return (
-                        <BodyCell key={col.id} width={w} {...stickyProps} className="justify-end px-1.5 tabular-nums text-foreground">
-                          {formatNumber(totals.totalRevenue, col, showKopecks, resolveDecimals(col, config.decimals))}
-                        </BodyCell>
-                      );
+                    const kind = effectiveAggregate(col);
+                    const value = totals.agg[col.id];
+                    if (kind === 'none' || value === undefined) {
+                      return <BodyCell key={col.id} width={w} {...stickyProps} className={cn('px-1.5', accentCellCls)} accentStyle={outlineStyle} />;
                     }
-                    if (col.id === 'profitMonth') {
-                      return (
-                        <BodyCell key={col.id} width={w} {...stickyProps} className="justify-end px-1.5 tabular-nums text-emerald-700 dark:text-emerald-400">
-                          {formatNumber(totals.totalProfit, col, showKopecks, resolveDecimals(col, config.decimals))}
-                        </BodyCell>
-                      );
-                    }
-                    if (col.id === 'stock') {
-                      return (
-                        <BodyCell key={col.id} width={w} {...stickyProps} className="justify-end px-1.5 tabular-nums text-muted-foreground">
-                          {new Intl.NumberFormat('ru-RU').format(totals.stockTotal)}
-                        </BodyCell>
-                      );
-                    }
-                    if (col.id === 'marginRetail') {
-                      return (
-                        <BodyCell key={col.id} width={w} {...stickyProps} className="justify-end px-1.5 tabular-nums text-muted-foreground">
-                          {formatNumber(totals.avgMargin, col, showKopecks, resolveDecimals(col, config.decimals))}
-                        </BodyCell>
-                      );
-                    }
-                    return <BodyCell key={col.id} width={w} {...stickyProps} className="px-1.5" />;
+                    const formatted =
+                      kind === 'count'
+                        ? new Intl.NumberFormat('ru-RU').format(value)
+                        : applyAffix(formatNumber(value, col, showKopecks, resolveDecimals(col, config.decimals)), col);
+                    return (
+                      <BodyCell
+                        key={col.id}
+                        width={w}
+                        {...stickyProps}
+                        className={cn('px-1.5 tabular-nums text-foreground', justifyCls ?? 'justify-end', accentCellCls)}
+                        accentStyle={outlineStyle}
+                      >
+                        <span className="flex min-w-0 items-center gap-1">
+                          <span className="text-[9px] font-normal text-muted-foreground/60">{AGG_META[kind].symbol}</span>
+                          <span className="truncate">{formatted}</span>
+                        </span>
+                      </BodyCell>
+                    );
                   })}
                   <BodyCell width={ACTIONS_W} className="px-1.5" />
                 </div>
@@ -2343,6 +2619,26 @@ function RenderMyStoreTable({ instance, onConfigChange }: BlockRenderProps) {
           onToggleHidden={() => updateColumn(editingColumn.id, { hidden: !editingColumn.hidden })}
           onTogglePin={() => togglePin(editingColumn.id)}
           onBulkFill={(value) => bulkFillColumn(editingColumn.id, value)}
+          aggPreview={(kind) => {
+            if (kind === 'none') return null;
+            const col = editingColumn;
+            if (col.type === 'text') {
+              let count = 0;
+              for (const { values } of computedRows) {
+                const v = values[col.id];
+                if (typeof v === 'string' ? v.trim() !== '' : v != null) count += 1;
+              }
+              return new Intl.NumberFormat('ru-RU').format(count);
+            }
+            const nums: number[] = [];
+            for (const { values } of computedRows) {
+              const n = Number(values[col.id]);
+              if (Number.isFinite(n)) nums.push(n);
+            }
+            const val = aggregateOf(nums, kind);
+            if (kind === 'count') return new Intl.NumberFormat('ru-RU').format(val);
+            return applyAffix(formatNumber(val, col, showKopecks, resolveDecimals(col, config.decimals)), col);
+          }}
         />
       )}
 
@@ -2455,6 +2751,7 @@ function HeaderCell({
   stickyEdge,
   zIndex,
   className,
+  accentStyle,
   children,
 }: {
   width: number;
@@ -2463,16 +2760,18 @@ function HeaderCell({
   stickyEdge?: boolean;
   zIndex?: number;
   className?: string;
+  /** Inline-стиль акцента (заливка/обводка колонки) — мерджится последним. */
+  accentStyle?: React.CSSProperties;
   children?: React.ReactNode;
 }) {
   return (
     <div
       data-sticky={sticky ? '' : undefined}
-      className={
-        'group/header flex shrink-0 flex-col justify-center overflow-hidden border-r border-border/40 px-1.5 py-1.5 text-[10px] uppercase tracking-wider text-muted-foreground ' +
-        (sticky ? 'isolate bg-card ' : '') +
-        (className ?? '')
-      }
+      className={cn(
+        'group/header flex shrink-0 flex-col justify-center overflow-hidden border-r border-border/40 px-1.5 py-1.5 text-[10px] uppercase tracking-wider text-muted-foreground',
+        sticky && 'isolate bg-card',
+        className,
+      )}
       style={{
         width,
         minWidth: width,
@@ -2483,6 +2782,7 @@ function HeaderCell({
         left: sticky ? stickyLeft : undefined,
         zIndex: sticky ? zIndex ?? 45 : zIndex,
         boxShadow: stickyEdge ? '1px 0 0 0 var(--border)' : undefined,
+        ...accentStyle,
       }}
     >
       {children}
@@ -2497,6 +2797,7 @@ function BodyCell({
   stickyEdge,
   zIndex,
   className,
+  accentStyle,
   children,
 }: {
   width: number;
@@ -2505,16 +2806,18 @@ function BodyCell({
   stickyEdge?: boolean;
   zIndex?: number;
   className?: string;
+  /** Inline-стиль акцента (заливка/обводка колонки) — мерджится последним. */
+  accentStyle?: React.CSSProperties;
   children?: React.ReactNode;
 }) {
   return (
     <div
       data-sticky={sticky ? '' : undefined}
-      className={
-        'flex shrink-0 items-center overflow-hidden border-r border-border/30 ' +
-        (sticky ? 'isolate bg-card ' : '') +
-        (className ?? '')
-      }
+      className={cn(
+        'flex shrink-0 items-center overflow-hidden border-r border-border/30',
+        sticky && 'isolate bg-card',
+        className,
+      )}
       style={{
         width,
         minWidth: width,
@@ -2525,6 +2828,7 @@ function BodyCell({
         left: sticky ? stickyLeft : undefined,
         zIndex: sticky ? zIndex ?? 30 : zIndex,
         boxShadow: stickyEdge ? '1px 0 0 0 var(--border)' : undefined,
+        ...accentStyle,
       }}
     >
       {children}
@@ -2569,6 +2873,10 @@ function MyStoreNumberCell({
   decimals,
   fieldLabel,
   unit,
+  prefix,
+  suffix,
+  align,
+  textColor,
   bindingLabel,
   onCommit,
   onOpenPicker,
@@ -2581,6 +2889,13 @@ function MyStoreNumberCell({
   decimals: number | null;
   fieldLabel: string;
   unit?: string;
+  /** Префикс/суффикс значения (adornments вокруг input). */
+  prefix?: string;
+  suffix?: string;
+  /** Выравнивание (по умолчанию вправо). */
+  align?: 'left' | 'center' | 'right';
+  /** Цвет текста из цветовой шкалы (inline). */
+  textColor?: string;
   bindingLabel?: string;
   onCommit: (v: number) => void;
   onOpenPicker: () => void;
@@ -2605,6 +2920,10 @@ function MyStoreNumberCell({
       ? '—'
       : formatCellValue(resolvedValue as number, money, showKopecks, decimals)
     : formatCellValue(manualValue, money, showKopecks, decimals);
+  const alignCls = align === 'left' ? 'text-left' : align === 'center' ? 'text-center' : 'text-right';
+  // Цвет шкалы не применяем, когда показываем '—' (источник недоступен) — там амбер.
+  const inlineColor = textColor && !linkUnavailable && draft === null ? textColor : undefined;
+  const showAffix = (prefix || suffix) && !isLinked;
 
   return (
     <div
@@ -2619,12 +2938,18 @@ function MyStoreNumberCell({
           : `Введите ${fieldLabel}${unit ? ', ' + unit : ''}`
       }
     >
+      {showAffix && prefix && (
+        <span className="flex h-full shrink-0 items-center pl-1.5 text-[11px] text-muted-foreground/70 select-none">
+          {prefix}
+        </span>
+      )}
       <input
         type="text"
         inputMode={isLinked ? undefined : 'decimal'}
         readOnly={isLinked}
         tabIndex={isLinked ? -1 : 0}
         value={draft !== null ? draft : display}
+        style={inlineColor ? { color: inlineColor } : undefined}
         onClick={isLinked ? onOpenPicker : undefined}
         onFocus={isLinked ? undefined : () => setDraft(String(manualValue))}
         onChange={isLinked ? undefined : (e) => setDraft(e.target.value)}
@@ -2648,11 +2973,19 @@ function MyStoreNumberCell({
               }
         }
         className={cn(
-          'h-full flex-1 min-w-0 border-0 bg-transparent px-1.5 text-right tabular-nums outline-none placeholder:text-muted-foreground/60',
+          'h-full flex-1 min-w-0 border-0 bg-transparent px-1.5 tabular-nums outline-none placeholder:text-muted-foreground/60',
+          alignCls,
+          showAffix && prefix && 'pl-0.5',
+          showAffix && suffix && 'pr-0.5',
           isLinked && 'cursor-pointer select-none',
           linkUnavailable && 'text-amber-700 dark:text-amber-400',
         )}
       />
+      {showAffix && suffix && (
+        <span className="flex h-full shrink-0 items-center pr-0.5 text-[11px] text-muted-foreground/70 select-none">
+          {suffix}
+        </span>
+      )}
       <button
         type="button"
         onClick={onOpenPicker}
@@ -2692,6 +3025,7 @@ function MyStoreExcelCell({
   inputRef,
   placeholder,
   tone,
+  textColor,
   pickMode,
   onActivate,
   onPick,
@@ -2713,6 +3047,8 @@ function MyStoreExcelCell({
   placeholder?: string;
   /** Подсветка значения (для колонок с `positive` — +/−). */
   tone?: 'positive' | 'negative';
+  /** Цвет текста из цветовой шкалы (inline, перекрывает tone). */
+  textColor?: string;
   /** Идёт редактирование формулы → клик по этой ячейке вставит её колонку. */
   pickMode: boolean;
   onActivate: () => void;
@@ -2723,6 +3059,9 @@ function MyStoreExcelCell({
   onBlur: (e: React.FocusEvent<HTMLInputElement>) => void;
 }) {
   const leftAlign = isIdentity || col.type === 'text';
+  // Выравнивание: явная настройка колонки перекрывает дефолт (текст влево, число вправо).
+  const inputAlign = col.align ? alignText(col)! : leftAlign ? 'text-left' : 'text-right';
+  const btnJustify = col.align ? alignJustify(col)! : leftAlign ? 'justify-start' : 'justify-end';
   // В режиме формулы клик по НЕ-identity ячейке вставляет id её колонки в формулу
   // (cell-pick), а не активирует ячейку. Identity (артикул/название) — обычная
   // активация (их id не числовые, в формуле бесполезны).
@@ -2751,7 +3090,7 @@ function MyStoreExcelCell({
           placeholder={placeholder}
           className={cn(
             'h-full w-full min-w-0 border-0 bg-transparent px-1.5 font-mono text-[12px] tabular-nums outline-none placeholder:text-muted-foreground/50',
-            leftAlign ? 'text-left' : 'text-right',
+            inputAlign,
           )}
         />
       </div>
@@ -2781,7 +3120,7 @@ function MyStoreExcelCell({
       }
       className={cn(
         'flex h-full w-full min-w-0 items-center gap-1 rounded border border-transparent px-1.5 text-[12px] tabular-nums transition hover:border-border/70',
-        leftAlign ? 'justify-start' : 'justify-end',
+        btnJustify,
         isPickTarget && 'cursor-cell ring-1 ring-sky-400/60 hover:ring-sky-500',
         isErr
           ? 'text-amber-600 dark:text-amber-400'
@@ -2798,9 +3137,10 @@ function MyStoreExcelCell({
         <span
           className={cn(
             'truncate',
-            !isErr && tone === 'positive' && 'text-emerald-600 dark:text-emerald-400',
-            !isErr && tone === 'negative' && 'text-red-600 dark:text-red-400',
+            !isErr && !textColor && tone === 'positive' && 'text-emerald-600 dark:text-emerald-400',
+            !isErr && !textColor && tone === 'negative' && 'text-red-600 dark:text-red-400',
           )}
+          style={!isErr && textColor ? { color: textColor } : undefined}
         >
           {displayText}
         </span>
@@ -2826,6 +3166,11 @@ type MyStoreRowProps = {
   showKopecks: boolean;
   /** Блочная настройка знаков после запятой (per-column перекрывает). */
   blockDecimals: number | null | undefined;
+  /**
+   * Авто-диапазон цветовых шкал: colId → {min,max} по данным колонки. Стабильный
+   * пустой ref когда ни у одной колонки нет шкалы → `React.memo` не страдает.
+   */
+  scaleStats: Record<string, { min: number; max: number }>;
   onUpdateRow: (rowId: string, patch: Partial<Row>) => void;
   onUpdateRowValue: (rowId: string, colId: string, value: number | string) => void;
   onRemoveRow: (rowId: string) => void;
@@ -2875,6 +3220,7 @@ const MyStoreRow = memo(function MyStoreRow({
   lastPinnedId,
   showKopecks,
   blockDecimals,
+  scaleStats,
   onUpdateRow,
   onUpdateRowValue,
   onRemoveRow,
@@ -2931,6 +3277,14 @@ const MyStoreRow = memo(function MyStoreRow({
           fillColId === col.id && fillLo !== null && rowIdx >= fillLo && rowIdx <= (fillHi as number);
         const fillCls = inFill ? 'bg-primary/5 ring-1 ring-inset ring-primary/40' : '';
 
+        // Акцент колонки (v0.40.0): заливка ячеек + цветная обводка + выравнивание.
+        const accent = getColumnAccent(col);
+        const accentCellCls = col.fillCells && accent ? accent.cell : '';
+        const outlineStyle = outlineStyleFor(col);
+        const colStat = scaleStats[col.id];
+        const justifyCls = alignJustify(col);
+        const textAlignCls = alignText(col);
+
         // ── Excel-режим: единый sheet-style редактор для ЛЮБОЙ ячейки —
         //    identity / text / number / money / percent / formula (per-cell
         //    override колоночной формулы для одной строки). ──
@@ -2959,11 +3313,16 @@ const MyStoreRow = memo(function MyStoreRow({
           } else {
             const n = Number(computed);
             displayText = Number.isFinite(n)
-              ? formatCellValue(n, isMoneyCol(col), showKopecks, resolveDecimals(col, blockDecimals))
+              ? applyAffix(formatCellValue(n, isMoneyCol(col), showKopecks, resolveDecimals(col, blockDecimals)), col)
               : '';
           }
+          // Цветовая шкала текста (перекрывает +/− tone).
+          const scaleColor =
+            !isErr && !isIdentity && col.type !== 'text' && col.scale
+              ? scaleTextColor(Number(computed), col.scale, colStat)
+              : undefined;
           let tone: 'positive' | 'negative' | undefined;
-          if (!isErr && col.positive && !isIdentity && col.type !== 'text') {
+          if (!scaleColor && !isErr && col.positive && !isIdentity && col.type !== 'text') {
             const n = Number(computed);
             if (n > 0) tone = 'positive';
             else if (n < 0) tone = 'negative';
@@ -2973,7 +3332,8 @@ const MyStoreRow = memo(function MyStoreRow({
               key={col.id}
               width={w}
               {...stickyProps}
-              className={cn('group/cell relative p-0.5', fillCls)}
+              className={cn('group/cell relative p-0.5', fillCls, accentCellCls)}
+              accentStyle={outlineStyle}
             >
               <MyStoreExcelCell
                 col={col}
@@ -2988,6 +3348,7 @@ const MyStoreRow = memo(function MyStoreRow({
                 inputRef={isActive ? inlineInputRef : undefined}
                 placeholder={isIdentity || col.type === 'text' ? col.label : '0'}
                 tone={tone}
+                textColor={scaleColor}
                 pickMode={pickMode}
                 onActivate={() => onCellActivate(row.id, col.id)}
                 onPick={() => onCellPick(col.id)}
@@ -3007,7 +3368,7 @@ const MyStoreRow = memo(function MyStoreRow({
           const isArticle = col.id === IDENTITY_ARTICLE_ID;
           const value = isArticle ? row.article : row.name;
           return (
-            <BodyCell key={col.id} width={w} {...stickyProps} className="p-0">
+            <BodyCell key={col.id} width={w} {...stickyProps} className={cn('p-0', accentCellCls)} accentStyle={outlineStyle}>
               <input
                 type="text"
                 value={value}
@@ -3015,7 +3376,10 @@ const MyStoreRow = memo(function MyStoreRow({
                   onUpdateRow(row.id, isArticle ? { article: e.target.value } : { name: e.target.value })
                 }
                 placeholder={col.label}
-                className="h-full w-full min-w-0 truncate border-0 bg-transparent px-1.5 text-[11px] outline-none placeholder:text-muted-foreground/60"
+                className={cn(
+                  'h-full w-full min-w-0 truncate border-0 bg-transparent px-1.5 text-[11px] outline-none placeholder:text-muted-foreground/60',
+                  textAlignCls,
+                )}
               />
             </BodyCell>
           );
@@ -3025,25 +3389,31 @@ const MyStoreRow = memo(function MyStoreRow({
         if (col.type === 'formula') {
           const isErr = raw === '#CYCLE' || raw === '#ERR';
           const num = Number(raw);
-          const positive = col.positive && num > 0;
-          const negative = col.positive && num < 0;
+          const scaleColor = !isErr && col.scale ? scaleTextColor(num, col.scale, colStat) : undefined;
+          const positive = !scaleColor && col.positive && num > 0;
+          const negative = !scaleColor && col.positive && num < 0;
           return (
-            <BodyCell key={col.id} width={w} {...stickyProps} className="justify-end px-1.5 tabular-nums">
+            <BodyCell
+              key={col.id}
+              width={w}
+              {...stickyProps}
+              className={cn('px-1.5 tabular-nums', justifyCls ?? 'justify-end', accentCellCls)}
+              accentStyle={outlineStyle}
+            >
               {isErr ? (
                 <span className="truncate text-amber-600 dark:text-amber-400" title={String(raw)}>
                   {String(raw)}
                 </span>
               ) : (
                 <span
-                  className={
-                    positive
-                      ? 'truncate text-emerald-600 dark:text-emerald-400'
-                      : negative
-                        ? 'truncate text-red-600 dark:text-red-400'
-                        : 'truncate'
-                  }
+                  className={cn(
+                    'truncate',
+                    positive && 'text-emerald-600 dark:text-emerald-400',
+                    negative && 'text-red-600 dark:text-red-400',
+                  )}
+                  style={scaleColor ? { color: scaleColor } : undefined}
                 >
-                  {formatNumber(num, col, showKopecks, resolveDecimals(col, blockDecimals))}
+                  {applyAffix(formatNumber(num, col, showKopecks, resolveDecimals(col, blockDecimals)), col)}
                 </span>
               )}
             </BodyCell>
@@ -3055,21 +3425,26 @@ const MyStoreRow = memo(function MyStoreRow({
         if (isCellFormulaValue(row.values[col.id])) {
           const isErr = raw === '#CYCLE' || raw === '#ERR';
           const num = Number(raw);
-          const positive = col.positive && num > 0;
-          const negative = col.positive && num < 0;
+          const scaleColor =
+            !isErr && col.type !== 'text' && col.scale
+              ? scaleTextColor(num, col.scale, colStat)
+              : undefined;
+          const positive = !scaleColor && col.positive && num > 0;
+          const negative = !scaleColor && col.positive && num < 0;
           const display = isErr
             ? String(raw)
             : col.type === 'text'
               ? typeof raw === 'string'
                 ? raw
                 : String(raw ?? '')
-              : formatNumber(num, col, showKopecks, resolveDecimals(col, blockDecimals));
+              : applyAffix(formatNumber(num, col, showKopecks, resolveDecimals(col, blockDecimals)), col);
           return (
             <BodyCell
               key={col.id}
               width={w}
               {...stickyProps}
-              className={cn('group/cell relative justify-end px-1.5 tabular-nums', fillCls)}
+              className={cn('group/cell relative px-1.5 tabular-nums', justifyCls ?? 'justify-end', fillCls, accentCellCls)}
+              accentStyle={outlineStyle}
             >
               <span
                 className="flex min-w-0 items-center gap-1"
@@ -3087,6 +3462,7 @@ const MyStoreRow = memo(function MyStoreRow({
                           ? 'text-red-600 dark:text-red-400'
                           : '',
                   )}
+                  style={scaleColor ? { color: scaleColor } : undefined}
                 >
                   {display}
                 </span>
@@ -3099,13 +3475,16 @@ const MyStoreRow = memo(function MyStoreRow({
         if (col.type === 'text') {
           const text = typeof raw === 'string' ? raw : String(raw ?? '');
           return (
-            <BodyCell key={col.id} width={w} {...stickyProps} className={cn('group/cell relative p-0', fillCls)}>
+            <BodyCell key={col.id} width={w} {...stickyProps} className={cn('group/cell relative p-0', fillCls, accentCellCls)} accentStyle={outlineStyle}>
               <input
                 type="text"
                 value={text}
                 onChange={(e) => onUpdateRowValue(row.id, col.id, e.target.value)}
                 placeholder={col.label}
-                className="h-full w-full min-w-0 truncate border-0 bg-transparent px-1.5 text-[11px] outline-none placeholder:text-muted-foreground/60"
+                className={cn(
+                  'h-full w-full min-w-0 truncate border-0 bg-transparent px-1.5 text-[11px] outline-none placeholder:text-muted-foreground/60',
+                  textAlignCls,
+                )}
               />
               <FillHandle onPointerDown={(e) => onFillStart(rowIdx, col.id, e)} active={fillActive} />
             </BodyCell>
@@ -3116,8 +3495,10 @@ const MyStoreRow = memo(function MyStoreRow({
         const binding = row.bindings[col.id] as UnitCellBinding | undefined;
         const linked = isBindingActive(binding);
         const manualNum = Number(row.values[col.id]);
+        const numForScale = linked ? boundForRow?.[col.id] ?? NaN : manualNum;
+        const numScaleColor = col.scale ? scaleTextColor(numForScale, col.scale, colStat) : undefined;
         return (
-          <BodyCell key={col.id} width={w} {...stickyProps} className={cn('group/cell relative p-0.5', fillCls)}>
+          <BodyCell key={col.id} width={w} {...stickyProps} className={cn('group/cell relative p-0.5', fillCls, accentCellCls)} accentStyle={outlineStyle}>
             <MyStoreNumberCell
               manualValue={Number.isFinite(manualNum) ? manualNum : 0}
               isLinked={linked}
@@ -3127,6 +3508,10 @@ const MyStoreRow = memo(function MyStoreRow({
               decimals={resolveDecimals(col, blockDecimals)}
               fieldLabel={col.label}
               unit={col.unit}
+              prefix={col.prefix}
+              suffix={col.suffix}
+              align={col.align}
+              textColor={numScaleColor}
               bindingLabel={binding?.ref?.label}
               onCommit={(v) => onUpdateRowValue(row.id, col.id, v)}
               onOpenPicker={() => onOpenPicker(row.id, col.id)}
@@ -3422,6 +3807,8 @@ function MyStoreSortableHeaderCell({
     id: col.id,
     disabled: !draggable,
   });
+  const accent = getColumnAccent(col);
+  const headerTitle = col.note ? `${col.label} — ${col.note}` : col.label;
   const style: React.CSSProperties = {
     width,
     minWidth: width,
@@ -3436,10 +3823,12 @@ function MyStoreSortableHeaderCell({
       ? {
           position: 'sticky',
           left: stickyLeft,
-          backgroundColor: 'hsl(var(--card))',
+          // С акцентом фон даёт класс (accent.header), иначе — карточный.
+          backgroundColor: accent ? undefined : 'hsl(var(--card))',
           boxShadow: isLastPinned ? PIN_SHADOW : undefined,
         }
       : {}),
+    ...outlineStyleFor(col, 'top'),
   };
   const unitBadge = col.type === 'formula' ? 'fx' : (col.unit ?? '');
   return (
@@ -3447,12 +3836,12 @@ function MyStoreSortableHeaderCell({
       ref={setNodeRef}
       style={style}
       onClick={onSort}
-      title={col.label}
-      className={
-        'group/h relative isolate flex shrink-0 items-center overflow-hidden border-r border-border/40 ' +
-        'cursor-pointer bg-card ' +
-        (isPinned ? '' : 'hover:bg-accent/30 ')
-      }
+      title={headerTitle}
+      className={cn(
+        'group/h relative isolate flex shrink-0 items-center overflow-hidden border-r border-border/40 cursor-pointer bg-card',
+        !isPinned && 'hover:bg-accent/30',
+        accent?.header,
+      )}
     >
       {/*
         `flex w-full min-w-0`: обязательно для truncate в flex-контексте.
@@ -3471,8 +3860,14 @@ function MyStoreSortableHeaderCell({
         )}
         {/* Метка — занимает всё оставшееся место. */}
         <span
-          className="block min-w-0 flex-1 truncate font-semibold text-foreground"
-          title={col.label}
+          className={cn(
+            'block min-w-0 flex-1 truncate',
+            col.headerBold ? 'font-bold' : 'font-semibold',
+            accent ? accent.headerText : 'text-foreground',
+            alignText(col),
+            col.note && 'underline decoration-dotted decoration-muted-foreground/40 underline-offset-2',
+          )}
+          title={headerTitle}
         >
           {col.label}
         </span>
@@ -3521,6 +3916,125 @@ function MyStoreSortableHeaderCell({
   );
 }
 
+/** Сегментированный переключатель (как кнопки «знаков после запятой»). */
+function Segmented<T extends string | number | undefined>({
+  value,
+  options,
+  onChange,
+  className,
+}: {
+  value: T;
+  options: { value: T; label: React.ReactNode; title?: string }[];
+  onChange: (v: T) => void;
+  className?: string;
+}) {
+  return (
+    <div className={cn('flex flex-wrap items-center gap-0.5', className)}>
+      {options.map((o) => {
+        const active = value === o.value;
+        return (
+          <button
+            key={String(o.value)}
+            type="button"
+            title={o.title}
+            onClick={() => onChange(o.value)}
+            className={cn(
+              'flex h-8 items-center gap-1 rounded px-2 text-xs tabular-nums transition-colors',
+              active
+                ? 'bg-primary text-primary-foreground'
+                : 'border border-border/60 bg-background text-muted-foreground hover:bg-accent',
+            )}
+          >
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Строка-тоггл (Switch + подпись + опц. подсказка). */
+function ToggleRow({
+  label,
+  hint,
+  checked,
+  onChange,
+  disabled,
+}: {
+  label: React.ReactNode;
+  hint?: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className={cn('flex items-start justify-between gap-3', disabled && 'opacity-50')}>
+      <div className="min-w-0">
+        <div className="text-sm">{label}</div>
+        {hint && <p className="text-[11px] text-muted-foreground">{hint}</p>}
+      </div>
+      <Switch checked={checked} onCheckedChange={onChange} disabled={disabled} className="mt-0.5 shrink-0" />
+    </div>
+  );
+}
+
+/** Пикер акцент-цвета колонки (пресеты + «без цвета»). */
+function ColorSwatchPicker({
+  value,
+  onChange,
+}: {
+  value?: string;
+  onChange: (v: string | undefined) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <button
+        type="button"
+        title="Без цвета"
+        onClick={() => onChange(undefined)}
+        className={cn(
+          'flex h-7 w-7 items-center justify-center rounded-full border bg-background text-muted-foreground transition',
+          !value ? 'ring-2 ring-primary ring-offset-1 ring-offset-background' : 'border-border/60 hover:bg-accent',
+        )}
+      >
+        <Ban className="h-3.5 w-3.5" />
+      </button>
+      {ACCENT_KEYS.map((k) => {
+        const active = value === k;
+        return (
+          <button
+            key={k}
+            type="button"
+            title={k}
+            onClick={() => onChange(k)}
+            className={cn(
+              'flex h-7 w-7 items-center justify-center rounded-full transition-transform',
+              ACCENT_STYLES[k].swatch,
+              active ? 'scale-110 ring-2 ring-primary ring-offset-1 ring-offset-background' : 'hover:scale-110',
+            )}
+          >
+            {active && <Check className="h-3.5 w-3.5 text-white" />}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** CSS-градиент превью цветовой шкалы. */
+function scaleGradientCss(palette: ColumnScale['palette']): string {
+  const [a, b, c] = SCALE_STOPS[palette];
+  return `linear-gradient(to right, rgb(${a.join(' ')}), rgb(${b.join(' ')}), rgb(${c.join(' ')}))`;
+}
+
+/** Парсинг опционального числа: пусто → null (авто), иначе число/предыдущее. */
+function parseNullableNum(s: string): number | null {
+  const t = s.trim();
+  if (t === '') return null;
+  const n = Number(t.replace(',', '.'));
+  return Number.isFinite(n) ? n : null;
+}
+
 function ColumnEditDialog({
   column,
   pinned,
@@ -3530,6 +4044,7 @@ function ColumnEditDialog({
   onToggleHidden,
   onTogglePin,
   onBulkFill,
+  aggPreview,
 }: {
   column: Column;
   pinned: boolean;
@@ -3539,13 +4054,23 @@ function ColumnEditDialog({
   onToggleHidden: () => void;
   onTogglePin: () => void;
   onBulkFill: (value: number | string) => { applied: number; skipped: number };
+  /** Живой предпросмотр итога по текущим данным (считает родитель). */
+  aggPreview?: (agg: AggregateKind) => string | null;
 }) {
   const [draft, setDraft] = useState<Column>({ ...column });
   const [bulkDraft, setBulkDraft] = useState('');
   const [bulkFeedback, setBulkFeedback] = useState<string | null>(null);
-  const isFormula = column.type === 'formula';
-  const isText = column.type === 'text';
+  const isFormula = draft.type === 'formula';
+  const isText = draft.type === 'text';
   const isIdentity = column.type === 'identity';
+  const isNumeric = !isIdentity && !isText; // number/money/percent/formula
+  const showNumbersTab = isNumeric;
+  const showTotalsTab = !isIdentity;
+  const showDataTab = !isIdentity;
+
+  function patch(p: Partial<Column>) {
+    setDraft((d) => ({ ...d, ...p }));
+  }
 
   function handleBulkApply() {
     if (isFormula) return;
@@ -3572,155 +4097,334 @@ function ColumnEditDialog({
     setBulkDraft('');
   }
 
+  const aggOptions: { value: AggregateKind; label: React.ReactNode; title?: string }[] = isText
+    ? [
+        { value: 'none', label: 'Нет' },
+        { value: 'count', label: '# Кол-во', title: 'Количество непустых' },
+      ]
+    : [
+        { value: 'none', label: 'Нет' },
+        { value: 'sum', label: 'Σ Сумма' },
+        { value: 'avg', label: '⌀ Среднее' },
+        { value: 'min', label: '↓ Мин' },
+        { value: 'max', label: '↑ Макс' },
+        { value: 'count', label: '# Кол-во', title: 'Количество непустых' },
+      ];
+
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Колонка «{column.label}»</DialogTitle>
-          <DialogDescription>Имя, тип, формула и ширина. Удаление — справа внизу.</DialogDescription>
+          <DialogDescription>Вид, формат чисел, цветовые шкалы и итоги.</DialogDescription>
         </DialogHeader>
-        <div className="space-y-3 text-sm">
-          <Field label="Название">
-            <Input value={draft.label} onChange={(e) => setDraft({ ...draft, label: e.target.value })} />
-          </Field>
-          {!isIdentity && (
-            <Field label="Тип">
-              <select
-                value={draft.type}
-                onChange={(e) => setDraft({ ...draft, type: e.target.value as ColumnType })}
-                className="h-9 w-full rounded border border-border/60 bg-background px-2 text-sm"
-              >
-                <option value="number">Число</option>
-                <option value="percent">Процент</option>
-                <option value="money">Деньги</option>
-                <option value="text">Текст</option>
-                <option value="formula">Формула</option>
-              </select>
-            </Field>
-          )}
-          {!isIdentity && (
-            <Field label="Единица (опц.)">
-              <Input
-                value={draft.unit ?? ''}
-                onChange={(e) => setDraft({ ...draft, unit: e.target.value || undefined })}
-                placeholder="₽, %, шт."
-              />
-            </Field>
-          )}
-          {draft.type === 'formula' && (
-            <Field label="Формула">
-              <Input
-                value={draft.formula ?? ''}
-                onChange={(e) => setDraft({ ...draft, formula: e.target.value })}
-                placeholder="=priceRetail - cost"
-              />
-              <p className="mt-1 text-[11px] text-muted-foreground">
-                Доступны id колонок (например <code>priceRetail</code>) и глобальные переменные{' '}
-                <code>vatPct</code>, <code>taxRatePct</code>.
-              </p>
-            </Field>
-          )}
-          <Field label="Ширина, px">
-            <Input
-              type="number"
-              value={draft.width ?? 96}
-              onChange={(e) => setDraft({ ...draft, width: Math.max(40, Number(e.target.value) || 96) })}
-            />
-          </Field>
-          {!isIdentity && (
-            <Field label="Знаков после запятой">
-              <div className="flex items-center gap-0.5">
-                {([undefined, 0, 1, 2, 3] as const).map((d) => {
-                  const active = draft.decimals === d;
-                  return (
-                    <button
-                      key={String(d)}
-                      type="button"
-                      onClick={() => setDraft({ ...draft, decimals: d })}
-                      className={cn(
-                        'h-8 rounded px-2 text-xs tabular-nums transition-colors',
-                        active
-                          ? 'bg-primary text-primary-foreground'
-                          : 'border border-border/60 bg-background text-muted-foreground hover:bg-accent',
-                      )}
-                    >
-                      {d === undefined ? 'По умолч.' : d}
-                    </button>
-                  );
-                })}
-              </div>
-              <p className="mt-1 text-[11px] text-muted-foreground">
-                Переопределяет блочную настройку. «По умолч.» — наследовать. Число — показывать
-                до N знаков (напр. 0,5).
-              </p>
-            </Field>
-          )}
-          {!isIdentity && (
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={!!draft.positive}
-                onChange={(e) => setDraft({ ...draft, positive: e.target.checked })}
-              />
-              Подсвечивать +/−
-            </label>
-          )}
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={pinned} onChange={() => onTogglePin()} />
-            Закрепить слева (sticky)
-          </label>
 
-          {!isIdentity && (
-          <div className="rounded border border-dashed border-border/60 bg-muted/20 p-3">
-            <div className="mb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-              Массовое заполнение
-            </div>
-            {isFormula ? (
-              <p className="text-[11px] text-muted-foreground">
-                Колонка типа «Формула» вычисляется автоматически — массовое заполнение недоступно.
-              </p>
-            ) : (
-              <>
-                <p className="mb-2 text-[11px] text-muted-foreground">
-                  Применит указанное значение ко всем строкам колонки. Привязанные ячейки будут
-                  пропущены.
+        <Tabs defaultValue="main" className="min-w-0">
+          <TabsList className="grid w-full grid-flow-col auto-cols-fr">
+            <TabsTrigger value="main">Основное</TabsTrigger>
+            <TabsTrigger value="view">Вид</TabsTrigger>
+            {showNumbersTab && <TabsTrigger value="num">Числа</TabsTrigger>}
+            {showTotalsTab && <TabsTrigger value="totals">Итоги</TabsTrigger>}
+            {showDataTab && <TabsTrigger value="data">Данные</TabsTrigger>}
+          </TabsList>
+
+          {/* ── Основное ── */}
+          <TabsContent value="main" className="mt-3 space-y-3 text-sm">
+            <Field label="Название">
+              <Input value={draft.label} onChange={(e) => patch({ label: e.target.value })} />
+            </Field>
+            {!isIdentity && (
+              <Field label="Тип">
+                <select
+                  value={draft.type}
+                  onChange={(e) => patch({ type: e.target.value as ColumnType })}
+                  className="h-9 w-full rounded border border-border/60 bg-background px-2 text-sm"
+                >
+                  <option value="number">Число</option>
+                  <option value="percent">Процент</option>
+                  <option value="money">Деньги</option>
+                  <option value="text">Текст</option>
+                  <option value="formula">Формула</option>
+                </select>
+              </Field>
+            )}
+            {!isIdentity && (
+              <Field label="Единица (опц.)">
+                <Input
+                  value={draft.unit ?? ''}
+                  onChange={(e) => patch({ unit: e.target.value || undefined })}
+                  placeholder="₽, %, шт."
+                />
+              </Field>
+            )}
+            {draft.type === 'formula' && (
+              <Field label="Формула">
+                <Input
+                  value={draft.formula ?? ''}
+                  onChange={(e) => patch({ formula: e.target.value })}
+                  placeholder="=priceRetail - cost"
+                />
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  Доступны id колонок (например <code>priceRetail</code>) и глобальные переменные{' '}
+                  <code>vatPct</code>, <code>taxRatePct</code>.
                 </p>
-                <div className="flex items-center gap-1.5">
+              </Field>
+            )}
+            <Field label="Ширина, px">
+              <Input
+                type="number"
+                value={draft.width ?? 96}
+                onChange={(e) => patch({ width: Math.max(40, Number(e.target.value) || 96) })}
+              />
+            </Field>
+            <Field label="Подсказка (тултип, опц.)">
+              <Input
+                value={draft.note ?? ''}
+                onChange={(e) => patch({ note: e.target.value || undefined })}
+                placeholder="Что значит колонка / как считается"
+              />
+            </Field>
+          </TabsContent>
+
+          {/* ── Вид ── */}
+          <TabsContent value="view" className="mt-3 space-y-3.5 text-sm">
+            <Field label="Акцент-цвет колонки">
+              <ColorSwatchPicker value={draft.color} onChange={(c) => patch({ color: c })} />
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Тинт шапки + опц. заливка и обводка. Помогает группировать колонки визуально.
+              </p>
+            </Field>
+            <ToggleRow
+              label="Заливка ячеек"
+              hint="Лёгкий фон цвета акцента на всех ячейках колонки."
+              checked={!!draft.fillCells}
+              disabled={!draft.color}
+              onChange={(v) => patch({ fillCells: v })}
+            />
+            <ToggleRow
+              label="Обводка колонки"
+              hint="Цветная рамка по бокам колонки."
+              checked={!!draft.outline}
+              disabled={!draft.color}
+              onChange={(v) => patch({ outline: v })}
+            />
+            <Field label="Выравнивание">
+              <Segmented
+                value={draft.align}
+                onChange={(a) => patch({ align: a })}
+                options={[
+                  { value: undefined, label: 'Авто', title: 'По умолчанию (число вправо, текст влево)' },
+                  { value: 'left', label: <AlignLeft className="h-3.5 w-3.5" />, title: 'Влево' },
+                  { value: 'center', label: <AlignCenter className="h-3.5 w-3.5" />, title: 'По центру' },
+                  { value: 'right', label: <AlignRight className="h-3.5 w-3.5" />, title: 'Вправо' },
+                ]}
+              />
+            </Field>
+            <ToggleRow
+              label="Жирный заголовок"
+              checked={!!draft.headerBold}
+              onChange={(v) => patch({ headerBold: v })}
+            />
+            <ToggleRow
+              label="Закрепить слева (sticky)"
+              hint="Колонка не скроллится по горизонтали."
+              checked={pinned}
+              onChange={() => onTogglePin()}
+            />
+          </TabsContent>
+
+          {/* ── Числа ── */}
+          {showNumbersTab && (
+            <TabsContent value="num" className="mt-3 space-y-3.5 text-sm">
+              <Field label="Знаков после запятой">
+                <Segmented
+                  value={draft.decimals}
+                  onChange={(d) => patch({ decimals: d })}
+                  options={[
+                    { value: undefined, label: 'По умолч.' },
+                    { value: 0, label: '0' },
+                    { value: 1, label: '1' },
+                    { value: 2, label: '2' },
+                    { value: 3, label: '3' },
+                  ]}
+                />
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  Переопределяет блочную настройку. Число — показывать до N знаков (напр. 0,5).
+                </p>
+              </Field>
+              <div className="grid grid-cols-2 gap-2">
+                <Field label="Префикс (опц.)">
                   <Input
-                    type={isText ? 'text' : 'number'}
-                    value={bulkDraft}
-                    onChange={(e) => setBulkDraft(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        handleBulkApply();
-                      }
-                    }}
-                    placeholder={isText ? 'Текст' : 'Значение'}
-                    className="h-8 flex-1 text-sm"
+                    value={draft.prefix ?? ''}
+                    onChange={(e) => patch({ prefix: e.target.value || undefined })}
+                    placeholder="$"
                   />
-                  {column.unit && !isText && (
-                    <span className="text-xs text-muted-foreground">{column.unit}</span>
-                  )}
-                  <Button
-                    type="button"
-                    size="sm"
-                    onClick={handleBulkApply}
-                    disabled={bulkDraft.trim().length === 0}
-                  >
-                    Применить
-                  </Button>
-                </div>
-                {bulkFeedback && (
-                  <div className="mt-2 rounded bg-accent/50 px-2 py-1 text-[11px] text-foreground">
-                    {bulkFeedback}
+                </Field>
+                <Field label="Суффикс (опц.)">
+                  <Input
+                    value={draft.suffix ?? ''}
+                    onChange={(e) => patch({ suffix: e.target.value || undefined })}
+                    placeholder="kg, ×"
+                  />
+                </Field>
+              </div>
+              <ToggleRow
+                label="Подсвечивать +/−"
+                hint="Зелёный для положительных, красный для отрицательных."
+                checked={!!draft.positive}
+                onChange={(v) => patch({ positive: v })}
+              />
+              <div className="border-t border-border/40 pt-3">
+                <ToggleRow
+                  label="Цветовая шкала текста"
+                  hint="Окрашивает число градиентом по значению (как Color Scales в Excel)."
+                  checked={!!draft.scale}
+                  onChange={(on) =>
+                    patch({ scale: on ? draft.scale ?? { palette: 'greenRed' } : undefined })
+                  }
+                />
+                {draft.scale && (
+                  <div className="mt-2 space-y-2.5 rounded border border-border/50 bg-muted/20 p-2.5">
+                    <Field label="Палитра">
+                      <Segmented
+                        value={draft.scale.palette}
+                        onChange={(p) =>
+                          patch({ scale: { ...draft.scale!, palette: p } })
+                        }
+                        options={[
+                          { value: 'greenRed', label: 'Зел → Красн' },
+                          { value: 'redGreen', label: 'Красн → Зел' },
+                          { value: 'heat', label: 'Тепловая' },
+                        ]}
+                      />
+                    </Field>
+                    <div
+                      className="h-2 w-full rounded"
+                      style={{ background: scaleGradientCss(draft.scale.palette) }}
+                    />
+                    <div className="grid grid-cols-3 gap-2">
+                      <Field label="Min">
+                        <Input
+                          type="number"
+                          value={draft.scale.min ?? ''}
+                          onChange={(e) =>
+                            patch({ scale: { ...draft.scale!, min: parseNullableNum(e.target.value) } })
+                          }
+                          placeholder="Авто"
+                          className="h-8"
+                        />
+                      </Field>
+                      <Field label="Середина">
+                        <Input
+                          type="number"
+                          value={draft.scale.mid ?? ''}
+                          onChange={(e) =>
+                            patch({ scale: { ...draft.scale!, mid: parseNullableNum(e.target.value) } })
+                          }
+                          placeholder="Авто"
+                          className="h-8"
+                        />
+                      </Field>
+                      <Field label="Max">
+                        <Input
+                          type="number"
+                          value={draft.scale.max ?? ''}
+                          onChange={(e) =>
+                            patch({ scale: { ...draft.scale!, max: parseNullableNum(e.target.value) } })
+                          }
+                          placeholder="Авто"
+                          className="h-8"
+                        />
+                      </Field>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground">
+                      Пусто — авто (мин/макс по данным колонки). Напр. для «% к плану»: Min 0, Max 100,
+                      Середина 40.
+                    </p>
                   </div>
                 )}
-              </>
-            )}
-          </div>
+              </div>
+            </TabsContent>
           )}
-        </div>
+
+          {/* ── Итоги ── */}
+          {showTotalsTab && (
+            <TabsContent value="totals" className="mt-3 space-y-3 text-sm">
+              <Field label="Агрегат в строке «Итого»">
+                <Segmented
+                  value={effectiveAggregate(draft)}
+                  onChange={(a) => patch({ aggregate: a })}
+                  options={aggOptions}
+                />
+              </Field>
+              {aggPreview && effectiveAggregate(draft) !== 'none' && (
+                <div className="flex items-center gap-2 rounded bg-accent/40 px-2.5 py-1.5 text-xs">
+                  <Sigma className="h-3.5 w-3.5 text-muted-foreground" />
+                  <span className="text-muted-foreground">Текущий итог:</span>
+                  <span className="font-semibold tabular-nums">
+                    {aggPreview(effectiveAggregate(draft)) ?? '—'}
+                  </span>
+                </div>
+              )}
+              <p className="text-[11px] text-muted-foreground">
+                Итог считается по всем строкам и показывается в нижней закреплённой строке таблицы.
+              </p>
+            </TabsContent>
+          )}
+
+          {/* ── Данные (массовое заполнение) ── */}
+          {showDataTab && (
+            <TabsContent value="data" className="mt-3 text-sm">
+              <div className="mb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                Массовое заполнение
+              </div>
+              {isFormula ? (
+                <p className="text-[11px] text-muted-foreground">
+                  Колонка типа «Формула» вычисляется автоматически — массовое заполнение недоступно.
+                </p>
+              ) : (
+                <>
+                  <p className="mb-2 text-[11px] text-muted-foreground">
+                    Применит указанное значение ко всем строкам колонки. Привязанные ячейки будут
+                    пропущены.
+                  </p>
+                  <div className="flex items-center gap-1.5">
+                    <Input
+                      type={isText ? 'text' : 'number'}
+                      value={bulkDraft}
+                      onChange={(e) => setBulkDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleBulkApply();
+                        }
+                      }}
+                      placeholder={isText ? 'Текст' : 'Значение'}
+                      className="h-8 flex-1 text-sm"
+                    />
+                    {draft.unit && !isText && (
+                      <span className="text-xs text-muted-foreground">{draft.unit}</span>
+                    )}
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={handleBulkApply}
+                      disabled={bulkDraft.trim().length === 0}
+                    >
+                      Применить
+                    </Button>
+                  </div>
+                  {bulkFeedback && (
+                    <div className="mt-2 rounded bg-accent/50 px-2 py-1 text-[11px] text-foreground">
+                      {bulkFeedback}
+                    </div>
+                  )}
+                </>
+              )}
+            </TabsContent>
+          )}
+        </Tabs>
+
         <DialogFooter className="flex items-center justify-between gap-2 sm:justify-between">
           <div className="flex items-center gap-2">
             <Button variant="ghost" size="sm" onClick={onToggleHidden}>

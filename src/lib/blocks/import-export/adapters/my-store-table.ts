@@ -71,6 +71,17 @@ type RawColumn = {
   formula?: string;
   hidden?: boolean;
   decimals?: number;
+  // Внешний вид (v0.40.0) — сохраняются в `_meta` для round-trip XLSX.
+  color?: string;
+  fillCells?: boolean;
+  outline?: boolean;
+  align?: string;
+  headerBold?: boolean;
+  scale?: unknown;
+  prefix?: string;
+  suffix?: string;
+  note?: string;
+  aggregate?: string;
 };
 
 type RawRow = {
@@ -199,16 +210,9 @@ function exportXlsx(
     title: cfg.title ?? 'Мой магазин',
     global: cfg.global ?? { vatPct: 0 },
     decimals: cfg.decimals ?? null,
-    columns: visibleColumns.map((c) => ({
-      id: c.id,
-      label: c.label,
-      type: c.type ?? 'number',
-      unit: c.unit,
-      width: c.width,
-      formula: c.formula,
-      default: c.default,
-      decimals: c.decimals,
-    })),
+    // Spread сохраняет ВСЕ поля колонки (включая вид/шкалу/итоги v0.40.0 и
+    // будущие) — round-trip XLSX не теряет настройки.
+    columns: visibleColumns.map((c) => ({ ...c, type: c.type ?? 'number' })),
     pinnedColumns: cfg.pinnedColumns ?? [IDENTITY_ARTICLE_ID, IDENTITY_NAME_ID],
   };
 
@@ -293,6 +297,19 @@ function importXlsx(buffer: ArrayBuffer, current: BlockInstance): ImportPreview 
       col.default = metaMatch.default;
     }
     if (metaMatch && typeof metaMatch.decimals === 'number') col.decimals = metaMatch.decimals;
+    // Внешний вид (v0.40.0). Значения дополнительно валидирует zod при parseConfig.
+    if (metaMatch) {
+      if (typeof metaMatch.color === 'string') col.color = metaMatch.color;
+      if (typeof metaMatch.fillCells === 'boolean') col.fillCells = metaMatch.fillCells;
+      if (typeof metaMatch.outline === 'boolean') col.outline = metaMatch.outline;
+      if (typeof metaMatch.align === 'string') col.align = metaMatch.align;
+      if (typeof metaMatch.headerBold === 'boolean') col.headerBold = metaMatch.headerBold;
+      if (metaMatch.scale && typeof metaMatch.scale === 'object') col.scale = metaMatch.scale;
+      if (typeof metaMatch.prefix === 'string') col.prefix = metaMatch.prefix;
+      if (typeof metaMatch.suffix === 'string') col.suffix = metaMatch.suffix;
+      if (typeof metaMatch.note === 'string') col.note = metaMatch.note;
+      if (typeof metaMatch.aggregate === 'string') col.aggregate = metaMatch.aggregate;
+    }
     columns.push(col);
   }
 
