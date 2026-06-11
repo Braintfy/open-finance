@@ -11,7 +11,9 @@
 
 После этого можно работать любой сложности. Дальше — **только релевантное конкретной задаче** (см. таблицу маршрутизации).
 
-> В Cursor IDE дополнительно автоматически загружается `.cursor/rules/project-context.mdc` (`alwaysApply: true`, ~80 строк) — он короче `START.md` и работает как «всегда включённый минимум». При работе с конкретными подсистемами Cursor сам прицепляет `.cursor/rules/{blocks,marketplaces,ai-tools,drizzle,security,unit-economics}.mdc` по globs.
+> В Cursor IDE дополнительно автоматически загружается `.cursor/rules/project-context.mdc` (`alwaysApply: true`, компактный) — он короче `START.md` и работает как «всегда включённый минимум». При работе с конкретными подсистемами Cursor сам прицепляет `.cursor/rules/{blocks,marketplaces,ai-tools,drizzle,security,unit-economics}.mdc` по globs.
+>
+> В Claude Code работает агентная обвязка **`.claude/`** (с v0.41.0): скилы `/of-*` (процедуры), сабагенты `of-*-dev`/`of-*-reviewer`, воркфлоу `of-{test-sweep,review,rules-audit}`. Карта — `.claude/README.md`. Принцип: правила живут ТОЛЬКО в `.cursor/rules/*.mdc`, обвязка на них ссылается.
 
 ## Идентичность
 
@@ -19,7 +21,7 @@
 
 Главная идея: **почти каждая страница = настраиваемый BlockGrid**. Новая фича обычно = новый block type в `src/lib/blocks/catalog/`, а не статичная страница.
 
-Источник правды: `CHANGELOG.md` + `git log` (текущая v0.22.2, `package.json` 0.5.0 устарел).
+Источник правды версии: первый заголовок `## [X.Y.Z]` в `CHANGELOG.md` + `git log` (`package.json` 0.5.0 устарел навсегда — версию НЕ хардкодить в доках).
 
 ## Жёсткие правила (MUST NOT)
 
@@ -77,10 +79,10 @@ src/
 | **AI Vision (распознавание чеков/счетов)** | `src/lib/ai/vision/{types,router}.ts`, `providers/{claude,openai,yandex,tesseract,mock}.ts`, `docs/AI_VISION.md`. |
 | **Inbox / IMAP** | `src/lib/inbox/{imap,mime,crypto,queries}.ts`, `src/lib/blocks/catalog/inbox-channel-feed.tsx`, `docs/EMAIL_BEGET.md`. |
 | **Курсы валют** | `src/lib/currency/{types,queries,sources/cbr}.ts`, `src/lib/blocks/catalog/currency-rates.tsx`, `src/app/api/currency/rates/{route,refresh/route}.ts`, `drizzle/init/06-currency.sql`. |
-| **Ozon Seller API / Performance API** | `src/lib/marketplaces/{types,crypto,queries,use-accounts}.ts`, `src/lib/marketplaces/ozon/{client,endpoints,types,upsert,upsert-plan,sync/*}.ts`, `src/app/api/marketplaces/**`, `src/app/(app)/settings/integrations/*`, `src/components/marketplaces/*`. Rules: `marketplaces.mdc`. При работе с API смотреть `OZON_API_VERSION_MAP` в `endpoints.ts`. **`OzonClient.post()` lenient** (warning + raw на Zod fail) — `{ strict: true }` для критичных. **Sync upsert идемпотентен через `planUnitProductUpsertFromOzon()`** (pure function, 47 unit-тестов). |
+| **Ozon Seller API / Performance API** | `src/lib/marketplaces/{types,crypto,queries,use-accounts}.ts`, `src/lib/marketplaces/ozon/{client,endpoints,types,upsert,upsert-plan,sync/*}.ts`, `src/app/api/marketplaces/**`, `src/app/(app)/settings/integrations/*`, `src/components/marketplaces/*`. Rules: `marketplaces.mdc`. При работе с API смотреть `OZON_API_VERSION_MAP` в `endpoints.ts`. **`OzonClient.post()` lenient** (warning + raw на Zod fail) — `{ strict: true }` для критичных. **Sync upsert идемпотентен через `planUnitProductUpsertFromOzon()`** (pure function, unit-тесты в `scripts/test-ozon-upsert.ts`). |
 | **Ozon Analytics (per-product, KPI, ABC, campaigns)** | Блоки `unit.ozon-*` в `src/lib/blocks/catalog/`, `src/components/unit-economics/ozon-analytics-*`, `src/app/api/marketplaces/ozon/{kpi,timeseries,top-ads,abc,campaigns,search-phrases,cluster-stocks-v2}/route.ts`. Все используют MSC `query-period.ts`. Ads totals — `src/lib/marketplaces/ozon/ads-totals.ts`. Rules: `marketplaces.mdc`. |
 | **Roadmap marketplace-интеграций** | `docs/MARKETPLACES_FUTURE_PLAN.md`, `docs/OZON_ADS_GAP.md`, `docs/MARKETPLACES_OZON_PERFORMANCE.md`. |
-| **Unit Economics (калькуляторы, multi-table, my store)** | `src/lib/unit-economics/{types,ozon,yandex,bindings,store-formula,ozon-to-my-store}.ts`, `src/components/unit-economics/*`, `src/app/api/unit-economics/**`. Rules: `unit-economics.mdc`. |
+| **Unit Economics (калькуляторы, multi-table, my store)** | `src/lib/unit-economics/{types,bindings,store-formula,ozon-to-my-store}.ts`, директории `src/lib/unit-economics/{ozon,yandex}/` (calculate, tariffs-*), `src/components/unit-economics/*`, `src/app/api/unit-economics/**`. Rules: `unit-economics.mdc`. |
 | **Sheet / custom.data / excel.cell** | `src/lib/blocks/catalog/{sheet,custom-data,excel-cell}.tsx`, `docs/CUSTOM_DATA_BLOCK.md`. |
 | **KPI Grid** | `src/lib/blocks/catalog/kpi-grid.tsx`, `docs/KPI_GRID.md`. |
 | **Periods / page-period header / useBlockPeriod** | `src/lib/blocks/use-block-period.ts`, `src/lib/blocks/page-period-context.tsx`, `src/components/blocks/page-period-header.tsx`, `docs/PAGE_PERIODS.md` — **читать при добавлении нового блока с периодом**. |
@@ -93,9 +95,13 @@ src/
 | **Tauri / desktop** | `docs/DESKTOP_STRATEGY.md`, `docs/LICENSING.md`. |
 | **Локальный AI / Ollama / VPN** | `docs/LOCAL_AI.md`, `docs/VPN_FOR_AI.md`. |
 | **Стратегия продукта** | `PLAN.md` — **только нужный раздел через `Read offset+limit`**, не файл целиком (1427 строк). |
-| **История релизов** | `git log --oneline -30` или `Read CHANGELOG.md offset=1 limit=100`. НЕ весь файл (2981 строка). |
+| **История релизов** | `git log --oneline -30` или `Read CHANGELOG.md offset=1 limit=100`. НЕ весь файл (~4K строк). |
 | **Историческая память (v0.10-v0.22)** | `docs/memory-archive/` — конкретный файл версии по запросу. |
 | **Работа с библиотекой** (Next 15, Drizzle, shadcn, pgvector, Tauri 2) | Context7: `mcp0_resolve-library-id` → `mcp0_query-docs`, не более 3 вызовов. |
+| **Верификация / smoke-тесты** | Скилы `.claude/skills/of-verify`, `of-run-tests`; все тесты параллельно — воркфлоу `of-test-sweep`. |
+| **Ревью перед коммитом** | Сабагенты `of-code-reviewer`/`of-security-reviewer` или воркфлоу `of-review` (мультиагентный с верификацией находок). |
+| **Конец сессии (CHANGELOG/MEMORY/handoff)** | **Канон:** `.claude/skills/of-end-session/SKILL.md`. |
+| **Процедуры: новый блок / схема БД / AI-route / AI-tool / колонка Ozon** | Скилы `of-new-block`, `of-db-change`, `of-new-ai-route`, `of-new-ai-tool`, `of-ozon-column`. |
 
 ## Команды
 
@@ -113,7 +119,9 @@ pnpm typecheck && pnpm build            # проверка
 2. Обновить `MEMORY.md` (если изменились ключевые файлы/инварианты/грабли).
 3. Добавить запись в `CHANGELOG.md`.
 4. Дать пользователю git-команды (`git add -A && git commit -m "..." && git push origin main`) — **не выполнять самому**.
-5. (Опц.) `./scripts/sync-mempalace.sh` — обновить external AI handoff (если mempalace работает).
+5. (Опц.) Ключевые решения → agentmemory MCP `memory_save` (mempalace и `sync-mempalace.sh` deprecated).
+
+Полный ритуал — `.claude/skills/of-end-session/SKILL.md` (канон).
 
 ## AI memory — agentmemory (с v0.22.4)
 

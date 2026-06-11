@@ -10,14 +10,14 @@
 1. **`START.md`** — карта проекта, hard-rules, маршрутизация по типу задачи (~3K токенов).
 2. **`MEMORY.md`** — компактный handoff с текущим состоянием (~5K токенов).
 3. **`git -C /Users/firay/open-finance/open-finance log --oneline -20`** — последние коммиты (~0.5K).
-4. (Опц.) **`mempalace search "..." --wing open-finance`** — точечно для исторических вопросов. См. `docs/MEMPALACE_RUNBOOK.md`.
+4. (Опц.) **agentmemory MCP `memory_smart_search`** — точечно для исторических вопросов («когда/почему перешли с X на Y»). См. `docs/MEMORY_SETUP.md` (mempalace deprecated с v0.22.4).
 
 После этих шагов работа любой сложности. Дальше — **только релевантное конкретной задаче**.
 
 ### Cursor 2026 — path-scoped rules
 
 В Cursor IDE автоматически работают `.cursor/rules/*.mdc`:
-- **`project-context.mdc`** (`alwaysApply: true`) — всегда загружен (~80 строк, hard rules).
+- **`project-context.mdc`** (`alwaysApply: true`) — всегда загружен (компактный файл hard rules).
 - **`blocks.mdc`** — auto-attach при работе с `src/lib/blocks/**`, `src/components/blocks/**`.
 - **`ai-tools.mdc`** — auto-attach при работе с `src/lib/ai/**`, `src/app/api/ai/**`.
 - **`marketplaces.mdc`** — auto-attach при работе с `src/lib/marketplaces/**`.
@@ -27,12 +27,22 @@
 
 Это экономит ~10K токенов на каждую задачу (вместо загрузки полного `CLAUDE.md` правил, только релевантные подгружаются).
 
+### Claude Code — агентная обвязка `.claude/` (с v0.41.0)
+
+Полное описание — **`.claude/README.md`**. Принцип: **правила НЕ копируются** — доменные правила живут только в `.cursor/rules/*.mdc`, обвязка на них ссылается. Версии нигде не хардкодятся (источник — первый `## [X.Y.Z]` в `CHANGELOG.md`).
+
+- **Скилы** (`.claude/skills/of-*`): `of-verify` (верификация), `of-end-session` (**канон** ритуала конца сессии — раздел ниже лишь резюме), `of-run-tests`, `of-new-block`, `of-db-change`, `of-new-ai-route`, `of-new-ai-tool`, `of-ozon-column`, `of-memory`.
+- **Сабагенты** (`.claude/agents/`): `of-code-reviewer`, `of-security-reviewer` (read-only ревью) + доменные `of-{blocks,ai,ozon,db,unit-economics}-dev` — каждый первым шагом читает свой `.mdc`.
+- **Воркфлоу** (`.claude/workflows/`): `of-test-sweep` (все smoke-тесты параллельно), `of-review` (мультиагентный ревью диффа с адверсариальной верификацией), `of-rules-audit` (аудит дрейфа правил — гонять на минорный релиз).
+- **`.claude/settings.proposed.json`** — предложение permissions+hooks; активирует пользователь (`mv` в `settings.json`). Хук `scripts/claude-rules-hint.sh` — аналог path-scoped правил Cursor.
+- Глобальный скил `/ship` в этом репо ЗАПРЕЩЁН (он коммитит и пушит — нарушает жёсткие правила); вместо него `of-end-session`.
+
 ### НЕ загружать по умолчанию
 
-- **`CHANGELOG.md`** (2981 строка) — только при вопросах про историю; иначе `git log`.
-- **`PLAN.md`** (1427 строк) — только при стратегических вопросах; через `Read offset+limit`.
+- **`CHANGELOG.md`** (~4K строк) — только при вопросах про историю; иначе `git log`.
+- **`PLAN.md`** (~1.4K строк) — только при стратегических вопросах; через `Read offset+limit`.
 - **`docs/memory-archive/*`** — детальные нарративы по версиям v0.10-v0.22; по запросу.
-- **`mempalace wake-up`** — индекс содержит устаревшие версии (Tauri-only, Prisma, Python).
+- **agentmemory** — НЕ для bootstrap'а (только семантическая археология, точечным `memory_smart_search`).
 
 ### Если задача про библиотеку (Next 15, Drizzle, shadcn, pgvector, Tauri 2)
 
@@ -40,11 +50,13 @@ Context7: `mcp0_resolve-library-id` → `mcp0_query-docs`. Не более 3 в�
 
 ### В конце каждой значимой сессии (ОБЯЗАТЕЛЬНО)
 
+Канон — скил **`.claude/skills/of-end-session/SKILL.md`** (там детали форматов и бампа версии). Резюме:
+
 1. Обновить **`MEMORY.md`** при изменении ключевых файлов/инвариантов/граблей.
 2. Обновить **`CHANGELOG.md`** с детальным описанием изменений.
 3. При изменении bootstrap или ключевых инвариантов — обновить **`START.md`** и/или `.cursor/rules/*.mdc`.
 4. Новые грабли → **`LEARNING_LOG.md`** (append-only). Раз в неделю агрегируются в `MEMORY.md`.
-5. Запустить **`./scripts/sync-mempalace.sh`** для обновления external AI handoff (или git push triggers pre-push hook).
+5. (Опц.) Ключевые решения сессии → agentmemory MCP **`memory_save`** (замена deprecated `./scripts/sync-mempalace.sh`; git-хуки по умолчанию НЕ установлены — ставятся вручную `./scripts/install-hooks.sh`).
 
 Цель: следующая сессия за 30 секунд понимает состояние системы из `START.md` + `MEMORY.md`, без reverse-engineering.
 
@@ -125,7 +137,7 @@ Context7: `mcp0_resolve-library-id` → `mcp0_query-docs`. Не более 3 в�
 2. **Roadmap** — `TodoWrite` с атомарными шагами (если ≥3 шагов).
 3. **Чтение** — прочитать файлы которые планируется менять.
 4. **Поиск контекста** — `Grep`/`Glob` или `mcp0_query-docs` (Context7).
-5. **Выполнение** — точечные правки через `StrReplace` / `Write`.
+5. **Выполнение** — точечные правки через `Edit` / `Write` (в Cursor — search_replace).
 6. **Верификация** — `pnpm typecheck` или `pnpm build`.
 7. **Документация** — обновить `MEMORY.md` (если ключевое) и `CHANGELOG.md`.
 8. **Команды** — дать пользователю git-команды для коммита.
@@ -174,9 +186,11 @@ export const createTransactionTool = {
 - **`START.md`** — bootstrap новой сессии, карта проекта, роутинг по задачам.
 - **`MEMORY.md`** — компактный handoff с текущим состоянием.
 - **`AGENTS.md`** — для не-Claude AI агентов (Cline, Aider, Continue, Windsurf).
-- **`.cursor/rules/*.mdc`** — Cursor 2026 path-scoped правила.
+- **`.cursor/rules/*.mdc`** — Cursor 2026 path-scoped правила (единый источник доменных правил).
+- **`.claude/README.md`** — агентная обвязка Claude Code (скилы, сабагенты, воркфлоу).
 - **`LEARNING_LOG.md`** — append-only AI learnings (новые грабли).
-- **`docs/MEMPALACE_RUNBOOK.md`** — починка mempalace.
+- **`docs/MEMORY_SETUP.md`** — agentmemory (AI-память, MCP).
+- **`docs/MEMPALACE_RUNBOOK.md`** — legacy mempalace (deprecated).
 - `docs/MODULES.md` — как добавить модуль.
 - `docs/AI_TOOLS.md` — реестр всех AI-инструментов.
 - `docs/AI_VISION.md` — vision providers.
@@ -234,24 +248,11 @@ pnpm build                     # production build
 
 ---
 
-## MemPalace integration
+## AI-память — agentmemory (mempalace deprecated с v0.22.4)
 
-**Назначение:** археология проекта для исторических вопросов («когда мы перешли с X на Y», «почему отказались от Z»). НЕ источник правды для текущего состояния.
+**Назначение:** археология проекта для исторических вопросов («когда мы перешли с X на Y», «почему отказались от Z»). НЕ источник правды для текущего состояния — это `MEMORY.md` + `git log`.
 
-**Команды:**
-```bash
-# Точечный поиск (когда работает)
-mempalace search "конкретный вопрос" --wing open-finance
-
-# Список wings
-mempalace wings
-
-# Синхронизация sources после значимых изменений
-./scripts/sync-mempalace.sh
-```
-
-**НЕ использовать** для bootstrap'а — `wake-up` тащит и устаревшие версии (Tauri-only, Prisma, Python sidecar).
-
-**Если зависает** — chromadb 1.5.6 не может читать старый палац. Полная процедура починки — `docs/MEMPALACE_RUNBOOK.md`.
-
-Запись автоматическая через hooks (`~/.mempalace/hooks/mempal_save_hook.sh`, `mempal_precompact_hook.sh`).
+- **Сервер:** localhost:3111 (viewer :3113), launchd-агент `com.agentmemory.server`. Health: `curl http://localhost:3111/agentmemory/health`.
+- **Использование:** MCP tools `memory_smart_search` (поиск), `memory_save` (запись решений), `memory_recall`, `memory_sessions`. Если сервер лежит — MCP shim даёт 7 fallback-tools, работа продолжается.
+- **Маршрутизация «куда писать / где искать»** — скил `.claude/skills/of-memory/SKILL.md`.
+- **Полная инструкция/починка:** `docs/MEMORY_SETUP.md`. Старый mempalace: история и runbook — `docs/MEMPALACE_RUNBOOK.md` (chromadb Issue #832; `./scripts/sync-mempalace.sh` больше не входит в ритуал).

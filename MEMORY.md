@@ -8,17 +8,17 @@
 1. **`START.md`** — карта проекта, жёсткие правила, маршрутизация задач (~3K токенов).
 2. **`MEMORY.md`** (этот файл) — текущее состояние, ключевые файлы, активные грабли (~5K токенов).
 3. **`git -C /Users/firay/open-finance/open-finance log --oneline -20`** — последние коммиты (~0.5K токенов).
-4. (Опц.) **`mempalace search "..." --wing open-finance`** — точечно для исторических вопросов («когда мы перешли с X на Y»). См. `docs/MEMPALACE_RUNBOOK.md`.
+4. (Опц.) **agentmemory MCP `memory_smart_search`** — точечно для исторических вопросов («когда мы перешли с X на Y»). См. `docs/MEMORY_SETUP.md`.
 
 После 3 шагов = ~8-9K токенов и можно работать любой сложности. Дальше — **только релевантное конкретной задаче** (см. таблицу маршрутизации в `START.md`).
 
 ## Что НЕ загружать по умолчанию
 
-- `CHANGELOG.md` (2981 строк) — только при вопросах про историю; иначе `git log`.
-- `PLAN.md` (1427 строк) — только при стратегических вопросах; читать через `Read offset+limit`.
+- `CHANGELOG.md` (~4K строк) — только при вопросах про историю; иначе `git log`.
+- `PLAN.md` (~1.4K строк) — только при стратегических вопросах; читать через `Read offset+limit`.
 - `docs/memory-archive/*.md` — детальные нарративы по версиям v0.10-v0.22. Грузить только когда нужны детали конкретной миграции/фикса.
 - `docs/*.md` — каждый файл подгружается по таблице маршрутизации.
-- `mempalace wake-up --wing open-finance` — индекс содержит и устаревшие версии (Tauri-only, Prisma, Python sidecar). Использовать `mempalace search` точечно.
+- agentmemory — НЕ для bootstrap'а; только точечная археология через `memory_smart_search` (mempalace deprecated с v0.22.4).
 
 ## Перед работой с библиотеками
 
@@ -26,11 +26,13 @@ Context7: `mcp0_resolve-library-id` → `mcp0_query-docs`. Не более 3 в�
 
 ## После значимых изменений
 
+Канон ритуала — `.claude/skills/of-end-session/SKILL.md`. Резюме:
+
 1. `pnpm build` — должен пройти.
 2. Обновить `MEMORY.md` (если изменились ключевые файлы/инварианты/грабли).
 3. Добавить запись в `CHANGELOG.md`.
 4. Дать пользователю git-команды (`git add -A && git commit -m "..." && git push origin main`) — **не выполнять самому**.
-5. (Опц.) Синхронизировать sources: `./scripts/sync-mempalace.sh` (если mempalace работает).
+5. (Опц.) Ключевые решения → agentmemory `memory_save` (`./scripts/sync-mempalace.sh` deprecated).
 
 ## Идентичность проекта
 
@@ -40,7 +42,7 @@ Context7: `mcp0_resolve-library-id` → `mcp0_query-docs`. Не более 3 в�
 - **Phase 2:** Tauri 2.0 desktop.
 - **Phase 3:** React Native + Expo mobile.
 - **Главная идея:** почти каждая страница = настраиваемый **BlockGrid** (Lego из блоков). Новая фича обычно = новый block type в `src/lib/blocks/catalog/`, а не статичная страница.
-- **Источник правды версии:** `CHANGELOG.md` + `git log` (`package.json` остался на `0.5.0`, не используется). Текущая версия — **v0.40.0** (2026-06-04). UI читает версию через `src/lib/version.ts` (`APP_VERSION`), значение инжектируется в build-time из `CHANGELOG.md` через `next.config.mjs` → `env.NEXT_PUBLIC_APP_VERSION`.
+- **Источник правды версии:** первый заголовок `## [X.Y.Z]` в `CHANGELOG.md` + `git log` (`package.json` остался на `0.5.0`, не используется). UI читает версию через `src/lib/version.ts` (`APP_VERSION`), значение инжектируется в build-time из `CHANGELOG.md` через `next.config.mjs` → `env.NEXT_PUBLIC_APP_VERSION`. В доках версию НЕ хардкодить.
 
 ## Жёсткие правила
 
@@ -102,6 +104,18 @@ src/
 drizzle/init/             manual SQL: pgvector, boards, inbox, unit-economics, currency, marketplaces, analytics, sku-backfill
 docs/memory-archive/      исторические разделы MEMORY.md (по запросу)
 ```
+
+## Агентная обвязка `.claude/` (v0.41.0)
+
+Карта — `.claude/README.md`. Состав: 9 скилов (`of-verify`, `of-end-session` — **канон ритуала конца сессии**, `of-run-tests`, `of-new-block`, `of-db-change`, `of-new-ai-route`, `of-new-ai-tool`, `of-ozon-column`, `of-memory`), 7 сабагентов (`of-code-reviewer`, `of-security-reviewer`, `of-{blocks,ai,ozon,db,unit-economics}-dev`), 3 воркфлоу (`of-test-sweep`, `of-review`, `of-rules-audit`), `settings.proposed.json` (активирует пользователь через `mv` в `settings.json`) + PreToolUse-хук `scripts/claude-rules-hint.sh` (аналог path-scoped правил Cursor, дедуп раз в сессию на домен).
+
+**Инварианты обвязки (не нарушать):**
+- Доменные правила живут ТОЛЬКО в `.cursor/rules/*.mdc` — скилы/агенты на них ссылаются, копии текста правил запрещены (уже было 4 дрейфующих копии до v0.41.0).
+- Версии/счётчики строк нигде не хардкодить — источник версии: первый `## [X.Y.Z]` в `CHANGELOG.md`.
+- Ритуал конца сессии каноничен в `of-end-session`; CLAUDE.md/AGENTS.md/START.md держат только резюме со ссылкой.
+- mempalace/`sync-mempalace.sh` deprecated → agentmemory MCP (`memory_save`/`memory_smart_search`, только археология).
+- Глобальный скил `/ship` в этом репо запрещён (коммитит сам).
+- Контроль дрейфа — воркфлоу `of-rules-audit` на минорный релиз.
 
 ## Block-Grid — фундамент UI
 
@@ -290,13 +304,12 @@ docs/memory-archive/      исторические разделы MEMORY.md (п�
 - Приоритет промптов: `aiPromptSupplement (max 500) > aiPrompt (deprecated) > legacy config.blockPrompt`.
 - Приоритет credentials: `user_ai_credentials (enabled) > tenants.settings.aiExternal > Ollama`.
 - `parseAction()` понимает fenced/unfenced JSON, `update_block`, `create_block`, `text_only`.
-- `parseAction()` понимает fenced/unfenced JSON, `update_block`, `create_block`, `text_only`.
 
 ## Marketplace Integrations (краткая навигация)
 
-- **Foundation (v0.17.0):** `src/lib/db/schema/marketplaces.ts`, `src/lib/marketplaces/{types,crypto,queries}.ts`, `src/lib/marketplaces/ozon/{client,endpoints,types,upsert,upsert-plan}.ts`, `sync/{products,prices,stocks,orders,realization,transactions,turnover,analytics-data,clusters,warehouseStocks,perf-{campaigns,sku-stats,cpo-daily,expense-daily}}.ts`.
+- **Foundation (v0.17.0):** `src/lib/db/schema/marketplaces.ts`, `src/lib/marketplaces/{types,crypto,queries}.ts`, `src/lib/marketplaces/ozon/{client,endpoints,types,upsert,upsert-plan}.ts`, `sync/{products,prices,stocks,orders,realization,transactions,turnover,analytics-data,clusters,warehouse-stocks,perf-{campaigns,sku-stats,cpo-daily,expense-daily}}.ts`.
 - **Settings:** `src/app/(app)/settings/integrations/{page,integrations-client}.tsx`.
-- **Блоки sync UI:** `src/components/unit-economics/{ozon-sync-button,ozon-sync-settings-form,ozon-sync-preview-dialog,ozon-sync-diff,ozon-sync-section}.tsx`.
+- **Блоки sync UI:** `src/components/unit-economics/{ozon-sync-button,ozon-sync-settings-form,ozon-sync-preview-dialog,ozon-sync-section}.tsx` + `ozon-sync-diff.ts`.
 - **Universal sync dialog:** `src/components/marketplaces/ozon-sync-dialog.tsx` + `ozon-sync-presets.ts` (v0.22.1+).
 - **Global sync indicator:** `src/components/marketplaces/global-sync-indicator.tsx` (mount в `(app)/layout.tsx`).
 - **Analytics:** `src/app/api/marketplaces/analytics/ozon/route.ts`, `src/app/api/marketplaces/ozon/{kpi,timeseries,top-ads,abc,campaigns,search-phrases,cluster-stocks-v2}/route.ts`. Все используют MSC `query-period.ts`.
@@ -366,9 +379,8 @@ pnpm docker:up                          # PostgreSQL + Redis
 
 # Применение SQL (manual)
 pnpm db:push
-docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev < drizzle/init/02-vector-indexes.sql
-# ... аналогично для 03-boards, 04-inbox, 05-unit-economics, 06-currency, 07-marketplaces,
-#     09-marketplaces-analytics, 10-marketplaces-perf-cpo, 11-marketplaces-sku-backfill
+# Все init-файлы по порядку (актуальный список — ls drizzle/init/):
+for f in drizzle/init/*.sql; do docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev < "$f"; done
 
 # Dev
 pnpm dev
@@ -402,7 +414,7 @@ pnpm tsx scripts/test-{unit-economics,ozon-upsert,ozon-sync-diff,ozon-analytics,
 - `.cursor/rules/*.mdc` — path-scoped правила Cursor 2026 (auto-attach по globs).
 - `CHANGELOG.md`, `PLAN.md` — только по запросу.
 - `docs/memory-archive/*` — историческая память.
-- `docs/MEMPALACE_RUNBOOK.md` — починка mempalace.
+- `docs/MEMPALACE_RUNBOOK.md` — legacy mempalace (deprecated с v0.22.4; актуальная память — `docs/MEMORY_SETUP.md`).
 - `docs/SECURITY.md` — **обязательно** при работе с секретами/сетью/биллингом.
 - `docs/CASHFLOW_BLOCKS.md`, `docs/KPI_GRID.md`, `docs/CUSTOM_DATA_BLOCK.md`, `docs/UNIT_ECONOMICS_TABS.md` — блочные системы.
 - `docs/AI_TOOLS.md`, `docs/AI_VISION.md` — AI integration.

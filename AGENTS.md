@@ -1,15 +1,15 @@
 # AGENTS.md — универсальные правила для AI-агентов
 
 > Этот файл для **любого AI-агента** (Cline, Aider, Continue, Codeium, Windsurf, Claude Code).
-> Cursor IDE дополнительно использует `.cursor/rules/*.mdc` (auto-attach по globs).
-> Полные правила в `CLAUDE.md`. Здесь — самое важное в сжатом виде.
+> Процесс работы — в `CLAUDE.md`; доменные правила — в `.cursor/rules/*.mdc` (единый источник);
+> процедуры — в `.claude/skills/*/SKILL.md`. Здесь — самое важное в сжатом виде.
 
 ## Project Identity
 
 - **Name:** Open Finance
 - **Type:** AI-первая модульная финансовая платформа (SaaS + Tauri Desktop)
 - **Audience:** Селлеры маркетплейсов, ИП, фрилансеры, малый бизнес РФ
-- **Status:** v0.22.2 (см. `CHANGELOG.md`)
+- **Status:** версия = первый заголовок `## [X.Y.Z]` в `CHANGELOG.md` (НЕ хардкодить; `package.json` 0.5.0 устарел)
 
 ## Tech Stack
 
@@ -26,9 +26,11 @@
 2. `MEMORY.md` — текущее состояние, ключевые файлы, грабли (~5K токенов).
 3. `git -C /Users/firay/open-finance/open-finance log --oneline -20` — свежие коммиты.
 
-Дальше — только релевантное конкретной задаче. **НЕ грузить** `CHANGELOG.md` (2981 строка) и `PLAN.md` (1427 строк) целиком по умолчанию.
+Дальше — только релевантное конкретной задаче. **НЕ грузить** `CHANGELOG.md` (~4K строк) и `PLAN.md` (~1.4K строк) целиком по умолчанию.
 
-`mempalace wake-up --wing open-finance` — **не использовать** для стартового контекста (индекс содержит устаревшие версии Tauri-only, Prisma, Python sidecar). `mempalace search "..." --wing open-finance` — точечно для исторических вопросов. См. `docs/MEMPALACE_RUNBOOK.md`.
+Историческая память — agentmemory MCP (localhost:3111, `memory_smart_search`) — **только** для вопросов «когда/почему перешли с X на Y», НЕ для bootstrap'а. См. `docs/MEMORY_SETUP.md` (mempalace deprecated с v0.22.4).
+
+**Канонические процедуры** (новый блок, изменение БД, AI-route, верификация, конец сессии) — `.claude/skills/*/SKILL.md`. Это обычный markdown — читаем любым агентом, не только Claude Code. Доменные правила — `.cursor/rules/*.mdc` (единый источник, тоже читаемы как markdown).
 
 ## Critical Rules
 
@@ -68,7 +70,6 @@ src/
 ├── app/                  Next.js App Router
 ├── modules/              Бизнес-модули (плоско)
 │   ├── cashflow/
-│   ├── taxes/
 │   ├── inbox/
 │   └── communications/
 ├── components/           UI компоненты
@@ -144,7 +145,7 @@ export const myBlock: BlockDef = {
 2. Прочитать **нужный раздел** `PLAN.md` через `Read offset+limit` (не файл целиком — 1427 строк).
 3. Использовать Context7 (`mcp0_query-docs`) для актуальной документации.
 4. Прочитать `docs/SECURITY.md` если работа касается секретов/сети/биллинга.
-5. Историю проекта искать через `git log` или `mempalace search "..." --wing open-finance` (точечно), не через `CHANGELOG.md` целиком.
+5. Историю проекта искать через `git log` или agentmemory MCP `memory_smart_search` (точечно), не через `CHANGELOG.md` целиком.
 6. Детальные нарративы по версиям v0.10-v0.22 — в `docs/memory-archive/`.
 
 ## Cursor IDE — path-scoped rules
@@ -159,13 +160,15 @@ export const myBlock: BlockDef = {
 - **`.cursor/rules/security.mdc`** — при работе с auth/crypto/billing.
 - **`.cursor/rules/unit-economics.mdc`** — при работе с `src/lib/unit-economics/**`.
 
-Для не-Cursor агентов — игнорировать; вся информация дублируется в основных файлах.
+Не-Cursor агентам читать `.cursor/rules/*.mdc` напрямую как обычный markdown — это **единый источник доменных правил**, в основных файлах они не дублируются.
 
 ## После значимых изменений
 
+Канон — `.claude/skills/of-end-session/SKILL.md`. Резюме:
+
 1. `pnpm build` (или `pnpm typecheck`).
 2. Обновить `MEMORY.md` (если изменились ключевые файлы/инварианты/грабли).
-3. Записать новую грабли в `LEARNING_LOG.md`.
+3. Записать новую граблю в `LEARNING_LOG.md`.
 4. Добавить запись в `CHANGELOG.md`.
 5. Дать пользователю git-команды для коммита (не выполнять самому).
-6. (Опц.) `./scripts/sync-mempalace.sh` — обновить external AI handoff.
+6. (Опц.) Ключевые решения → agentmemory `memory_save` (`./scripts/sync-mempalace.sh` deprecated).

@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.41.0] - 2026-06-11
+
+### Added
+- **Агентная обвязка `.claude/` (Claude Code)** — проект получил полноценное агентное окружение (карта — `.claude/README.md`). Принцип анти-дрейфа: доменные правила живут ТОЛЬКО в `.cursor/rules/*.mdc`, обвязка на них ссылается (до этого правила дрейфовали в 4 копиях: CLAUDE.md / project-context.mdc / AGENTS.md / user-скилл с версиями от v0.22.2); версии нигде не хардкодятся (источник — первый `## [X.Y.Z]` этого файла).
+  - **9 проектных скилов** (`.claude/skills/of-*`): `of-verify` (typecheck → build с обработкой stale `.next` → доменные тесты), `of-end-session` (**канонический** ритуал конца сессии — CLAUDE.md/AGENTS.md/START.md теперь держат только резюме со ссылкой), `of-run-tests` (карта доменов → `scripts/test-*.ts`, тест-раннера в проекте нет), `of-new-block`, `of-db-change`, `of-new-ai-route`, `of-new-ai-tool`, `of-ozon-column` (4 файла синхронно), `of-memory` (маршрутизация: куда писать грабли / где искать историю).
+  - **7 сабагентов** (`.claude/agents/`): read-only ревьюеры `of-code-reviewer` (чеклист универсальных граблей из MEMORY.md) и `of-security-reviewer` (принудительно читает `docs/SECURITY.md`) + доменные `of-{blocks,ai,ozon,db,unit-economics}-dev` — каждый первым шагом читает свой `.mdc` вместо копии правил.
+  - **3 сохранённых воркфлоу** (`.claude/workflows/`, мультиагентная оркестрация): `of-test-sweep` (параллельный прогон всех ~33 smoke-тестов батчами со сводкой pass/fail и маппингом провалов на коммиты), `of-review` (ревью диффа по 5 доменным измерениям + адверсариальная верификация каждой находки двумя скептиками), `of-rules-audit` (аудит дрейфа правил: хардкоженные версии, мёртвые ссылки, противоречия — гонять на минорный релиз).
+  - **`scripts/claude-rules-hint.sh`** — PreToolUse-хук: функциональный эквивалент path-scoped правил Cursor (при правке файла подсказывает релевантный `.mdc`, 1 раз за сессию на домен, fail-open).
+  - **`.claude/settings.proposed.json`** — предложение permissions (allow: verify/read-only-git/тесты; deny: `git add/commit/push`, `db:push/migrate`, `.env`) + подключение хука. Активируется пользователем осознанно: `mv .claude/settings.proposed.json .claude/settings.json`.
+
+### Changed
+- **CLAUDE.md / START.md / AGENTS.md / MEMORY.md / `.cursor/rules/project-context.mdc`** — синхронизированы с обвязкой: убраны хардкоды версии v0.22.2 (источник — head CHANGELOG), маршрутизация задач в START.md дополнена скилами/воркфлоу, ритуал конца сессии всюду заменён ссылкой на канон `of-end-session`.
+- **mempalace окончательно выписан из процедур** — все упоминания `mempalace search` / `./scripts/sync-mempalace.sh` в актуальных доках заменены на agentmemory MCP (`memory_smart_search` / `memory_save`, только археология); `docs/MEMPALACE_RUNBOOK.md` остаётся как legacy-справка. Убрано ложное утверждение «git push triggers pre-push hook» (хуки не установлены; ставятся вручную `./scripts/install-hooks.sh`).
+- **User-скилл `~/.claude/skills/open-finance-bootstrap`** — обновлён: убран хардкод v0.22.2 и mempalace-секция, добавлен указатель на проектную обвязку `.claude/`.
+
 ## [0.40.0] - 2026-06-04
 
 ### Added

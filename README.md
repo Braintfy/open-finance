@@ -3,8 +3,9 @@
 > AI-первая модульная финансовая платформа для предпринимателей.
 > Notion-style блоки + Linear UX + Claude Code минимализм + RAG-память + AI-секретарь.
 
-[![Status](https://img.shields.io/badge/status-foundation-blue.svg)]()
-[![Version](https://img.shields.io/badge/version-0.5.0-blue.svg)]()
+[![Status](https://img.shields.io/badge/status-active-blue.svg)]()
+
+> Текущая версия — первый заголовок `## [X.Y.Z]` в [CHANGELOG.md](CHANGELOG.md) (версия в `package.json` не сопровождается).
 
 ## Что это
 
