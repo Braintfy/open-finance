@@ -14,6 +14,7 @@ import { Card } from '@/components/ui/card';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { ChartShell, type ChartSeries, type ChartYAxis } from '@/components/blocks/chart-shell';
+import { useReportBlockLoading } from '@/components/blocks/use-block-loading';
 import {
   PeriodPicker,
   resolvePeriod,
@@ -177,6 +178,7 @@ function RenderOzonChart({ instance, onConfigChange }: BlockRenderProps) {
   }, [config.granularity]);
   const [data, setData] = useState<OzonTimeseriesResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  useReportBlockLoading(loading);
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
 

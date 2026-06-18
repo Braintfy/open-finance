@@ -54,6 +54,7 @@ const BLOCK_META: Record<
     source?: BlockDef['source'];
     iconName: string;
     usesPeriod?: boolean;
+    skeletonVariant?: string;
   }
 > = {
   'stat.income': {
@@ -218,9 +219,57 @@ const BLOCK_META: Record<
   },
 };
 
+// Форма скелетона загрузки по типу блока (см. BlockSkeletonVariant в block-skeleton.tsx).
+// Строкой → RSC-safe (как iconName). Дефолт для отсутствующих — 'generic'.
+const SKELETON_VARIANT_BY_TYPE: Record<string, string> = {
+  'stat.income': 'stat',
+  'stat.expense': 'stat',
+  'stat.balance': 'stat',
+  'stat.custom': 'stat',
+  'computed.sum': 'stat',
+  'excel.cell': 'stat',
+  'kpi.grid': 'kpiGrid',
+  'unit.ozon-kpi': 'kpiGrid',
+  'chart.cashflow': 'chart',
+  'unit.ozon-chart': 'chart',
+  sheet: 'table',
+  'custom.data': 'table',
+  'unit.ozon-multi-table': 'table',
+  'unit.ozon-analytics': 'table',
+  'unit.ozon-top-ads': 'table',
+  'unit.ozon-stock-clusters': 'table',
+  'unit.ozon-warehouse-clusters': 'table',
+  'unit.ozon-search-phrases': 'table',
+  'unit.ozon-campaigns': 'table',
+  'unit.ozon-abc': 'table',
+  'unit.my-store-table': 'table',
+  'cashflow.top-categories': 'list',
+  'cashflow.transactions': 'list',
+  'inbox.channel-feed': 'list',
+  'inbox.dashboard': 'list',
+  'unit.ozon-data-health': 'list',
+  'unit.ozon-ai-insights': 'list',
+  'currency.rates': 'list',
+  'unit.ozon-calculator': 'calculator',
+  'unit.yandex-calculator': 'calculator',
+  'navigate.card': 'generic',
+  'ai.micro-agent': 'generic',
+  'note.markdown': 'generic',
+};
+
+function resolveSkeletonVariant(def: BlockDef, metaVariant?: string): string {
+  return def.skeletonVariant ?? metaVariant ?? SKELETON_VARIANT_BY_TYPE[def.type] ?? 'generic';
+}
+
 function withMeta(def: BlockDef): BlockDef {
   const meta = BLOCK_META[def.type];
-  if (!meta) return { ...def, source: def.source ?? 'builtin', iconName: def.iconName ?? 'Square' };
+  if (!meta)
+    return {
+      ...def,
+      source: def.source ?? 'builtin',
+      iconName: def.iconName ?? 'Square',
+      skeletonVariant: resolveSkeletonVariant(def),
+    };
   return {
     ...def,
     tags: def.tags ?? meta.tags,
@@ -228,6 +277,7 @@ function withMeta(def: BlockDef): BlockDef {
     source: def.source ?? meta.source ?? 'builtin',
     iconName: def.iconName ?? meta.iconName,
     usesPeriod: def.usesPeriod ?? meta.usesPeriod,
+    skeletonVariant: resolveSkeletonVariant(def, meta.skeletonVariant),
   };
 }
 

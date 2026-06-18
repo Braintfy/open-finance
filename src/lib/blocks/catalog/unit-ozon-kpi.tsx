@@ -12,6 +12,7 @@ import { useLastFetched } from '@/lib/blocks/use-last-fetched';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { StatCard } from '@/components/blocks/stat-card';
+import { useReportBlockLoading } from '@/components/blocks/use-block-loading';
 import {
   PeriodPicker,
   resolvePeriod,
@@ -174,6 +175,7 @@ function RenderOzonKpi({ instance, onConfigChange }: BlockRenderProps) {
   );
   const [data, setData] = useState<OzonKpiResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  useReportBlockLoading(loading);
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
   const { markFetched, label: lastFetchedLabel, justUpdated } = useLastFetched();

@@ -29,6 +29,7 @@ import {
   type PeriodPreset,
   type PeriodValue,
 } from '@/components/blocks/period-picker';
+import { useReportBlockLoading } from '@/components/blocks/use-block-loading';
 import { OzonAccountSelector } from '@/components/marketplaces/ozon-account-selector';
 import { useBlockValuePublisher, formatPeriodKey } from '@/lib/blocks/values';
 import { useBlockPeriod } from '@/lib/blocks/use-block-period';
@@ -161,6 +162,7 @@ function RenderOzonAiInsights({ instance, onConfigChange }: BlockRenderProps) {
   const [kpi, setKpi] = useState<OzonKpiResponse | null>(null);
   const [analytics, setAnalytics] = useState<OzonAnalyticsResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  useReportBlockLoading(loading);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [reports, setReports] = useState<AiInsightReport[]>([]);

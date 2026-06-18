@@ -4,7 +4,7 @@
 // Мой магазин) seed'ятся при первом визите. Custom — любой набор блоков.
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react';
 import {
   Calculator,
   Table as TableIcon,
@@ -140,9 +140,13 @@ export function UnitEconomicsClient({
    * Wrapper над `setActive` который дополнительно синкает выбор в URL,
    * чтобы reload страницы оставался на выбранной вкладке.
    */
+  // useTransition: переключение вкладки ремоунтит BlockGrid (key=pageKey).
+  // Старый грид остаётся виден (приглушённым) пока новый коммитится — без блика.
+  // Маскирует render/commit, НЕ fetch блоков (их закрывают per-block скелетоны).
+  const [isTabPending, startTabTransition] = useTransition();
   const selectTab = useCallback(
     (id: string) => {
-      setActive(id);
+      startTabTransition(() => setActive(id));
       syncTabToUrl(tabs.find((t) => t.id === id));
     },
     [tabs],
@@ -335,12 +339,14 @@ export function UnitEconomicsClient({
       </div>
 
       {activeTab && (
-        <BlockGrid
-          key={activeTab.pageKey}
-          pageKey={activeTab.pageKey}
-          tenantId={tenantId}
-          initialBlocks={activeTab.blocks}
-        />
+        <div className={isTabPending ? 'pointer-events-none opacity-60 transition-opacity' : 'transition-opacity'}>
+          <BlockGrid
+            key={activeTab.pageKey}
+            pageKey={activeTab.pageKey}
+            tenantId={tenantId}
+            initialBlocks={activeTab.blocks}
+          />
+        </div>
       )}
 
       <CreateTabDialog

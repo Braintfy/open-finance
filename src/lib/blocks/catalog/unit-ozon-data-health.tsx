@@ -16,6 +16,7 @@ import {
 import { Card } from '@/components/ui/card';
 import { OzonAccountSelector } from '@/components/marketplaces/ozon-account-selector';
 import { useMarketplaceAccounts } from '@/lib/marketplaces/use-accounts';
+import { useReportBlockLoading } from '@/components/blocks/use-block-loading';
 import { useBlockValuePublisher } from '@/lib/blocks/values';
 import type {
   BlockDef,
@@ -44,6 +45,7 @@ function formatRelativeTime(iso: string | null): string {
 function RenderOzonDataHealth({ instance }: BlockRenderProps) {
   const config = useMemo(() => parseConfig(instance.config), [instance.config]);
   const { accounts, loading, error, reload } = useMarketplaceAccounts({ marketplace: 'ozon' });
+  useReportBlockLoading(loading);
   const account = accounts.find((a) => a.id === config.accountId);
 
   // Hook должен вызываться безусловно — поэтому считаем диагностику здесь,

@@ -153,6 +153,13 @@ export type BlockDef = {
    * `iconName` обычно подставляется автоматически через `withMeta()` в `registry.ts`.
    */
   iconName?: string;
+  /**
+   * Форма скелетона загрузки (строка, RSC-safe как iconName): 'stat' | 'kpiGrid'
+   * | 'chart' | 'table' | 'list' | 'calculator' | 'map' | 'generic'. Подставляется
+   * через `withMeta()` (SKELETON_VARIANT_BY_TYPE). Маппится в компонент в
+   * `block-skeleton.tsx` (client). Компонент-скелет в BlockDef НЕ кладём (RSC).
+   */
+  skeletonVariant?: string;
   defaultSize: { w: number; h: number };
   /** Минимум в ячейках grid (1x1 разрешено по умолчанию) */
   minSize: { w: number; h: number };

@@ -945,6 +945,7 @@ function BlockGridInner({
                 block={b}
                 currentPageKey={pageKey}
                 hasRelations={participatingIds.has(b.id)}
+                skeletonVariant={def.skeletonVariant}
                 onRemove={() => onRemoveBlock(b.id)}
                 onOpenSettings={() => setSettingsId(b.id)}
                 onOpenAi={() => setAiBlockId(b.id)}

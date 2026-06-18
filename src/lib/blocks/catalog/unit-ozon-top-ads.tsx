@@ -15,6 +15,7 @@ import {
   type PeriodPreset,
   type PeriodValue,
 } from '@/components/blocks/period-picker';
+import { useReportBlockLoading } from '@/components/blocks/use-block-loading';
 import { OzonAccountSelector } from '@/components/marketplaces/ozon-account-selector';
 import { useMarketplaceAccounts } from '@/lib/marketplaces/use-accounts';
 import { useBlockValuePublisher } from '@/lib/blocks/values';
@@ -92,6 +93,7 @@ function RenderOzonTopAds({ instance }: BlockRenderProps) {
   );
   const [data, setData] = useState<OzonTopAdsResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  useReportBlockLoading(loading);
   const [error, setError] = useState<string | null>(null);
   const { markFetched, label: lastFetchedLabel, justUpdated } = useLastFetched();
   const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({

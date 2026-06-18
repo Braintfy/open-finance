@@ -9,6 +9,7 @@ import { Warehouse } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { useBlockValuePublisher } from '@/lib/blocks/values';
 import { OzonAccountSelector } from '@/components/marketplaces/ozon-account-selector';
+import { useReportBlockLoading } from '@/components/blocks/use-block-loading';
 import type {
   BlockDef,
   BlockRenderProps,
@@ -31,6 +32,7 @@ function RenderOzonStockClusters({ instance }: BlockRenderProps) {
   const config = useMemo(() => parseConfig(instance.config), [instance.config]);
   const [data, setData] = useState<OzonStockClustersResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  useReportBlockLoading(loading);
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
 

@@ -3,10 +3,12 @@
 'use client';
 
 import { GripVertical, X, Settings2, Network, Sparkles } from 'lucide-react';
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
 import type { BlockAppearance, BlockInstance } from '@/lib/blocks/types';
 import { CrossPagePin } from './cross-page-pin';
+import { BlockSkeleton, type BlockSkeletonVariant } from './block-skeleton';
+import { BlockLoadingReporterProvider } from './use-block-loading';
 
 /** Задержка появления hover-контролов в обычном режиме (Notion = 0мс, мы ставим лёгкую задержку чтобы избежать мигания) */
 const HOVER_REVEAL_DELAY_MS = 250;
@@ -18,6 +20,7 @@ export function BlockChrome({
   block,
   currentPageKey,
   hasRelations,
+  skeletonVariant,
   onRemove,
   onOpenSettings,
   onOpenAi,
@@ -31,6 +34,8 @@ export function BlockChrome({
   currentPageKey?: string;
   /** Блок участвует в связях (source или target) — показать микро-иконку */
   hasRelations?: boolean;
+  /** Форма скелетона на ПЕРВУЮ загрузку (из BlockDef.skeletonVariant). */
+  skeletonVariant?: string;
   onRemove?: () => void;
   onOpenSettings?: () => void;
   /** Открыть AI микроагент в контексте этого блока */
@@ -38,6 +43,17 @@ export function BlockChrome({
 }) {
   const [hovered, setHovered] = useState(false);
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Контракт загрузки: блок репортит loading через useReportBlockLoading.
+  // Overlay-скелет показываем ТОЛЬКО на первую загрузку (renderedOnceRef) —
+  // refetch/смена периода оставляют родной in-block спиннер (и scroll/state).
+  const [loading, setLoading] = useState(false);
+  const renderedOnceRef = useRef(false);
+  const reportLoading = useCallback((l: boolean) => {
+    if (!l) renderedOnceRef.current = true;
+    setLoading((prev) => (prev === l ? prev : l));
+  }, []);
+  const showSkeleton = loading && !renderedOnceRef.current;
 
   useEffect(() => {
     return () => {
@@ -197,6 +213,19 @@ export function BlockChrome({
         className="pointer-events-auto absolute bottom-0 right-0 z-20 h-10 w-10 cursor-se-resize"
       />
 
+      {/*
+        Overlay-скелет первой загрузки. Сиблинг контента (НЕ внутри edit-mode
+        обёртки → не наследует ring/opacity). z-[5]: выше контента (z-auto), ниже
+        relations-иконки (z-10), hotzone'ов (z-15/20) и контролов (z-30).
+        pointer-events-none — не перехватывает hover/resize. bg-card перекрывает
+        родной спиннер блока под ним.
+      */}
+      {showSkeleton && (
+        <div className="pointer-events-none absolute inset-0 z-[5] overflow-hidden rounded-lg bg-card">
+          <BlockSkeleton variant={skeletonVariant as BlockSkeletonVariant | undefined} />
+        </div>
+      )}
+
       {/* Само содержимое блока. В edit mode — рамка + приглушённость + блокировка кликов */}
       <div
         className={
@@ -205,7 +234,7 @@ export function BlockChrome({
             : 'h-full w-full'
         }
       >
-        {children}
+        <BlockLoadingReporterProvider value={reportLoading}>{children}</BlockLoadingReporterProvider>
       </div>
     </div>
   );

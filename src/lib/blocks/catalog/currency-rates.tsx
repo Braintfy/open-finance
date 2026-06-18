@@ -34,6 +34,7 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { useBlockDensity } from '@/components/blocks/block-size';
+import { useReportBlockLoading } from '@/components/blocks/use-block-loading';
 import { useBlockValuePublisher } from '../values';
 import { cn } from '@/lib/utils';
 import type { CurrencyRate } from '@/lib/currency/types';
@@ -320,6 +321,7 @@ function RenderCurrencyRates({ instance }: BlockRenderProps) {
   const config = useMemo(() => parseConfig(instance.config), [instance.config]);
   const density = useBlockDensity();
   const { rates, lastUpdatedAt, loading, error, refresh } = useCurrencyRates();
+  useReportBlockLoading(loading);
   const accent = instance.appearance?.accentColor;
   const title = instance.appearance?.title ?? 'Курсы валют';
 

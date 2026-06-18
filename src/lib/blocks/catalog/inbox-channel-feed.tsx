@@ -36,6 +36,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { cn, formatDate } from '@/lib/utils';
 import { useBlockDensity } from '@/components/blocks/block-size';
+import { useReportBlockLoading } from '@/components/blocks/use-block-loading';
 import { useBlockValuePublisher } from '@/lib/blocks/values';
 import { sanitizeEmailHtml, buildEmailSrcDoc } from '@/lib/inbox/sanitize-html';
 import { cleanPreview, cleanPlainTextBody } from '@/lib/inbox/clean-text';
@@ -68,6 +69,7 @@ function RenderInboxChannelFeed({ instance }: BlockRenderProps) {
   const [messages, setMessages] = useState<InboxMessageDto[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  useReportBlockLoading(loading);
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const cfg = Config.parse(instance.config ?? {});
   const title = instance.appearance?.title ?? cfg.title;

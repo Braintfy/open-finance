@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { useLastFetched } from '@/lib/blocks/use-last-fetched';
+import { useReportBlockLoading } from '@/components/blocks/use-block-loading';
 import type { BlockDef, BlockRenderProps, BlockSettingsFormProps } from '../types';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -126,6 +127,7 @@ function RenderOzonAnalytics({ instance, onConfigChange }: BlockRenderProps) {
   );
   const [response, setResponse] = useState<OzonAnalyticsResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  useReportBlockLoading(loading);
   const [error, setError] = useState<string | null>(null);
   // v0.22.1: sync-модалка
   const [syncDialogOpen, setSyncDialogOpen] = useState(false);
