@@ -42,6 +42,23 @@ const nextConfig = {
   images: {
     unoptimized: !!process.env.TAURI_BUILD,
   },
+  // /app-префикс: старые пути (закладки, внешние ссылки) форвардим на /app/*.
+  // redirects() выполняется ДО middleware → неавторизованный заход на старый путь
+  // сначала форвардится на /app/*, затем middleware уводит на /login?next=/app/*.
+  // auth-страницы (/login,/register,...), лендинг / и /api/* НЕ редиректим (external/public).
+  async redirects() {
+    const pages = ['dashboard', 'cashflow', 'inbox', 'unit-economics', 'marketplace', 'onboarding'];
+    return [
+      ...pages.map((p) => ({ source: `/${p}`, destination: `/app/${p}`, permanent: false })),
+      { source: '/boards', destination: '/app/boards', permanent: false },
+      { source: '/boards/:path*', destination: '/app/boards/:path*', permanent: false },
+      { source: '/marketplaces/:path*', destination: '/app/marketplaces/:path*', permanent: false },
+      { source: '/settings', destination: '/app/settings', permanent: false },
+      { source: '/settings/:path*', destination: '/app/settings/:path*', permanent: false },
+      { source: '/admin', destination: '/app/admin', permanent: false },
+      { source: '/admin/:path*', destination: '/app/admin/:path*', permanent: false },
+    ];
+  },
   // Headers для безопасности
   async headers() {
     return [

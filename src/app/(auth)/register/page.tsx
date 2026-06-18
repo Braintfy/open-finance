@@ -34,7 +34,7 @@ export default function RegisterPage() {
         setLoading(false);
         return;
       }
-      router.push('/onboarding');
+      router.push('/app/onboarding');
       router.refresh();
     } catch {
       setError('Ошибка сети');

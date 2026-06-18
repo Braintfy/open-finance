@@ -3,7 +3,7 @@
 // в правом нижнем углу с прогрессом текущего стейджа.
 //
 // Видим на всех страницах приложения после mount'а в (app)/layout.tsx —
-// пользователь запускает sync с /settings/integrations или из header
+// пользователь запускает sync с /app/settings/integrations или из header
 // /marketplaces/ozon и видит прогресс не уходя со страницы дашборда.
 
 'use client';
@@ -165,7 +165,7 @@ function SyncJobCard({
           />
         </div>
         <Link
-          href="/settings/integrations"
+          href="/app/settings/integrations"
           className="mt-2 inline-flex items-center gap-0.5 text-[10px] text-primary hover:underline"
         >
           Подробнее <ChevronRight className="h-2.5 w-2.5" />

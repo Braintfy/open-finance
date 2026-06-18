@@ -84,7 +84,7 @@ export function SyncAllButton() {
   if (accounts.length === 0) {
     return (
       <Link
-        href="/settings/integrations"
+        href="/app/settings/integrations"
         className="inline-flex items-center gap-1 rounded-md border border-primary/40 bg-primary/5 px-2 py-1 text-[11px] font-medium text-primary hover:bg-primary/10"
       >
         Подключить Ozon

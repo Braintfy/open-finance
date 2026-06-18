@@ -104,7 +104,7 @@ const FIELD_DESCRIPTORS: FieldDescriptor[] = [
     key: 'salesPerMonth',
     label: 'Продаж/мес',
     source: 'COUNT(ozon_orders WHERE status=delivered AND order_created_at > 30d)',
-    note: 'Считается только при включённом стейдже «Заказы» в /settings/integrations.',
+    note: 'Считается только при включённом стейдже «Заказы» в /app/settings/integrations.',
     category: 'advanced',
   },
 ];
@@ -227,7 +227,7 @@ export function OzonSyncSettingsForm({
               Ни один Ozon-магазин не подключён.
             </div>
             <Link
-              href="/settings/integrations"
+              href="/app/settings/integrations"
               className="inline-flex items-center gap-1.5 text-[12px] font-medium text-primary hover:underline"
             >
               <LinkIcon className="h-3 w-3" />
@@ -421,7 +421,7 @@ export function OzonSyncSettingsForm({
         <div className="mt-1 flex items-start gap-1.5 rounded border border-border/40 bg-muted/20 p-2 text-[11px] text-muted-foreground">
           <Info className="mt-0.5 h-3 w-3 shrink-0" />
           <span>
-            Сначала выполняется синхронизация с Ozon (см. /settings/integrations),
+            Сначала выполняется синхронизация с Ozon (см. /app/settings/integrations),
             потом данные применяются к ячейкам блока согласно политике выше.
             Перед записью вы увидите предпросмотр изменений.
           </span>

@@ -163,16 +163,16 @@ export function useCrossPageRelations(
 
 /** href по pageKey для кликабельных ссылок в popover. Best-effort. */
 export function pageHref(pageKey: string): string {
-  if (pageKey === 'dashboard') return '/dashboard';
-  if (pageKey === 'cashflow') return '/cashflow';
-  if (pageKey === 'inbox') return '/inbox';
-  if (pageKey === 'taxes') return '/taxes';
-  if (pageKey === 'deadlines') return '/deadlines';
-  if (pageKey === 'settings') return '/settings';
+  if (pageKey === 'dashboard') return '/app/dashboard';
+  if (pageKey === 'cashflow') return '/app/cashflow';
+  if (pageKey === 'inbox') return '/app/inbox';
+  if (pageKey === 'taxes') return '/app/taxes';
+  if (pageKey === 'deadlines') return '/app/deadlines';
+  if (pageKey === 'settings') return '/app/settings';
   if (pageKey.startsWith('unit-economics-')) {
     const slug = pageKey.replace('unit-economics-', '');
-    return `/unit-economics/${slug}`;
+    return `/app/unit-economics/${slug}`;
   }
-  if (pageKey.startsWith('board-')) return `/boards/${pageKey.replace('board-', '')}`;
+  if (pageKey.startsWith('board-')) return `/app/boards/${pageKey.replace('board-', '')}`;
   return '#';
 }

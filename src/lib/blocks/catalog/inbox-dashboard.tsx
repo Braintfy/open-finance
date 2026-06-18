@@ -81,7 +81,7 @@ function RenderInboxDashboard({ instance }: BlockRenderProps) {
       'count=Кол-во писем,latestSubject=Тема последнего,latestSender=Отправитель последнего',
   });
 
-  const inboxHref = cfg.channelId ? `/inbox?channel=${cfg.channelId}` : '/inbox';
+  const inboxHref = cfg.channelId ? `/app/inbox?channel=${cfg.channelId}` : '/app/inbox';
 
   // xs: бейдж с числом
   if (density === 'xs') {
@@ -146,7 +146,7 @@ function RenderInboxDashboard({ instance }: BlockRenderProps) {
           <div className="flex h-full flex-col items-center justify-center text-center">
             <Inbox className="mb-1 h-5 w-5 text-muted-foreground/40" />
             <div className="text-xs text-muted-foreground">Нет писем</div>
-            <Link href="/inbox" className="mt-1 text-[10px] text-primary hover:underline">
+            <Link href="/app/inbox" className="mt-1 text-[10px] text-primary hover:underline">
               Подключить канал →
             </Link>
           </div>
@@ -154,7 +154,7 @@ function RenderInboxDashboard({ instance }: BlockRenderProps) {
           <ul className="space-y-1">
             {messages.slice(0, displayLimit).map((m) => (
               <li key={m.id} className="rounded p-1 hover:bg-muted/40">
-                <Link href={`/inbox?message=${m.id}`} className="block">
+                <Link href={`/app/inbox?message=${m.id}`} className="block">
                   <div className="flex items-baseline justify-between gap-1">
                     <span className="truncate text-[11px] font-medium">
                       {m.senderName ?? m.senderAddress ?? 'Без отправителя'}

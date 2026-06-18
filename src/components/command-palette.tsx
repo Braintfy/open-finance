@@ -69,7 +69,7 @@ export function CommandPalette() {
       icon: LayoutDashboard,
       group: 'Навигация',
       keywords: 'dashboard главная home',
-      onSelect: () => go('/dashboard'),
+      onSelect: () => go('/app/dashboard'),
     },
     {
       id: 'nav-cashflow',
@@ -77,7 +77,7 @@ export function CommandPalette() {
       icon: Wallet,
       group: 'Навигация',
       keywords: 'cashflow деньги доход расход',
-      onSelect: () => go('/cashflow'),
+      onSelect: () => go('/app/cashflow'),
     },
     {
       id: 'nav-unit-economics',
@@ -85,7 +85,7 @@ export function CommandPalette() {
       icon: Calculator,
       group: 'Навигация',
       keywords: 'юнит unit ozon озон яндекс маркет калькулятор маржа roi',
-      onSelect: () => go('/unit-economics'),
+      onSelect: () => go('/app/unit-economics'),
     },
     {
       id: 'nav-inbox',
@@ -93,7 +93,7 @@ export function CommandPalette() {
       icon: Inbox,
       group: 'Навигация',
       keywords: 'inbox входящие почта телеграм чеки документы',
-      onSelect: () => go('/inbox'),
+      onSelect: () => go('/app/inbox'),
     },
     {
       id: 'nav-boards',
@@ -101,7 +101,7 @@ export function CommandPalette() {
       icon: LayoutGrid,
       group: 'Навигация',
       keywords: 'boards доски проекты workspace',
-      onSelect: () => go('/boards'),
+      onSelect: () => go('/app/boards'),
     },
     {
       id: 'nav-deadlines',
@@ -109,7 +109,7 @@ export function CommandPalette() {
       icon: Calendar,
       group: 'Навигация',
       keywords: 'deadlines дедлайны календарь напоминания',
-      onSelect: () => go('/deadlines'),
+      onSelect: () => go('/app/deadlines'),
     },
     {
       id: 'nav-settings',
@@ -117,7 +117,7 @@ export function CommandPalette() {
       icon: Settings,
       group: 'Навигация',
       keywords: 'settings настройки',
-      onSelect: () => go('/settings'),
+      onSelect: () => go('/app/settings'),
     },
     // Actions
     {
@@ -126,7 +126,7 @@ export function CommandPalette() {
       icon: Plus,
       group: 'Действия',
       keywords: 'add transaction создать new транзакция',
-      onSelect: () => go('/cashflow?action=add'),
+      onSelect: () => go('/app/cashflow?action=add'),
     },
     {
       id: 'action-calculator',

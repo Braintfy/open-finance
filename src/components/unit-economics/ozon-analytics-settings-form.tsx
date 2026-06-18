@@ -116,7 +116,7 @@ export function OzonAnalyticsSettingsForm({
               Ни один Ozon-магазин не подключён.
             </div>
             <Link
-              href="/settings/integrations"
+              href="/app/settings/integrations"
               className="inline-flex items-center gap-1.5 text-[12px] font-medium text-primary hover:underline"
             >
               <LinkIcon className="h-3 w-3" />

@@ -10,12 +10,12 @@ export function welcomeEmail(input: { name?: string | null; appUrl: string }) {
         <p>Спасибо за регистрацию в <strong>Open Finance</strong>.</p>
         <p>Мы дали вам Pro на 14 дней без оплаты. После окончания триала ничего не спишется — просто часть функций перейдёт в Free.</p>
         <p style="margin:24px 0">
-          <a href="${input.appUrl}/dashboard" style="background:#18181b;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;display:inline-block">Открыть кабинет</a>
+          <a href="${input.appUrl}/app/dashboard" style="background:#18181b;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;display:inline-block">Открыть кабинет</a>
         </p>
         <p style="color:#71717a;font-size:13px">Если что-то не работает — ответьте на это письмо, мы починим.</p>
       </div>
     `,
-    text: `${greeting}\n\nСпасибо за регистрацию в Open Finance. Pro на 14 дней — без оплаты.\nКабинет: ${input.appUrl}/dashboard`,
+    text: `${greeting}\n\nСпасибо за регистрацию в Open Finance. Pro на 14 дней — без оплаты.\nКабинет: ${input.appUrl}/app/dashboard`,
   };
 }
 

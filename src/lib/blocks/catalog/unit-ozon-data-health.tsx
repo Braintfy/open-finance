@@ -106,7 +106,7 @@ function RenderOzonDataHealth({ instance }: BlockRenderProps) {
         <AlertTriangle className="h-5 w-5" />
         Ни один Ozon-магазин не подключён
         <Link
-          href="/settings/integrations"
+          href="/app/settings/integrations"
           className="text-[11px] text-primary hover:underline"
         >
           Подключить в Настройках → Интеграции →
@@ -131,7 +131,7 @@ function RenderOzonDataHealth({ instance }: BlockRenderProps) {
           Состояние данных · {account.name || account.clientId}
         </div>
         <Link
-          href="/settings/integrations"
+          href="/app/settings/integrations"
           className="text-[10px] text-primary hover:underline"
         >
           Открыть Интеграции →
@@ -179,7 +179,7 @@ function RenderOzonDataHealth({ instance }: BlockRenderProps) {
       </div>
       {!account.perfConnected && (
         <Link
-          href="/settings/integrations"
+          href="/app/settings/integrations"
           className="mt-3 inline-flex w-full items-center justify-center gap-1 rounded-md border border-primary/40 bg-primary/5 px-2 py-1.5 text-[11px] font-medium text-primary hover:bg-primary/10"
         >
           <RefreshCw className="h-3 w-3" />

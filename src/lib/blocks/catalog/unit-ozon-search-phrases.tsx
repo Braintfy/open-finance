@@ -370,7 +370,7 @@ function SearchPhrasesEmptyState({
         <AlertCircle className="h-5 w-5" />
         Для этого магазина не подключён Performance API
         <Link
-          href="/settings/integrations"
+          href="/app/settings/integrations"
           className="text-[11px] text-primary hover:underline"
         >
           Подключить в Настройках → Интеграции →

@@ -213,7 +213,7 @@ export function OzonSyncSection({
               <>
                 {' '}
                 <Link
-                  href="/settings/integrations"
+                  href="/app/settings/integrations"
                   className="text-primary hover:underline"
                 >
                   Подключить Performance API →

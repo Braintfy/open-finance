@@ -9,11 +9,11 @@ import { useState } from 'react';
 import type { BlockInstance } from '@/lib/blocks/types';
 
 const PAGE_LABELS: Record<string, { label: string; href: string }> = {
-  cashflow: { label: 'Денежный поток', href: '/cashflow' },
-  dashboard: { label: 'Дашборд', href: '/dashboard' },
-  taxes: { label: 'Налоги', href: '/taxes' },
-  inbox: { label: 'Входящие', href: '/inbox' },
-  deadlines: { label: 'Дедлайны', href: '/deadlines' },
+  cashflow: { label: 'Денежный поток', href: '/app/cashflow' },
+  dashboard: { label: 'Дашборд', href: '/app/dashboard' },
+  taxes: { label: 'Налоги', href: '/app/taxes' },
+  inbox: { label: 'Входящие', href: '/app/inbox' },
+  deadlines: { label: 'Дедлайны', href: '/app/deadlines' },
 };
 
 type Props = {

@@ -312,7 +312,7 @@ export const DEFAULT_LAYOUTS: Record<string, PageLayout> = {
         w: 4,
         h: 2,
         config: {
-          href: '/cashflow',
+          href: '/app/cashflow',
           title: 'Денежный поток',
           description: 'Доходы и расходы, импорт выписок',
           comingSoon: false,
@@ -336,7 +336,7 @@ export const DEFAULT_LAYOUTS: Record<string, PageLayout> = {
         w: 4,
         h: 2,
         config: {
-          href: '/deadlines',
+          href: '/app/deadlines',
           title: 'Дедлайны',
           description: 'Налоги, отчёты, обязательства',
           comingSoon: true,

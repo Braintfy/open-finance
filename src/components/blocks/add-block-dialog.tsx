@@ -310,7 +310,7 @@ function PickStep({
 
       <DialogFooter className="border-t pt-3 text-[11px] text-muted-foreground sm:justify-between">
         <Link
-          href="/marketplace"
+          href="/app/marketplace"
           className="inline-flex items-center gap-1 text-primary transition-colors hover:underline"
         >
           <Store className="h-3.5 w-3.5" />

@@ -164,7 +164,7 @@ export function OzonSyncButton({
   if (activeAccounts.length === 0) {
     return (
       <Link
-        href="/settings/integrations"
+        href="/app/settings/integrations"
         className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-background px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"
         title="Подключить Ozon Seller API в настройках"
       >

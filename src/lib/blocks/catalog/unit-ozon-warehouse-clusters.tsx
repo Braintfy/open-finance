@@ -178,7 +178,7 @@ function ClusterEmptyState({
         </div>
       )}
       <Link
-        href="/settings/integrations"
+        href="/app/settings/integrations"
         className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-card px-3 py-1.5 text-[11px] font-medium text-foreground hover:bg-accent"
       >
         Перейти в настройки синхронизации

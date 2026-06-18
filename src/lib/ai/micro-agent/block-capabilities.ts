@@ -171,7 +171,7 @@ export const BLOCK_CAPABILITIES: Record<string, BlockCapability> = {
     description: 'Ссылка на другую страницу/модуль.',
     canUpdate: true,
     configFormat: `{
-  "href": "/cashflow",
+  "href": "/app/cashflow",
   "title": "Денежный поток",
   "description": "Доходы и расходы",
   "comingSoon": false

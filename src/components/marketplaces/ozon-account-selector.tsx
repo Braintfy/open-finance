@@ -1,7 +1,7 @@
 // PURPOSE: Селектор Ozon-аккаунта для SettingsForm любого блока.
 // Использует useMarketplaceAccounts({ marketplace: 'ozon' }), показывает
 // статус подключения и Performance API в подписи. Если у пользователя
-// нет ни одного Ozon-аккаунта — рендерит CTA с ссылкой на /settings/integrations.
+// нет ни одного Ozon-аккаунта — рендерит CTA с ссылкой на /app/settings/integrations.
 
 'use client';
 
@@ -45,7 +45,7 @@ export function OzonAccountSelector({
         <div className="rounded-md border border-dashed border-border/60 p-3 text-[11px] text-muted-foreground">
           Нет подключённых магазинов.{' '}
           <Link
-            href="/settings/integrations"
+            href="/app/settings/integrations"
             className="font-medium text-primary hover:underline"
           >
             Подключить Ozon →
@@ -85,7 +85,7 @@ export function OzonAccountSelector({
             <>
               Performance API не подключён.{' '}
               <Link
-                href="/settings/integrations"
+                href="/app/settings/integrations"
                 className="text-primary hover:underline"
               >
                 Подключить →

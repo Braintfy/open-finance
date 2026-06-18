@@ -1,5 +1,5 @@
 // PURPOSE: Складная мини-инструкция «Где взять Client-Id и Api-Key Ozon».
-// Отображается в /settings/integrations и (компактнее) в CreateAccountDialog.
+// Отображается в /app/settings/integrations и (компактнее) в CreateAccountDialog.
 // Использует native <details> чтобы не тянуть отдельную Collapsible-обёртку.
 
 'use client';

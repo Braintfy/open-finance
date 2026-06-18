@@ -13,11 +13,23 @@ import { cn } from '@/lib/utils';
 import { useBlockDensity } from '@/components/blocks/block-size';
 
 const NavCardConfig = z.object({
-  href: z.string().default('/dashboard'),
+  href: z.string().default('/app/dashboard'),
   title: z.string().default('Раздел'),
   description: z.string().default(''),
   comingSoon: z.boolean().default(false),
 });
+
+// /app-префикс: старые nav-card'ы в БД хранят href без /app (напр. '/cashflow').
+// Нормализуем на рендере — страховка к разовой SQL-миграции block_layouts.
+// Внешние (http/mailto), лендинг '/', auth и /api — НЕ префиксуем.
+const NAV_HREF_PUBLIC_PREFIXES = ['/login', '/register', '/forgot-password', '/reset-password', '/api'];
+function normalizeNavHref(href: string): string {
+  if (!href.startsWith('/')) return href; // внешние и относительные
+  if (href === '/') return href; // лендинг
+  if (href === '/app' || href.startsWith('/app/')) return href; // уже мигрирован
+  if (NAV_HREF_PUBLIC_PREFIXES.some((p) => href === p || href.startsWith(p + '/'))) return href;
+  return `/app${href}`;
+}
 
 function RenderNavCard({ instance }: BlockRenderProps) {
   const cfg = NavCardConfig.parse(instance.config ?? {});
@@ -109,7 +121,7 @@ function RenderNavCard({ instance }: BlockRenderProps) {
 
   if (cfg.comingSoon) return inner;
   return (
-    <Link href={cfg.href} className="block h-full">
+    <Link href={normalizeNavHref(cfg.href)} className="block h-full">
       {inner}
     </Link>
   );
@@ -146,10 +158,10 @@ function NavCardSettings({ config, onChange }: BlockSettingsFormProps) {
           id="nav-href"
           value={cfg.href}
           onChange={(e) => set('href', e.target.value)}
-          placeholder="/cashflow"
+          placeholder="/app/cashflow"
         />
         <p className="text-[11px] text-muted-foreground">
-          Начните с <code>/</code> для внутреннего раздела, например <code>/cashflow</code>
+          Начните с <code>/</code> для внутреннего раздела, например <code>/app/cashflow</code>
         </p>
       </div>
       <div className="flex items-center justify-between rounded-md border p-2.5">
@@ -182,7 +194,7 @@ export const NavigateCardBlock: BlockDef = {
   pages: ['dashboard', '*'],
   configSchema: NavCardConfig,
   defaultConfig: () => ({
-    href: '/cashflow',
+    href: '/app/cashflow',
     title: 'Раздел',
     description: 'Описание раздела',
     comingSoon: false,
