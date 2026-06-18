@@ -132,6 +132,24 @@
 **Build-грабля:** после `rm -rf .next` первый `pnpm build` иногда падает с `PageNotFoundError: Cannot find module for page` на этапе «Collecting page data» (flaky worker) — повторный build с тёплым кэшем проходит. Не искать несуществующую ошибку, если typecheck зелёный.
 **Урок:** Проектируй «report» примитивы scope-нейтрально (section/block/page) с самого начала — тогда новый scope = новые билдеры контекста + новая таблица с доп. ключом, без дублирования парсера/типов/UI-карточек.
 
+### 2026-06-19 — `/app`-префикс: grep-аудит, а не typedRoutes, — настоящий гейт миграции путей
+
+**Контекст:** добавляли `/app` ко всем внутренним страницам (`(app)→app` сегмент).
+**Грабля 1 — typedRoutes НЕ ловит большинство:** `experimental.typedRoutes` включён только при `!isTurbo` (`next.config.mjs`) И валидирует лишь `Route`-типизированные JSX `<Link href>`-литералы. Хардкод-пути в `string`-конфигах (nav-массивы, `command-palette` `go()`, `pageHref(): string`, e-mail HTML, AI-промпт) типам невидимы. Настоящий гейт — grep: `['"\`]/(dashboard|cashflow|...)` (кавычка/бэктик + сразу `/имя-страницы` структурно исключает `/api/...` и `/app/...`).
+**Грабля 2 — функциональные пропуски вне кода:** `/cashflow` сидел в AI-промпте (`block-capabilities.ts` `configFormat`) → ИИ продолжил бы генерить мёртвые nav-card URL; и в e-mail `templates.ts` (plain HTML). Оба не ловятся ничем кроме grep по всему `src`.
+**Грабля 3 — переменные, собранные из путей:** `const inboxHref = cfg.channelId ? \`/inbox?...\` : '/inbox'` — `string`-переменная в `<Link>`, типы молчат. grep-аудит поймал.
+**Механизм:** `(app)` (route-group, без URL) → реальный сегмент `app/` даёт `/app/*` тем же `layout.tsx`. `next.config.redirects()` (выполняется ДО middleware) форвардит старые пути → закладки живы. Персистентные данные (nav-card `config.href` в jsonb) чиним и на рендере (`normalizeNavHref`), и разовым SQL — render-нормализация делает SQL некритичным.
+**Урок:** при массовой замене путевых литералов нельзя полагаться на типы/билд — обязателен grep-аудит по всему `src` (вкл. промпты/письма/string-конфиги), а персистентные пути в БД чинить нормализацией-на-рендере + опциональной миграцией.
+
+### 2026-06-19 — Скелетоны: route loading.tsx НЕ покрывает «холодный» вход, пока async-layout сам await'ит БД
+
+**Контекст:** глобальная система скелетонов загрузки (route `loading.tsx` + per-block overlay).
+**Грабля (нашёл адверсариальный критик):** `(app)/loading.tsx` — это fallback для **children** layout'а, но сам async `layout.tsx` рендерит эту Suspense-границу и обязан завершиться первым. Пока layout `await`'ит `auth()` + `loadLayout('nav')` + `listPinnedBoards()`, при **первом** (холодном) входе в сегмент пользователь видит старый экран, а не скелет. `loading.tsx` помогает только на навигации ВНУТРИ сегмента.
+**Фикс (B0):** статическую оболочку (сайдбар-рамка/хедер) рендерим сразу после дешёвого `auth()` (JWT, без БД); DB-зависимую навигацию выносим в async-компонент под `<Suspense>` со скелет-навигацией. Только тогда холодный вход показывает скелет мгновенно.
+**Грабля 2 — overlay-контракт:** per-block скелет-overlay в `BlockChrome` обязан быть `z-[5]` (выше контента z-auto, НИЖЕ relations-иконки z-10/hotzone'ов z-15-20/контролов z-30) + `pointer-events-none`, и быть **сиблингом** контент-обёртки (не внутри неё) — иначе наследует edit-mode `ring-dashed`/`opacity` и перекрывает hover-зоны.
+**Грабля 3 — overlay = no-op для server-fed блоков:** cashflow KPI/kpi.grid гидрируются данными из RSC-пропсов (`CashflowDataContext.loading` захардкожен `false`) → у них нет client-фазы загрузки, overlay никогда не сработает. Контракт `useReportBlockLoading` ставить ТОЛЬКО в client-fetch блоки (Ozon/inbox/currency).
+**Урок:** в App Router скелет под Suspense показывается, только если компонент, рендерящий границу, уже отрисовался — async-layout с БД-await'ами надо расшивать (static shell + Suspense на data-часть), иначе route `loading.tsx` бесполезен на холодном входе.
+
 ---
 
 ## Как использовать

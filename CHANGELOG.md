@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.42.0] - 2026-06-19
+
+### Added
+- **`/app`-префикс для всех внутренних страниц** — route-group `src/app/(app)/` превращён в реальный сегмент `src/app/app/` (`/cashflow` → `/app/cashflow` и т.д.). Auth-страницы (`/login`, `/register`, `/forgot-password`, `/reset-password`), лендинг `/` и `/api/*` остаются на корне (external/public). Мигрировано ~85 ссылок в 28 файлах: `middleware.ts` (`ADMIN_PATHS`, admin-fallback redirect), nav-массивы layout/admin, `command-palette`, `cross-page-pin`, `use-cross-page-relations.ts` (`pageHref()`), `navigate-card` (дефолты + placeholder), `registry.ts` (`DEFAULT_LAYOUTS`), `inbox-dashboard`, `add-block-dialog`, 14× Ozon-CTA «Подключить» (`/app/settings/integrations`), AI-промпт `block-capabilities.ts` (иначе ИИ генерил мёртвые nav-card URL), e-mail `templates.ts`. Логин-fallback и `next`-param round-trip → `/app/dashboard`.
+  - **`next.config.mjs` `redirects()`** — старые пути (`/dashboard`, `/cashflow`, `/boards/:path*`, `/settings/:path*`, `/admin/:path*`, …) форвардятся на `/app/*` (закладки/внешние ссылки не ломаются). `redirects()` выполняется ДО middleware → неавторизованный заход на старый путь сначала форвардится на `/app/*`, затем уводится на `/login?next=/app/*`.
+  - **Страховка nav-card href:** `normalizeNavHref()` в `navigate-card.tsx` нормализует старые href из БД (`/cashflow` → `/app/cashflow`) **на рендере** (внешние/auth/api/лендинг не трогает) + разовая data-миграция `drizzle/data/2026-06-19_app-prefix-navcards.sql` (идемпотентна, под jsonb `block_layouts.blocks`) приводит в порядок и сами данные.
+- **Глобальная система скелетонов загрузки** — устранены «зависший старый экран» при навигации и одинокие спиннеры в блоках.
+  - Примитивы: `ui/skeleton.tsx` (база, `animate-pulse bg-muted`, server-safe), `blocks/block-skeleton.tsx` (`'use client'`, density-aware формы `stat/kpiGrid/chart/table/list/calculator/map/generic`), `blocks/block-grid-skeleton.tsx` (статическая сетка для route-loading), `blocks/use-block-loading.ts` (контракт `useReportBlockLoading`).
+  - **Route-level `src/app/app/loading.tsx`** — при переходе в `<main>` сразу скелет-сетка вместо замороженного экрана.
+  - **Per-block overlay:** `skeletonVariant` (строка, RSC-safe как `iconName`) добавлен в `BlockDef`/`BLOCK_META`/`withMeta` + карта `SKELETON_VARIANT_BY_TYPE` (30 типов). `BlockChrome` показывает overlay-скелет нужной формы на **первую** загрузку (`z-[5]`, `pointer-events-none`, сиблинг контента — не наследует edit-mode ring/opacity; refetch/смена периода оставляют родной спиннер). 13 client-fetch блоков (Ozon ×11, inbox-feed, currency) репортят `loading` через `useReportBlockLoading`. Cashflow/kpi.grid исключены намеренно (гидрируются данными RSC → overlay был бы no-op).
+- **TanStack Query подключён** (`@tanstack/react-query` был в deps, но не использовался) — `QueryProvider` в корневом layout (`staleTime 60с`, `gcTime 5мин`, `refetchOnWindowFocus:false`).
+
+### Changed
+- **`src/app/app/layout.tsx` (B0, перф)** — статическая оболочка (сайдбар-рамка + хедер + main) рендерится сразу после дешёвого `auth()` (JWT, без БД). DB-зависимая навигация (`loadLayout('nav')` + `listPinnedBoards()`, теперь распараллелены через `Promise.all`) стримится в `<Suspense>` со скелет-навигацией → переход не блокирует весь экран.
+- **`useMarketplaceAccounts` → `useQuery`** (общий `queryKey ['marketplace-accounts', marketplace]`) — 5 одинаковых блоков на дашборде Ozon дают **один** запрос аккаунтов (был дубль ×5, без межблочного кэша). API совместим (`{ accounts, loading, error, reload }`).
+- **`useTransition` на переключении вкладок «Юнит-экономика»** — ремоунт `BlockGrid` (key=pageKey) больше не моргает: старый грид виден приглушённым пока новый коммитится. (Тоггл «Карта» не трогали — он уже ленивый `dynamic(ssr:false)` со своим fallback.)
+
+### Deferred
+- **Per-block `useQuery`-кэш тяжёлых Ozon-блоков (staleTime на сам контент аналитики/KPI/чарта)** отложен — это деликатный рефактор bespoke-фетча (AbortController + `useOzonSyncListener`-рефреш + period-гейт) в каждом блоке, рантайм которого (обновление после Sync, смена периода) проверяется только на живом сервере с реальными Ozon-данными. Низкая критичность: воспринимаемая медленность уже закрыта скелетонами + route-loading, дедуп аккаунтов сделан.
+
 ## [0.41.0] - 2026-06-11
 
 ### Added
