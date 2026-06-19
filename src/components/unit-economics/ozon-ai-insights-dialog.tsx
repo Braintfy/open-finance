@@ -26,10 +26,9 @@ import {
 import { Button } from '@/components/ui/button';
 import { InsightCard } from '@/components/unit-economics/ozon-insight-card';
 import { renderInlineMd } from '@/components/unit-economics/inline-md';
-import type {
-  Insight,
-  InsightKind,
-  InsightRecommendation,
+import {
+  parseAiInsightsReport,
+  type ParsedAiReport,
 } from '@/lib/blocks/catalog/unit-ozon-ai-insights-types';
 
 type StreamEvent =
@@ -38,81 +37,6 @@ type StreamEvent =
   | { type: 'done'; content: string; model?: string }
   | { type: 'error'; error: string }
   | { type: 'aborted' };
-
-type ParsedReport = { summary: string; insights: Insight[] };
-
-const VALID_TYPES = new Set(['positive', 'warning', 'danger', 'info']);
-const VALID_CATEGORIES = new Set(['revenue', 'ads', 'products', 'stock', 'returns', 'general']);
-const VALID_KINDS = new Set(['action', 'observation', 'opportunity', 'info']);
-
-function str(v: unknown, max: number): string | undefined {
-  return typeof v === 'string' && v.trim() ? v.slice(0, max) : undefined;
-}
-
-function parseRecommendation(v: unknown): InsightRecommendation | undefined {
-  if (!v || typeof v !== 'object') return undefined;
-  const r = v as Record<string, unknown>;
-  const action = str(r.action, 300);
-  const basis = str(r.basis, 500);
-  const expectedEffect = str(r.expectedEffect, 500);
-  if (!action && !basis && !expectedEffect) return undefined;
-  return { action: action ?? '', basis: basis ?? '', expectedEffect: expectedEffect ?? '' };
-}
-
-/** Достать первый JSON-объект из ответа (модель иногда оборачивает в ```json). */
-function extractJson(raw: string): ParsedReport | null {
-  if (!raw) return null;
-  let text = raw.trim();
-  // Снять markdown-обёртку.
-  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fence) text = fence[1].trim();
-  // Если есть лишний текст вокруг — взять от первой { до последней }.
-  const first = text.indexOf('{');
-  const last = text.lastIndexOf('}');
-  if (first === -1 || last === -1 || last <= first) return null;
-  const slice = text.slice(first, last + 1);
-  let obj: unknown;
-  try {
-    obj = JSON.parse(slice);
-  } catch {
-    return null;
-  }
-  if (!obj || typeof obj !== 'object') return null;
-  const o = obj as Record<string, unknown>;
-  const summary = typeof o.summary === 'string' ? o.summary : '';
-  const rawInsights = Array.isArray(o.insights) ? o.insights : [];
-  const insights: Insight[] = [];
-  for (const it of rawInsights) {
-    if (!it || typeof it !== 'object') continue;
-    const r = it as Record<string, unknown>;
-    const type = String(r.type ?? 'info');
-    const category = String(r.category ?? 'general');
-    const title = typeof r.title === 'string' ? r.title : '';
-    if (!title) continue;
-    const kind = typeof r.kind === 'string' && VALID_KINDS.has(r.kind) ? (r.kind as InsightKind) : undefined;
-    const tags = Array.isArray(r.tags)
-      ? r.tags.filter((t): t is string => typeof t === 'string' && !!t.trim()).map((t) => t.slice(0, 60)).slice(0, 4)
-      : undefined;
-    insights.push({
-      type: (VALID_TYPES.has(type) ? type : 'info') as Insight['type'],
-      category: (VALID_CATEGORIES.has(category) ? category : 'general') as Insight['category'],
-      kind,
-      title: title.slice(0, 300),
-      description: typeof r.description === 'string' ? r.description.slice(0, 2000) : '',
-      metric: typeof r.metric === 'string' ? r.metric.slice(0, 120) : undefined,
-      priority:
-        r.priority === 1 || r.priority === 2 || r.priority === 3
-          ? (r.priority as 1 | 2 | 3)
-          : undefined,
-      sku: str(r.sku, 120),
-      productName: str(r.productName, 300),
-      tags: tags && tags.length ? tags : undefined,
-      recommendation: parseRecommendation(r.recommendation),
-    });
-  }
-  if (!summary && insights.length === 0) return null;
-  return { summary, insights };
-}
 
 type Props = {
   open: boolean;
@@ -140,7 +64,7 @@ export function OzonAiInsightsDialog({
   const [query, setQuery] = useState('');
   const [streaming, setStreaming] = useState(false);
   const [raw, setRaw] = useState('');
-  const [parsed, setParsed] = useState<ParsedReport | null>(null);
+  const [parsed, setParsed] = useState<ParsedAiReport | null>(null);
   const [model, setModel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -234,7 +158,7 @@ export function OzonAiInsightsDialog({
           if (evt.type === 'done') {
             full = evt.content || full;
             setRaw(full);
-            const p = extractJson(full);
+            const p = parseAiInsightsReport(full);
             if (p) setParsed(p);
             else setError('Не удалось разобрать ответ ИИ. Попробуйте ещё раз.');
             setStreaming(false);
@@ -323,7 +247,10 @@ export function OzonAiInsightsDialog({
             </DialogDescription>
           </DialogHeader>
 
-          <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-contain p-4">
+          {/* transform:translateZ(0) — собственный GPU-слой: без него внутренний
+              скролл внутри fixed+translate(-50%) Radix-диалога даёт repaint-flash
+              контента при прокрутке на macOS (Chromium/WebKit). */}
+          <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-contain p-4 [transform:translateZ(0)]">
             <div className="space-y-1">
               <label className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                 Фокус анализа (необязательно)

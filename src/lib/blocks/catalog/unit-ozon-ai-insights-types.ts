@@ -882,3 +882,178 @@ export function filterInsightsByTab(
   if (tab === 'all') return insights;
   return insights.filter((ins) => resolveInsightKind(ins) === tab);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Парсинг ответа ИИ (контракт — один JSON-объект { summary, insights[] }).
+// Pure-функция: тестируется в scripts/test-ozon-ai-insights-parse.ts и
+// используется клиентской модалкой OzonAiInsightsDialog.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Результат парсинга ответа ИИ. */
+export type ParsedAiReport = { summary: string; insights: Insight[] };
+
+const VALID_INSIGHT_TYPES = new Set<string>(['positive', 'warning', 'danger', 'info']);
+const VALID_INSIGHT_CATEGORIES = new Set<string>([
+  'revenue',
+  'ads',
+  'products',
+  'stock',
+  'returns',
+  'general',
+]);
+const VALID_INSIGHT_KINDS = new Set<string>(['action', 'observation', 'opportunity', 'info']);
+
+function clampStr(v: unknown, max: number): string | undefined {
+  return typeof v === 'string' && v.trim() ? v.slice(0, max) : undefined;
+}
+
+function parseRecommendation(v: unknown): InsightRecommendation | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const r = v as Record<string, unknown>;
+  const action = clampStr(r.action, 300);
+  const basis = clampStr(r.basis, 500);
+  const expectedEffect = clampStr(r.expectedEffect, 500);
+  if (!action && !basis && !expectedEffect) return undefined;
+  return { action: action ?? '', basis: basis ?? '', expectedEffect: expectedEffect ?? '' };
+}
+
+/** Безопасный JSON.parse → объект-запись или null. */
+function safeParseObj(s: string): Record<string, unknown> | null {
+  try {
+    const o: unknown = JSON.parse(s);
+    return o && typeof o === 'object' && !Array.isArray(o) ? (o as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Подстрока сбалансированного {…}-объекта начиная с openIdx (там должна быть `{`).
+ * Уважает строки и escape. Возвращает [slice, endIndex] или null, если объект
+ * не закрылся (усечённый ответ модели).
+ */
+function balancedObjectAt(text: string, openIdx: number): [string, number] | null {
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = openIdx; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return [text.slice(openIdx, i + 1), i];
+    }
+  }
+  return null;
+}
+
+/** Все валидные top-level JSON-объекты в тексте (во вложенные не спускаемся). */
+function* topLevelObjects(text: string): Generator<Record<string, unknown>> {
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== '{') continue;
+    const bal = balancedObjectAt(text, i);
+    if (!bal) continue; // от этой `{` не закрылось — пробуем следующую
+    i = bal[1]; // перепрыгнуть за объект, чтобы не дублировать вложенные
+    const obj = safeParseObj(bal[0]);
+    if (obj) yield obj;
+  }
+}
+
+/** Распарсить один инсайт из произвольного объекта. Требует непустой title. */
+function parseInsight(r: Record<string, unknown>): Insight | null {
+  const title = typeof r.title === 'string' ? r.title : '';
+  if (!title) return null;
+  const type = String(r.type ?? 'info');
+  const category = String(r.category ?? 'general');
+  const kind =
+    typeof r.kind === 'string' && VALID_INSIGHT_KINDS.has(r.kind) ? (r.kind as InsightKind) : undefined;
+  const tags = Array.isArray(r.tags)
+    ? r.tags
+        .filter((t): t is string => typeof t === 'string' && !!t.trim())
+        .map((t) => t.slice(0, 60))
+        .slice(0, 4)
+    : undefined;
+  return {
+    type: (VALID_INSIGHT_TYPES.has(type) ? type : 'info') as InsightType,
+    category: (VALID_INSIGHT_CATEGORIES.has(category) ? category : 'general') as InsightCategory,
+    kind,
+    title: title.slice(0, 300),
+    description: typeof r.description === 'string' ? r.description.slice(0, 2000) : '',
+    metric: typeof r.metric === 'string' ? r.metric.slice(0, 120) : undefined,
+    priority:
+      r.priority === 1 || r.priority === 2 || r.priority === 3 ? (r.priority as 1 | 2 | 3) : undefined,
+    sku: clampStr(r.sku, 120),
+    productName: clampStr(r.productName, 300),
+    tags: tags && tags.length ? tags : undefined,
+    recommendation: parseRecommendation(r.recommendation),
+  };
+}
+
+/** Собрать отчёт из корневого объекта { summary, insights[] }. */
+function buildReport(o: Record<string, unknown>): ParsedAiReport | null {
+  const summary = typeof o.summary === 'string' ? o.summary : '';
+  const rawInsights = Array.isArray(o.insights) ? o.insights : [];
+  const insights: Insight[] = [];
+  for (const it of rawInsights) {
+    if (!it || typeof it !== 'object') continue;
+    const ins = parseInsight(it as Record<string, unknown>);
+    if (ins) insights.push(ins);
+  }
+  if (!summary && insights.length === 0) return null;
+  return { summary, insights };
+}
+
+/** Достать summary регуляркой — фолбэк, когда корневой объект оборвался. */
+function matchSummary(text: string): string | undefined {
+  const m = text.match(/"summary"\s*:\s*"((?:\\.|[^"\\])*)"/);
+  if (!m) return undefined;
+  try {
+    return JSON.parse(`"${m[1]}"`) as string;
+  } catch {
+    return m[1];
+  }
+}
+
+/**
+ * Извлечь отчёт из ответа ИИ. Терпимо к: markdown-обёртке (```json),
+ * преамбуле/эпилогу с посторонними скобками (модель иногда добавляет вступление
+ * вопреки инструкции — частая причина «не удалось разобрать» на первом запуске)
+ * и к усечённому JSON (модель не дописала ответ). Стратегии:
+ *  1) полноценный корневой объект { summary, insights } среди top-level объектов;
+ *  2) спасение — каждый сбалансированный объект с title как отдельный инсайт +
+ *     summary регуляркой (когда корень оборвался на полуслове).
+ * Возвращает null только если не нашлось ни summary, ни одного инсайта.
+ */
+export function parseAiInsightsReport(raw: string): ParsedAiReport | null {
+  if (!raw) return null;
+  let text = raw.trim();
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) text = fence[1].trim();
+
+  const objects = [...topLevelObjects(text)];
+
+  // 1) Полноценный отчёт.
+  for (const o of objects) {
+    if ('summary' in o || Array.isArray(o.insights)) {
+      const rep = buildReport(o);
+      if (rep) return rep;
+    }
+  }
+
+  // 2) Спасение из усечённого/«грязного» ответа.
+  const insights: Insight[] = [];
+  for (const o of objects) {
+    const ins = parseInsight(o);
+    if (ins) insights.push(ins);
+  }
+  const summary = matchSummary(text) ?? '';
+  if (!summary && insights.length === 0) return null;
+  return { summary, insights };
+}
