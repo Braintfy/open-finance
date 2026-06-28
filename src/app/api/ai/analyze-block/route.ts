@@ -7,6 +7,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { auth } from '@/lib/auth';
+import { rateLimit, rateLimitResponse } from '@/lib/rate-limit';
 import { db } from '@/lib/db/client';
 import { tenants } from '@/lib/db/schema/tenants';
 import { eq } from 'drizzle-orm';
@@ -100,6 +101,9 @@ export async function POST(req: NextRequest) {
     if (!session?.tenantId || !session.userId) {
       return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
     }
+
+    const aiLimit = await rateLimit({ key: `ai:analyze-block:tenant:${session.tenantId}`, limit: 20, windowSec: 60 });
+    if (!aiLimit.ok) return rateLimitResponse(aiLimit);
 
     const json = await req.json();
     const body = RequestSchema.safeParse(json);

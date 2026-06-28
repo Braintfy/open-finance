@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.43.0] - 2026-06-28
+
+### Security
+- **Rate-limiting `/api/auth/*` и `/api/ai/*` (C1/C2)** — новый `src/lib/rate-limit.ts` (fixed-window поверх `getRedis()`, Redis-ready). Auth: `login`/`register`/`forgot-password`/`reset-password` — per-IP 10/15мин + per-email 5/15мин → `429` с `Retry-After`. AI: `ai/chat`, `ai/analyze-block`, `ai/analyze-section`, `marketplaces/ozon/ai-insights` — per-tenant 20/мин. Закрывает брутфорс паролей и раздувание счёта платных AI-API.
+- **Санитизация 5xx-ошибок (C4)** — новый `src/lib/api-error.ts` (`internalError()`/`apiError()`). Устранена утечка `e.message` (тексты Postgres/Drizzle: имена таблиц/колонок/constraint) наружу в ~24 catch-блоках 21 роута (ozon/unit-economics/accounts/admin local-models/inbox). Наружу — нейтральное `Internal error`, детали только в серверный лог. Из `accounts` POST убран hint с `docker`/`db user`/путём к SQL. SSE/502-провайдер- и 4xx-диагностика интеграций оставлены намеренно.
+- **`docs/SECURITY_AUDIT.md`** — полный аудит безопасности перед запуском (чеклист A–I + приоритизированный план по фазам, baseline v0.42.1).
+
 ## [0.42.1] - 2026-06-19
 
 ### Fixed

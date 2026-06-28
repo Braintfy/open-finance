@@ -3,13 +3,19 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { confirmPasswordReset } from '@/lib/auth';
+import { rateLimit, rateLimitResponse, clientIp } from '@/lib/rate-limit';
 
 const Body = z.object({
   token: z.string().min(8, 'Некорректный токен'),
   password: z.string().min(8, 'Минимум 8 символов'),
 });
 
+const WINDOW_SEC = 15 * 60;
+
 export async function POST(req: Request) {
+  const ipLimit = await rateLimit({ key: `auth:reset:ip:${clientIp(req)}`, limit: 10, windowSec: WINDOW_SEC });
+  if (!ipLimit.ok) return rateLimitResponse(ipLimit);
+
   let parsed: z.infer<typeof Body>;
   try {
     parsed = Body.parse(await req.json());

@@ -40,7 +40,7 @@ export async function GET(req: Request) {
   } catch (e) {
     console.error('[marketplaces] GET /accounts failed:', e);
     return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : 'Failed to list accounts' },
+      { ok: false, error: 'Internal error' },
       { status: 500 },
     );
   }
@@ -86,14 +86,12 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true, account: toPublicAccount(account) });
   } catch (e) {
     console.error('[marketplaces] POST /accounts failed:', e);
-    const msg = e instanceof Error ? e.message : 'Failed to create account';
+    const msg = e instanceof Error ? e.message : '';
     const isMissingTable = /relation .*marketplace_accounts.* does not exist/i.test(msg);
     return NextResponse.json(
       {
         ok: false,
-        error: isMissingTable
-          ? 'Таблица marketplace_accounts не создана. Применить SQL: docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev < drizzle/init/07-marketplaces.sql'
-          : msg,
+        error: isMissingTable ? 'Сервис временно недоступен' : 'Internal error',
       },
       { status: isMissingTable ? 503 : 500 },
     );

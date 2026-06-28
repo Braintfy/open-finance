@@ -39,7 +39,7 @@ export async function GET(_req: Request, ctx: RouteCtx) {
   } catch (e) {
     console.error('[marketplaces] GET /accounts/[id]/jobs/[jobId] failed:', e);
     return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : 'Failed' },
+      { ok: false, error: 'Internal error' },
       { status: 500 },
     );
   }

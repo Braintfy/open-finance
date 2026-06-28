@@ -291,7 +291,7 @@ export async function GET(req: NextRequest) {
   } catch (e) {
     console.error('[marketplaces] GET /ozon/kpi failed:', e);
     return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : 'Failed' },
+      { ok: false, error: 'Internal error' },
       { status: 500 },
     );
   }

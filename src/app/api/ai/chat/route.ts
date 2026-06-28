@@ -4,6 +4,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { auth } from '@/lib/auth';
+import { rateLimit, rateLimitResponse } from '@/lib/rate-limit';
 import { resolvePromptStack } from '@/lib/ai/prompt-resolver';
 import { getActiveCredentials } from '@/lib/ai/user-keys';
 import { db } from '@/lib/db/client';
@@ -282,6 +283,9 @@ export async function POST(req: Request) {
   if (!session?.tenantId) {
     return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
   }
+
+  const aiLimit = await rateLimit({ key: `ai:chat:tenant:${session.tenantId}`, limit: 20, windowSec: 60 });
+  if (!aiLimit.ok) return rateLimitResponse(aiLimit);
 
   const json = await req.json();
   const body = RequestSchema.safeParse(json);

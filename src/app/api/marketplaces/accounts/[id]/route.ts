@@ -32,7 +32,7 @@ export async function GET(_req: Request, ctx: RouteCtx) {
   } catch (e) {
     console.error('[marketplaces] GET /accounts/[id] failed:', e);
     return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : 'Failed' },
+      { ok: false, error: 'Internal error' },
       { status: 500 },
     );
   }
@@ -66,7 +66,7 @@ export async function PATCH(req: Request, ctx: RouteCtx) {
   } catch (e) {
     console.error('[marketplaces] PATCH /accounts/[id] failed:', e);
     return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : 'Failed' },
+      { ok: false, error: 'Internal error' },
       { status: 500 },
     );
   }
@@ -84,7 +84,7 @@ export async function DELETE(_req: Request, ctx: RouteCtx) {
   } catch (e) {
     console.error('[marketplaces] DELETE /accounts/[id] failed:', e);
     return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : 'Failed' },
+      { ok: false, error: 'Internal error' },
       { status: 500 },
     );
   }

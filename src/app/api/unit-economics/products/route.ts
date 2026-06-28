@@ -207,7 +207,7 @@ export async function GET(req: NextRequest) {
   } catch (e) {
     console.error('[unit-economics] GET /products failed:', e);
     return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : 'Failed' },
+      { ok: false, error: 'Internal error' },
       { status: 500 },
     );
   }
@@ -248,7 +248,7 @@ export async function POST(req: NextRequest) {
   } catch (e) {
     console.error('[unit-economics] POST /products failed:', e);
     return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : 'Failed' },
+      { ok: false, error: 'Internal error' },
       { status: 500 },
     );
   }

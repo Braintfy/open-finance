@@ -70,7 +70,7 @@ export async function POST(_req: Request, ctx: RouteCtx) {
   } catch (e) {
     console.error('[marketplaces] POST /accounts/[id]/test failed:', e);
     return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : 'Failed' },
+      { ok: false, error: 'Internal error' },
       { status: 500 },
     );
   }

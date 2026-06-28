@@ -2,6 +2,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { auth } from '@/lib/auth';
+import { internalError } from '@/lib/api-error';
 import { createOrUpdateEmailChannel, listInboxChannels } from '@/lib/inbox/queries';
 
 export const runtime = 'nodejs';
@@ -62,9 +63,7 @@ export async function POST(req: Request) {
     });
     return NextResponse.json({ ok: true, channel });
   } catch (e) {
-    return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : 'Failed to save channel' },
-      { status: 500 },
-    );
+    console.error('[inbox] POST /channels failed:', e);
+    return internalError();
   }
 }

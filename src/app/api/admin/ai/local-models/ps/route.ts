@@ -19,7 +19,7 @@ export async function GET() {
     return NextResponse.json({ ok: true, ollamaAvailable: true, running });
   } catch (e) {
     return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : 'Failed' },
+      { ok: false, error: 'Internal error' },
       { status: 500 }
     );
   }
