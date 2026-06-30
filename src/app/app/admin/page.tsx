@@ -22,6 +22,7 @@ export default async function AdminPage() {
       <div className="mt-8 grid gap-4 md:grid-cols-2">
         <Section title="Пользователи и доступ" links={[
           { href: '/app/admin/users', label: 'Список пользователей' },
+          { href: '/app/admin/deletion-requests', label: 'Заявки на удаление аккаунтов (152-ФЗ)' },
           { href: '/app/admin/settings', label: 'Открытая регистрация / by-invite' },
         ]} />
         <Section title="AI и инфраструктура" links={[

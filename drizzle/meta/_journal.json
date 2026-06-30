@@ -64,6 +64,13 @@
       "when": 1780389820981,
       "tag": "0008_violet_leper_queen",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1782759484692,
+      "tag": "0009_conscious_squirrel_girl",
+      "breakpoints": true
     }
   ]
 }

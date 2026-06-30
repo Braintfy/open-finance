@@ -15,6 +15,7 @@ export default function RegisterPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
+  const [consent, setConsent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -26,7 +27,7 @@ export default function RegisterPage() {
       const res = await fetch('/api/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, name }),
+        body: JSON.stringify({ email, password, name, consent }),
       });
       const data = await res.json();
       if (!data.ok) {
@@ -89,13 +90,37 @@ export default function RegisterPage() {
               />
             </div>
 
+            <div className="flex items-start gap-2">
+              <input
+                id="consent"
+                type="checkbox"
+                checked={consent}
+                onChange={(e) => setConsent(e.target.checked)}
+                className="mt-0.5 h-4 w-4 shrink-0 rounded border-input accent-primary"
+              />
+              <Label
+                htmlFor="consent"
+                className="text-sm font-normal leading-snug text-muted-foreground"
+              >
+                Я согласен с{' '}
+                <Link
+                  href="/privacy"
+                  target="_blank"
+                  className="font-medium text-foreground hover:underline"
+                >
+                  политикой конфиденциальности
+                </Link>{' '}
+                и обработкой персональных данных
+              </Label>
+            </div>
+
             {error && (
               <Alert variant="destructive">
                 <AlertDescription>{error}</AlertDescription>
               </Alert>
             )}
 
-            <Button type="submit" disabled={loading} className="w-full">
+            <Button type="submit" disabled={loading || !consent} className="w-full">
               {loading ? 'Создаём…' : 'Создать аккаунт'}
             </Button>
           </form>

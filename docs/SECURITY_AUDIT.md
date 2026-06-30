@@ -130,12 +130,12 @@
 
 > Отмечай `[x]` по мере выполнения. Каждая фаза = отдельный коммит(ы) + запись в `CHANGELOG.md`.
 
-### Фаза 1 — 🔴 Критично (блокеры публичного запуска) — статус: 🟡 C1/C2/C4 done, C3 pending
+### Фаза 1 — 🔴 Критично (блокеры публичного запуска) — статус: ✅ done (C1/C2/C3/C4)
 - [x] **C1** rate-limit на `/api/auth/*` (per-IP 10/15м + per-email 5/15м) — ✔️ `src/lib/rate-limit.ts` + login/register/forgot-password/reset-password
 - [x] **C2** rate-limit на `/api/ai/*` (per-tenant 20/мин) — ✔️ chat / analyze-block / analyze-section / ozon ai-insights
 - [x] **C4** санитизация 5xx (`internalError()`/`apiError()` в `src/lib/api-error.ts`) — ✔️ 24 блока в 21 файле + accounts (GET/POST, убран docker/db/path-hint) + inbox/channels (+лог)
-- [ ] **C3** privacy policy + согласие при регистрации + удаление аккаунта/AI-памяти — **следующая под-фаза (Фаза 1b)**
-- **Done-критерий:** перебор пароля и спам AI-запросов отбиваются 429 ✔️; ответы API не содержат внутренних сообщений ✔️; регистрация требует согласия (C3); есть рабочее удаление аккаунта (C3).
+- [x] **C3** privacy policy + согласие при регистрации + удаление аккаунта/AI-данных — ✔️ публичная `/privacy` (+`src/lib/legal.ts`, `PUBLIC_PATHS`), обязательный чекбокс на `/register` + `users.consent_version/at`, self-service «Опасная зона» (`/api/account/{deletion-request,ai-data}`), очередь super_admin `/app/admin/deletion-requests` + `/api/admin/deletion-requests`, каскадное удаление tenant+user (`account_deletion_requests`, drizzle 0009 / init 15)
+- **Done-критерий:** перебор пароля и спам AI-запросов отбиваются 429 ✔️; ответы API не содержат внутренних сообщений ✔️; регистрация требует согласия ✔️ (C3); есть рабочее удаление аккаунта ✔️ (C3, ручное подтверждение super_admin).
 - **Примечание:** дневной бюджет токенов на AI и diagnostics-4xx (inbox/test, account/test) оставлены намеренно; вынос лимитеров в Redis — H2 (Фаза 3).
 
 ### Фаза 2 — 🟡 Важно (hardening до прод-нагрузки) — статус: ⏳
@@ -172,3 +172,4 @@
 |---|---|---|---|---|
 | 2026-06-28 | — | Первичный аудит, составлен список и план | — | AI (Cascade) |
 | 2026-06-28 | Фаза 1a (C1/C2/C4) | rate-limit auth (4 роута) + AI (4 роута); санитизация 5xx-утечек `e.message` (21 файл / 24 блока + accounts + inbox); новые `src/lib/rate-limit.ts`, `src/lib/api-error.ts`; `pnpm typecheck` ✅ | (pending) | AI (Cascade) |
+| 2026-06-29 | Фаза 1b (C3) | privacy `/privacy` + consent-чекбокс (`users.consent_version/at`) + удаление аккаунта: `account_deletion_requests` (drizzle 0009 / init 15), queries `src/lib/account/deletion-queries.ts`, self-service settings danger-zone, админка `/app/admin/deletion-requests`, `clearUserAiData`; `pnpm typecheck` ✅ | (pending) | AI (Cascade) |

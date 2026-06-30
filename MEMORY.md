@@ -310,6 +310,14 @@ docs/memory-archive/      исторические разделы MEMORY.md (п�
 - Приоритет credentials: `user_ai_credentials (enabled) > tenants.settings.aiExternal > Ollama`.
 - `parseAction()` понимает fenced/unfenced JSON, `update_block`, `create_block`, `text_only`.
 
+## Аккаунт / 152-ФЗ (краткая навигация, v0.44.0)
+
+- **Согласие на ПДн:** `users.consent_version`/`consent_at`; версия и реквизиты оператора (плейсхолдеры!) — `src/lib/legal.ts` (`PRIVACY_POLICY_VERSION`). Обязательный чекбокс на `/register` + валидация `consent` в `/api/auth/register` → пишется в `register()` action.
+- **Privacy policy:** публичная `/privacy` (`src/app/privacy/page.tsx`), добавлена в `PUBLIC_PATHS` middleware.
+- **Удаление аккаунта (ручное подтверждение super_admin):** таблица `account_deletion_requests` (FK `SET NULL` + email-снапшот → строка-аудит переживает удаление), queries `src/lib/account/deletion-queries.ts`. Self-service — settings `danger-zone.tsx` + `/api/account/{deletion-request,ai-data}`. Очередь — `/app/admin/deletion-requests` + `/api/admin/deletion-requests` (POST=super_admin, каскад tenant+user через FK CASCADE).
+- **Очистка AI-данных:** `clearUserAiData()` — отчёты блоков/разделов + Ozon AI-инсайты + BYOK (`user_ai_credentials`), скоуп tenant+user.
+- **Миграция:** `drizzle/0009_conscious_squirrel_girl.sql` / `drizzle/init/15-account-deletion.sql` (НЕ применять автоматически — команды пользователю).
+
 ## Marketplace Integrations (краткая навигация)
 
 - **Foundation (v0.17.0):** `src/lib/db/schema/marketplaces.ts`, `src/lib/marketplaces/{types,crypto,queries}.ts`, `src/lib/marketplaces/ozon/{client,endpoints,types,upsert,upsert-plan}.ts`, `sync/{products,prices,stocks,orders,realization,transactions,turnover,analytics-data,clusters,warehouse-stocks,perf-{campaigns,sku-stats,cpo-daily,expense-daily}}.ts`.

@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.44.0] - 2026-06-29
+
+### Added
+- **152-ФЗ: согласие на обработку ПДн + удаление аккаунта (C3)** — закрыт последний 🔴-блокер Фазы 1 аудита (`docs/SECURITY_AUDIT.md`).
+  - **Политика конфиденциальности** — публичная страница `/privacy` (`src/app/privacy/page.tsx`, шаблон 152-ФЗ с плейсхолдерами оператора), добавлена в `PUBLIC_PATHS` middleware. Версия и реквизиты оператора вынесены в `src/lib/legal.ts` (`PRIVACY_POLICY_VERSION` → фиксируется в согласии).
+  - **Согласие при регистрации** — обязательный чекбокс на `/register` со ссылкой на `/privacy` (submit заблокирован без него) + серверная валидация поля `consent` в `/api/auth/register`; факт согласия пишется в `users.consent_version`/`consent_at` (`register()` action).
+  - **Self-service в Настройках** — раздел «Опасная зона» (`src/app/app/settings/danger-zone.tsx`): «Удалить все AI-данные» (отчёты блоков/разделов, Ozon AI-инсайты, BYOK-ключи — `POST /api/account/ai-data`) и «Запросить удаление аккаунта» (`/api/account/deletion-request` GET/POST/DELETE). Подтверждения — `AlertDialog` (без системных `confirm`).
+  - **Обработка заявок (super_admin)** — очередь в админке `/app/admin/deletion-requests` + API `/api/admin/deletion-requests` (GET список / POST выполнить|отклонить). «Выполнить» — каскадное физическое удаление `tenant`+`user` (FK `ON DELETE CASCADE`); строка-аудит с email-снапшотом переживает удаление (FK `SET NULL`). Просмотр — admin|super_admin, обработка — только super_admin.
+  - **Queries-слой** `src/lib/account/deletion-queries.ts` — `create/get/cancel/list/process` заявок + `clearUserAiData` (скоуп `tenant`+`user`).
+
+### Migration
+- **`drizzle/0009_conscious_squirrel_girl.sql` + `drizzle/init/15-account-deletion.sql`** — колонки `users.consent_version`/`consent_at` и таблица `account_deletion_requests`. Применение (НЕ автозапуск): `pnpm db:push` (dev) либо `docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev < drizzle/init/15-account-deletion.sql`.
+
 ## [0.43.0] - 2026-06-28
 
 ### Security

@@ -27,6 +27,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useFormatSettings } from '@/lib/format-settings';
+import { DangerZone } from './danger-zone';
 
 type NavItem = {
   key: string;
@@ -207,6 +208,8 @@ export function SettingsClient({
       <AiSettingsLink />
 
       <FormatSection />
+
+      <DangerZone />
     </div>
   );
 }

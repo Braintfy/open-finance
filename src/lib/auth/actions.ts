@@ -20,6 +20,8 @@ export type RegisterInput = {
   email: string;
   password: string;
   name?: string;
+  /** Версия политики конфиденциальности, с которой согласился пользователь (152-ФЗ). */
+  consentVersion?: string;
 };
 
 export type LoginInput = {
@@ -68,7 +70,13 @@ export async function register(input: RegisterInput): Promise<AuthResult> {
     result = await db.transaction(async (tx) => {
       const [user] = await tx
         .insert(users)
-        .values({ email, passwordHash, name: input.name?.trim() || null })
+        .values({
+          email,
+          passwordHash,
+          name: input.name?.trim() || null,
+          consentVersion: input.consentVersion ?? null,
+          consentAt: input.consentVersion ? new Date() : null,
+        })
         .returning({ id: users.id, globalRole: users.globalRole });
 
       const tenantSlug = `${makeSlug(email)}-${Math.random().toString(36).slice(2, 6)}`;
