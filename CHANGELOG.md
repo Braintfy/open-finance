@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.46.0] - 2026-07-01
+
+### Security
+- **Yandex SmartCaptcha на формах входа/регистрации/сброса (I6)** — закрыт последний пункт Фазы 2 аудита (`docs/SECURITY_AUDIT.md`).
+  - **Виджет** `src/components/captcha/smart-captcha.tsx` — грузит `captcha.js?render=onload`, `window.smartCaptcha.render` (`hl:'ru'`), одноразовый токен → форма; ремонт виджета через `key` при ошибке отправки. Рендерится только если задан `NEXT_PUBLIC_YANDEX_SMARTCAPTCHA_CLIENT_KEY` (иначе капча выключена — dev без изменений).
+  - **Серверная проверка** `src/lib/security/captcha.ts` — `verifyCaptcha()` → `POST https://smartcaptcha.cloud.yandex.ru/validate` (`x-www-form-urlencoded` secret/token/ip, timeout 5с). Fail-open при недоступности сервиса/не-200, fail-closed при вердикте «робот» или отсутствии токена.
+  - **Роуты** `/api/auth/register|login|forgot-password` — принимают `captchaToken`, проверяют ПОСЛЕ rate-limit (C1) и до бизнес-логики; при провале — 400 с нейтральным сообщением.
+  - **Формы** register/login/forgot — виджет + блокировка submit до прохождения (когда капча включена) + сброс токена на ошибке.
+  - **Env:** `YANDEX_SMARTCAPTCHA_SERVER_KEY` (server, `src/lib/env.ts`) + `NEXT_PUBLIC_YANDEX_SMARTCAPTCHA_CLIENT_KEY` (client). Задокументированы в `.env.example`. Инструкция — `docs/SMARTCAPTCHA.md`.
+
+### Notes
+- Капча опциональна: без ключей выключена. `NEXT_PUBLIC_*` вшивается в бандл на сборке → после задания ключей нужен `pnpm build`/рестарт.
+
 ## [0.45.0] - 2026-07-01
 
 ### Security

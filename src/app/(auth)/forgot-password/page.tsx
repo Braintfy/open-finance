@@ -3,22 +3,44 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import { SmartCaptcha, captchaEnabled } from '@/components/captcha/smart-captcha';
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState('');
   const [done, setDone] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [captchaToken, setCaptchaToken] = useState('');
+  const [captchaKey, setCaptchaKey] = useState(0);
+  function resetCaptcha() {
+    setCaptchaToken('');
+    setCaptchaKey((k) => k + 1);
+  }
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
+    setError(null);
     setLoading(true);
-    await fetch('/api/auth/forgot-password', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email }),
-    });
-    setDone(true);
-    setLoading(false);
+    try {
+      const res = await fetch('/api/auth/forgot-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, captchaToken }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setError(data.error || 'Не удалось отправить. Попробуйте позже.');
+        setLoading(false);
+        resetCaptcha();
+        return;
+      }
+      setDone(true);
+      setLoading(false);
+    } catch {
+      setError('Ошибка сети');
+      setLoading(false);
+      resetCaptcha();
+    }
   }
 
   return (
@@ -44,9 +66,13 @@ export default function ForgotPasswordPage() {
               placeholder="you@example.com"
               autoFocus
             />
+            {error && <p className="text-sm text-red-600">{error}</p>}
+
+            <SmartCaptcha key={captchaKey} onVerify={setCaptchaToken} />
+
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || (captchaEnabled && !captchaToken)}
               className="w-full rounded-md bg-zinc-900 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50"
             >
               {loading ? 'Отправляем…' : 'Отправить ссылку'}

@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { signUp } from '@/lib/auth';
 import { rateLimit, rateLimitResponse, clientIp } from '@/lib/rate-limit';
 import { PRIVACY_POLICY_VERSION } from '@/lib/legal';
+import { verifyCaptcha } from '@/lib/security/captcha';
 
 const Body = z.object({
   email: z.string().email('Некорректный email'),
@@ -14,6 +15,7 @@ const Body = z.object({
     .refine((v) => v === true, {
       message: 'Необходимо согласие с политикой конфиденциальности',
     }),
+  captchaToken: z.string().optional(),
 });
 
 const WINDOW_SEC = 15 * 60;
@@ -32,6 +34,13 @@ export async function POST(req: Request) {
   if (!ipLimit.ok) return rateLimitResponse(ipLimit);
   const emailLimit = await rateLimit({ key: `auth:register:email:${email}`, limit: 5, windowSec: WINDOW_SEC });
   if (!emailLimit.ok) return rateLimitResponse(emailLimit);
+
+  if (!(await verifyCaptcha(parsed.captchaToken, clientIp(req)))) {
+    return NextResponse.json(
+      { ok: false, error: 'Не пройдена проверка «я не робот». Обновите страницу и попробуйте снова.' },
+      { status: 400 },
+    );
+  }
 
   const result = await signUp({
     email: parsed.email,

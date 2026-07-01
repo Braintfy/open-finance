@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { SmartCaptcha, captchaEnabled } from '@/components/captcha/smart-captcha';
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -18,6 +19,12 @@ export default function RegisterPage() {
   const [consent, setConsent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [captchaToken, setCaptchaToken] = useState('');
+  const [captchaKey, setCaptchaKey] = useState(0);
+  function resetCaptcha() {
+    setCaptchaToken('');
+    setCaptchaKey((k) => k + 1);
+  }
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -27,12 +34,13 @@ export default function RegisterPage() {
       const res = await fetch('/api/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, name, consent }),
+        body: JSON.stringify({ email, password, name, consent, captchaToken }),
       });
       const data = await res.json();
       if (!data.ok) {
         setError(data.error || 'Не удалось зарегистрироваться');
         setLoading(false);
+        resetCaptcha();
         return;
       }
       router.push('/app/onboarding');
@@ -40,6 +48,7 @@ export default function RegisterPage() {
     } catch {
       setError('Ошибка сети');
       setLoading(false);
+      resetCaptcha();
     }
   }
 
@@ -120,7 +129,13 @@ export default function RegisterPage() {
               </Alert>
             )}
 
-            <Button type="submit" disabled={loading || !consent} className="w-full">
+            <SmartCaptcha key={captchaKey} onVerify={setCaptchaToken} />
+
+            <Button
+              type="submit"
+              disabled={loading || !consent || (captchaEnabled && !captchaToken)}
+              className="w-full"
+            >
               {loading ? 'Создаём…' : 'Создать аккаунт'}
             </Button>
           </form>

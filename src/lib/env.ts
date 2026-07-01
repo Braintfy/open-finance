@@ -72,6 +72,11 @@ const envSchema = z.object({
   // используется INBOX_SECRET_KEY (обратная совместимость с уже зашифрованными кредами).
   MARKETPLACE_SECRET_KEY: z.string().optional().or(z.literal('')),
 
+  // Yandex SmartCaptcha (I6) — серверный ключ для проверки токена. Если пусто —
+  // капча выключена. Публичный client-key живёт на клиенте как
+  // NEXT_PUBLIC_YANDEX_SMARTCAPTCHA_CLIENT_KEY (см. src/components/captcha).
+  YANDEX_SMARTCAPTCHA_SERVER_KEY: z.string().optional().or(z.literal('')),
+
   // Feature flags
   FEATURE_OPEN_REGISTRATION: z
     .string()
@@ -129,6 +134,7 @@ export const env = envSchema.parse({
   APP_URL: process.env.APP_URL,
   INBOX_SECRET_KEY: process.env.INBOX_SECRET_KEY,
   MARKETPLACE_SECRET_KEY: process.env.MARKETPLACE_SECRET_KEY,
+  YANDEX_SMARTCAPTCHA_SERVER_KEY: process.env.YANDEX_SMARTCAPTCHA_SERVER_KEY,
   FEATURE_OPEN_REGISTRATION: process.env.FEATURE_OPEN_REGISTRATION,
   FEATURE_ONBOARDING_WIZARD: process.env.FEATURE_ONBOARDING_WIZARD,
   FEATURE_BILLING_MOCK: process.env.FEATURE_BILLING_MOCK,

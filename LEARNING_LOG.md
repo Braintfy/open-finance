@@ -168,6 +168,14 @@
 
 ---
 
+### 2026-07-01 — SmartCaptcha: client-key вшивается на сборке + одноразовый токен
+
+**Контекст:** I6 — интеграция Yandex SmartCaptcha на формы auth (`src/components/captcha/smart-captcha.tsx`, `src/lib/security/captcha.ts`).
+**Грабля:** (1) `NEXT_PUBLIC_YANDEX_SMARTCAPTCHA_CLIENT_KEY` не подхватывался без пересборки; (2) после ошибочного submit повторная отправка падала бы с «Invalid or expired Token».
+**Причина:** (1) `NEXT_PUBLIC_*` инлайнится в бандл на этапе `next build`, не в рантайме; (2) токен SmartCaptcha одноразовый (TTL 5 мин) — переиспользование → `status: failed`.
+**Фикс:** (1) документировать «после смены ключей — `pnpm build`/рестарт» (`docs/SMARTCAPTCHA.md`); (2) ремонт виджета сменой `key` + сброс `captchaToken` во всех ветках ошибки формы. Серверная проверка fail-open при недоступности Yandex, fail-closed при вердикте «робот».
+**Урок:** капча опциональна (нет ключа → выключена); client-key публичен by design, секрет — только server-key; токен одноразовый — сбрасывать виджет на любой ошибке отправки.
+
 ## Как использовать
 
 **Когда писать:**

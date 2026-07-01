@@ -3,10 +3,12 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { signIn } from '@/lib/auth';
 import { rateLimit, rateLimitResponse, clientIp } from '@/lib/rate-limit';
+import { verifyCaptcha } from '@/lib/security/captcha';
 
 const Body = z.object({
   email: z.string().email('Некорректный email'),
   password: z.string().min(1, 'Введите пароль'),
+  captchaToken: z.string().optional(),
 });
 
 const WINDOW_SEC = 15 * 60;
@@ -25,6 +27,13 @@ export async function POST(req: Request) {
   if (!ipLimit.ok) return rateLimitResponse(ipLimit);
   const emailLimit = await rateLimit({ key: `auth:login:email:${email}`, limit: 5, windowSec: WINDOW_SEC });
   if (!emailLimit.ok) return rateLimitResponse(emailLimit);
+
+  if (!(await verifyCaptcha(parsed.captchaToken, clientIp(req)))) {
+    return NextResponse.json(
+      { ok: false, error: 'Не пройдена проверка «я не робот». Обновите страницу и попробуйте снова.' },
+      { status: 400 },
+    );
+  }
 
   const result = await signIn(parsed);
   if (!result.ok) {

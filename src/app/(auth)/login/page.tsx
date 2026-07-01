@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { SmartCaptcha, captchaEnabled } from '@/components/captcha/smart-captcha';
 
 export default function LoginPage() {
   return (
@@ -27,6 +28,12 @@ function LoginForm() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [captchaToken, setCaptchaToken] = useState('');
+  const [captchaKey, setCaptchaKey] = useState(0);
+  function resetCaptcha() {
+    setCaptchaToken('');
+    setCaptchaKey((k) => k + 1);
+  }
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -36,12 +43,13 @@ function LoginForm() {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email, password, captchaToken }),
       });
       const data = await res.json();
       if (!data.ok) {
         setError(data.error || 'Не удалось войти');
         setLoading(false);
+        resetCaptcha();
         return;
       }
       router.push(next);
@@ -49,6 +57,7 @@ function LoginForm() {
     } catch {
       setError('Ошибка сети');
       setLoading(false);
+      resetCaptcha();
     }
   }
 
@@ -92,7 +101,13 @@ function LoginForm() {
               </Alert>
             )}
 
-            <Button type="submit" disabled={loading} className="w-full">
+            <SmartCaptcha key={captchaKey} onVerify={setCaptchaToken} />
+
+            <Button
+              type="submit"
+              disabled={loading || (captchaEnabled && !captchaToken)}
+              className="w-full"
+            >
               {loading ? 'Вход…' : 'Войти'}
             </Button>
           </form>

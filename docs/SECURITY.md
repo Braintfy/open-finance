@@ -138,13 +138,14 @@ gitleaks protect --staged --verbose --redact
 - **Сброс пароля (I4)** — токен в БД хранится как SHA-256 (plaintext только на почту, TTL 1ч); утечка дампа не даёт рабочих токенов.
 - **Шифрование секретов интеграций (I5)** — AES-256-GCM; `INBOX_SECRET_KEY` (inbox) и `MARKETPLACE_SECRET_KEY` (маркетплейсы, с legacy-fallback на inbox-ключ). Fail-fast проверка обязательных прод-секретов при старте (`src/instrumentation.ts` → `src/lib/security/assert-secrets.ts`).
 - **Tenant-изоляция (I1)** — review-gate: `requireTenant()/requireTenantRoute()` (`src/lib/auth/guards.ts`), правила + чек-лист (`docs/TENANT_SCOPING.md`), smoke `pnpm check:tenant-isolation`.
+- **CAPTCHA (I6)** — Yandex SmartCaptcha на формах входа/регистрации/сброса (опциональна, включается заданием ключей). Виджет `src/components/captcha/smart-captcha.tsx`, проверка `src/lib/security/captcha.ts`. См. `docs/SMARTCAPTCHA.md`.
 
 ### Enumeration (I3) — принятый остаточный риск
 
 Регистрация авто-логинит пользователя при успехе, поэтому скрыть факт
 существования email (ответ «email занят») без email-верификации невозможно.
 Решение: **принять** и снизить массовость через rate-limit (C1: per-email +
-per-IP) на `/api/auth/register`; планируется CAPTCHA (I6). Полное закрытие —
+per-IP) на `/api/auth/register` + CAPTCHA (I6, Yandex SmartCaptcha — опциональна). Полное закрытие —
 опциональный флоу email-верификации (ломает текущий авто-логин/онбординг),
 выносится отдельной задачей.
 
