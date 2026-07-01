@@ -128,12 +128,32 @@ gitleaks protect --staged --verbose --redact
 }
 ```
 
+## Реализованные защиты приложения (актуальное состояние)
+
+Соответствует коду на момент правки (Фаза 1-2 аудита). Обновлять при изменениях.
+
+- **Аутентификация** — bcrypt (12 раундов), JWT-сессии в httpOnly-cookie (`jose`, HS256, 30д); `NEXTAUTH_SECRET` ≥32 симв. (fail в проде если короче).
+- **Rate-limiting (C1)** — на `/api/auth/*` (логин/сброс/регистрация): лимиты per-email + per-IP, окно 15 мин.
+- **Security-заголовки (I2)** — `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`, `Permissions-Policy`, **HSTS** `max-age=31536000; includeSubDomains` (`next.config.mjs`).
+- **Сброс пароля (I4)** — токен в БД хранится как SHA-256 (plaintext только на почту, TTL 1ч); утечка дампа не даёт рабочих токенов.
+- **Шифрование секретов интеграций (I5)** — AES-256-GCM; `INBOX_SECRET_KEY` (inbox) и `MARKETPLACE_SECRET_KEY` (маркетплейсы, с legacy-fallback на inbox-ключ). Fail-fast проверка обязательных прод-секретов при старте (`src/instrumentation.ts` → `src/lib/security/assert-secrets.ts`).
+- **Tenant-изоляция (I1)** — review-gate: `requireTenant()/requireTenantRoute()` (`src/lib/auth/guards.ts`), правила + чек-лист (`docs/TENANT_SCOPING.md`), smoke `pnpm check:tenant-isolation`.
+
+### Enumeration (I3) — принятый остаточный риск
+
+Регистрация авто-логинит пользователя при успехе, поэтому скрыть факт
+существования email (ответ «email занят») без email-верификации невозможно.
+Решение: **принять** и снизить массовость через rate-limit (C1: per-email +
+per-IP) на `/api/auth/register`; планируется CAPTCHA (I6). Полное закрытие —
+опциональный флоу email-верификации (ломает текущий авто-логин/онбординг),
+выносится отдельной задачей.
+
 ## Финансовые и личные данные пользователей
 
 ### Принципы
 - **Шифрование at-rest** — на диске SaaS-сервера данные зашифрованы (LUKS/AWS EBS)
 - **Шифрование in-transit** — TLS 1.3 минимум, HTTP→HTTPS редирект
-- **RLS** — `tenant_id` изолирует данные между пользователями (см. `lib/db/rls.ts`)
+- **Tenant-изоляция** — `tenant_id` разделяет данные пользователей; защита на уровне приложения через обязательный **review-gate** (`requireTenant()` + правила, см. `docs/TENANT_SCOPING.md`), не Postgres RLS
 - **Аудит-лог** — все мутации с user_id + timestamp
 - **Минимизация** — не запрашиваем ИНН/паспорт/etc если не обязательно по 152-ФЗ
 
@@ -174,7 +194,7 @@ gitleaks protect --staged --verbose --redact
 - [ ] `.env.example` без значений в гите
 - [ ] `gitleaks` или эквивалент в pre-commit
 - [ ] HTTPS с самого начала (даже в dev — через mkcert)
-- [ ] RLS на всех таблицах с `tenant_id`
+- [x] Tenant-изоляция: review-gate + `requireTenant()` + smoke (`pnpm check:tenant-isolation`), см. `docs/TENANT_SCOPING.md` (Postgres RLS — возможное усиление позже)
 
 ### Production (Этап 13)
 - [ ] Шифрование БД at-rest

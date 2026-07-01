@@ -68,6 +68,9 @@ const envSchema = z.object({
   // Inbox integrations
   // AES-256-GCM key for connected channel secrets. In development a fallback is used.
   INBOX_SECRET_KEY: z.string().optional().or(z.literal('')),
+  // Отдельный AES-256-GCM ключ для секретов маркетплейсов (I5). Если не задан —
+  // используется INBOX_SECRET_KEY (обратная совместимость с уже зашифрованными кредами).
+  MARKETPLACE_SECRET_KEY: z.string().optional().or(z.literal('')),
 
   // Feature flags
   FEATURE_OPEN_REGISTRATION: z
@@ -125,6 +128,7 @@ export const env = envSchema.parse({
   SMTP_FROM: process.env.SMTP_FROM,
   APP_URL: process.env.APP_URL,
   INBOX_SECRET_KEY: process.env.INBOX_SECRET_KEY,
+  MARKETPLACE_SECRET_KEY: process.env.MARKETPLACE_SECRET_KEY,
   FEATURE_OPEN_REGISTRATION: process.env.FEATURE_OPEN_REGISTRATION,
   FEATURE_ONBOARDING_WIZARD: process.env.FEATURE_ONBOARDING_WIZARD,
   FEATURE_BILLING_MOCK: process.env.FEATURE_BILLING_MOCK,

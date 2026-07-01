@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.45.0] - 2026-07-01
+
+### Security
+- **Фаза 2 аудита (I1–I5, I7) — hardening перед публичным запуском** (`docs/SECURITY_AUDIT.md`). Миграции БД не требуются.
+  - **Tenant-изоляция review-gate (I1)** — вместо Postgres RLS зафиксирован обязательный ревью-гейт: `requireTenant()`/`requireTenantRoute()` (`src/lib/auth/guards.ts`) — единственный источник `tenantId` (из сессии, не из ввода). Правила + PR-чек-лист + перечень tenant-таблиц в `docs/TENANT_SCOPING.md`; smoke-канарейка `scripts/check-tenant-isolation.ts` (`pnpm check:tenant-isolation`). Хелпер применён в `src/app/api/marketplaces/accounts/[id]/route.ts` (референс). RLS — возможное усиление позже.
+  - **HSTS (I2)** — `Strict-Transport-Security: max-age=31536000; includeSubDomains` в `next.config.mjs` (к уже имевшимся X-Frame-Options/nosniff/Referrer-Policy/Permissions-Policy).
+  - **Хеширование reset-токена (I4)** — `passwordResetToken` хранится как SHA-256 (`hashResetToken()` в `src/lib/auth/password.ts`), plaintext только на почту (TTL 1ч). Утечка дампа БД не даёт рабочих токенов. Без миграции (64-hex влезает в `varchar(100)`).
+  - **Отдельный ключ маркетплейсов + fail-fast прод-секретов (I5)** — `MARKETPLACE_SECRET_KEY` для AES-256-GCM API-ключей маркетплейсов с legacy-fallback на `INBOX_SECRET_KEY` (старые креды не ломаются); `src/lib/inbox/crypto.ts` разбит на key-параметризованные `deriveKey/encryptWithKey/decryptWithKey`. Проверка обязательных прод-секретов (`NEXTAUTH_SECRET`≥32, `INBOX_SECRET_KEY`) на старте сервера: `src/instrumentation.ts` → `src/lib/security/assert-secrets.ts` (падает на деплое, не на первом запросе; не в build-фазе).
+  - **Enumeration (I3) — принятый остаточный риск** — авто-логин при регистрации не даёт скрыть существование email без email-верификации; смягчено rate-limit'ом (C1), CAPTCHA — план (I6). Зафиксировано в `register()` и `docs/SECURITY.md §enumeration`.
+  - **Синхронизация docs (I7)** — `docs/SECURITY.md` приведён к коду: убран несуществующий `lib/db/rls.ts` и «RLS на всех таблицах», добавлены раздел «Реализованные защиты» (C1/I1/I2/I4/I5) и enumeration-residual.
+
+### Changed
+- **`.env.example`** — задокументированы `INBOX_SECRET_KEY` (ранее отсутствовал) и `MARKETPLACE_SECRET_KEY`.
+
+### Notes
+- **Прод-действие (не миграция):** задать в проде `NEXTAUTH_SECRET` (≥32, `openssl rand -base64 48`) и `INBOX_SECRET_KEY`; опционально `MARKETPLACE_SECRET_KEY`. Иначе сервер намеренно падает на старте (I5).
+
 ## [0.44.0] - 2026-06-29
 
 ### Added

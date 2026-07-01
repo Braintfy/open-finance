@@ -69,6 +69,9 @@ const nextConfig = {
           { key: 'X-Content-Type-Options', value: 'nosniff' },
           { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
           { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
+          // HSTS (I2): браузеры применяют только по HTTPS, по HTTP игнорируется.
+          // 1 год + субдомены. preload не включаем (требует submit в hstspreload.org).
+          { key: 'Strict-Transport-Security', value: 'max-age=31536000; includeSubDomains' },
         ],
       },
     ];

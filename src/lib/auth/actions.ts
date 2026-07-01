@@ -5,7 +5,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { users, memberships } from '@/lib/db/schema/users';
 import { tenants } from '@/lib/db/schema/tenants';
-import { hashPassword, verifyPassword, generatePasswordResetToken } from './password';
+import { hashPassword, verifyPassword, generatePasswordResetToken, hashResetToken } from './password';
 import {
   setSessionCookie,
   clearSessionCookie,
@@ -57,6 +57,10 @@ export async function register(input: RegisterInput): Promise<AuthResult> {
     return { ok: false, error: 'Регистрация закрыта администратором' };
   }
 
+  // I3 (принятый остаточный риск): авто-логин при успешной регистрации делает
+  // невозможным сокрытие факта существования email без email-верификации.
+  // Mass-enumeration ограничен rate-limit (C1: 5/email + 10/IP за 15м на
+  // /api/auth/register); планируется CAPTCHA (I6). См. docs/SECURITY.md §enumeration.
   const existing = await db.select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1);
   if (existing.length > 0) {
     return { ok: false, error: 'Пользователь с таким email уже существует' };
@@ -189,7 +193,8 @@ export async function requestPasswordReset(email: string) {
   await db
     .update(users)
     .set({
-      passwordResetToken: token,
+      // I4: в БД — хеш, по почте уходит plaintext token.
+      passwordResetToken: hashResetToken(token),
       passwordResetExpiresAt: new Date(Date.now() + 60 * 60 * 1000), // 1 час
     })
     .where(eq(users.id, user.id));
@@ -213,7 +218,7 @@ export async function confirmPasswordReset(token: string, newPassword: string): 
       expiresAt: users.passwordResetExpiresAt,
     })
     .from(users)
-    .where(eq(users.passwordResetToken, token))
+    .where(eq(users.passwordResetToken, hashResetToken(token)))
     .limit(1);
 
   if (!user || !user.expiresAt || user.expiresAt < new Date()) {

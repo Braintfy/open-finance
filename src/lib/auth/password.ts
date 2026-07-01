@@ -2,6 +2,7 @@
 // 12 раундов — sweet spot для bcrypt в 2025+ (~250ms на iPhone, безопасно).
 
 import bcrypt from 'bcryptjs';
+import { createHash } from 'crypto';
 
 const ROUNDS = 12;
 
@@ -22,4 +23,10 @@ export function generatePasswordResetToken(): string {
   const arr = new Uint8Array(32);
   crypto.getRandomValues(arr);
   return Array.from(arr, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+// I4: в БД хранится не сам токен, а его SHA-256 (64 hex). Утечка дампа БД не даёт
+// рабочих reset-токенов. Пользователю по почте уходит plaintext, в БД — хеш.
+export function hashResetToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
 }

@@ -4,7 +4,7 @@
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { auth } from '@/lib/auth';
+import { requireTenantRoute } from '@/lib/auth/guards';
 import {
   deleteAccount,
   getAccount,
@@ -20,11 +20,9 @@ type RouteCtx = { params: Promise<{ id: string }> };
 export async function GET(_req: Request, ctx: RouteCtx) {
   try {
     const { id } = await ctx.params;
-    const session = await auth();
-    if (!session?.tenantId) {
-      return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
-    }
-    const account = await getAccount({ tenantId: session.tenantId, id });
+    const t = await requireTenantRoute();
+    if (!t.ok) return t.response;
+    const account = await getAccount({ tenantId: t.ctx.tenantId, id });
     if (!account) {
       return NextResponse.json({ ok: false, error: 'Not found' }, { status: 404 });
     }
@@ -41,10 +39,8 @@ export async function GET(_req: Request, ctx: RouteCtx) {
 export async function PATCH(req: Request, ctx: RouteCtx) {
   try {
     const { id } = await ctx.params;
-    const session = await auth();
-    if (!session?.tenantId) {
-      return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
-    }
+    const t = await requireTenantRoute();
+    if (!t.ok) return t.response;
 
     let body: z.infer<typeof UpdateAccountSchema>;
     try {
@@ -55,7 +51,7 @@ export async function PATCH(req: Request, ctx: RouteCtx) {
     }
 
     const updated = await updateAccount({
-      tenantId: session.tenantId,
+      tenantId: t.ctx.tenantId,
       id,
       patch: body,
     });
@@ -75,11 +71,9 @@ export async function PATCH(req: Request, ctx: RouteCtx) {
 export async function DELETE(_req: Request, ctx: RouteCtx) {
   try {
     const { id } = await ctx.params;
-    const session = await auth();
-    if (!session?.tenantId) {
-      return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
-    }
-    await deleteAccount({ tenantId: session.tenantId, id });
+    const t = await requireTenantRoute();
+    if (!t.ok) return t.response;
+    await deleteAccount({ tenantId: t.ctx.tenantId, id });
     return NextResponse.json({ ok: true });
   } catch (e) {
     console.error('[marketplaces] DELETE /accounts/[id] failed:', e);

@@ -21,7 +21,8 @@
     "ollama:check": "curl -sS http://localhost:11434/api/tags || echo 'Ollama не запущен. См. docs/LOCAL_AI.md'",
     "db:seed": "tsx scripts/seed.ts",
     "admin:reset-password": "tsx scripts/reset-password.ts",
-    "admin:create": "tsx scripts/create-user.ts"
+    "admin:create": "tsx scripts/create-user.ts",
+    "check:tenant-isolation": "tsx scripts/check-tenant-isolation.ts"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
