@@ -210,7 +210,13 @@ export async function deleteTab(args: {
     await db
       .update(unitEconomicsTabs)
       .set({ hidden: true, updatedAt: new Date() })
-      .where(eq(unitEconomicsTabs.id, args.id));
+      .where(
+        and(
+          eq(unitEconomicsTabs.tenantId, args.tenantId),
+          eq(unitEconomicsTabs.userId, args.userId),
+          eq(unitEconomicsTabs.id, args.id),
+        ),
+      );
     return { deleted: true, kind: 'default' };
   }
 
@@ -224,7 +230,16 @@ export async function deleteTab(args: {
         eq(blockLayouts.pageKey, tab.pageKey),
       ),
     );
-  await db.delete(unitEconomicsTabs).where(eq(unitEconomicsTabs.id, args.id));
+  // Defence-in-depth (H1): финальный delete тоже скоупим по tenant/user, а не только по id.
+  await db
+    .delete(unitEconomicsTabs)
+    .where(
+      and(
+        eq(unitEconomicsTabs.tenantId, args.tenantId),
+        eq(unitEconomicsTabs.userId, args.userId),
+        eq(unitEconomicsTabs.id, args.id),
+      ),
+    );
   return { deleted: true, kind: 'custom' };
 }
 

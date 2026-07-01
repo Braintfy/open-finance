@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.46.1] - 2026-07-01
+
+### Security
+- **CSP-заголовок (I2, вторая половина к HSTS)** — `Content-Security-Policy` в проде (`next.config.mjs`): `default-src 'self'`, разрешены домены SmartCaptcha (script/frame/connect), `img-src https:` (письма в sandbox `<iframe srcdoc>` наследуют CSP родителя + товарные CDN маркетплейсов). В dev не ставится (HMR/react-refresh). `frame-ancestors` намеренно опущен — кликджекинг уже закрыт `X-Frame-Options: DENY`, а наследование в srcdoc-iframe в части движков ломает рендер писем.
+- **H1 defence-in-depth** — `deleteTab` (`src/lib/unit-economics/tabs-queries.ts`): soft- и hard-delete скоупятся `tenantId+userId+id`, а не только `id`.
+- **H5 зависимости** — `pnpm audit --prod`: 24 → 3 уязвимости (0 high/critical). Обновлены: `dompurify` 3.4.6→3.4.11 (XSS-фиксы санитайзера писем), `nodemailer` 6.10.1→9.0.3, `mailparser` 3.9.8→3.9.12 (тянет транзитивный nodemailer 9), `xlsx` 0.18.5→0.20.3 (официальный SheetJS CDN — на npm фиксов нет; закрыты 2 high на парсинге пользовательских XLSX), `postcss` 8.5.16. Остаток — принятые moderate-транзитивы (postcss внутри `next`, js-yaml, linkify-it).
+
+### Changed
+- **docs/SECURITY_AUDIT.md** — синхронизирован с фактом: Фаза 2 (I1–I7) отмечена done, статусы таблиц Шагов 1–5 обновлены, лог дополнен коммитами (e3a66c3/027ab9f/1fef07d/890b648), вердикт пересмотрен («готово по чеклисту» при прод-секретах и резидентности РФ). `docs/SECURITY.md` — I2-заголовки дополнены CSP + бюллет о гигиене зависимостей.
+
 ## [0.46.0] - 2026-07-01
 
 ### Security

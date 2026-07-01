@@ -134,7 +134,8 @@ gitleaks protect --staged --verbose --redact
 
 - **Аутентификация** — bcrypt (12 раундов), JWT-сессии в httpOnly-cookie (`jose`, HS256, 30д); `NEXTAUTH_SECRET` ≥32 симв. (fail в проде если короче).
 - **Rate-limiting (C1)** — на `/api/auth/*` (логин/сброс/регистрация): лимиты per-email + per-IP, окно 15 мин.
-- **Security-заголовки (I2)** — `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`, `Permissions-Policy`, **HSTS** `max-age=31536000; includeSubDomains` (`next.config.mjs`).
+- **Security-заголовки (I2)** — `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`, `Permissions-Policy`, **HSTS** `max-age=31536000; includeSubDomains`, **CSP** (prod-only: `default-src 'self'` + домены SmartCaptcha; `img-src https:` — письма в srcdoc-iframe наследуют CSP + CDN маркетплейсов; `frame-ancestors` намеренно опущен — кликджекинг закрыт XFO) — всё в `next.config.mjs`.
+- **Гигиена зависимостей (H5)** — `pnpm audit --prod` перед релизами; `xlsx` ставится с официального SheetJS CDN (на npm фиксов нет), `mailparser` обновлять вместе с транзитивным `nodemailer`.
 - **Сброс пароля (I4)** — токен в БД хранится как SHA-256 (plaintext только на почту, TTL 1ч); утечка дампа не даёт рабочих токенов.
 - **Шифрование секретов интеграций (I5)** — AES-256-GCM; `INBOX_SECRET_KEY` (inbox) и `MARKETPLACE_SECRET_KEY` (маркетплейсы, с legacy-fallback на inbox-ключ). Fail-fast проверка обязательных прод-секретов при старте (`src/instrumentation.ts` → `src/lib/security/assert-secrets.ts`).
 - **Tenant-изоляция (I1)** — review-gate: `requireTenant()/requireTenantRoute()` (`src/lib/auth/guards.ts`), правила + чек-лист (`docs/TENANT_SCOPING.md`), smoke `pnpm check:tenant-isolation`.

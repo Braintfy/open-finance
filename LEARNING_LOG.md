@@ -176,6 +176,14 @@
 **Фикс:** (1) документировать «после смены ключей — `pnpm build`/рестарт» (`docs/SMARTCAPTCHA.md`); (2) ремонт виджета сменой `key` + сброс `captchaToken` во всех ветках ошибки формы. Серверная проверка fail-open при недоступности Yandex, fail-closed при вердикте «робот».
 **Урок:** капча опциональна (нет ключа → выключена); client-key публичен by design, секрет — только server-key; токен одноразовый — сбрасывать виджет на любой ошибке отправки.
 
+### 2026-07-01 — CSP: srcdoc-iframe наследует политику; xlsx на npm заморожен
+
+**Контекст:** I2-остаток (CSP в `next.config.mjs`) + H5 (`pnpm audit --prod`: 24 уязвимости).
+**Грабля:** (1) строгий `img-src 'self'` сломал бы картинки писем: sandbox `<iframe srcdoc>` (Inbox) НАСЛЕДУЕТ CSP родителя — как и `frame-ancestors`, который в части движков ломает сам srcdoc-рендер; (2) `xlsx` имеет 2 high-уязвимости, но на npm фиксов нет (SheetJS публикует только на свой CDN); (3) `pnpm update nodemailer` не чинит транзитивную копию — `mailparser` пиннит свой `nodemailer`.
+**Причина:** (1) спецификация CSP: about:srcdoc получает policy container родителя; (2) SheetJS ушёл с npm-регистри после 0.18.5; (3) pnpm update обновляет только прямые зависимости.
+**Фикс:** CSP prod-only с `img-src https:` и без `frame-ancestors` (кликджекинг закрыт XFO); `pnpm add xlsx@https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz`; `pnpm update mailparser` (3.9.12 тянет nodemailer 9).
+**Урок:** при ужесточении CSP всегда проверять Inbox-письма (srcdoc) и внешние CDN-картинки; audit-фиксы транзитивов чинить через обновление родителя; xlsx обновлять только через SheetJS CDN.
+
 ## Как использовать
 
 **Когда писать:**

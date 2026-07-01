@@ -20,7 +20,9 @@
 | 🟢 Улучшения | 6 | H1 deleteTab defence-in-depth · H2 in-memory лимитеры → Redis · H3 billing webhook (подпись/idempotency) · H4 2FA owner · H5 pnpm audit + Next patch · H6 Sentry PII-scrub |
 | ✅ Подтверждено | 8 | tenant-скоуп · параметризованный SQL · шифрование секретов · `maskSecret` · хеш паролей · cookie-флаги · нет `dangerouslySetInnerHTML` · нет CORS `*` |
 
-**Вердикт:** к публичному запуску **не готово** до закрытия 🔴. Для закрытого beta за авторизацией — допустимо с планом на 🔴/🟡.
+**Вердикт (2026-06-28):** к публичному запуску **не готово** до закрытия 🔴. Для закрытого beta за авторизацией — допустимо с планом на 🔴/🟡.
+
+> **Обновление 2026-07-01 (v0.43–0.46.1):** все 🔴 (C1–C4) и 🟡 (I1–I7) закрыты; из 🟢 сделаны H1 и H5. Прод-audit: 24 → 3 уязвимости (0 high; остаток — moderate-транзитивы: postcss внутри `next`, js-yaml, linkify-it — приняты). Открыто: H2–H4, H6 + ручные проверки §4. **По чеклисту — готово к публичному запуску** при условии прод-секретов (I5 fail-fast проверит) и резидентности РФ (§4).
 
 ---
 
@@ -30,10 +32,10 @@
 
 | Пункт | Статус | Что нашёл (файл:строка) | Как исправить |
 |---|---|---|---|
-| Политика конфиденциальности | ❌ | `docs/PRIVACY.md` не существует | Создать `docs/PRIVACY.md` + страницу `/privacy`; ссылка в футере и на регистрации |
+| Политика конфиденциальности | ✔️ | Страница `/privacy` + `src/lib/legal.ts` (v0.44); в тексте плейсхолдеры оператора | Заполнить реквизиты оператора перед продом |
 | Где хранятся данные / резидентность РФ | ❓ | В коде не отражено; прод-инфра вне репо | Зафиксировать провайдера/регион (РФ) в `docs/`, подтвердить хостинг в РФ по 152-ФЗ |
-| Согласие на обработку ПДн при регистрации | ❌ | `register()` без поля согласия — `src/lib/auth/actions.ts:46`; чекбокса в форме не найдено | Добавить обязательный чекбокс согласия + хранить факт/дату согласия |
-| Право на удаление («Стереть аккаунт»/«память AI») | ❌ | Только планы — `PLAN.md`, `docs/SECURITY.md:144,150`; эндпоинта в `src/app/api` нет | Реализовать `DELETE` аккаунта (cascade по `tenant_id`) + очистку AI-памяти |
+| Согласие на обработку ПДн при регистрации | ✔️ | Обязательный чекбокс на `/register` + `users.consent_version/consent_at` (v0.44) | — |
+| Право на удаление («Стереть аккаунт»/«память AI») | ✔️ | Danger-zone в настройках (`/api/account/{deletion-request,ai-data}`) + очередь super_admin `/app/admin/deletion-requests` (v0.44) | — |
 | Минимизация ПДн / Sentry без PII | ❓ | Sentry опционален (`SENTRY_DSN`), скрабинг не настроен | Включить scrub PII перед прод-Sentry |
 
 ### Шаг 2 — Замок на базу данных (мультитенантность)
@@ -41,8 +43,8 @@
 | Пункт | Статус | Что нашёл (файл:строка) | Как исправить |
 |---|---|---|---|
 | `tenant_id` в каждом запросе | ✅ | Единообразно: `auth()`→`session.tenantId`→`WHERE tenant_id = ${session.tenantId}` (напр. `src/app/api/marketplaces/ozon/kpi/route.ts:205-251`, `…/campaigns/route.ts:76`) | Поддерживать паттерн в новых роутах |
-| DB-backstop (Postgres RLS) | ⚠️ | RLS не включён нигде (grep `ENABLE ROW LEVEL SECURITY`/`CREATE POLICY` пуст); `lib/db/rls.ts` из `docs/SECURITY.md` не существует | См. I1: включить RLS **или** обязательный ревью каждого нового запроса |
-| Удаление/обновление с проверкой владельца | ✅ | `deleteAccount` скоуплен `and(tenantId, id)` — `src/lib/marketplaces/queries.ts:251-263`; `deleteTab` проверяет владельца до удаления — `src/lib/unit-economics/tabs-queries.ts:196-207` | `deleteTab:227` — добавить `tenantId` в финальный `delete` (см. H1) |
+| DB-backstop (Postgres RLS) | ✔️ | Выбран review-gate (I1, v0.45): `requireTenant()/requireTenantRoute()` + `docs/TENANT_SCOPING.md` + smoke `pnpm check:tenant-isolation`; RLS — возможное усиление позже | — |
+| Удаление/обновление с проверкой владельца | ✅ | `deleteAccount` скоуплен `and(tenantId, id)` — `src/lib/marketplaces/queries.ts:251-263`; `deleteTab` проверяет владельца до удаления — `src/lib/unit-economics/tabs-queries.ts:196-207` | ✔️ H1 (v0.46.1): soft/hard delete в `deleteTab` скоуплены `tenantId+userId+id` |
 | `x-tenant-id` не спуфится | ✅ | Заголовки ставит middleware из проверенной сессии — `src/middleware.ts:53-59`; роуты берут tenant из `auth()`, не из заголовка | Не читать `x-tenant-id` из входящего запроса |
 | Серверная валидация ввода | ✅ | `zod` в роутах (напр. `src/app/api/ai/chat/route.ts:20-47`) | Покрыть валидацией оставшиеся роуты (ручная сверка) |
 | Ошибки не утекают наружу | ✔️ | Массово возвращается `error: e instanceof Error ? e.message : 'Failed'` — `…/ozon/kpi/route.ts:294`, `…/timeseries/route.ts:204`, `…/accounts/[id]/route.ts:35,69,87`, `…/unit-economics/products/route.ts:210,251`, `ai/chat/route.ts:420`, и др. | См. C4: возвращать нейтральное сообщение, детали — только в лог |
@@ -54,7 +56,7 @@
 | Неправильный пароль N раз (throttle/lockout) | ✔️ | `login()` без счётчика попыток/лока — `src/lib/auth/actions.ts:120-163` | См. C1: rate-limit + (опц.) временный лок |
 | Сброс для несуществующего email | ✅ | Всегда `ok`, не палит существование — `src/lib/auth/actions.ts:173-194` | — |
 | Повторное/просроченное открытие ссылки сброса | ✅ | Токен одноразовый + TTL 1ч — `src/lib/auth/actions.ts:196-227` | — |
-| Регистрация на существующий email | ⚠️ | Ответ «уже существует» → user-enumeration — `src/lib/auth/actions.ts:59-61` | См. I3: нейтральный ответ / одинаковый тайминг |
+| Регистрация на существующий email | ✔️ | Принятый остаточный риск (I3, v0.45): авто-логин не даёт скрыть без email-верификации; смягчено rate-limit (C1) + CAPTCHA (I6) — `docs/SECURITY.md §enumeration` | Email-верификация — отдельная задача (опционально) |
 | Cookie/JWT/хеш паролей | ✅ | `of_session` httpOnly+secure(prod)+sameSite lax — `src/lib/auth/session.ts:62-68`; bcrypt 12 раундов — `src/lib/auth/password.ts:6`; HS256, prod требует секрет ≥32 — `session.ts:20-34` | — |
 
 ### Шаг 4 — Секреты и утечки
@@ -62,7 +64,7 @@
 | Пункт | Статус | Что нашёл (файл:строка) | Как исправить |
 |---|---|---|---|
 | Ключи не во фронтенде | ✅ | Секреты только через `src/lib/env.ts` на сервере; на клиент — `maskSecret()` — `src/lib/inbox/crypto.ts:43-47` | Сверять, что новые поля не уезжают в RSC-пропсах |
-| Прод не на dev-fallback | ⚠️ | Dev-ключи: `INBOX_SECRET_KEY` — `src/lib/inbox/crypto.ts:9-17`; `NEXTAUTH_SECRET` — `src/lib/auth/session.ts:20-34` | См. I5: задать реальные секреты в проде, проверить на старте |
+| Прод не на dev-fallback | ✔️ | Fail-fast на старте прода (I5, v0.45): `src/instrumentation.ts` → `src/lib/security/assert-secrets.ts`; отдельный `MARKETPLACE_SECRET_KEY` с legacy-fallback | Задать реальные секреты в прод-env |
 | Секреты зашифрованы (AES-256-GCM) | ✅ | `encryptSecret/decryptSecret` — `src/lib/inbox/crypto.ts:19-41`; `api_key_enc`/`secret_enc`; decrypt только на сервере — `src/lib/marketplaces/queries.ts:265-268` | — |
 | Нет секретов в логах | ✅ | Ozon-клиент явно не логирует `api_key` — `src/lib/marketplaces/ozon/client.ts:7` | Сверять при добавлении логов |
 | AI Tools Layer / BYOK | ✅ | Зарегистрирован только read-only tool — `src/lib/ai/tools/index.ts:14`; BYOK через `getActiveCredentials` | При добавлении мутирующих tools — tenant-скоуп + валидация |
@@ -71,12 +73,12 @@
 
 | Пункт | Статус | Что нашёл (файл:строка) | Как исправить |
 |---|---|---|---|
-| Rate-limit на каждом эндпоинте | ⚠️ | Есть только: Ozon-исходящие (in-memory) — `src/lib/marketplaces/ozon/client.ts:24`; `…/currency/rates/refresh/route.ts:7-29`. **Нет** на `/api/auth/*` и `/api/ai/*` | См. C1/C2 |
-| Hard caps на платных AI API | ⚠️ | Лимитов токенов/частоты на `/api/ai/*` нет | Лимит запросов/токенов per-tenant + бюджет-гард |
-| CAPTCHA на публичных формах | ❌ | Не найдено | См. I6: Turnstile на `/register`, `/forgot-password` |
+| Rate-limit на каждом эндпоинте | ✔️ | C1/C2 (v0.43): `/api/auth/*` per-IP+per-email, `/api/ai/*` per-tenant 20/мин (`src/lib/rate-limit.ts`) | H2: вынести in-memory лимитеры в Redis |
+| Hard caps на платных AI API | ⚠️ | Частота ограничена (C2); дневного бюджета токенов нет (оставлено намеренно, см. Фаза 1 · Примечание) | Бюджет-гард per-tenant — план |
+| CAPTCHA на публичных формах | ✔️ | Yandex SmartCaptcha (I6, v0.46): login/register/forgot, опциональна по env — `docs/SMARTCAPTCHA.md` | — |
 | CORS не `*` | ✅ | `Access-Control-Allow-Origin: *` не задаётся (same-origin) | — |
-| Security-заголовки | ⚠️ | Есть X-Frame/X-Content/Referrer/Permissions — `next.config.mjs:63-75`; **нет CSP и HSTS** | См. I2 |
-| Зависимости / Next CVE | ❓ | Версию `next` сверить в `package.json`; `pnpm audit` не зафиксирован | См. H5 |
+| Security-заголовки | ✔️ | X-Frame/X-Content/Referrer/Permissions + **HSTS** (I2, v0.45) + **CSP prod-only** (v0.46.1) — `next.config.mjs` | Nonce-based CSP (без 'unsafe-inline') — возможное усиление |
+| Зависимости / Next CVE | ✔️ | H5 (v0.46.1): `pnpm audit --prod` 24 → 3 (0 high); dompurify 3.4.11, nodemailer 9.0.3, mailparser 3.9.12, xlsx 0.20.3 (SheetJS CDN), postcss 8.5.16; next 15.5.18 | Остаток (moderate-транзитивы: postcss←next, js-yaml, linkify-it) — принят; повторять audit перед релизами |
 
 ### Шаг 6 — Интеграции
 
@@ -101,7 +103,7 @@
 | Встроенный security-скан (`.claude/ of-security-reviewer` / `of-review`) | ⏳ | Прогнать перед выкаткой |
 | `gitleaks` по диффу/истории | ❓ | Прогнать |
 | Прод-env (реальные секреты, `FEATURE_BILLING_MOCK`) | ⏳ | Проверить перед деплоем |
-| `pnpm typecheck && pnpm build` | ⏳ | Перед деплоем |
+| `pnpm typecheck && pnpm build` | ✅ | Прогнаны на v0.46.1 (2026-07-01); повторять перед каждым деплоем |
 | Миграции (`pnpm db:push`/`db:migrate`) | ⏳ | **Команды выполняет пользователь** |
 
 ---
@@ -138,21 +140,21 @@
 - **Done-критерий:** перебор пароля и спам AI-запросов отбиваются 429 ✔️; ответы API не содержат внутренних сообщений ✔️; регистрация требует согласия ✔️ (C3); есть рабочее удаление аккаунта ✔️ (C3, ручное подтверждение super_admin).
 - **Примечание:** дневной бюджет токенов на AI и diagnostics-4xx (inbox/test, account/test) оставлены намеренно; вынос лимитеров в Redis — H2 (Фаза 3).
 
-### Фаза 2 — 🟡 Важно (hardening до прод-нагрузки) — статус: ⏳
-- [ ] **I1** Postgres RLS на тенант-таблицах **или** зафиксированный обязательный ревью-гейт
-- [ ] **I2** добавить CSP + HSTS в `next.config.mjs:63-75`
-- [ ] **I3** убрать user-enumeration в `register()` (`actions.ts:59-61`)
-- [ ] **I4** хешировать `passwordResetToken` в БД
-- [ ] **I5** реальные `NEXTAUTH_SECRET`/`INBOX_SECRET_KEY` в проде + отдельный `MARKETPLACE_SECRET_KEY`
-- [ ] **I6** CAPTCHA (Turnstile) на публичных формах
-- [ ] **I7** привести `docs/SECURITY.md` в соответствие коду (удаление, `lib/db/rls.ts`)
+### Фаза 2 — 🟡 Важно (hardening до прод-нагрузки) — статус: ✅ done (I1–I7, v0.45–0.46.1)
+- [x] **I1** review-gate вместо RLS — ✔️ `requireTenant()/requireTenantRoute()` + `docs/TENANT_SCOPING.md` + smoke `pnpm check:tenant-isolation`
+- [x] **I2** HSTS (v0.45) + CSP prod-only (v0.46.1) в `next.config.mjs` — ✔️
+- [x] **I3** enumeration — ✔️ принятый остаточный риск (rate-limit + CAPTCHA), `docs/SECURITY.md §enumeration`
+- [x] **I4** `passwordResetToken` — ✔️ SHA-256 (`hashResetToken()`, `src/lib/auth/password.ts`)
+- [x] **I5** fail-fast прод-секретов (`src/instrumentation.ts`) + `MARKETPLACE_SECRET_KEY` с legacy-fallback — ✔️
+- [x] **I6** CAPTCHA — ✔️ Yandex SmartCaptcha (вместо Turnstile: РФ-доступность) на login/register/forgot — `docs/SMARTCAPTCHA.md`
+- [x] **I7** `docs/SECURITY.md` синхронизирован с кодом — ✔️
 
-### Фаза 3 — 🟢 Улучшения — статус: ⏳
-- [ ] **H1** `deleteTab:227` — добавить `tenantId` в финальный `delete` (defence-in-depth)
+### Фаза 3 — 🟢 Улучшения — статус: ⏳ (H1, H5 done)
+- [x] **H1** `deleteTab` — ✔️ soft/hard delete скоуплены `tenantId+userId+id` (v0.46.1)
 - [ ] **H2** вынести in-memory лимитеры (Ozon/currency) в Redis для горизонтального масштаба
 - [ ] **H3** биллинг: верификация подписи webhook + idempotency (при включении реального)
 - [ ] **H4** 2FA для роли owner
-- [ ] **H5** `pnpm audit --prod` + сверить патч `next` (фикс SSRF)
+- [x] **H5** ✔️ `pnpm audit --prod`: 24 → 3 (0 high, v0.46.1) — dompurify 3.4.11 / nodemailer 9.0.3 / mailparser 3.9.12 / xlsx 0.20.3 (SheetJS CDN, на npm фиксов нет) / postcss 8.5.16; остаток — moderate-транзитивы (postcss←next, js-yaml, linkify-it). Повторять перед релизами
 - [ ] **H6** Sentry PII-scrubbing
 
 ---
@@ -171,5 +173,8 @@
 | Дата | Фаза/пункт | Что сделано | Коммит | Кто |
 |---|---|---|---|---|
 | 2026-06-28 | — | Первичный аудит, составлен список и план | — | AI (Cascade) |
-| 2026-06-28 | Фаза 1a (C1/C2/C4) | rate-limit auth (4 роута) + AI (4 роута); санитизация 5xx-утечек `e.message` (21 файл / 24 блока + accounts + inbox); новые `src/lib/rate-limit.ts`, `src/lib/api-error.ts`; `pnpm typecheck` ✅ | (pending) | AI (Cascade) |
-| 2026-06-29 | Фаза 1b (C3) | privacy `/privacy` + consent-чекбокс (`users.consent_version/at`) + удаление аккаунта: `account_deletion_requests` (drizzle 0009 / init 15), queries `src/lib/account/deletion-queries.ts`, self-service settings danger-zone, админка `/app/admin/deletion-requests`, `clearUserAiData`; `pnpm typecheck` ✅ | (pending) | AI (Cascade) |
+| 2026-06-28 | Фаза 1a (C1/C2/C4) | rate-limit auth (4 роута) + AI (4 роута); санитизация 5xx-утечек `e.message` (21 файл / 24 блока + accounts + inbox); новые `src/lib/rate-limit.ts`, `src/lib/api-error.ts`; `pnpm typecheck` ✅ | e3a66c3 | AI (Cascade) |
+| 2026-06-29 | Фаза 1b (C3) | privacy `/privacy` + consent-чекбокс (`users.consent_version/at`) + удаление аккаунта: `account_deletion_requests` (drizzle 0009 / init 15), queries `src/lib/account/deletion-queries.ts`, self-service settings danger-zone, админка `/app/admin/deletion-requests`, `clearUserAiData`; `pnpm typecheck` ✅ | 027ab9f | AI (Cascade) |
+| 2026-07-01 | Фаза 2 (I1–I5, I7) | review-gate + HSTS + SHA-256 reset-токен + `MARKETPLACE_SECRET_KEY` + fail-fast секретов + docs-sync | 1fef07d | AI (Cascade) |
+| 2026-07-01 | Фаза 2 (I6) | Yandex SmartCaptcha: виджет + сервер-проверка на register/login/forgot; `docs/SMARTCAPTCHA.md` | 890b648 | AI (Cascade) |
+| 2026-07-01 | Фаза 3 (H1, H5) + I2-CSP | `deleteTab` tenant-скоуп; CSP prod-only (`next.config.mjs`); deps: dompurify 3.4.11, nodemailer 9.0.3, mailparser 3.9.12, xlsx 0.20.3 (SheetJS CDN), postcss 8.5.16 — audit 24→3 (0 high); синхрон этого дока; `pnpm typecheck && pnpm build` ✅ | (pending) | AI (Cascade) |
