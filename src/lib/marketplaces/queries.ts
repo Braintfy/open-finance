@@ -2,7 +2,7 @@
 // ozon_sync_jobs. Все запросы фильтруются по tenant_id. Plan-gate
 // canAddAccount() ограничивает добавление >1 магазина на free/trial.
 
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, lt, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import {
   marketplaceAccounts,
@@ -340,6 +340,38 @@ export async function createSyncJob(input: {
   };
   const [row] = await db.insert(ozonSyncJobs).values(payload).returning();
   return row;
+}
+
+/** Закрывает как error зависшие pending-jobs старше N минут (фоновая задача
+ * упала до setSyncJobRunning или процесс перезапустили) — иначе GlobalSyncIndicator
+ * бесконечно показывает «подготовку к синхронизации». Нормальный переход
+ * pending→running занимает секунды, поэтому 10 минут — безопасный порог. */
+export async function failStaleSyncJobs(args: {
+  tenantId: string;
+  olderThanMinutes?: number;
+}): Promise<void> {
+  const cutoff = new Date(Date.now() - (args.olderThanMinutes ?? 10) * 60_000);
+  await db
+    .update(ozonSyncJobs)
+    .set({
+      status: 'error',
+      finishedAt: new Date(),
+      errors: [
+        {
+          message:
+            'Синхронизация не стартовала (фоновый процесс прерван) — job закрыт автоматически',
+          at: new Date().toISOString(),
+        },
+      ],
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(ozonSyncJobs.tenantId, args.tenantId),
+        eq(ozonSyncJobs.status, 'pending'),
+        lt(ozonSyncJobs.createdAt, cutoff),
+      ),
+    );
 }
 
 export async function setSyncJobRunning(jobId: string): Promise<void> {

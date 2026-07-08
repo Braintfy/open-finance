@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.47.1] - 2026-07-07
+
+### Fixed
+- **Ozon sync висел в «подготовке к синхронизации»** — `runFullSync` падал на расшифровке API-ключа («Unsupported state or unable to authenticate data») ДО `setSyncJobRunning`, job оставался `pending` навсегда, `GlobalSyncIndicator` поллил бесконечно. Причина: креды были зашифрованы старым dev-fallback ключом, а при security-аудите в `.env.local` заданы новые `INBOX_SECRET_KEY`/`MARKETPLACE_SECRET_KEY`. Фиксы: (1) try/catch-обёртка `runFullSync` — при любом throw job финализируется `error` + `updateAccountLastSync` (`src/lib/marketplaces/ozon/sync/full.ts`); (2) `decryptSecret` перебирает ключи primary→legacy→dev-fallback (dev-only) и бросает понятную ошибку (`src/lib/marketplaces/crypto.ts`); (3) `failStaleSyncJobs` в `GET /api/marketplaces/jobs/active` авто-закрывает pending-jobs старше 10 мин (`src/lib/marketplaces/queries.ts`).
+
+### Added
+- **`pnpm admin:reencrypt-secrets`** (`scripts/reencrypt-secrets.ts`) — перешифровка секретов (`marketplace_accounts.api_key_enc`/`perf_client_secret_enc`, `inbox_channels.secret`) на актуальные ключи после их ротации; старые записи расшифровываются кандидатами из `LEGACY_SECRET_KEYS` + dev-fallback.
+
+## [0.47.0] - 2026-07-06
+
+### Added
+- **Open-source пивот** — проект переведён в полностью открытый код: `LICENSE` (MIT), README §Open Source (plan-гейт/биллинг — как отключить), бейдж лицензии.
+- **docs/PERSONAL_USE.md** — инструкция личного self-hosted инстанса: обязательные секреты (fail-fast), `FEATURE_DEFAULT_PLAN=pro` (снятие plan-гейта), `FEATURE_OPEN_REGISTRATION=false`, опциональные интеграции, куда инстанс ходит по сети, чек-лист безопасности VPS.
+- **docs/DESKTOP_PLAN.md** — план local-first десктоп-приложения (Tauri 2) как оркестрация для AI-агента (Opus): 8 фаз с промптами/DoD/проверками, констрейнты (standalone-sidecar вместо static export, embedded Postgres, in-process очередь, keychain-секреты, single-user режим).
+
+### Changed
+- **Лендинг `/` (`src/app/page.tsx`)** — open-source позиционирование: MIT, self-hosted, «данные и ключи у вас», кнопка GitHub, 6 фич-карточек; убран SaaS-CTA «Попробовать Pro». Регистрация: убран текст про trial.
+- **README** — шапка/«Что это» под open source, «Тарифы» заменены на §Open Source, «Контрибьюшен» и «Лицензия» (MIT) актуализированы; добавлены ссылки на PERSONAL_USE/DESKTOP_PLAN.
+- **PLAN.md** — пометка о пивоте (тарифы/лицензирование — историчны); `.env.example` — подсказка `FEATURE_DEFAULT_PLAN=pro` для self-hosted.
+
+### Security
+- **Секрет-аудит репозитория (гейт «gitleaks» из SECURITY_AUDIT)** — в git только `.env.example` (dev-плейсхолдеры), `.env*` в `.gitignore`, `.env`-файлов в истории нет, хардкода ключей в коде нет; публичные dev-дефолты (docker-пароли, seed-админ) задокументированы в PERSONAL_USE с инструкцией смены.
+
 ## [0.46.1] - 2026-07-01
 
 ### Security

@@ -1,15 +1,17 @@
 # Open Finance
 
-> AI-первая модульная финансовая платформа для предпринимателей.
+> **Open-source** AI-первая модульная финансовая платформа для предпринимателей. Self-hosted: данные, ключи и AI — у вас.
 > Notion-style блоки + Linear UX + Claude Code минимализм + RAG-память + AI-секретарь.
 
-[![Status](https://img.shields.io/badge/status-active-blue.svg)]()
+[![Status](https://img.shields.io/badge/status-active-blue.svg)]() [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 > Текущая версия — первый заголовок `## [X.Y.Z]` в [CHANGELOG.md](CHANGELOG.md) (версия в `package.json` не сопровождается).
 
 ## Что это
 
-**Open Finance** — модульный конструктор финансов с AI-помощником, который работает поверх ВСЕХ ваших данных.
+**Open Finance** — модульный конструктор финансов с AI-помощником, который работает поверх ВСЕХ ваших данных. Код полностью открыт (MIT): разворачиваете у себя — все функции включены, без тарифов и внешних сервисов (кроме тех, что подключаете сами: Ozon API, AI-провайдеры, SMTP).
+
+Для личного использования — см. [`docs/PERSONAL_USE.md`](./docs/PERSONAL_USE.md) (секреты, фича-флаги, что отключить).
 
 ### Ключевые фичи
 
@@ -269,28 +271,29 @@ open-finance/
 - [`docs/AI_TOOLS.md`](./docs/AI_TOOLS.md) — реестр AI-инструментов
 - [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — карта архитектуры
 - [`docs/LOCAL_AI.md`](./docs/LOCAL_AI.md) — локальный AI через Ollama в dev
+- [`docs/PERSONAL_USE.md`](./docs/PERSONAL_USE.md) — инструкция для личного self-hosted инстанса
+- [`docs/DESKTOP_PLAN.md`](./docs/DESKTOP_PLAN.md) — план local-first десктоп-приложения (оркестрация для AI-агента)
 - [`docs/ONBOARDING.md`](./docs/ONBOARDING.md) — спецификация onboarding-визарда
 - [`FEED.md`](./FEED.md) — заготовки постов для Telegram-канала
 - [`CHANGELOG.md`](./CHANGELOG.md) — история изменений
 
-## Тарифы
+## Open Source
 
-| Тариф | Цена | Что включено |
-|-------|------|-------------|
-| Free | 0 ₽ | Дашборд, 1 источник, безлимитная история |
-| Trial Pro | 0 ₽ / 14 дней | Полный Pro без оплаты |
-| Pro | 690 ₽/мес | Все модули, AI, налоги |
-| Business | 2 490 ₽/мес | + 5 пользователей, API |
-| Enterprise | 6 990 ₽/мес | Безлимит, SLA |
-| Local Lifetime | 9 990 ₽ разово | Tauri-версия, lifetime |
+Весь код открыт (MIT), все функции доступны без оплаты. Нюансы из SaaS-прошлого проекта:
+
+- **Планы/биллинг** — в коде остался plan-гейт (free/trial → 1 магазин маркетплейса) и mock-биллинг. Для self-hosted задайте `FEATURE_DEFAULT_PLAN=pro` — все лимиты сняты, платёжные ключи не нужны (`FEATURE_BILLING_MOCK=true` по умолчанию).
+- **Внешние сервисы опциональны** — SMTP, SmartCaptcha, Sentry, AI-ключи: пусто = выключено/fallback. AI работает локально через Ollama.
+- **Десктоп (local-first)** — план отдельного Tauri-приложения: [`docs/DESKTOP_PLAN.md`](./docs/DESKTOP_PLAN.md).
+
+Подробная инструкция для личного инстанса: [`docs/PERSONAL_USE.md`](./docs/PERSONAL_USE.md).
 
 ## Контрибьюшен
 
-Проект в стадии foundation. Контрибьюшен правила появятся позже.
+Issue и PR приветствуются. Перед PR: `pnpm typecheck && pnpm build`, правила для AI-агентов — в [`AGENTS.md`](./AGENTS.md), безопасность — [`docs/SECURITY.md`](./docs/SECURITY.md) и [`docs/TENANT_SCOPING.md`](./docs/TENANT_SCOPING.md).
 
 ## Лицензия
 
-TBD (вероятно MIT для open core, commercial для SaaS-версии)
+[MIT](./LICENSE)
 
 ---
 

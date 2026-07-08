@@ -99,6 +99,37 @@ export type RunFullSyncArgs = {
 };
 
 export async function runFullSync(args: RunFullSyncArgs): Promise<void> {
+  try {
+    await runFullSyncInner(args);
+  } catch (e) {
+    // Любой throw до/вне стейджей (например, провал расшифровки API-ключа
+    // после смены MARKETPLACE_SECRET_KEY/INBOX_SECRET_KEY) раньше оставлял
+    // job в pending навсегда — GlobalSyncIndicator бесконечно показывал
+    // «подготовку к синхронизации». Финализируем job и аккаунт как error.
+    const message = e instanceof Error ? e.message : String(e);
+    try {
+      await finishSyncJob({
+        jobId: args.jobId,
+        status: 'error',
+        errors: [{ message, at: new Date().toISOString() }],
+      });
+      await updateAccountLastSync({
+        tenantId: args.tenantId,
+        id: args.accountId,
+        status: 'error',
+        error: message,
+      });
+    } catch (finalizeError) {
+      console.error(
+        '[marketplaces] runFullSync error-finalize failed:',
+        finalizeError,
+      );
+    }
+    throw e;
+  }
+}
+
+async function runFullSyncInner(args: RunFullSyncArgs): Promise<void> {
   const account = await getAccount({ tenantId: args.tenantId, id: args.accountId });
   if (!account) {
     await finishSyncJob({

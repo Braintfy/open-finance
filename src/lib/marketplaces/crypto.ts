@@ -32,16 +32,32 @@ export function encryptSecret(value: string): string {
   return encryptWithKey(value, deriveKey(rawKeys().primary));
 }
 
+/** Dev-fallback (см. inboxRaw): пробуется ПОСЛЕДНИМ кандидатом при расшифровке
+ * в development — спасает креды, сохранённые до появления реальных ключей в env. */
+const DEV_FALLBACK_RAW = 'dev-inbox-secret-key-change-before-production';
+
 export function decryptSecret(payload: string): string {
   const { primary, legacy } = rawKeys();
-  try {
-    return decryptWithKey(payload, deriveKey(primary));
-  } catch (e) {
-    if (legacy && legacy !== primary) {
-      return decryptWithKey(payload, deriveKey(legacy));
-    }
-    throw e;
+  const candidates = [primary];
+  if (legacy && !candidates.includes(legacy)) candidates.push(legacy);
+  if (env.NODE_ENV === 'development' && !candidates.includes(DEV_FALLBACK_RAW)) {
+    candidates.push(DEV_FALLBACK_RAW);
   }
+  let lastError: unknown = null;
+  for (const raw of candidates) {
+    try {
+      return decryptWithKey(payload, deriveKey(raw));
+    } catch (e) {
+      lastError = e;
+    }
+  }
+  const detail = lastError instanceof Error ? lastError.message : String(lastError);
+  throw new Error(
+    'Не удалось расшифровать секрет маркетплейса: текущие MARKETPLACE_SECRET_KEY/INBOX_SECRET_KEY ' +
+      'не совпадают с ключом, которым секрет был сохранён (ключи меняли?). ' +
+      'Переподключите аккаунт в Настройки → Интеграции или выполните pnpm admin:reencrypt-secrets ' +
+      `со старым ключом в LEGACY_SECRET_KEYS. (${detail})`,
+  );
 }
 
 export { maskSecret };

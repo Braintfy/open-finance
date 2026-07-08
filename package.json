@@ -22,6 +22,7 @@
     "db:seed": "tsx scripts/seed.ts",
     "admin:reset-password": "tsx scripts/reset-password.ts",
     "admin:create": "tsx scripts/create-user.ts",
+    "admin:reencrypt-secrets": "tsx scripts/reencrypt-secrets.ts",
     "check:tenant-isolation": "tsx scripts/check-tenant-isolation.ts"
   },
   "dependencies": {
@@ -67,6 +68,7 @@
     "react-dom": "18.3.1",
     "react-grid-layout": "^1.5.3",
     "react-hook-form": "^7.53.2",
+    "react-resizable": "^3.0.5",
     "recharts": "^3.8.1",
     "tailwind-merge": "^2.5.4",
     "tailwindcss": "^3.4.15",

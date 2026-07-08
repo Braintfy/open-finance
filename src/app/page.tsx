@@ -1,19 +1,24 @@
-// PURPOSE: Главная страница (минимальный лендинг — заглушка для MVP)
+// PURPOSE: Главная страница — лендинг open-source проекта Open Finance
 import Link from 'next/link';
 import { APP_VERSION } from '@/lib/version';
+
+// Ссылка на репозиторий. Для своего форка/инстанса — замените на свой URL.
+const GITHUB_URL = 'https://github.com/open-finance/open-finance';
 
 export default function HomePage() {
   return (
     <main className="container mx-auto flex min-h-screen flex-col items-center justify-center px-4 py-16">
       <div className="max-w-2xl space-y-8 text-center">
         <div className="space-y-3">
-          <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">v{APP_VERSION} · MVP foundation</p>
+          <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
+            v{APP_VERSION} · Open Source · MIT
+          </p>
           <h1 className="text-balance text-4xl font-semibold tracking-tight sm:text-5xl">
-            Open Finance — AI Финансовый Управляющий
+            Open Finance — открытый AI-финансовый управляющий
           </h1>
           <p className="text-balance text-lg text-muted-foreground">
-            Персональный AI-финансист для предпринимателей. Модульный конструктор, AI-секретарь, налоги РФ — в одном
-            месте.
+            Self-hosted платформа финансов для предпринимателей: модульный конструктор, маркетплейсы, AI-аналитика.
+            Полностью открытый код — данные и ключи остаются у вас.
           </p>
         </div>
 
@@ -22,7 +27,7 @@ export default function HomePage() {
             href="/register"
             className="inline-flex h-10 items-center justify-center rounded-lg bg-primary px-5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
           >
-            Попробовать Pro · 14 дней бесплатно
+            Создать аккаунт
           </Link>
           <Link
             href="/login"
@@ -30,6 +35,14 @@ export default function HomePage() {
           >
             Войти
           </Link>
+          <a
+            href={GITHUB_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex h-10 items-center justify-center rounded-lg border border-border px-5 text-sm font-medium transition-colors hover:bg-accent"
+          >
+            GitHub
+          </a>
         </div>
 
         <div className="mt-12 grid grid-cols-1 gap-4 text-left sm:grid-cols-2">
@@ -40,6 +53,13 @@ export default function HomePage() {
             </div>
           ))}
         </div>
+
+        <p className="text-xs text-muted-foreground">
+          Развернуть у себя: README · Личное использование: docs/PERSONAL_USE.md ·{' '}
+          <Link href="/privacy" className="underline underline-offset-2 hover:text-foreground">
+            Конфиденциальность
+          </Link>
+        </p>
       </div>
     </main>
   );
@@ -47,19 +67,27 @@ export default function HomePage() {
 
 const features = [
   {
+    title: 'Открытый код, self-hosted',
+    description: 'MIT-лицензия. Разверните на своём сервере или локально — все функции включены, без тарифов.',
+  },
+  {
+    title: 'Данные и ключи — у вас',
+    description: 'API-ключи маркетплейсов и AI шифруются AES-256-GCM и не покидают ваш инстанс. BYOK для AI.',
+  },
+  {
     title: 'AI-первая архитектура',
-    description: 'AI работает поверх всех твоих данных через RAG: видит связи, паттерны, аномалии.',
+    description: 'AI работает поверх всех данных через RAG: связи, паттерны, аномалии. Claude, OpenAI или локальная Ollama.',
+  },
+  {
+    title: 'Маркетплейсы и unit-экономика',
+    description: 'Ozon sync, KPI, ДРР, ABC-анализ, AI-инсайты по SKU. Excel-режим с формулами в таблицах.',
   },
   {
     title: 'Inbox для AI',
-    description: 'Кидаешь чеки, договоры, заметки — AI сам разносит по транзакциям и блокам.',
+    description: 'Кидаете чеки, договоры, заметки — AI разносит по транзакциям и блокам.',
   },
   {
-    title: 'AI-секретарь',
-    description: 'Подключи email, Telegram, WhatsApp — AI следит за заказами и напоминает.',
-  },
-  {
-    title: 'Налоги РФ нативно',
-    description: 'УСН/НДС/ПСН/НПД/АУСН/ОСНО — выбери режим, AI посчитает и сравнит.',
+    title: 'Налоги РФ',
+    description: 'УСН/НДС/ПСН/НПД/АУСН/ОСНО — выберите режим, AI посчитает и сравнит.',
   },
 ];

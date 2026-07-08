@@ -57,7 +57,7 @@ export default function RegisterPage() {
       <Card className="w-full max-w-sm">
         <CardHeader>
           <CardTitle className="text-2xl">Регистрация</CardTitle>
-          <CardDescription>Pro 14 дней бесплатно. Без карты.</CardDescription>
+          <CardDescription>Self-hosted: все функции включены, без тарифов.</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={onSubmit} className="space-y-4">

@@ -184,6 +184,14 @@
 **Фикс:** CSP prod-only с `img-src https:` и без `frame-ancestors` (кликджекинг закрыт XFO); `pnpm add xlsx@https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz`; `pnpm update mailparser` (3.9.12 тянет nodemailer 9).
 **Урок:** при ужесточении CSP всегда проверять Inbox-письма (srcdoc) и внешние CDN-картинки; audit-фиксы транзитивов чинить через обновление родителя; xlsx обновлять только через SheetJS CDN.
 
+### 2026-07-07 — Ротация секрет-ключей ломает сохранённые креды; fire-and-forget sync без catch вешает job в pending
+
+**Контекст:** Ozon sync висел в «подготовке к синхронизации» 10+ мин; в терминале `[marketplaces] runFullSync background error: Unsupported state or unable to authenticate data` (`decryptWithKey`); в БД 2 зомби-job'а `pending` (копились с 6 июля).
+**Грабля:** (1) при security-аудите в `.env.local` заданы новые `INBOX_SECRET_KEY`/`MARKETPLACE_SECRET_KEY`, а креды Ozon и inbox-каналов были зашифрованы старым dev-fallback ключом → AES-GCM auth tag fail; (2) `runFullSync` бросал ДО `setSyncJobRunning`, `.catch` в route только логировал → job навсегда `pending`, `GlobalSyncIndicator` поллит `/jobs/active` бесконечно.
+**Причина:** fire-and-forget фоновая задача не финализировала свой job при исключении; расшифровка не переживала ротацию ключей (legacy-fallback покрывал только пару MARKETPLACE↔INBOX, не старые значения).
+**Фикс:** try/catch-обёртка `runFullSync` (финализация job+account как error), кандидаты ключей в `decryptSecret` (primary→legacy→dev-fallback dev-only) с понятной ошибкой, `failStaleSyncJobs` (>10 мин pending→error) в `GET /jobs/active`, скрипт `pnpm admin:reencrypt-secrets` (перешифровал 4 секрета: Ozon api_key + perf_secret + 2 inbox-канала).
+**Урок:** fire-and-forget задача ОБЯЗАНА сама финализировать свой job в catch (иначе UI-поллинг вечный); после смены ключей шифрования сразу гнать `admin:reencrypt-secrets` (старые ключи — в `LEGACY_SECRET_KEYS`), не полагаться на fallback-кандидаты.
+
 ## Как использовать
 
 **Когда писать:**

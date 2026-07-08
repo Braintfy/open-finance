@@ -6,6 +6,7 @@ import { NextResponse } from 'next/server';
 import { and, eq, inArray, desc } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { auth } from '@/lib/auth';
+import { failStaleSyncJobs } from '@/lib/marketplaces/queries';
 import {
   marketplaceAccounts,
   ozonSyncJobs,
@@ -21,6 +22,10 @@ export async function GET() {
     if (!session?.tenantId) {
       return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
     }
+
+    // Зависшие pending-jobs (>10 мин без старта) закрываем как error — иначе
+    // индикатор синхронизации крутится бесконечно.
+    await failStaleSyncJobs({ tenantId: session.tenantId });
 
     const rows = await db
       .select({
