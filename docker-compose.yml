@@ -12,7 +12,10 @@ services:
       - "127.0.0.1:${POSTGRES_PORT:-5434}:5432"
     volumes:
       - openfinance_postgres_data:/var/lib/postgresql/data
-      - ./drizzle/init:/docker-entrypoint-initdb.d:ro
+      # Монтируем ТОЛЬКО 01-extensions.sql: на пустом volume entrypoint выполняет скрипты
+      # с ON_ERROR_STOP, а файлы 03+ ссылаются на ещё не созданные таблицы (tenants и др.) → падение старта.
+      # Схему создаёт `pnpm db:migrate`, затем 02-vector-indexes.sql применяется вручную (см. docs/DEPLOY_RPI5.md).
+      - ./drizzle/init/01-extensions.sql:/docker-entrypoint-initdb.d/01-extensions.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-openfinance_user} -d ${POSTGRES_DB:-openfinance_dev}"]
       interval: 30s

@@ -4,6 +4,13 @@
 
 ### Added
 - **docs/DEPLOY_RPI5.md** — канонический план прод-деплоя на минисервер Raspberry Pi 5 (16GB, ARM64): архитектура (nginx → один `next start` + Postgres/pgvector в Docker + Xray http-прокси для AI), фазы A–H, рутина обновления, реестр из 15 граблей. Составлен по мультиагентному аудиту репо (6 агентов): найдены блокеры — `undici` отсутствует в зависимостях (AI-прокси нерабочий), монтирование всего `drizzle/init/` роняет первый старт Postgres-контейнера, `db:push` сносит HNSW/FTS/trgm-индексы, SOCKS5 в прокси не поддержан (только HTTP).
+- **`undici ^7.29.0` в dependencies** — блокер AI-прокси: `src/lib/ai/providers/proxy.ts` делает динамический `import('undici')` для `ProxyAgent`, пакета в зависимостях не было → включение прокси падало «Пакет undici не установлен». Версия 7.x (не 8.x): undici 8 требует Node ≥22.19, что конфликтует с `engines: >=20`.
+
+### Fixed
+- **docker-compose: initdb монтирует только `01-extensions.sql`** — раньше монтировался весь `drizzle/init/`, и на пустом volume контейнер Postgres падал на первом старте (`03-boards.sql` → `relation "tenants" does not exist`, ON_ERROR_STOP → exit 3). Схему создаёт `pnpm db:migrate`, `02-vector-indexes.sql` применяется вручную после (см. docs/DEPLOY_RPI5.md).
+
+### Deployed
+- **Первый прод-деплой на Raspberry Pi 5 (16GB)** по docs/DEPLOY_RPI5.md: Pi OS Lite 64-bit + 4K-ядро (`kernel=kernel8.img` — фикс 16K-страниц под sharp), Node 22 + pnpm 9.12.3, Docker (только Postgres+pgvector, 127.0.0.1:5434, 38 таблиц через `db:migrate` + vector-индексы), systemd `open-finance` + nginx (self-signed TLS, стриминг-фиксы, анти-спуфинг XFF, зачистка x-user-* заголовков), zram 4G, ufw/fail2ban, ежедневный pg_dump-cron. Сборка на Pi — 145 с; RAM всего стека ~660 МБ. Осталось: VPN-прокси для AI (фаза C), домен/TLS вместо self-signed, перенос на NVMe.
 
 ## [0.47.1] - 2026-07-07
 
