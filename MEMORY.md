@@ -430,6 +430,7 @@ pnpm tsx scripts/test-{unit-economics,ozon-upsert,ozon-sync-diff,ozon-analytics,
 - `docs/memory-archive/*` — историческая память.
 - `docs/MEMPALACE_RUNBOOK.md` — legacy mempalace (deprecated с v0.22.4; актуальная память — `docs/MEMORY_SETUP.md`).
 - `docs/SECURITY.md` — **обязательно** при работе с секретами/сетью/биллингом.
+- `docs/DEPLOY_RPI5.md` — **канон прод-деплоя на минисервер Raspberry Pi 5 16GB** (v0.47.2): фазы, реестр граблей, рутина обновления. Роли: пользователь прошивает ОС/даёт SSH, Claude настраивает и деплоит (исполнение — Opus 5).
 - `docs/CASHFLOW_BLOCKS.md`, `docs/KPI_GRID.md`, `docs/CUSTOM_DATA_BLOCK.md`, `docs/UNIT_ECONOMICS_TABS.md` — блочные системы.
 - `docs/AI_TOOLS.md`, `docs/AI_VISION.md` — AI integration.
 - `docs/MARKETPLACES_OZON_PERFORMANCE.md`, `docs/MARKETPLACES_FUTURE_PLAN.md`, `docs/OZON_ADS_GAP.md` — Ozon.
