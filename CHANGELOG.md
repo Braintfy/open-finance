@@ -9,6 +9,9 @@
 ### Fixed
 - **docker-compose: initdb монтирует только `01-extensions.sql`** — раньше монтировался весь `drizzle/init/`, и на пустом volume контейнер Postgres падал на первом старте (`03-boards.sql` → `relation "tenants" does not exist`, ON_ERROR_STOP → exit 3). Схему создаёт `pnpm db:migrate`, `02-vector-indexes.sql` применяется вручную после (см. docs/DEPLOY_RPI5.md).
 
+### Planning
+- **docs/LK_V2_PLAN.md** — план «плотной работы»: воркспейсы (именованные кабинеты, сущность workspaces), переработка каталога блоков (discoverability-фиксы: универсальные блоки не попадают в «Рекомендуемые», cashflow-пресеты на всех страницах, флаг hidden), остатки «всё по всем складам» (подтверждён баг cluster-stocks-v2 — вся выручка в «Без кластера» из-за неверного JSON-пути склада; FBS-склады не синкаются), VLESS-VPN в админке (режимы ссылка/подписка, spool + systemd path-юнит без sudo у web-процесса). По мультиагентному анализу дев-БД и кода (6 агентов).
+
 ### Deployed
 - **Первый прод-деплой на Raspberry Pi 5 (16GB)** по docs/DEPLOY_RPI5.md: Pi OS Lite 64-bit + 4K-ядро (`kernel=kernel8.img` — фикс 16K-страниц под sharp), Node 22 + pnpm 9.12.3, Docker (только Postgres+pgvector, 127.0.0.1:5434, 38 таблиц через `db:migrate` + vector-индексы), systemd `open-finance` + nginx (self-signed TLS, стриминг-фиксы, анти-спуфинг XFF, зачистка x-user-* заголовков), zram 4G, ufw/fail2ban, ежедневный pg_dump-cron. Сборка на Pi — 145 с; RAM всего стека ~660 МБ. Осталось: VPN-прокси для AI (фаза C), домен/TLS вместо self-signed, перенос на NVMe.
 
