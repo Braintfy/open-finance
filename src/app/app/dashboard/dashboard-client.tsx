@@ -15,6 +15,7 @@ import type { BlockInstance } from '@/lib/blocks/types';
 
 export function DashboardClient({
   tenantId,
+  workspaceId,
   greeting,
   hasData,
   initialBlocks,
@@ -24,6 +25,8 @@ export function DashboardClient({
   initialTransactions,
 }: {
   tenantId: string;
+  /** Активный кабинет — ключ ремоунта грида (защита от pending-save в чужой кабинет). */
+  workspaceId?: string;
   greeting: string;
   hasData: boolean;
   initialBlocks: BlockInstance[];
@@ -50,7 +53,13 @@ export function DashboardClient({
         </div>
       </div>
 
-      <BlockGrid pageKey="dashboard" tenantId={tenantId} initialBlocks={initialBlocks}>
+      <BlockGrid
+        key={`${workspaceId ?? 'default'}:dashboard`}
+        pageKey="dashboard"
+        tenantId={tenantId}
+        workspaceId={workspaceId}
+        initialBlocks={initialBlocks}
+      >
         {(grid) => (
           <CashflowDataProvider
             value={{

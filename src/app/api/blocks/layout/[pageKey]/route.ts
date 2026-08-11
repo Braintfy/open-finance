@@ -3,7 +3,15 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { auth } from '@/lib/auth';
 import { loadLayout, saveLayout, deleteLayout } from '@/lib/blocks/queries';
-import { getDefaultLayout } from '@/lib/blocks/registry';
+import { getDefaultLayout } from '@/lib/blocks/default-layouts';
+import { getWorkspaceScope } from '@/lib/workspaces/active';
+import { getWorkspaceById } from '@/lib/workspaces/queries';
+import {
+  isSharedPageKey,
+  isUuid,
+  pageWorkspaceScope,
+  type PageWorkspaceScope,
+} from '@/lib/workspaces/scope';
 
 const PageKey = z.string().min(1).max(64).regex(/^[a-z0-9_-]+$/i);
 
@@ -58,67 +66,133 @@ const PutBody = z.object({
   hiddenSections: z.array(z.string().max(64)).max(50).optional(),
 });
 
+/**
+ * Кабинет запроса. По умолчанию — активный (кука/users.settings); 'nav' и
+ * 'board-*' всегда идут в default-кабинет. Клиентский BlockGrid дополнительно
+ * шлёт `?workspaceId=` того кабинета, в котором была отрисована раскладка —
+ * иначе отложенный save после переключения кабинета записал бы старые блоки в
+ * новый кабинет. Явный id принимается только после проверки принадлежности
+ * паре (tenant,user); чужой/битый — игнорируется (фолбэк на активный).
+ */
+async function resolveLayoutScope(
+  tenantId: string,
+  userId: string,
+  pageKey: string,
+  explicitId: string | null,
+): Promise<PageWorkspaceScope> {
+  const scope = await getWorkspaceScope(tenantId, userId);
+  const fallback = pageWorkspaceScope(scope, pageKey);
+  if (
+    !explicitId ||
+    !isUuid(explicitId) ||
+    isSharedPageKey(pageKey) ||
+    explicitId === fallback.workspaceId
+  ) {
+    return fallback;
+  }
+  const ws = await getWorkspaceById({ tenantId, userId, id: explicitId });
+  if (!ws) return fallback;
+  return {
+    workspaceId: ws.id,
+    template: ws.template,
+    includeLegacy: ws.id === scope.defaultId,
+  };
+}
+
+function explicitWorkspaceId(req: Request): string | null {
+  try {
+    return new URL(req.url).searchParams.get('workspaceId');
+  } catch {
+    return null;
+  }
+}
+
 export async function GET(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ pageKey: string }> }
 ) {
-  const session = await auth();
-  if (!session?.tenantId || !session.userId) {
-    return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
+  try {
+    const session = await auth();
+    if (!session?.tenantId || !session.userId) {
+      return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
+    }
+    const { pageKey: rawKey } = await params;
+    const parseKey = PageKey.safeParse(rawKey);
+    if (!parseKey.success) {
+      return NextResponse.json({ ok: false, error: 'Invalid pageKey' }, { status: 400 });
+    }
+    const scope = await resolveLayoutScope(
+      session.tenantId,
+      session.userId,
+      parseKey.data,
+      explicitWorkspaceId(req),
+    );
+    const layout = await loadLayout({
+      tenantId: session.tenantId,
+      userId: session.userId,
+      pageKey: parseKey.data,
+      workspaceId: scope.workspaceId,
+      workspaceTemplate: scope.template,
+    });
+    return NextResponse.json({ ok: true, ...layout });
+  } catch (error) {
+    console.error('[api/blocks/layout] GET failed:', error);
+    return NextResponse.json({ ok: false, error: 'Internal error' }, { status: 500 });
   }
-  const { pageKey: rawKey } = await params;
-  const parseKey = PageKey.safeParse(rawKey);
-  if (!parseKey.success) {
-    return NextResponse.json({ ok: false, error: 'Invalid pageKey' }, { status: 400 });
-  }
-  const layout = await loadLayout({
-    tenantId: session.tenantId,
-    userId: session.userId,
-    pageKey: parseKey.data,
-  });
-  return NextResponse.json({ ok: true, ...layout });
 }
 
 async function handleSave(
   req: Request,
   params: Promise<{ pageKey: string }>
 ) {
-  const session = await auth();
-  if (!session?.tenantId || !session.userId) {
-    return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
-  }
-  const { pageKey: rawKey } = await params;
-  const parseKey = PageKey.safeParse(rawKey);
-  if (!parseKey.success) {
-    return NextResponse.json({ ok: false, error: 'Invalid pageKey' }, { status: 400 });
-  }
-  // sendBeacon отправляет Blob с типом application/json — поддерживаем и его, и обычный JSON
-  let json: unknown;
   try {
-    json = await req.json();
-  } catch {
-    const text = await req.text();
-    try {
-      json = JSON.parse(text);
-    } catch {
-      return NextResponse.json({ ok: false, error: 'Invalid JSON' }, { status: 400 });
+    const session = await auth();
+    if (!session?.tenantId || !session.userId) {
+      return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
     }
-  }
-  const body = PutBody.safeParse(json);
-  if (!body.success) {
-    return NextResponse.json(
-      { ok: false, error: body.error.issues[0]?.message ?? 'Bad request' },
-      { status: 400 }
+    const { pageKey: rawKey } = await params;
+    const parseKey = PageKey.safeParse(rawKey);
+    if (!parseKey.success) {
+      return NextResponse.json({ ok: false, error: 'Invalid pageKey' }, { status: 400 });
+    }
+    // sendBeacon отправляет Blob с типом application/json — поддерживаем и его, и обычный JSON
+    let json: unknown;
+    try {
+      json = await req.json();
+    } catch {
+      const text = await req.text();
+      try {
+        json = JSON.parse(text);
+      } catch {
+        return NextResponse.json({ ok: false, error: 'Invalid JSON' }, { status: 400 });
+      }
+    }
+    const body = PutBody.safeParse(json);
+    if (!body.success) {
+      return NextResponse.json(
+        { ok: false, error: body.error.issues[0]?.message ?? 'Bad request' },
+        { status: 400 }
+      );
+    }
+    const scope = await resolveLayoutScope(
+      session.tenantId,
+      session.userId,
+      parseKey.data,
+      explicitWorkspaceId(req),
     );
+    await saveLayout({
+      tenantId: session.tenantId,
+      userId: session.userId,
+      pageKey: parseKey.data,
+      blocks: body.data.blocks,
+      hiddenSections: body.data.hiddenSections,
+      workspaceId: scope.workspaceId,
+    });
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    console.error('[api/blocks/layout] save failed:', error);
+    return NextResponse.json({ ok: false, error: 'Internal error' }, { status: 500 });
   }
-  await saveLayout({
-    tenantId: session.tenantId,
-    userId: session.userId,
-    pageKey: parseKey.data,
-    blocks: body.data.blocks,
-    hiddenSections: body.data.hiddenSections,
-  });
-  return NextResponse.json({ ok: true });
 }
 
 export async function PUT(
@@ -138,23 +212,35 @@ export async function POST(
 }
 
 export async function DELETE(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ pageKey: string }> }
 ) {
-  const session = await auth();
-  if (!session?.tenantId || !session.userId) {
-    return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
+  try {
+    const session = await auth();
+    if (!session?.tenantId || !session.userId) {
+      return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
+    }
+    const { pageKey: rawKey } = await params;
+    const parseKey = PageKey.safeParse(rawKey);
+    if (!parseKey.success) {
+      return NextResponse.json({ ok: false, error: 'Invalid pageKey' }, { status: 400 });
+    }
+    const scope = await resolveLayoutScope(
+      session.tenantId,
+      session.userId,
+      parseKey.data,
+      explicitWorkspaceId(req),
+    );
+    await deleteLayout({
+      tenantId: session.tenantId,
+      userId: session.userId,
+      pageKey: parseKey.data,
+      workspaceId: scope.workspaceId,
+    });
+    const defaults = getDefaultLayout(parseKey.data, scope.template);
+    return NextResponse.json({ ok: true, ...defaults });
+  } catch (error) {
+    console.error('[api/blocks/layout] DELETE failed:', error);
+    return NextResponse.json({ ok: false, error: 'Internal error' }, { status: 500 });
   }
-  const { pageKey: rawKey } = await params;
-  const parseKey = PageKey.safeParse(rawKey);
-  if (!parseKey.success) {
-    return NextResponse.json({ ok: false, error: 'Invalid pageKey' }, { status: 400 });
-  }
-  await deleteLayout({
-    tenantId: session.tenantId,
-    userId: session.userId,
-    pageKey: parseKey.data,
-  });
-  const defaults = getDefaultLayout(parseKey.data);
-  return NextResponse.json({ ok: true, ...defaults });
 }

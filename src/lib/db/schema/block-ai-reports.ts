@@ -12,6 +12,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { tenants } from './tenants';
 import { users } from './users';
+import { workspaces } from './workspaces';
 import type {
   SectionInsight,
   SectionReportMeta,
@@ -27,6 +28,13 @@ export const blockAiReports = pgTable(
     userId: uuid('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
+    // Воркспейс отчёта (изоляция AI-отчётов per-workspace). NULLABLE и БЕЗ
+    // бэкфилла: новые отчёты пишутся с workspace_id активного кабинета, а
+    // legacy-строки (NULL) видны ТОЛЬКО в default-кабинете —
+    // см. workspaceScopeCondition() в src/lib/workspaces/queries.ts.
+    workspaceId: uuid('workspace_id').references(() => workspaces.id, {
+      onDelete: 'cascade',
+    }),
     /** Ключ раздела (BlockGrid pageKey). */
     pageKey: varchar('page_key', { length: 64 }).notNull(),
     /** ID блока (BlockInstance.id) — история скоупится на блок. */

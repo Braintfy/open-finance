@@ -23,6 +23,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { tenants } from './tenants';
 import { users } from './users';
+import { workspaces } from './workspaces';
 
 export const unitEconomicsTabs = pgTable(
   'unit_economics_tabs',
@@ -34,6 +35,14 @@ export const unitEconomicsTabs = pgTable(
     userId: uuid('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
+    // Воркспейс вкладки (миграция 0011): вкладки раздельные per-workspace —
+    // у каждого кабинета свой набор вкладок и свои раскладки. Бэкфилл 0011
+    // проставил default-кабинет legacy-строкам, после чего колонка NOT NULL.
+    workspaceId: uuid('workspace_id')
+      .notNull()
+      .references(() => workspaces.id, {
+        onDelete: 'cascade',
+      }),
     /** pageKey-ссылка на block_layouts (unique per user × tenant). */
     pageKey: varchar('page_key', { length: 96 }).notNull(),
     /** Отображаемое название вкладки. */
@@ -58,9 +67,11 @@ export const unitEconomicsTabs = pgTable(
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
   (t) => [
-    uniqueIndex('unit_economics_tabs_tenant_user_page_idx').on(
-      t.tenantId,
-      t.userId,
+    // Миграция 0011: уникальность переехала с (tenant,user,page_key) на
+    // (workspace_id, page_key) — иначе default-вкладки ('unit-economics-ozon'
+    // и т.п.) нельзя было бы засидить во втором кабинете того же пользователя.
+    uniqueIndex('unit_economics_tabs_workspace_page_idx').on(
+      t.workspaceId,
       t.pageKey,
     ),
   ],

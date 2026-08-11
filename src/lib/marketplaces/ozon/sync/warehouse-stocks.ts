@@ -12,6 +12,7 @@ import { ozonWarehouseStocks } from '@/lib/db/schema/marketplaces';
 import { analyticsStockOnWarehouses } from '../endpoints';
 import { runStageWithTiming, type StageContext, type StageResult } from './types';
 import { loadWarehouseClusterMap } from './clusters';
+import { normalizeWarehouseName } from '../cluster-agg';
 
 const PAGE_LIMIT = 1000;
 const MAX_PAGES = 50; // 50_000 строк — с запасом
@@ -25,7 +26,7 @@ export async function syncWarehouseStocksStage(
     if (clusterMap.size === 0) {
       warnings.push(
         'Справочник кластеров пуст — остатки сохранятся без cluster_name. ' +
-          'Запустите sync stage `clusters` (Performance API).',
+          'Запустите sync stage `clusters` (Seller API POST /v1/cluster/list).',
       );
     }
 
@@ -71,7 +72,9 @@ export async function syncWarehouseStocksStage(
 
     let processed = 0;
     for (const r of all) {
-      const cluster = clusterMap.get(r.warehouseName.toLowerCase()) ?? null;
+      // Нормализация только в JS: SQL `lower()` в C-локали БД кириллицу
+      // не приводит к нижнему регистру (см. cluster-agg.ts).
+      const cluster = clusterMap.get(normalizeWarehouseName(r.warehouseName)) ?? null;
       await db
         .insert(ozonWarehouseStocks)
         .values({

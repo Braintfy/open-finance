@@ -1,8 +1,15 @@
 // PURPOSE: GET /api/blocks/sources — каталог доступных источников для cross-block формул.
 import { NextResponse } from 'next/server';
-import { and, eq, gte, ilike, sql } from 'drizzle-orm';
+import { and, eq, gte, ilike, inArray, sql } from 'drizzle-orm';
 import { auth } from '@/lib/auth';
 import { db } from '@/lib/db/client';
+import { getWorkspaceScope } from '@/lib/workspaces/active';
+import { workspaceScopeCondition } from '@/lib/workspaces/queries';
+import {
+  activeWorkspaceScope,
+  isSharedPageKey,
+  pageWorkspaceScope,
+} from '@/lib/workspaces/scope';
 import { blockLayouts } from '@/lib/db/schema/block-layouts';
 import { unitEconomicsTabs } from '@/lib/db/schema/unit-economics-tabs';
 import { transactions } from '@/lib/db/schema/transactions';
@@ -964,6 +971,9 @@ async function fieldsForBlock(
         { name: 'ordersInPeriod', label: 'Заказов / период', value: null, format: 'number' },
         { name: 'revenueInPeriod', label: 'Выручка / период', value: null, format: 'money' },
         { name: 'clustersCount', label: 'Кластеров', value: t.clustersCount, format: 'number' },
+        // Считается только в разрезе «Склады» (groupBy=warehouse) и зависит от
+        // периода — как ordersInPeriod, значение приходит от run-time publisher.
+        { name: 'warehousesCount', label: 'Складов', value: null, format: 'number' },
       ];
     } catch (e) {
       console.error('[blocks/sources] ozon-warehouse-clusters totals failed:', e);
@@ -977,6 +987,7 @@ async function fieldsForBlock(
         { name: 'ordersInPeriod', label: 'Заказов / период', value: null, format: 'number' },
         { name: 'revenueInPeriod', label: 'Выручка / период', value: null, format: 'money' },
         { name: 'clustersCount', label: 'Кластеров', value: null, format: 'number' },
+        { name: 'warehousesCount', label: 'Складов', value: null, format: 'number' },
       ];
     }
   }
@@ -1178,102 +1189,133 @@ async function fieldsForBlock(
 }
 
 export async function GET() {
-  const session = await auth();
-  if (!session?.tenantId || !session.userId) {
-    return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
-  }
-  const tenantId = session.tenantId;
-  const userId = session.userId;
+  try {
+    const session = await auth();
+    if (!session?.tenantId || !session.userId) {
+      return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
+    }
+    const tenantId = session.tenantId;
+    const userId = session.userId;
 
-  const saved = await db
-    .select({ pageKey: blockLayouts.pageKey })
-    .from(blockLayouts)
-    .where(and(eq(blockLayouts.tenantId, tenantId), eq(blockLayouts.userId, userId)));
+    // Изоляция кабинетов: источники — только страницы АКТИВНОГО воркспейса
+    // (+ ОБЩИЕ 'board-*' из default-кабинета). Cross-workspace @-ссылки запрещены.
+    const scope = await getWorkspaceScope(tenantId, userId);
+    const activeScope = activeWorkspaceScope(scope);
 
-  // v0.22.0: custom unit-economics-вкладки — динамические pageKeys + labels.
-  const unitTabsList = await db
-    .select({
-      pageKey: unitEconomicsTabs.pageKey,
-      label: unitEconomicsTabs.label,
-    })
-    .from(unitEconomicsTabs)
-    .where(
-      and(eq(unitEconomicsTabs.tenantId, tenantId), eq(unitEconomicsTabs.userId, userId)),
+    const savedRows = await db
+      .select({ pageKey: blockLayouts.pageKey, workspaceId: blockLayouts.workspaceId })
+      .from(blockLayouts)
+      .where(
+        and(
+          eq(blockLayouts.tenantId, tenantId),
+          eq(blockLayouts.userId, userId),
+          inArray(blockLayouts.workspaceId, [scope.activeId, scope.defaultId]),
+        ),
+      );
+    const saved = savedRows.filter(
+      (r) => r.workspaceId === scope.activeId || isSharedPageKey(r.pageKey),
     );
-  const customLabels: Record<string, string> = {};
-  for (const t of unitTabsList) {
-    customLabels[t.pageKey] = t.label;
-  }
 
-  const pageKeys: string[] = Array.from(
-    new Set([
-      ...DEFAULT_PAGE_KEYS,
-      ...unitTabsList.map((t) => t.pageKey),
-      ...saved.map((r) => r.pageKey),
-    ]),
-  );
-  const now = new Date();
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-  const [monthlySummary, currencyRatesList] = await Promise.all([
-    getCashflowSummary(tenantId, monthStart),
-    getCurrencyRates().catch((error) => {
-      console.error('[blocks/sources] currency rates load failed:', error);
-      return [] as CurrencyRate[];
-    }),
-  ]);
-  const currencyRatesByCode = new Map(currencyRatesList.map((r) => [r.code, r]));
+    // v0.22.0: custom unit-economics-вкладки — динамические pageKeys + labels.
+    // Вкладки per-workspace (Этап 3) → берём только вкладки активного кабинета.
+    const unitTabsList = await db
+      .select({
+        pageKey: unitEconomicsTabs.pageKey,
+        label: unitEconomicsTabs.label,
+      })
+      .from(unitEconomicsTabs)
+      .where(
+        and(
+          eq(unitEconomicsTabs.tenantId, tenantId),
+          eq(unitEconomicsTabs.userId, userId),
+          workspaceScopeCondition(unitEconomicsTabs.workspaceId, activeScope),
+        ),
+      );
+    const customLabels: Record<string, string> = {};
+    for (const t of unitTabsList) {
+      customLabels[t.pageKey] = t.label;
+    }
 
-  // Виртуальная страница `__virtual` — содержит cashflow KPI как «псевдо-блоки»
-  // (income/expense/balance). Любой блок на любой странице может биндиться
-  // на них по refs `@__virtual:cashflow.kpi.{metric}.{field}`.
-  const virtualPage = await buildVirtualCashflowPage(tenantId);
+    const pageKeys: string[] = Array.from(
+      new Set([
+        ...DEFAULT_PAGE_KEYS,
+        ...unitTabsList.map((t) => t.pageKey),
+        ...saved.map((r) => r.pageKey),
+      ]),
+    );
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const [monthlySummary, currencyRatesList] = await Promise.all([
+      getCashflowSummary(tenantId, monthStart),
+      getCurrencyRates().catch((error) => {
+        console.error('[blocks/sources] currency rates load failed:', error);
+        return [] as CurrencyRate[];
+      }),
+    ]);
+    const currencyRatesByCode = new Map(currencyRatesList.map((r) => [r.code, r]));
 
-  const pages = await Promise.all(pageKeys.map(async (pageKey) => {
-    const layout = await loadLayout({ tenantId, userId, pageKey });
-    const blocks = await Promise.all(layout.blocks.map(async (block) => {
-      const meta = typeMeta(block.type);
-      const label = titleOf(block);
-      const pLabel = pageLabel(pageKey, customLabels);
-      const fields = await fieldsForBlock(block, tenantId, monthlySummary, currencyRatesByCode);
-      const allFields: SourceField[] = [
-        ...fields,
-        { name: 'label', label: 'Название', value: label },
-      ];
-      // Для Ozon-блоков проставляем L2-группу (отображается как подзаголовок
-      // внутри секции экземпляра в модалке привязок). Прочие блоки идут
-      // плоским списком — group остаётся undefined.
-      if (block.type.startsWith('unit.ozon-')) {
-        decorateOzonGroups(allFields);
-      }
-      return {
-        blockId: block.id,
+    // Виртуальная страница `__virtual` — содержит cashflow KPI как «псевдо-блоки»
+    // (income/expense/balance). Любой блок на любой странице может биндиться
+    // на них по refs `@__virtual:cashflow.kpi.{metric}.{field}`.
+    const virtualPage = await buildVirtualCashflowPage(tenantId);
+
+    const pages = await Promise.all(pageKeys.map(async (pageKey) => {
+      const pageScope = pageWorkspaceScope(scope, pageKey);
+      const layout = await loadLayout({
+        tenantId,
+        userId,
         pageKey,
-        pageLabel: pLabel,
-        type: block.type,
-        typeLabel: meta.label,
-        category: meta.category,
-        label,
-        fields: allFields,
-        instanceLabel: buildInstanceLabel({
+        workspaceId: pageScope.workspaceId,
+        workspaceTemplate: pageScope.template,
+      });
+      const blocks = await Promise.all(layout.blocks.map(async (block) => {
+        const meta = typeMeta(block.type);
+        const label = titleOf(block);
+        const pLabel = pageLabel(pageKey, customLabels);
+        const fields = await fieldsForBlock(block, tenantId, monthlySummary, currencyRatesByCode);
+        const allFields: SourceField[] = [
+          ...fields,
+          { name: 'label', label: 'Название', value: label },
+        ];
+        // Для Ozon-блоков проставляем L2-группу (отображается как подзаголовок
+        // внутри секции экземпляра в модалке привязок). Прочие блоки идут
+        // плоским списком — group остаётся undefined.
+        if (block.type.startsWith('unit.ozon-')) {
+          decorateOzonGroups(allFields);
+        }
+        return {
+          blockId: block.id,
+          pageKey,
+          pageLabel: pLabel,
           type: block.type,
           typeLabel: meta.label,
+          category: meta.category,
           label,
-          pageLabel: pLabel,
-          config: block.config,
-        }),
-        periodKey: block.type.startsWith('unit.ozon-') ? computePeriodKey(block.config) : null,
-      } satisfies SourceBlock;
+          fields: allFields,
+          instanceLabel: buildInstanceLabel({
+            type: block.type,
+            typeLabel: meta.label,
+            label,
+            pageLabel: pLabel,
+            config: block.config,
+          }),
+          periodKey: block.type.startsWith('unit.ozon-') ? computePeriodKey(block.config) : null,
+        } satisfies SourceBlock;
+      }));
+      // Сортировка: по категории (CATEGORY_ORDER), потом по label.
+      blocks.sort((a, b) => {
+        const r = categoryRank(a.category) - categoryRank(b.category);
+        if (r !== 0) return r;
+        return a.label.localeCompare(b.label, 'ru');
+      });
+      return { pageKey, pageLabel: pageLabel(pageKey, customLabels), blocks };
     }));
-    // Сортировка: по категории (CATEGORY_ORDER), потом по label.
-    blocks.sort((a, b) => {
-      const r = categoryRank(a.category) - categoryRank(b.category);
-      if (r !== 0) return r;
-      return a.label.localeCompare(b.label, 'ru');
-    });
-    return { pageKey, pageLabel: pageLabel(pageKey, customLabels), blocks };
-  }));
 
-  return NextResponse.json({ ok: true, pages: [virtualPage, ...pages] });
+    return NextResponse.json({ ok: true, pages: [virtualPage, ...pages] });
+  } catch (error) {
+    console.error('[api/blocks/sources] GET failed:', error);
+    return NextResponse.json({ ok: false, error: 'Internal error' }, { status: 500 });
+  }
 }
 
 // ============================================================================

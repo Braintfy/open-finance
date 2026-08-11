@@ -26,6 +26,7 @@ import {
 } from '@/lib/ai/section-insights';
 import { resolveBlockContextSelections } from '@/lib/ai/block-context-sources-queries';
 import { listBlockReports } from '@/lib/ai/block-reports-queries';
+import { getPageWorkspaceScope, getWorkspaceScope } from '@/lib/workspaces/active';
 
 export const runtime = 'nodejs';
 export const maxDuration = 120;
@@ -139,10 +140,13 @@ export async function POST(req: NextRequest) {
       extraBlocks.push({ label: b.title, mode: 'blocks', blocks: [b] });
     }
     if (externalBlocks && externalBlocks.length > 0) {
+      // Резолв строго в рамках активного кабинета (общие доски — из default).
+      const workspaceScope = await getWorkspaceScope(session.tenantId, session.userId);
       const resolvedExternal = await resolveBlockContextSelections({
         tenantId: session.tenantId,
         userId: session.userId,
         selections: externalBlocks,
+        workspace: workspaceScope,
       });
       extraBlocks.push(...resolvedExternal);
     }
@@ -152,11 +156,17 @@ export async function POST(req: NextRequest) {
       | { createdAt: string; summary: string; insights: SectionInsight[] }
       | null = null;
     if (includeLastReport) {
+      const reportWorkspace = await getPageWorkspaceScope(
+        session.tenantId,
+        session.userId,
+        pageKey,
+      );
       const reports = await listBlockReports({
         tenantId: session.tenantId,
         userId: session.userId,
         pageKey,
         blockId,
+        workspace: reportWorkspace,
       }).catch(() => []);
       const last = reports[0];
       if (last) {

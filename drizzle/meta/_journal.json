@@ -71,6 +71,20 @@
       "when": 1782759484692,
       "tag": "0009_conscious_squirrel_girl",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1786135188697,
+      "tag": "0010_workspaces",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1786392484117,
+      "tag": "0011_workspace_ue_tabs",
+      "breakpoints": true
     }
   ]
 }

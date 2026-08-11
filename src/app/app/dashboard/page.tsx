@@ -12,6 +12,7 @@ import {
   listTransactions,
 } from '@/lib/cashflow/queries';
 import { loadLayout } from '@/lib/blocks/queries';
+import { getPageWorkspaceScope } from '@/lib/workspaces/active';
 import { DashboardClient } from './dashboard-client';
 
 export default async function DashboardPage() {
@@ -46,6 +47,8 @@ export default async function DashboardPage() {
 
   const now = new Date();
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  // Раскладка дашборда — из АКТИВНОГО кабинета (кука/users.settings).
+  const scope = await getPageWorkspaceScope(session.tenantId, session.userId, 'dashboard');
   const [summary, topIncome, topExpense, recent, layout] = await Promise.all([
     getCashflowSummary(session.tenantId, monthStart),
     getTopCategories(session.tenantId, 'income', 5),
@@ -55,6 +58,8 @@ export default async function DashboardPage() {
       tenantId: session.tenantId,
       userId: session.userId,
       pageKey: 'dashboard',
+      workspaceId: scope.workspaceId,
+      workspaceTemplate: scope.template,
     }),
   ]);
 
@@ -64,6 +69,7 @@ export default async function DashboardPage() {
   return (
     <DashboardClient
       tenantId={session.tenantId}
+      workspaceId={scope.workspaceId}
       greeting={greeting}
       hasData={hasData}
       initialBlocks={layout.blocks}

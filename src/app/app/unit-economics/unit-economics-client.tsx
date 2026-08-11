@@ -105,9 +105,12 @@ function syncTabToUrl(tab: ClientTab | undefined) {
 
 export function UnitEconomicsClient({
   tenantId,
+  workspaceId,
   initialTabs,
 }: {
   tenantId: string;
+  /** Активный кабинет — часть ключа ремоунта грида (вкладки per-workspace). */
+  workspaceId?: string;
   initialTabs: ClientTab[];
 }) {
   const [tabs, setTabs] = useState<ClientTab[]>(initialTabs);
@@ -341,9 +344,10 @@ export function UnitEconomicsClient({
       {activeTab && (
         <div className={isTabPending ? 'pointer-events-none opacity-60 transition-opacity' : 'transition-opacity'}>
           <BlockGrid
-            key={activeTab.pageKey}
+            key={`${workspaceId ?? 'default'}:${activeTab.pageKey}`}
             pageKey={activeTab.pageKey}
             tenantId={tenantId}
+            workspaceId={workspaceId}
             initialBlocks={activeTab.blocks}
           />
         </div>

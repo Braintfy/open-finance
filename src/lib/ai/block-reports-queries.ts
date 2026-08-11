@@ -1,9 +1,20 @@
 // PURPOSE: CRUD для ИИ-отчётов «AI Анализ блока». История скоупится на блок
 // (tenant + user + pageKey + blockId), лимит 10. При достижении лимита
 // saveBlockReport требует overwriteOldest=true (UI спрашивает подтверждение).
+//
+// Воркспейсы (Этап 3): отчёты изолированы по кабинетам. workspace-скоуп
+// резолвится вызывающим роутом через getPageWorkspaceScope(pageKey) и
+// передаётся параметром `workspace`; без него — прежнее поведение (все отчёты
+// пары tenant+user). Следствие резолва ПО СТРАНИЦЕ: у общих ключей
+// (isSharedPageKey — 'nav'/'board-*') скоуп = default-кабинет, то есть отчёты
+// досок ОБЩИЕ для всех кабинетов; изолированы отчёты только непубличных
+// страниц. block_ai_reports.workspace_id остаётся NULLABLE: legacy-отчёты
+// (созданные до Этапа 3) видны ТОЛЬКО в default-кабинете (includeLegacy).
 import { and, asc, desc, eq, inArray } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { blockAiReports, type BlockAiReport } from '@/lib/db/schema/block-ai-reports';
+import { workspaceScopeCondition } from '@/lib/workspaces/queries';
+import type { PageWorkspaceScope } from '@/lib/workspaces/scope';
 import {
   SECTION_AI_MAX_REPORTS,
   type SectionInsight,
@@ -22,6 +33,7 @@ export async function listBlockReports(args: {
   userId: string;
   pageKey: string;
   blockId: string;
+  workspace?: PageWorkspaceScope;
 }): Promise<BlockAiReport[]> {
   return db
     .select()
@@ -32,6 +44,7 @@ export async function listBlockReports(args: {
         eq(blockAiReports.userId, args.userId),
         eq(blockAiReports.pageKey, args.pageKey),
         eq(blockAiReports.blockId, args.blockId),
+        workspaceScopeCondition(blockAiReports.workspaceId, args.workspace),
       ),
     )
     .orderBy(desc(blockAiReports.createdAt));
@@ -43,11 +56,13 @@ export async function getLatestBlockReportsForPage(args: {
   userId: string;
   pageKey: string;
   blockIds?: string[];
+  workspace?: PageWorkspaceScope;
 }): Promise<Record<string, BlockAiReport>> {
   const conds = [
     eq(blockAiReports.tenantId, args.tenantId),
     eq(blockAiReports.userId, args.userId),
     eq(blockAiReports.pageKey, args.pageKey),
+    workspaceScopeCondition(blockAiReports.workspaceId, args.workspace),
   ];
   if (args.blockIds && args.blockIds.length > 0) {
     conds.push(inArray(blockAiReports.blockId, args.blockIds));
@@ -82,6 +97,7 @@ export async function saveBlockReport(args: {
   insights: SectionInsight[];
   meta: SectionReportMeta | null;
   overwriteOldest?: boolean;
+  workspace?: PageWorkspaceScope;
 }): Promise<SaveBlockReportResult> {
   const existing = await db
     .select({ id: blockAiReports.id, createdAt: blockAiReports.createdAt })
@@ -92,6 +108,7 @@ export async function saveBlockReport(args: {
         eq(blockAiReports.userId, args.userId),
         eq(blockAiReports.pageKey, args.pageKey),
         eq(blockAiReports.blockId, args.blockId),
+        workspaceScopeCondition(blockAiReports.workspaceId, args.workspace),
       ),
     )
     .orderBy(asc(blockAiReports.createdAt));
@@ -122,6 +139,7 @@ export async function saveBlockReport(args: {
     .values({
       tenantId: args.tenantId,
       userId: args.userId,
+      workspaceId: args.workspace?.workspaceId ?? null,
       pageKey: args.pageKey,
       blockId: args.blockId,
       blockType: args.blockType,

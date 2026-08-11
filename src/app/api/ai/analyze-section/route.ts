@@ -25,6 +25,7 @@ import {
 } from '@/lib/ai/section-insights';
 import { resolveExternalSources } from '@/lib/ai/context-sources-queries';
 import { getLatestBlockReportsForPage } from '@/lib/ai/block-reports-queries';
+import { getPageWorkspaceScope, getWorkspaceScope } from '@/lib/workspaces/active';
 
 export const runtime = 'nodejs';
 export const maxDuration = 120;
@@ -116,24 +117,33 @@ export async function POST(req: NextRequest) {
       .limit(1);
     const tenantSettings = tenant?.settings ?? null;
 
-    // Кросс-раздельные источники — резолвятся из БД (последний отчёт / config блоков).
+    // Кросс-раздельные источники — резолвятся из БД (последний отчёт / config блоков),
+    // строго в рамках активного кабинета (общие доски — из default).
+    const workspaceScope = await getWorkspaceScope(session.tenantId, session.userId);
     let extraSections: ExternalSourceContext[] = [];
     if (externalSources && externalSources.length > 0) {
       extraSections = await resolveExternalSources({
         tenantId: session.tenantId,
         userId: session.userId,
         selections: externalSources,
+        workspace: workspaceScope,
       });
     }
 
     // По умолчанию подмешиваем последний ИИ-отчёт каждого блока вместо сырых данных.
     let effectiveBlocks = blocks;
     if (blockSource === 'reports' && blocks.length > 0) {
+      const reportWorkspace = await getPageWorkspaceScope(
+        session.tenantId,
+        session.userId,
+        pageKey,
+      );
       const reportMap = await getLatestBlockReportsForPage({
         tenantId: session.tenantId,
         userId: session.userId,
         pageKey,
         blockIds: blocks.map((b) => b.blockId),
+        workspace: reportWorkspace,
       }).catch(() => ({}));
       const lite: Record<string, BlockReportLite> = {};
       for (const [id, r] of Object.entries(reportMap)) {

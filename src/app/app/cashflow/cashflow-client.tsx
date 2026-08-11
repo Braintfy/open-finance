@@ -38,6 +38,7 @@ import { formatRubles, formatDate } from '@/lib/utils';
 
 export function CashflowClient({
   tenantId,
+  workspaceId,
   initialBlocks,
   summary,
   topIncome,
@@ -45,6 +46,8 @@ export function CashflowClient({
   initialTransactions,
 }: {
   tenantId: string;
+  /** Активный кабинет — ключ ремоунта грида при переключении. */
+  workspaceId?: string;
   initialBlocks: BlockInstance[];
   summary: CashflowSummary;
   topIncome: CashflowCategory[];
@@ -80,8 +83,10 @@ export function CashflowClient({
             BlockGrid (auto-mount). PagePeriodProvider/PageSourceProvider тоже
             создаются автоматически (если не обёрнуты снаружи). */}
         <BlockGrid
+          key={`${workspaceId ?? 'default'}:cashflow`}
           pageKey="cashflow"
           tenantId={tenantId}
+          workspaceId={workspaceId}
           initialBlocks={initialBlocks}
           periodPanel="always"
           showSourceFilter

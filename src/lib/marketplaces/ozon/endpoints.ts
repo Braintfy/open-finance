@@ -340,9 +340,15 @@ export type ClusterListItem = {
  *
  * Параметры:
  *  - `clusterIds` — фильтр по ID кластеров. Если пусто (`[]`) — все.
- *  - `clusterType` — `CLUSTER_TYPE_OZON` (по умолчанию) или
- *    `CLUSTER_TYPE_CIS` (для аккаунтов СНГ). На большинстве RU-аккаунтов
- *    нужен только Ozon.
+ *  - `clusterType` — `CLUSTER_TYPE_OZON` или `CLUSTER_TYPE_CIS`
+ *    (Казахстан/Беларусь: АСТАНА_РФЦ, МИНСК_МПСЦ). Стейдж `clusters`
+ *    запрашивает ОБА и мержит: аккаунт может отгружать и в РФ, и в СНГ.
+ *
+ * `client.post()` намеренно остаётся lenient (без `{ strict: true }`):
+ * схема целиком из `.optional()` + `.passthrough()`, поэтому Zod здесь
+ * почти не может упасть, а если Ozon поменяет форму ответа — лучше отдать
+ * raw и разобрать что сможем, чем потерять весь справочник кластеров
+ * и уронить резолв склад→кластер во всём блоке остатков.
  */
 export async function getClusterListSeller(
   client: OzonClient,

@@ -50,13 +50,8 @@ const nextConfig = {
   env: {
     NEXT_PUBLIC_APP_VERSION: APP_VERSION,
   },
-  ...(isTurbo
-    ? {}
-    : {
-        experimental: {
-          typedRoutes: true,
-        },
-      }),
+  // typedRoutes стабилизирован в Next 15.5 (в `experimental` — deprecated-варнинг).
+  ...(isTurbo ? {} : { typedRoutes: true }),
   // Поддержка Tauri (output: export для desktop).
   // ВНИМАНИЕ: с output:'export' middleware и API routes НЕ работают.
   // Для Tauri-сборки нужно: либо SPA-only часть UI без middleware/API, либо отдельный сервер для API.

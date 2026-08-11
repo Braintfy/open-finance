@@ -3,7 +3,7 @@
 // и для каждого отдаёт список блоков (config + последний отчёт блока).
 // Используется GET /api/ai/block-context-sources и серверным резолвом выбранных
 // блоков в analyze-block. Тело резолвится из БД — не доверяется клиенту.
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray, or } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { blockLayouts } from '@/lib/db/schema/block-layouts';
 import { blockAiReports, type BlockAiReport } from '@/lib/db/schema/block-ai-reports';
@@ -11,6 +11,13 @@ import { loadLayout } from '@/lib/blocks/queries';
 import { resolvePageLabel } from '@/lib/ai/page-labels';
 import { buildCustomLabels } from '@/lib/ai/context-sources-queries';
 import { getLatestBlockReportsForPage } from '@/lib/ai/block-reports-queries';
+import { workspaceScopeCondition } from '@/lib/workspaces/queries';
+import {
+  activeWorkspaceScope,
+  isSharedPageKey,
+  pageWorkspaceScope,
+  type ActiveWorkspaceScope,
+} from '@/lib/workspaces/scope';
 import type { BlockInstance } from '@/lib/blocks/types';
 import type {
   BlockContextSourceDto,
@@ -36,20 +43,64 @@ export async function listBlockContextSources(args: {
   tenantId: string;
   userId: string;
   currentPageKey: string;
+  workspace?: ActiveWorkspaceScope;
 }): Promise<BlockContextSourceDto[]> {
-  const { tenantId, userId, currentPageKey } = args;
+  const { tenantId, userId, currentPageKey, workspace } = args;
+  const reportScope = workspace ? activeWorkspaceScope(workspace) : undefined;
+  // Обе половины union'а тянут активный + default кабинет, лишнее отсекается
+  // фильтром ниже: иначе 'board-*' страница с отчётами, но без строки layout,
+  // пропадала бы из пикера в не-default кабинете.
+  const reportWorkspaceFilter = workspace
+    ? or(
+        // активный кабинет (+ legacy NULL, если активный и есть default)
+        workspaceScopeCondition(blockAiReports.workspaceId, reportScope),
+        // + default-кабинет — из него берём только общие ('board-*') страницы
+        eq(blockAiReports.workspaceId, workspace.defaultId),
+      )
+    : undefined;
 
-  const [layoutRows, reportRows, customLabels] = await Promise.all([
+  const [layoutRowsAll, reportRowsAll, customLabels] = await Promise.all([
     db
-      .select({ pageKey: blockLayouts.pageKey })
+      .select({ pageKey: blockLayouts.pageKey, workspaceId: blockLayouts.workspaceId })
       .from(blockLayouts)
-      .where(and(eq(blockLayouts.tenantId, tenantId), eq(blockLayouts.userId, userId))),
+      .where(
+        and(
+          eq(blockLayouts.tenantId, tenantId),
+          eq(blockLayouts.userId, userId),
+          workspace
+            ? inArray(blockLayouts.workspaceId, [workspace.activeId, workspace.defaultId])
+            : undefined,
+        ),
+      ),
     db
-      .select({ pageKey: blockAiReports.pageKey })
+      .select({ pageKey: blockAiReports.pageKey, workspaceId: blockAiReports.workspaceId })
       .from(blockAiReports)
-      .where(and(eq(blockAiReports.tenantId, tenantId), eq(blockAiReports.userId, userId))),
-    buildCustomLabels({ tenantId, userId }),
+      .where(
+        and(
+          eq(blockAiReports.tenantId, tenantId),
+          eq(blockAiReports.userId, userId),
+          reportWorkspaceFilter,
+        ),
+      ),
+    buildCustomLabels({ tenantId, userId, workspace }),
   ]);
+
+  // Изоляция кабинетов: страницы активного + ОБЩИЕ ('board-*') из default.
+  const layoutRows = workspace
+    ? layoutRowsAll.filter(
+        (r) => r.workspaceId === workspace.activeId || isSharedPageKey(r.pageKey),
+      )
+    : layoutRowsAll;
+
+  // Та же изоляция для отчётов (+ legacy NULL — только в default-кабинете).
+  const reportRows = workspace
+    ? reportRowsAll.filter(
+        (r) =>
+          r.workspaceId === workspace.activeId ||
+          (r.workspaceId === workspace.defaultId && isSharedPageKey(r.pageKey)) ||
+          (r.workspaceId === null && reportScope?.includeLegacy === true),
+      )
+    : reportRowsAll;
 
   const pageKeys = Array.from(
     new Set<string>([
@@ -63,14 +114,24 @@ export async function listBlockContextSources(args: {
 
   const sources = await Promise.all(
     pageKeys.map(async (pageKey): Promise<BlockContextSourceDto> => {
+      const pageScope = workspace ? pageWorkspaceScope(workspace, pageKey) : undefined;
       const [layout, reportMap] = await Promise.all([
-        loadLayout({ tenantId, userId, pageKey }).catch(() => ({
+        loadLayout({
+          tenantId,
+          userId,
+          pageKey,
+          workspaceId: pageScope?.workspaceId,
+          workspaceTemplate: pageScope?.template,
+        }).catch(() => ({
           blocks: [] as BlockInstance[],
           hiddenSections: [] as string[],
         })),
-        getLatestBlockReportsForPage({ tenantId, userId, pageKey }).catch(
-          (): Record<string, BlockAiReport> => ({}),
-        ),
+        getLatestBlockReportsForPage({
+          tenantId,
+          userId,
+          pageKey,
+          workspace: pageScope,
+        }).catch((): Record<string, BlockAiReport> => ({})),
       ]);
       const isCurrent = pageKey === currentPageKey;
       const blocks: BlockContextBlockDto[] = layout.blocks
@@ -120,10 +181,12 @@ export async function resolveBlockContextSelections(args: {
   userId: string;
   selections: Array<{ pageKey: string; blockId: string; mode: 'report' | 'data' }>;
   customLabels?: Record<string, string>;
+  workspace?: ActiveWorkspaceScope;
 }): Promise<ExternalSourceContext[]> {
-  const { tenantId, userId, selections } = args;
+  const { tenantId, userId, selections, workspace } = args;
   if (selections.length === 0) return [];
-  const customLabels = args.customLabels ?? (await buildCustomLabels({ tenantId, userId }));
+  const customLabels =
+    args.customLabels ?? (await buildCustomLabels({ tenantId, userId, workspace }));
 
   // Группируем по pageKey — один loadLayout / reportMap на раздел.
   const byPage = new Map<string, Array<{ blockId: string; mode: 'report' | 'data' }>>();
@@ -139,17 +202,27 @@ export async function resolveBlockContextSelections(args: {
       const pageLabel = resolvePageLabel(pageKey, customLabels);
       const needReports = sels.some((s) => s.mode === 'report');
       const needData = sels.some((s) => s.mode === 'data');
+      const pageScope = workspace ? pageWorkspaceScope(workspace, pageKey) : undefined;
       const [layout, reportMap] = await Promise.all([
         needData
-          ? loadLayout({ tenantId, userId, pageKey }).catch(() => ({
+          ? loadLayout({
+              tenantId,
+              userId,
+              pageKey,
+              workspaceId: pageScope?.workspaceId,
+              workspaceTemplate: pageScope?.template,
+            }).catch(() => ({
               blocks: [] as BlockInstance[],
               hiddenSections: [] as string[],
             }))
           : Promise.resolve({ blocks: [] as BlockInstance[], hiddenSections: [] as string[] }),
         needReports
-          ? getLatestBlockReportsForPage({ tenantId, userId, pageKey }).catch(
-              (): Record<string, BlockAiReport> => ({}),
-            )
+          ? getLatestBlockReportsForPage({
+              tenantId,
+              userId,
+              pageKey,
+              workspace: pageScope,
+            }).catch((): Record<string, BlockAiReport> => ({}))
           : Promise.resolve({} as Record<string, BlockAiReport>),
       ]);
       const blockMap = new Map(layout.blocks.map((b) => [b.id, b]));

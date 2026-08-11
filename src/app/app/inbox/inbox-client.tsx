@@ -7,9 +7,12 @@ import type { BlockInstance } from '@/lib/blocks/types';
 
 export function InboxClient({
   tenantId,
+  workspaceId,
   initialBlocks,
 }: {
   tenantId: string;
+  /** Активный кабинет — ключ ремоунта грида при переключении. */
+  workspaceId?: string;
   initialBlocks: BlockInstance[];
 }) {
   return (
@@ -24,7 +27,13 @@ export function InboxClient({
         </div>
       </div>
 
-      <BlockGrid pageKey="inbox" tenantId={tenantId} initialBlocks={initialBlocks} />
+      <BlockGrid
+        key={`${workspaceId ?? 'default'}:inbox`}
+        pageKey="inbox"
+        tenantId={tenantId}
+        workspaceId={workspaceId}
+        initialBlocks={initialBlocks}
+      />
     </div>
   );
 }

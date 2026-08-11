@@ -74,6 +74,7 @@ src/
 | Тип задачи | Что читать |
 |---|---|
 | **BlockGrid / новый block** | `src/lib/blocks/{types,registry}.ts`, `src/components/blocks/block-grid.tsx`, нужный файл из `src/lib/blocks/catalog/`. Cursor подтянет `.cursor/rules/blocks.mdc`. |
+| **Воркспейсы («кабинеты») / активный кабинет / шаблоны** | `src/lib/workspaces/{scope,active,queries}.ts`, `src/lib/blocks/default-layouts.ts` (WORKSPACE_TEMPLATES), `src/app/api/workspaces/**`, `src/components/workspaces/workspace-switcher.tsx`, раздел «Воркспейсы» в `MEMORY.md`. Инвариант: `nav`+`board-*` всегда в default-кабинете. |
 | **AI-чат, streaming, micro-agent** | `src/app/api/ai/chat/route.ts`, `src/components/micro-agent/micro-agent-dialog.tsx`, `src/lib/ai/providers/{ollama,openai-compat,proxy}.ts`. Rules: `ai-tools.mdc`. |
 | **Новый AI tool** | `src/lib/ai/tools/index.ts` + пример `src/lib/ai/tools/query-inbox-messages.ts`, `docs/AI_TOOLS.md`. Rules: `ai-tools.mdc`. |
 | **AI Vision (распознавание чеков/счетов)** | `src/lib/ai/vision/{types,router}.ts`, `providers/{claude,openai,yandex,tesseract,mock}.ts`, `docs/AI_VISION.md`. |

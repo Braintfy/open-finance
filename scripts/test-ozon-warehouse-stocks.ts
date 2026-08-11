@@ -130,25 +130,30 @@ async function main() {
     const clustersCount = clustersRows[0]?.cnt ?? 0;
     console.log(`  ozon_clusters rows:                   ${clustersCount}`);
 
-    // 3. orders (для JOIN-ability на warehouse_name)
-    const ordersResult = await db.execute<{
-      cnt: number;
-      with_wh_name: number;
-    }>(sql`
+    // 3. orders (для резолва склад→кластер).
+    // ВАЖНО: имя склада лежит в `raw->'analytics_data'->>'warehouse_name'`.
+    // Легаси-путь `raw->>'warehouseName'` НЕ существует ни в одном постинге —
+    // именно из-за него вся выручка периода когда-то оседала в «Без кластера».
+    type OrdersDiag = { cnt: number; with_wh_name: number; legacy_wh_name: number };
+    const ordersResult = await db.execute<OrdersDiag>(sql`
       SELECT
         COUNT(*)::int AS cnt,
-        COUNT(*) FILTER (WHERE raw->>'warehouseName' IS NOT NULL)::int AS with_wh_name
+        COUNT(*) FILTER (
+          WHERE COALESCE(raw->'analytics_data'->>'warehouse_name', '') <> ''
+        )::int AS with_wh_name,
+        COUNT(*) FILTER (WHERE raw->>'warehouseName' IS NOT NULL)::int AS legacy_wh_name
       FROM ${ozonOrders}
       WHERE tenant_id = ${acc.tenantId} AND account_id = ${acc.id}
         AND order_created_at >= NOW() - INTERVAL '30 days'
     `);
-    const ordersRows: Array<{ cnt: number; with_wh_name: number }> = Array.isArray(ordersResult)
-      ? (ordersResult as Array<{ cnt: number; with_wh_name: number }>)
-      : ((ordersResult as unknown as { rows: Array<{ cnt: number; with_wh_name: number }> }).rows ?? []);
-    const ordersAgg = ordersRows[0] ?? { cnt: 0, with_wh_name: 0 };
+    const ordersRows: OrdersDiag[] = Array.isArray(ordersResult)
+      ? (ordersResult as OrdersDiag[])
+      : ((ordersResult as unknown as { rows: OrdersDiag[] }).rows ?? []);
+    const ordersAgg = ordersRows[0] ?? { cnt: 0, with_wh_name: 0, legacy_wh_name: 0 };
     console.log(
       `  ozon_orders (30d) rows:               ${ordersAgg.cnt}`,
-      `(with raw.warehouseName=${ordersAgg.with_wh_name})`,
+      `(with analytics_data.warehouse_name=${ordersAgg.with_wh_name},`,
+      `legacy raw.warehouseName=${ordersAgg.legacy_wh_name})`,
     );
 
     // 4. Live Seller API sanity-call (по --live флагу)
@@ -160,14 +165,24 @@ async function main() {
         const client = new OzonClient({ clientId: acc.clientId, apiKey });
 
         console.log('  --- Live Seller API check ---');
-        try {
-          const clusters = await getClusterListSeller(client);
-          console.log(
-            `  POST /v1/cluster/list:                ✓ clusters=${clusters.length}`,
-            clusters.slice(0, 3).map((c) => `${c.clusterId}:${c.clusterName} (${c.warehouseNames.length} wh)`).join(', '),
-          );
-        } catch (e) {
-          console.error('  POST /v1/cluster/list:                ✗', e instanceof Error ? e.message : e);
+        // Стейдж clusters тянет ОБА типа: без CLUSTER_TYPE_CIS склады
+        // Казахстана/Беларуси (АСТАНА_РФЦ, МИНСК_МПСЦ) не резолвятся.
+        for (const clusterType of ['CLUSTER_TYPE_OZON', 'CLUSTER_TYPE_CIS'] as const) {
+          try {
+            const clusters = await getClusterListSeller(client, { clusterType });
+            console.log(
+              `  POST /v1/cluster/list ${clusterType.replace('CLUSTER_TYPE_', '').padEnd(4)}: ✓ clusters=${clusters.length}`,
+              clusters
+                .slice(0, 3)
+                .map((c) => `${c.clusterId}:${c.clusterName} (${c.warehouseNames.length} wh)`)
+                .join(', '),
+            );
+          } catch (e) {
+            console.error(
+              `  POST /v1/cluster/list ${clusterType.replace('CLUSTER_TYPE_', '').padEnd(4)}: ✗`,
+              e instanceof Error ? e.message : e,
+            );
+          }
         }
         try {
           const stocks = await analyticsStockOnWarehouses(client, { limit: 50 });
@@ -193,6 +208,9 @@ async function main() {
     }
     if (stocksAgg.cnt > 0 && stocksAgg.with_cluster === 0) {
       diags.push('⚠ warehouse_stocks есть, но все cluster_id=NULL → проверьте маппинг warehouse_name → cluster в sync/clusters.ts');
+    }
+    if (ordersAgg.cnt > 0 && ordersAgg.with_wh_name === 0) {
+      diags.push('⚠ ни у одного заказа нет analytics_data.warehouse_name → выручка уйдёт в «Склад не указан» (FBS-постинги — ожидаемо)');
     }
     if (diags.length === 0) {
       console.log('  ✓ Данные есть, блок должен показывать ряды.');

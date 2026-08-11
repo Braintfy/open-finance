@@ -11,6 +11,7 @@ import {
   saveBlockReport,
 } from '@/lib/ai/block-reports-queries';
 import { SectionInsightSchema } from '@/lib/ai/section-insights';
+import { getPageWorkspaceScope } from '@/lib/workspaces/active';
 
 export const runtime = 'nodejs';
 
@@ -34,87 +35,108 @@ const SaveSchema = z.object({
 });
 
 export async function GET(req: NextRequest) {
-  const session = await auth();
-  if (!session?.tenantId || !session.userId) {
-    return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
-  }
-  const params = new URL(req.url).searchParams;
-  const pageKey = params.get('pageKey');
-  const blockId = params.get('blockId');
-  if (!pageKey) {
-    return NextResponse.json({ ok: false, error: 'pageKey required' }, { status: 400 });
-  }
+  try {
+    const session = await auth();
+    if (!session?.tenantId || !session.userId) {
+      return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
+    }
+    const params = new URL(req.url).searchParams;
+    const pageKey = params.get('pageKey');
+    const blockId = params.get('blockId');
+    if (!pageKey) {
+      return NextResponse.json({ ok: false, error: 'pageKey required' }, { status: 400 });
+    }
 
-  // Без blockId → карта последних отчётов по странице (для анализа раздела).
-  if (!blockId) {
-    const map = await getLatestBlockReportsForPage({
+    // Отчёты изолированы по кабинетам (legacy без workspace_id — только в default).
+    const workspace = await getPageWorkspaceScope(session.tenantId, session.userId, pageKey);
+
+    // Без blockId → карта последних отчётов по странице (для анализа раздела).
+    if (!blockId) {
+      const map = await getLatestBlockReportsForPage({
+        tenantId: session.tenantId,
+        userId: session.userId,
+        pageKey,
+        workspace,
+      });
+      const latest = Object.fromEntries(
+        Object.entries(map).map(([id, r]) => [
+          id,
+          {
+            id: r.id,
+            createdAt: r.createdAt.toISOString(),
+            blockTitle: r.blockTitle,
+            summary: r.summary,
+            insights: r.insights,
+          },
+        ]),
+      );
+      return NextResponse.json({ ok: true, latest });
+    }
+
+    const reports = await listBlockReports({
       tenantId: session.tenantId,
       userId: session.userId,
       pageKey,
+      blockId,
+      workspace,
     });
-    const latest = Object.fromEntries(
-      Object.entries(map).map(([id, r]) => [
-        id,
-        {
-          id: r.id,
-          createdAt: r.createdAt.toISOString(),
-          blockTitle: r.blockTitle,
-          summary: r.summary,
-          insights: r.insights,
-        },
-      ]),
-    );
-    return NextResponse.json({ ok: true, latest });
+    return NextResponse.json({ ok: true, reports });
+  } catch (error) {
+    console.error('[api/ai/block-reports] GET failed:', error);
+    return NextResponse.json({ ok: false, error: 'Internal error' }, { status: 500 });
   }
-
-  const reports = await listBlockReports({
-    tenantId: session.tenantId,
-    userId: session.userId,
-    pageKey,
-    blockId,
-  });
-  return NextResponse.json({ ok: true, reports });
 }
 
 export async function POST(req: NextRequest) {
-  const session = await auth();
-  if (!session?.tenantId || !session.userId) {
-    return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
-  }
-  let json: unknown;
   try {
-    json = await req.json();
-  } catch {
-    return NextResponse.json({ ok: false, error: 'Invalid JSON' }, { status: 400 });
-  }
-  const body = SaveSchema.safeParse(json);
-  if (!body.success) {
-    return NextResponse.json(
-      { ok: false, error: body.error.issues[0]?.message ?? 'Bad request' },
-      { status: 400 },
+    const session = await auth();
+    if (!session?.tenantId || !session.userId) {
+      return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
+    }
+    let json: unknown;
+    try {
+      json = await req.json();
+    } catch {
+      return NextResponse.json({ ok: false, error: 'Invalid JSON' }, { status: 400 });
+    }
+    const body = SaveSchema.safeParse(json);
+    if (!body.success) {
+      return NextResponse.json(
+        { ok: false, error: body.error.issues[0]?.message ?? 'Bad request' },
+        { status: 400 },
+      );
+    }
+
+    const workspace = await getPageWorkspaceScope(
+      session.tenantId,
+      session.userId,
+      body.data.pageKey,
     );
+    const result = await saveBlockReport({
+      tenantId: session.tenantId,
+      userId: session.userId,
+      workspace,
+      pageKey: body.data.pageKey,
+      blockId: body.data.blockId,
+      blockType: body.data.blockType ?? null,
+      blockTitle: body.data.blockTitle ?? null,
+      model: body.data.model ?? null,
+      summary: body.data.summary,
+      insights: body.data.insights,
+      meta: body.data.meta ?? null,
+      overwriteOldest: body.data.overwriteOldest,
+    });
+
+    if (!result.ok) {
+      return NextResponse.json(
+        { ok: false, needsOverwrite: true, oldest: result.oldest },
+        { status: 409 },
+      );
+    }
+
+    return NextResponse.json({ ok: true, report: result.report }, { status: 201 });
+  } catch (error) {
+    console.error('[api/ai/block-reports] POST failed:', error);
+    return NextResponse.json({ ok: false, error: 'Internal error' }, { status: 500 });
   }
-
-  const result = await saveBlockReport({
-    tenantId: session.tenantId,
-    userId: session.userId,
-    pageKey: body.data.pageKey,
-    blockId: body.data.blockId,
-    blockType: body.data.blockType ?? null,
-    blockTitle: body.data.blockTitle ?? null,
-    model: body.data.model ?? null,
-    summary: body.data.summary,
-    insights: body.data.insights,
-    meta: body.data.meta ?? null,
-    overwriteOldest: body.data.overwriteOldest,
-  });
-
-  if (!result.ok) {
-    return NextResponse.json(
-      { ok: false, needsOverwrite: true, oldest: result.oldest },
-      { status: 409 },
-    );
-  }
-
-  return NextResponse.json({ ok: true, report: result.report }, { status: 201 });
 }

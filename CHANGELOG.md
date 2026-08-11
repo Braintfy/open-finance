@@ -1,5 +1,58 @@
 # Changelog
 
+## [0.48.0] - 2026-08-11
+
+### Added
+- **Воркспейсы («кабинеты»)** (Этап 3 LK_V2_PLAN, вариант В — много именованных): таблица `workspaces` (`src/lib/db/schema/workspaces.ts`: id, tenant_id, user_id, name, slug, template, is_default, sort_order; uniq `(tenant_id,user_id,slug)`), `block_layouts.workspace_id NOT NULL` (uniq `(workspace_id,page_key)` вместо `(tenant,user,page_key)`), `users.settings jsonb` (персист `activeWorkspaceId`). Слой запросов `src/lib/workspaces/queries.ts` (getOrCreateDefaultWorkspace, list/create/rename/delete, клон кабинета с копией раскладок и UE-вкладок, setActiveWorkspace, resolveActiveWorkspace, getWorkspaceById, workspaceScopeCondition).
+- **Скоупинг-ядро** `src/lib/workspaces/scope.ts` (чистые правила: `WORKSPACE_COOKIE='of_active_workspace'`, isSharedPageKey — `nav`+`board-*` всегда в default-кабинете, pageWorkspaceScope/activeWorkspaceScope) + `src/lib/workspaces/active.ts` (React `cache()`-резолв активного кабинета на запрос: кука → users.settings → default).
+- **API**: `GET/POST /api/workspaces` (список+создание: пустой / из шаблона / клон), `PATCH/DELETE /api/workspaces/[id]` (rename; delete c 409-причинами last/is_default и чисткой куки), `POST /api/workspace/active` (httpOnly-кука sameSite lax + users.settings). `blocks/layout/[pageKey]` принимает `?workspaceId=` с валидацией принадлежности (закрывает гонку `flushSave()` при unmount после смены куки — старые блоки не запишутся в новый кабинет).
+- **UI**: дропдаун-переключатель кабинетов в шапке (`src/components/workspaces/workspace-switcher.tsx` + слот в `src/app/app/layout.tsx` под Suspense): переключение с `router.refresh()`, переименование (Dialog), «+ новый» (пустой/шаблон/копия текущего), удаление (AlertDialog). BlockGrid ремоунтится по `key={workspaceId+pageKey}` и шлёт `?workspaceId=` во все layout-вызовы.
+- **Шаблоны кабинетов** `WORKSPACE_TEMPLATES` в `src/lib/blocks/default-layouts.ts` (вынос `DEFAULT_LAYOUTS` из registry, импортируемо без client-catalog): `seller-ozon` (дефолт: ozon-kpi → chart → analytics → warehouse-clusters(groupBy=warehouse) → abc + data-health → примеры custom.data/excel.cell) и `blank` (все страницы пустые); `getDefaultLayout(pageKey, template?)`. Smoke `scripts/test-workspace-templates.ts` (38 проверок).
+- **Миграции (НЕ применены — запускает пользователь, см. Migration notes)**: `drizzle/0010_workspaces.sql` (двухфазная: workspaces + nullable workspace_id → бэкфилл «Кабинет 1» на пары (tenant,user) → NOT NULL + swap uniq; проверена на throwaway-БД) и `drizzle/0011_workspace_ue_tabs.sql` (unit_economics_tabs: бэкфилл пар с вкладками без раскладок → workspace_id NOT NULL + uniq `(workspace_id,page_key)` — без swap'а второй кабинет не смог бы засидить дефолтные вкладки). Идемпотентный миррор для fresh-install: `drizzle/init/16-workspaces.sql`.
+
+### Changed
+- **Скоупинг данных по кабинетам**: страничные раскладки — активный кабинет; ОБЩИЕ `nav` (сайдбар) и `board-*` (доски) — всегда default. UE-вкладки (`tabs-queries.ts` + оба роута) — per-workspace (seed/клон в текущем кабинете, удаление чужого запрещено). AI-отчёты (`block/section-reports-queries` + 6 роутов) — workspace_id при генерации, nullable без бэкфилла: legacy-отчёты видны только в default-кабинете (единое правило `includeLegacy`); отчёты `board-*` страниц — общие (default-кабинет). Изоляция @-ссылок: `/api/blocks/{sources,relations}`, UE-импорты — перечисление страниц ограничено активным кабинетом + общие `board-*`.
+- **`DEFAULT_LAYOUTS.dashboard` переписан** под Ozon-селлера (= шаблон seller-ozon): убраны legacy `stat.*`, пустой `inbox.dashboard`, мёртвая `navigate.card`; `recommendedFor` +`dashboard` у `unit.ozon-{abc,data-health,warehouse-clusters}`.
+
+### Fixed
+- **Сырой NUL-байт (0x00) в `src/lib/marketplaces/ozon/cluster-agg.ts`** — разделитель составного ключа `mapKey` был вставлен сырым байтом. Причина: генерация кода в Этапе 1. Следствие: `file` детектил исходник как data, grep отвечал «Binary file matches», git показывал бы диффы как «Binary files differ». Фикс: эскейп `\x00` (семантика ключа не изменилась, smoke 38/38).
+- **Асимметрия union в пикере AI-контекста** (`listBlockContextSources`/`listSectionContextSources`): layout-половина включала общие `board-*` из default-кабинета, отчётная — только активный кабинет → board-страница с отчётами, но без строки раскладки, пропадала из пикера в не-default кабинете. Фикс: отчётная половина симметрична layout-половине (default для shared + legacy NULL только в default).
+- **Top-level try/catch** (инвариант drizzle.mdc) добавлен в 12 хендлеров, куда пришли новые DB-awaits воркспейс-резолва (частично отсутствовал и до диффа): blocks/layout GET/handleSave/DELETE, blocks/relations GET, blocks/sources GET, ai/block-reports GET+POST, ai/section-reports GET+POST, unit-economics/tabs GET/POST, tabs/[id] PATCH/DELETE — unhandled exception больше не отдаёт HTML-500 вместо JSON.
+- **Комментарии-контракт AI-скоупинга** выровнены с кодом (шапки reports-queries называли не тот резолвер; докстринги scope/active ложно утверждали «AI-отчёты не бывают общими») + 5-строчный инвариант у upsert раскладки (target = uniq-индекс `(workspace_id,page_key)`, tenant-защита — валидация workspaceId вызывающим).
+
+### Deployed
+- **Этап 0 LK_V2_PLAN — Xray VLESS-клиент на Raspberry Pi 5**: xray-core 26.3.27 arm64, systemd enabled (User=nobody), конфиг `/usr/local/etc/xray/config.json` (600), inbound `http 127.0.0.1:10809` (только localhost, ufw не менялся), outbound VLESS+REALITY (Германия/Франкфурт, выбор из 293 серверов подписки по латентности). Проверено: `api.anthropic.com` через прокси → 401 (реальный ответ API) вместо гео-403; exit-IP DE. Осталось руками: галка aiProxy `http://127.0.0.1:10809` в `/app/admin/ai/providers`.
+
+### Migration notes (ОБЯЗАТЕЛЬНО перед запуском кода 0.48.0)
+- `pnpm db:migrate` накатывает 0010+0011 подряд (обязательно вместе). Порядок деплоя на Pi: СНАЧАЛА миграция на прод-БД, ПОТОМ rsync+build+restart кода — код 0.48.0 обращается к `workspace_id` и без миграции падает.
+
+## [0.47.4] - 2026-08-07
+
+### Added
+- **Ozon «Остатки по кластерам» — разрез по складам** (Этап 2a LK_V2_PLAN): переключатель «Кластеры | Склады» в шапке блока (персистится в config), раскрывающиеся строки кластера со списком складов, колонка «Склад» синхронно в 4 местах (CLUSTER_COLUMN_KEYS/COLUMN_LABELS/formatCell/tfoot). API `cluster-stocks-v2` получил `?groupBy=cluster|warehouse` (+`warehouseLimit`/`warehouseSort`/`warehouseSortDir`), иерархический ответ cluster→warehouses[] с `hiddenWarehouses` при превышении топ-N. Множество складов = остатки ∪ заказы периода: склады, выбитые в ноль, но продававшие, теперь видны (на дев-данных 40 складов, из них 25 в нуле с продажами). Топ-N отбирает сервер по метрике сортировки (смена сортировки → рефетч в warehouse-режиме). Инвариант: `Σ складов == строка кластера`, totals совпадают между разрезами (покрыто тестами).
+- **`resolveOrdersToWarehouses`/`attachWarehousesToClusters`** в `cluster-agg.ts` (склады достраиваются к уже посчитанным строкам кластеров — разрезы не могут разъехаться в цифрах); `ClusterAggRow.rowKey` (различает «Без кластера» и «Склад не указан» — обе с clusterId=null). Тесты `test-ozon-cluster-agg.ts`: 18 → 38 проверок.
+
+### Fixed
+- **Блок остатков: shadow-state больше не маскирует внешние правки config** — локальная тень разреза/раскрытых кластеров использовалась безусловно, из-за чего изменение «Разрез по умолчанию» в форме настроек (или AI-tool `update_block_config`) не отражалось в блоке до ремаунта. Теперь config — единственный источник правды при наличии `onConfigChange`; тень работает только в превью (без персиста).
+- **`warehouseLimit=0`** при отсутствии параметра клампился в 1 склад на кластер — пустое значение уходит в дефолт 20.
+
+## [0.47.3] - 2026-08-07
+
+### Fixed
+- **Ozon «Остатки по кластерам» — выручка больше не сваливается в «Без кластера»** (Этап 1 LK_V2_PLAN): склад заказа читался по несуществующему JSON-пути `raw->>'warehouseName'` (реальный — `raw->'analytics_data'->>'warehouse_name'`) → у всех кластеров были нули заказов/выручки и «Дни запаса — —». На дев-данных за 30 дней: было 0 ₽ по кластерам, стало 3 897 784 ₽ по 21 кластеру (итог сходится до рубля).
+- **Резолв склад→кластер перенесён в JS** (`normalizeWarehouseName`): SQL `lower()` в C-locale БД не сворачивает кириллицу; заодно схлопнуты разделители `[\s_-]+`→`_` (Ozon пишет «Ростов_на_Дону» и «РОСТОВ-НА-ДОНУ» в разных API). Проверено на справочнике: 749 имён → 749 ключей без склеек.
+- **CIS-кластеры** — стейдж `clusters` теперь грузит CLUSTER_TYPE_OZON + CLUSTER_TYPE_CIS (Беларусь/Казахстан/Армения/Узбекистан — 5 кластеров, которых не было); фейл CIS уходит в warnings, не роняя стейдж. Резолв заказов — через свежий справочник, снапшот остатков — fallback.
+- **skuCount** — `COUNT(DISTINCT sku)` вместо числа строк (цифра задваивалась при товаре на нескольких складах); totals — глобальный distinct.
+- **Разведены смыслы**: «Без кластера» (склад есть, кластера нет в справочнике) и «Склад не указан» (FBS-заказы без analytics_data) — разные строки + `meta.unresolved`; множество строк = кластеры с остатком ∪ кластеры с заказами (выручка выбитых в ноль кластеров не исчезает).
+- **next.config.mjs** — `experimental.typedRoutes` → `typedRoutes` (deprecation-варнинг Next 15.5).
+
+### Changed
+- **Каталог блоков — discoverability** (Этап 1 LK_V2_PLAN): `listRecommendedForPage` добавляет универсальные блоки (`pages` ровно `['*']`, без legacy/hidden) хвостом после профильных — sheet/custom.data/excel.cell/computed.sum/note.markdown/currency.rates/ai.micro-agent теперь находимы на любой странице (Ozon-дашборд: 11→18 рекомендуемых). Все 8 `BLOCK_PRESETS` потеряли `'*'` в pages — cashflow-пресеты больше не первая секция на Ozon/UE-страницах.
+- **`BlockDef.hidden`** — новый флаг «скрыт из каталога добавления» (размещённые инстансы живут; `getBlockDef`/`listAllBlocks`/`sanitizeBlocks` не фильтруют). Скрыты: `inbox.dashboard` (пустой без IMAP), `navigate.card` (дефолт вёл на несуществующий раздел). Фильтрация в реестре и в `add-block-dialog` (+блоки секций обёрнуты в useMemo).
+
+### Added
+- **`src/lib/marketplaces/ozon/cluster-agg.ts`** (pure: normalizeWarehouseName/resolveOrdersToClusters/buildClusterRows) + **`cluster-stocks-query.ts`** (DB-слой, роут `cluster-stocks-v2` стал тонким, −264 строки) + smoke **`scripts/test-ozon-cluster-agg.ts`** (18 проверок, включая инвариант сохранения выручки и регрессию старого поведения).
+
 ## [0.47.2] - 2026-08-06
 
 ### Added

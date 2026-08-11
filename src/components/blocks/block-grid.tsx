@@ -356,6 +356,14 @@ const BREAKPOINTS = { lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 };
 type Props = {
   pageKey: string;
   tenantId: string;
+  /**
+   * Кабинет (воркспейс), в котором отрисована эта раскладка. Передаётся в
+   * load/save/delete как `?workspaceId=` — иначе отложенный (debounce/unmount)
+   * save после переключения кабинета попал бы уже в НОВЫЙ кабинет: сервер
+   * резолвит активный кабинет по куке, а она к тому моменту уже сменилась.
+   * Сервер валидирует принадлежность id паре (tenant,user).
+   */
+  workspaceId?: string;
   initialBlocks: BlockInstance[];
   /** Обёртка для контекста данных страницы (например CashflowDataProvider) */
   children?: (rendered: React.ReactNode) => React.ReactNode;
@@ -401,6 +409,7 @@ export function BlockGrid(props: Props) {
 function BlockGridInner({
   pageKey,
   tenantId,
+  workspaceId,
   initialBlocks,
   children,
   periodPanel = 'auto',
@@ -499,6 +508,12 @@ function BlockGridInner({
       return isBound;
     });
   }, [blocks, periodPanel]);
+  /** URL раскладки с явным кабинетом (см. Props.workspaceId). */
+  const layoutUrl = useMemo(
+    () =>
+      `/api/blocks/layout/${pageKey}${workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : ''}`,
+    [pageKey, workspaceId],
+  );
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingBlocks = useRef<BlockInstance[] | null>(null);
   /**
@@ -532,7 +547,7 @@ function BlockGridInner({
 
       setSaving(true);
       try {
-        const res = await fetch(`/api/blocks/layout/${pageKey}`, {
+        const res = await fetch(layoutUrl, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ blocks: data }),
@@ -553,7 +568,7 @@ function BlockGridInner({
         setSaving(false);
       }
     },
-    [pageKey]
+    [layoutUrl]
   );
 
   const scheduleSave = useCallback(
@@ -583,7 +598,7 @@ function BlockGridInner({
       return;
     }
     pendingBlocks.current = null;
-    const url = `/api/blocks/layout/${pageKey}`;
+    const url = layoutUrl;
     const payload = JSON.stringify({ blocks: data });
     // sendBeacon — гарантированная доставка (поддерживает только POST), API имеет POST handler
     if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
@@ -602,7 +617,7 @@ function BlockGridInner({
       body: payload,
       keepalive: true,
     }).catch(() => {});
-  }, [pageKey]);
+  }, [layoutUrl]);
 
   useEffect(() => {
     const handleBeforeUnload = () => flushSave();
@@ -883,7 +898,7 @@ function BlockGridInner({
     pendingBlocks.current = null;
     setSaving(true);
     try {
-      const res = await fetch(`/api/blocks/layout/${pageKey}`, { method: 'DELETE' });
+      const res = await fetch(layoutUrl, { method: 'DELETE' });
       const data = await res.json();
       if (data.ok) {
         const next = sanitizeBlocks(data.blocks ?? []);

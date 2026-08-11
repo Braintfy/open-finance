@@ -188,6 +188,12 @@ export type BlockDef = {
    */
   tags?: string[];
   /**
+   * Блок скрыт из каталога добавления (AddBlockDialog: рекомендуемые, категории,
+   * поиск). Уже размещённые инстансы продолжают работать — `getBlockDef`,
+   * `listAllBlocks`, `sanitizeBlocks` и REGISTRY флаг игнорируют.
+   */
+  hidden?: boolean;
+  /**
    * Источник блока — для будущих пользовательских/купленных блоков.
    * 'builtin' (default) — встроенный, 'user' — созданный юзером, 'paid' — куплен.
    */

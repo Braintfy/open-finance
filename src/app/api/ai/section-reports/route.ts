@@ -9,6 +9,7 @@ import {
   saveSectionReport,
 } from '@/lib/ai/section-reports-queries';
 import { SectionInsightSchema } from '@/lib/ai/section-insights';
+import { getPageWorkspaceScope } from '@/lib/workspaces/active';
 
 export const runtime = 'nodejs';
 
@@ -30,59 +31,78 @@ const SaveSchema = z.object({
 });
 
 export async function GET(req: NextRequest) {
-  const session = await auth();
-  if (!session?.tenantId || !session.userId) {
-    return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
+  try {
+    const session = await auth();
+    if (!session?.tenantId || !session.userId) {
+      return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
+    }
+    const pageKey = new URL(req.url).searchParams.get('pageKey');
+    if (!pageKey) {
+      return NextResponse.json({ ok: false, error: 'pageKey required' }, { status: 400 });
+    }
+    // Отчёты изолированы по кабинетам (legacy без workspace_id — только в default).
+    const workspace = await getPageWorkspaceScope(session.tenantId, session.userId, pageKey);
+    const reports = await listSectionReports({
+      tenantId: session.tenantId,
+      userId: session.userId,
+      pageKey,
+      workspace,
+    });
+    return NextResponse.json({ ok: true, reports });
+  } catch (error) {
+    console.error('[api/ai/section-reports] GET failed:', error);
+    return NextResponse.json({ ok: false, error: 'Internal error' }, { status: 500 });
   }
-  const pageKey = new URL(req.url).searchParams.get('pageKey');
-  if (!pageKey) {
-    return NextResponse.json({ ok: false, error: 'pageKey required' }, { status: 400 });
-  }
-  const reports = await listSectionReports({
-    tenantId: session.tenantId,
-    userId: session.userId,
-    pageKey,
-  });
-  return NextResponse.json({ ok: true, reports });
 }
 
 export async function POST(req: NextRequest) {
-  const session = await auth();
-  if (!session?.tenantId || !session.userId) {
-    return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
-  }
-  let json: unknown;
   try {
-    json = await req.json();
-  } catch {
-    return NextResponse.json({ ok: false, error: 'Invalid JSON' }, { status: 400 });
-  }
-  const body = SaveSchema.safeParse(json);
-  if (!body.success) {
-    return NextResponse.json(
-      { ok: false, error: body.error.issues[0]?.message ?? 'Bad request' },
-      { status: 400 },
+    const session = await auth();
+    if (!session?.tenantId || !session.userId) {
+      return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
+    }
+    let json: unknown;
+    try {
+      json = await req.json();
+    } catch {
+      return NextResponse.json({ ok: false, error: 'Invalid JSON' }, { status: 400 });
+    }
+    const body = SaveSchema.safeParse(json);
+    if (!body.success) {
+      return NextResponse.json(
+        { ok: false, error: body.error.issues[0]?.message ?? 'Bad request' },
+        { status: 400 },
+      );
+    }
+
+    const workspace = await getPageWorkspaceScope(
+      session.tenantId,
+      session.userId,
+      body.data.pageKey,
     );
+    const result = await saveSectionReport({
+      tenantId: session.tenantId,
+      userId: session.userId,
+      workspace,
+      pageKey: body.data.pageKey,
+      pageLabel: body.data.pageLabel ?? null,
+      model: body.data.model ?? null,
+      summary: body.data.summary,
+      insights: body.data.insights,
+      meta: body.data.meta ?? null,
+      overwriteOldest: body.data.overwriteOldest,
+    });
+
+    if (!result.ok) {
+      return NextResponse.json(
+        { ok: false, needsOverwrite: true, oldest: result.oldest },
+        { status: 409 },
+      );
+    }
+
+    return NextResponse.json({ ok: true, report: result.report }, { status: 201 });
+  } catch (error) {
+    console.error('[api/ai/section-reports] POST failed:', error);
+    return NextResponse.json({ ok: false, error: 'Internal error' }, { status: 500 });
   }
-
-  const result = await saveSectionReport({
-    tenantId: session.tenantId,
-    userId: session.userId,
-    pageKey: body.data.pageKey,
-    pageLabel: body.data.pageLabel ?? null,
-    model: body.data.model ?? null,
-    summary: body.data.summary,
-    insights: body.data.insights,
-    meta: body.data.meta ?? null,
-    overwriteOldest: body.data.overwriteOldest,
-  });
-
-  if (!result.ok) {
-    return NextResponse.json(
-      { ok: false, needsOverwrite: true, oldest: result.oldest },
-      { status: 409 },
-    );
-  }
-
-  return NextResponse.json({ ok: true, report: result.report }, { status: 201 });
 }

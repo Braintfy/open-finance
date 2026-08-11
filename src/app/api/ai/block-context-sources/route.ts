@@ -6,6 +6,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { auth } from '@/lib/auth';
 import { listBlockContextSources } from '@/lib/ai/block-context-sources-queries';
+import { getWorkspaceScope } from '@/lib/workspaces/active';
 
 export const runtime = 'nodejs';
 
@@ -16,10 +17,13 @@ export async function GET(req: NextRequest) {
   }
   const currentPageKey = new URL(req.url).searchParams.get('pageKey') ?? '';
   try {
+    // Источники — только из активного кабинета (+ общие доски).
+    const workspace = await getWorkspaceScope(session.tenantId, session.userId);
     const sources = await listBlockContextSources({
       tenantId: session.tenantId,
       userId: session.userId,
       currentPageKey,
+      workspace,
     });
     return NextResponse.json({ ok: true, sources });
   } catch (error) {

@@ -11,9 +11,12 @@ import { SectionAiButton } from '@/components/blocks/section-ai-button';
 
 export function MarketplacesOzonClient({
   tenantId,
+  workspaceId,
   blocks,
 }: {
   tenantId: string;
+  /** Активный кабинет — ключ ремоунта грида при переключении. */
+  workspaceId?: string;
   blocks: BlockInstance[];
 }) {
   return (
@@ -37,9 +40,11 @@ export function MarketplacesOzonClient({
         </div>
       </div>
       <BlockGrid
+        key={`${workspaceId ?? 'default'}:marketplaces-ozon-dashboard`}
         pageKey="marketplaces-ozon-dashboard"
         initialBlocks={blocks}
         tenantId={tenantId}
+        workspaceId={workspaceId}
       />
     </div>
   );

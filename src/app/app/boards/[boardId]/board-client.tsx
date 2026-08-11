@@ -40,9 +40,21 @@ type Props = {
   board: Board;
   allBoards: Board[];
   initialBlocks: BlockInstance[];
+  /**
+   * Кабинет раскладки доски. Доски ОБЩИЕ между кабинетами → это всегда
+   * default-кабинет (см. isSharedPageKey). Передаём явно, чтобы отложенный
+   * save не зависел от куки активного кабинета.
+   */
+  workspaceId?: string;
 };
 
-export function BoardClient({ tenantId, board, allBoards, initialBlocks }: Props) {
+export function BoardClient({
+  tenantId,
+  board,
+  allBoards,
+  initialBlocks,
+  workspaceId,
+}: Props) {
   const router = useRouter();
   const [boards, setBoards] = useState<Board[]>(allBoards);
   const [currentBoard, setCurrentBoard] = useState<Board>(board);
@@ -283,6 +295,7 @@ export function BoardClient({ tenantId, board, allBoards, initialBlocks }: Props
       <BlockGrid
         pageKey={boardPageKey(currentBoard.id)}
         tenantId={tenantId}
+        workspaceId={workspaceId}
         initialBlocks={initialBlocks}
       />
 

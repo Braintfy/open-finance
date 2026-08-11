@@ -1,9 +1,17 @@
 // PURPOSE: CRUD для ИИ-отчётов «AI Анализ раздела». История скоупится на
 // раздел (tenant + user + pageKey), лимит 10. При достижении лимита saveReport
 // требует overwriteOldest=true (UI спрашивает подтверждение перезаписи).
+//
+// Воркспейсы (Этап 3): отчёты изолированы по кабинетам через `workspace` —
+// роут резолвит его через getPageWorkspaceScope(pageKey), поэтому у общих
+// ключей ('nav'/'board-*') это default-кабинет и отчёты досок ОБЩИЕ.
+// section_ai_reports.workspace_id NULLABLE — legacy-отчёты
+// видны ТОЛЬКО в default-кабинете (includeLegacy в workspaceScopeCondition).
 import { and, asc, desc, eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { sectionAiReports, type SectionAiReport } from '@/lib/db/schema/section-ai-reports';
+import { workspaceScopeCondition } from '@/lib/workspaces/queries';
+import type { PageWorkspaceScope } from '@/lib/workspaces/scope';
 import {
   SECTION_AI_MAX_REPORTS,
   type SectionInsight,
@@ -19,6 +27,7 @@ export async function listSectionReports(args: {
   tenantId: string;
   userId: string;
   pageKey: string;
+  workspace?: PageWorkspaceScope;
 }): Promise<SectionAiReport[]> {
   return db
     .select()
@@ -28,6 +37,7 @@ export async function listSectionReports(args: {
         eq(sectionAiReports.tenantId, args.tenantId),
         eq(sectionAiReports.userId, args.userId),
         eq(sectionAiReports.pageKey, args.pageKey),
+        workspaceScopeCondition(sectionAiReports.workspaceId, args.workspace),
       ),
     )
     .orderBy(desc(sectionAiReports.createdAt));
@@ -39,12 +49,14 @@ export async function getSectionReportsByIds(args: {
   userId: string;
   pageKey: string;
   ids: string[];
+  workspace?: PageWorkspaceScope;
 }): Promise<SectionAiReport[]> {
   if (args.ids.length === 0) return [];
   const rows = await listSectionReports({
     tenantId: args.tenantId,
     userId: args.userId,
     pageKey: args.pageKey,
+    workspace: args.workspace,
   });
   const idSet = new Set(args.ids);
   return rows.filter((r) => idSet.has(r.id));
@@ -65,6 +77,7 @@ export async function saveSectionReport(args: {
   insights: SectionInsight[];
   meta: SectionReportMeta | null;
   overwriteOldest?: boolean;
+  workspace?: PageWorkspaceScope;
 }): Promise<SaveSectionReportResult> {
   const existing = await db
     .select({ id: sectionAiReports.id, createdAt: sectionAiReports.createdAt })
@@ -74,6 +87,7 @@ export async function saveSectionReport(args: {
         eq(sectionAiReports.tenantId, args.tenantId),
         eq(sectionAiReports.userId, args.userId),
         eq(sectionAiReports.pageKey, args.pageKey),
+        workspaceScopeCondition(sectionAiReports.workspaceId, args.workspace),
       ),
     )
     .orderBy(asc(sectionAiReports.createdAt));
@@ -104,6 +118,7 @@ export async function saveSectionReport(args: {
     .values({
       tenantId: args.tenantId,
       userId: args.userId,
+      workspaceId: args.workspace?.workspaceId ?? null,
       pageKey: args.pageKey,
       pageLabel: args.pageLabel,
       model: args.model,

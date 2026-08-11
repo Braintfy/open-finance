@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { loadLayout } from '@/lib/blocks/queries';
 import { listTabs } from '@/lib/unit-economics/tabs-queries';
+import { getActiveWorkspacePageScope } from '@/lib/workspaces/active';
 import { UnitEconomicsClient, type ClientTab } from './unit-economics-client';
 
 export default async function UnitEconomicsPage() {
@@ -12,7 +13,13 @@ export default async function UnitEconomicsPage() {
   if (!session?.userId) redirect('/login');
   if (!session.tenantId) redirect('/app/onboarding');
 
-  const tabs = await listTabs({ tenantId: session.tenantId, userId: session.userId });
+  // Вкладки и их раскладки — из АКТИВНОГО кабинета.
+  const workspace = await getActiveWorkspacePageScope(session.tenantId, session.userId);
+  const tabs = await listTabs({
+    tenantId: session.tenantId,
+    userId: session.userId,
+    workspace,
+  });
 
   const tabsWithLayouts: ClientTab[] = await Promise.all(
     tabs.map(async (t) => {
@@ -20,6 +27,8 @@ export default async function UnitEconomicsPage() {
         tenantId: session.tenantId!,
         userId: session.userId!,
         pageKey: t.pageKey,
+        workspaceId: workspace.workspaceId,
+        workspaceTemplate: workspace.template,
       });
       return {
         id: t.id,
@@ -34,5 +43,11 @@ export default async function UnitEconomicsPage() {
     }),
   );
 
-  return <UnitEconomicsClient tenantId={session.tenantId} initialTabs={tabsWithLayouts} />;
+  return (
+    <UnitEconomicsClient
+      tenantId={session.tenantId}
+      workspaceId={workspace.workspaceId}
+      initialTabs={tabsWithLayouts}
+    />
+  );
 }

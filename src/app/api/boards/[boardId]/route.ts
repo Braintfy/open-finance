@@ -5,6 +5,7 @@ import { auth } from '@/lib/auth';
 import { updateBoard, deleteBoard, getBoard } from '@/lib/boards/queries';
 import { boardPageKey } from '@/lib/boards/queries';
 import { deleteLayout } from '@/lib/blocks/queries';
+import { getPageWorkspaceScope } from '@/lib/workspaces/active';
 
 const UpdateBody = z.object({
   name: z.string().min(1).max(200).optional(),
@@ -92,12 +93,15 @@ export async function DELETE(
     return NextResponse.json({ ok: false, error: 'Not found' }, { status: 404 });
   }
 
-  // Также удаляем layout блоков этой доски
+  // Также удаляем layout блоков этой доски (доски общие → default-кабинет).
   try {
+    const pageKey = boardPageKey(boardId);
+    const scope = await getPageWorkspaceScope(session.tenantId, session.userId, pageKey);
     await deleteLayout({
       tenantId: session.tenantId,
       userId: session.userId,
-      pageKey: boardPageKey(boardId),
+      pageKey,
+      workspaceId: scope.workspaceId,
     });
   } catch {
     // layout может не существовать — это нормально

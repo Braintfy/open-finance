@@ -1,5 +1,5 @@
 // PURPOSE: Реестр всех типов блоков (мап type → BlockDef)
-import type { BlockDef, BlockInstance, PageLayout } from './types';
+import type { BlockDef, BlockInstance } from './types';
 import { applySourceBindingMigration } from './source-binding';
 import {
   StatIncomeBlock,
@@ -55,6 +55,8 @@ const BLOCK_META: Record<
     iconName: string;
     usesPeriod?: boolean;
     skeletonVariant?: string;
+    /** Скрыт из каталога добавления; существующие инстансы работают (см. BlockDef.hidden). */
+    hidden?: boolean;
   }
 > = {
   'stat.income': {
@@ -96,7 +98,14 @@ const BLOCK_META: Record<
     usesPeriod: true,
   },
   sheet: { tags: ['tables', 'spreadsheet', 'universal'], recommendedFor: [], iconName: 'Table2' },
-  'navigate.card': { tags: ['navigation', 'dashboard'], recommendedFor: ['dashboard'], iconName: 'Link' },
+  'navigate.card': {
+    tags: ['navigation', 'dashboard'],
+    recommendedFor: ['dashboard'],
+    iconName: 'Link',
+    // Дефолтный config ведёт на несуществующий раздел (/app/deadlines, comingSoon)
+    // → в каталоге добавления бесполезен. Размещённые карточки работают.
+    hidden: true,
+  },
   'computed.sum': { tags: ['formula', 'analytics', 'universal'], recommendedFor: [], iconName: 'Sigma' },
   'custom.data': { tags: ['data', 'universal'], recommendedFor: [], iconName: 'Database' },
   'excel.cell': { tags: ['spreadsheet', 'universal'], recommendedFor: [], iconName: 'Calculator' },
@@ -122,6 +131,9 @@ const BLOCK_META: Record<
     tags: ['inbox', 'communications', 'compact'],
     recommendedFor: ['dashboard', 'cashflow'],
     iconName: 'Inbox',
+    // Без настроенных IMAP/Telegram-каналов блок всегда пуст → прячем из каталога
+    // добавления. Размещённые инстансы работают как раньше.
+    hidden: true,
   },
   'unit.ozon-calculator': {
     tags: ['marketplace', 'unit-economics', 'ozon'],
@@ -163,8 +175,9 @@ const BLOCK_META: Record<
     iconName: 'Warehouse',
   },
   'unit.ozon-warehouse-clusters': {
-    tags: ['marketplace', 'analytics', 'ozon', 'inventory', 'clusters'],
-    recommendedFor: ['marketplaces-ozon-dashboard'],
+    tags: ['marketplace', 'analytics', 'ozon', 'inventory', 'clusters', 'warehouses'],
+    // 'dashboard' — блок входит в стартовый шаблон кабинета 'seller-ozon'.
+    recommendedFor: ['marketplaces-ozon-dashboard', 'dashboard'],
     iconName: 'Map',
     usesPeriod: true,
   },
@@ -182,12 +195,12 @@ const BLOCK_META: Record<
   },
   'unit.ozon-data-health': {
     tags: ['marketplace', 'ozon', 'health', 'status'],
-    recommendedFor: ['marketplaces-ozon-dashboard'],
+    recommendedFor: ['marketplaces-ozon-dashboard', 'dashboard'],
     iconName: 'Activity',
   },
   'unit.ozon-abc': {
     tags: ['marketplace', 'analytics', 'ozon', 'abc'],
-    recommendedFor: ['marketplaces-ozon-dashboard'],
+    recommendedFor: ['marketplaces-ozon-dashboard', 'dashboard'],
     iconName: 'PieChart',
     usesPeriod: true,
   },
@@ -277,6 +290,7 @@ function withMeta(def: BlockDef): BlockDef {
     source: def.source ?? meta.source ?? 'builtin',
     iconName: def.iconName ?? meta.iconName,
     usesPeriod: def.usesPeriod ?? meta.usesPeriod,
+    hidden: def.hidden ?? meta.hidden,
     skeletonVariant: resolveSkeletonVariant(def, meta.skeletonVariant),
   };
 }
@@ -330,232 +344,54 @@ export function listBlocksForPage(pageKey: string): BlockDef[] {
 }
 
 /**
- * Блоки, рекомендуемые для конкретной страницы.
- * Правило: `recommendedFor` явно содержит pageKey ИЛИ `pages` содержит pageKey
- * (без '*'-блоков, чтобы Рекомендуемые не превращались во «всё»).
+ * Блоки, рекомендуемые для конкретной страницы. Порядок стабильный (порядок
+ * `ALL_BLOCKS` внутри каждой группы), две группы подряд:
+ *
+ *  1. Явные — `recommendedFor` содержит pageKey ИЛИ `pages` содержит pageKey.
+ *  2. Универсальные — `pages` РОВНО `['*']`, т.е. у блока нет собственных
+ *     «домашних» страниц (sheet, custom.data, excel.cell, computed.sum,
+ *     note.markdown, currency.rates, ai.micro-agent). Раньше они не попадали
+ *     в «Рекомендуемые» ни на одной странице. Блоки вида `['cashflow','*']`
+ *     (kpi.grid, navigate.card) остаются рекомендованными только на своих
+ *     страницах — иначе cashflow-блоки лезли бы на Ozon-дашборд.
+ *
+ * Из обеих групп исключаются `hidden`-блоки, из универсальной — ещё и
+ * `legacy`-тегированные.
  */
 export function listRecommendedForPage(pageKey: string): BlockDef[] {
-  return ALL_BLOCKS.filter((b) => {
-    if (b.recommendedFor?.includes(pageKey)) return true;
-    if (b.pages.includes(pageKey)) return true;
-    return false;
-  });
+  const explicit = ALL_BLOCKS.filter(
+    (b) => !b.hidden && (b.recommendedFor?.includes(pageKey) || b.pages.includes(pageKey)),
+  );
+  const seen = new Set(explicit.map((b) => b.type));
+  const universal = ALL_BLOCKS.filter(
+    (b) =>
+      !b.hidden &&
+      !seen.has(b.type) &&
+      b.pages.length === 1 &&
+      b.pages[0] === '*' &&
+      !(b.tags ?? []).includes('legacy'),
+  );
+  return [...explicit, ...universal];
 }
 
 export function listAllBlocks(): BlockDef[] {
   return ALL_BLOCKS.slice();
 }
 
-/** Дефолтные layout'ы для страниц — используются если у пользователя нет своего */
-export const DEFAULT_LAYOUTS: Record<string, PageLayout> = {
-  dashboard: {
-    pageKey: 'dashboard',
-    blocks: [
-      { id: 'dash-income', type: 'stat.income', x: 0, y: 0, w: 4, h: 2 },
-      { id: 'dash-expense', type: 'stat.expense', x: 4, y: 0, w: 4, h: 2 },
-      { id: 'dash-balance', type: 'stat.balance', x: 8, y: 0, w: 4, h: 2 },
-      {
-        id: 'dash-nav-cashflow',
-        type: 'navigate.card',
-        x: 0,
-        y: 2,
-        w: 4,
-        h: 2,
-        config: {
-          href: '/app/cashflow',
-          title: 'Денежный поток',
-          description: 'Доходы и расходы, импорт выписок',
-          comingSoon: false,
-        },
-        appearance: { icon: 'Wallet' },
-      },
-      {
-        id: 'dash-inbox',
-        type: 'inbox.dashboard',
-        x: 4,
-        y: 2,
-        w: 4,
-        h: 4,
-        config: { title: 'Входящие', limit: 5, channelId: null },
-      },
-      {
-        id: 'dash-nav-deadlines',
-        type: 'navigate.card',
-        x: 8,
-        y: 2,
-        w: 4,
-        h: 2,
-        config: {
-          href: '/app/deadlines',
-          title: 'Дедлайны',
-          description: 'Налоги, отчёты, обязательства',
-          comingSoon: true,
-        },
-        appearance: { icon: 'Calendar' },
-      },
-    ],
-    hiddenSections: [],
-  },
-  cashflow: {
-    pageKey: 'cashflow',
-    blocks: [
-      { id: 'default-income', type: 'stat.income', x: 0, y: 0, w: 4, h: 2 },
-      { id: 'default-expense', type: 'stat.expense', x: 4, y: 0, w: 4, h: 2 },
-      { id: 'default-balance', type: 'stat.balance', x: 8, y: 0, w: 4, h: 2 },
-      {
-        id: 'default-chart',
-        type: 'chart.cashflow',
-        x: 0,
-        y: 2,
-        w: 12,
-        h: 5,
-        config: {
-          chartType: 'area',
-          showIncome: true,
-          showExpense: true,
-          showBalance: false,
-          compare: 'prev',
-          granularity: 'auto',
-          periodOverride: null,
-        },
-      },
-      {
-        id: 'default-top-income',
-        type: 'cashflow.top-categories',
-        x: 0,
-        y: 7,
-        w: 6,
-        h: 4,
-        config: { type: 'income', title: 'Топ доходов' },
-      },
-      {
-        id: 'default-top-expense',
-        type: 'cashflow.top-categories',
-        x: 6,
-        y: 7,
-        w: 6,
-        h: 4,
-        config: { type: 'expense', title: 'Топ расходов' },
-      },
-      {
-        id: 'default-list',
-        type: 'cashflow.transactions',
-        x: 0,
-        y: 11,
-        w: 12,
-        h: 6,
-      },
-    ],
-    hiddenSections: [],
-  },
-  inbox: {
-    pageKey: 'inbox',
-    blocks: [
-      {
-        id: 'default-inbox-feed-left',
-        type: 'inbox.channel-feed',
-        x: 0,
-        y: 0,
-        w: 6,
-        h: 12,
-        config: { title: 'Входящие' },
-      },
-      {
-        id: 'default-inbox-feed-right',
-        type: 'inbox.channel-feed',
-        x: 6,
-        y: 0,
-        w: 6,
-        h: 12,
-        config: { title: 'Входящие' },
-      },
-    ],
-    hiddenSections: [],
-  },
-  'unit-economics-ozon': {
-    pageKey: 'unit-economics-ozon',
-    blocks: [
-      {
-        id: 'default-unit-ozon-calc',
-        type: 'unit.ozon-calculator',
-        x: 0,
-        y: 0,
-        w: 12,
-        h: 9,
-      },
-    ],
-    hiddenSections: [],
-  },
-  'unit-economics-ozon-multi': {
-    pageKey: 'unit-economics-ozon-multi',
-    blocks: [
-      {
-        id: 'default-unit-ozon-multi',
-        type: 'unit.ozon-multi-table',
-        x: 0,
-        y: 0,
-        w: 12,
-        h: 12,
-      },
-    ],
-    hiddenSections: [],
-  },
-  'marketplaces-ozon-dashboard': {
-    pageKey: 'marketplaces-ozon-dashboard',
-    blocks: [
-      { id: 'mp-ozon-kpi', type: 'unit.ozon-kpi', x: 0, y: 0, w: 12, h: 4 },
-      { id: 'mp-ozon-chart', type: 'unit.ozon-chart', x: 0, y: 4, w: 12, h: 6 },
-      { id: 'mp-ozon-analytics', type: 'unit.ozon-analytics', x: 0, y: 10, w: 12, h: 10 },
-      { id: 'mp-ozon-warehouse-clusters', type: 'unit.ozon-warehouse-clusters', x: 0, y: 20, w: 12, h: 6 },
-      { id: 'mp-ozon-top-ads', type: 'unit.ozon-top-ads', x: 0, y: 26, w: 8, h: 6 },
-      { id: 'mp-ozon-data-health', type: 'unit.ozon-data-health', x: 8, y: 26, w: 4, h: 6 },
-      { id: 'mp-ozon-campaigns', type: 'unit.ozon-campaigns', x: 0, y: 32, w: 6, h: 6 },
-      { id: 'mp-ozon-search-phrases', type: 'unit.ozon-search-phrases', x: 6, y: 32, w: 6, h: 6 },
-      { id: 'mp-ozon-stock-clusters', type: 'unit.ozon-stock-clusters', x: 0, y: 38, w: 6, h: 5 },
-      { id: 'mp-ozon-abc', type: 'unit.ozon-abc', x: 6, y: 38, w: 6, h: 7 },
-      { id: 'mp-ozon-ai-insights', type: 'unit.ozon-ai-insights', x: 0, y: 45, w: 6, h: 6 },
-    ],
-    hiddenSections: [],
-  },
-  'unit-economics-yandex': {
-    pageKey: 'unit-economics-yandex',
-    blocks: [
-      {
-        id: 'default-unit-yandex-calc',
-        type: 'unit.yandex-calculator',
-        x: 0,
-        y: 0,
-        w: 12,
-        h: 9,
-      },
-    ],
-    hiddenSections: [],
-  },
-  'unit-economics-my-store': {
-    pageKey: 'unit-economics-my-store',
-    blocks: [
-      {
-        id: 'default-unit-my-store',
-        type: 'unit.my-store-table',
-        x: 0,
-        y: 0,
-        w: 12,
-        h: 12,
-      },
-    ],
-    hiddenSections: [],
-  },
-};
-
-export function getDefaultLayout(pageKey: string): PageLayout {
-  return (
-    DEFAULT_LAYOUTS[pageKey] ?? {
-      pageKey,
-      blocks: [],
-      hiddenSections: [],
-    }
-  );
-}
+// Дефолтные раскладки страниц и шаблоны кабинетов вынесены в отдельный модуль
+// без импортов catalog-блоков (см. ./default-layouts.ts) — чтобы серверные
+// запросы и smoke-тесты могли их использовать без клиентского бандла.
+// Ре-экспорт сохраняет существующие импорты из '@/lib/blocks/registry'.
+export {
+  DEFAULT_LAYOUTS,
+  WORKSPACE_TEMPLATES,
+  WORKSPACE_TEMPLATE_IDS,
+  DEFAULT_WORKSPACE_TEMPLATE,
+  isWorkspaceTemplateId,
+  listWorkspaceTemplates,
+  getDefaultLayout,
+} from './default-layouts';
+export type { WorkspaceTemplate, WorkspaceTemplateId } from './default-layouts';
 
 /**
  * Простая валидация — обрезает блоки с неизвестным type и применяет
@@ -625,7 +461,7 @@ export const BLOCK_PRESETS: BlockPreset[] = [
     },
     defaultAppearance: { icon: 'ArrowDown', accentColor: '#10b981' },
     defaultSize: { w: 4, h: 2 },
-    pages: ['cashflow', 'dashboard', '*'],
+    pages: ['cashflow', 'dashboard'],
   },
   {
     id: 'cashflow.expense-period',
@@ -644,7 +480,7 @@ export const BLOCK_PRESETS: BlockPreset[] = [
     },
     defaultAppearance: { icon: 'ArrowUp', accentColor: '#ef4444' },
     defaultSize: { w: 4, h: 2 },
-    pages: ['cashflow', 'dashboard', '*'],
+    pages: ['cashflow', 'dashboard'],
   },
   {
     id: 'cashflow.balance-period',
@@ -663,7 +499,7 @@ export const BLOCK_PRESETS: BlockPreset[] = [
     },
     defaultAppearance: { icon: 'Wallet', accentColor: '#3b82f6' },
     defaultSize: { w: 4, h: 2 },
-    pages: ['cashflow', 'dashboard', '*'],
+    pages: ['cashflow', 'dashboard'],
   },
   {
     id: 'cashflow.count-period',
@@ -688,7 +524,7 @@ export const BLOCK_PRESETS: BlockPreset[] = [
     },
     defaultAppearance: { icon: 'ListOrdered' },
     defaultSize: { w: 4, h: 2 },
-    pages: ['cashflow', 'dashboard', '*'],
+    pages: ['cashflow', 'dashboard'],
   },
   // ----- kpi.grid presets -----
   {
@@ -708,7 +544,7 @@ export const BLOCK_PRESETS: BlockPreset[] = [
       ],
     },
     defaultSize: { w: 12, h: 3 },
-    pages: ['cashflow', 'dashboard', '*'],
+    pages: ['cashflow', 'dashboard'],
   },
   {
     id: 'kpi-grid.months',
@@ -745,7 +581,7 @@ export const BLOCK_PRESETS: BlockPreset[] = [
       ],
     },
     defaultSize: { w: 12, h: 3 },
-    pages: ['cashflow', 'dashboard', '*'],
+    pages: ['cashflow', 'dashboard'],
   },
   {
     id: 'kpi-grid.panel-2x2',
@@ -765,7 +601,7 @@ export const BLOCK_PRESETS: BlockPreset[] = [
       ],
     },
     defaultSize: { w: 8, h: 4 },
-    pages: ['cashflow', 'dashboard', '*'],
+    pages: ['cashflow', 'dashboard'],
   },
   {
     id: 'cashflow.delta-prev',
@@ -784,7 +620,7 @@ export const BLOCK_PRESETS: BlockPreset[] = [
     },
     defaultAppearance: { icon: 'TrendingUp' },
     defaultSize: { w: 4, h: 2 },
-    pages: ['cashflow', 'dashboard', '*'],
+    pages: ['cashflow', 'dashboard'],
   },
 ];
 

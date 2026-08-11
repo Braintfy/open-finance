@@ -3,7 +3,7 @@
 // текущий), и для каждого отдаёт config блоков (из layout, без live-значений) +
 // последний сохранённый ИИ-отчёт. Используется GET /api/ai/context-sources и
 // серверным резолвом выбранных источников в analyze-section.
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray, or } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { blockLayouts } from '@/lib/db/schema/block-layouts';
 import { sectionAiReports } from '@/lib/db/schema/section-ai-reports';
@@ -13,6 +13,13 @@ import { listBoards } from '@/lib/boards/queries';
 import { listSectionReports } from '@/lib/ai/section-reports-queries';
 import { resolvePageLabel } from '@/lib/ai/page-labels';
 import type { BlockInstance } from '@/lib/blocks/types';
+import { workspaceScopeCondition } from '@/lib/workspaces/queries';
+import {
+  activeWorkspaceScope,
+  isSharedPageKey,
+  pageWorkspaceScope,
+  type ActiveWorkspaceScope,
+} from '@/lib/workspaces/scope';
 import type {
   ExternalSourceContext,
   SectionBlockSnapshot,
@@ -40,12 +47,21 @@ function toSnapshot(b: BlockInstance): SectionBlockSnapshot {
 export async function buildCustomLabels(args: {
   tenantId: string;
   userId: string;
+  workspace?: ActiveWorkspaceScope;
 }): Promise<Record<string, string>> {
+  // Вкладки UE — per-workspace: метки берём из активного кабинета.
+  const tabScope = args.workspace ? activeWorkspaceScope(args.workspace) : undefined;
   const [tabRows, boards] = await Promise.all([
     db
       .select({ pageKey: unitEconomicsTabs.pageKey, label: unitEconomicsTabs.label })
       .from(unitEconomicsTabs)
-      .where(and(eq(unitEconomicsTabs.tenantId, args.tenantId), eq(unitEconomicsTabs.userId, args.userId)))
+      .where(
+        and(
+          eq(unitEconomicsTabs.tenantId, args.tenantId),
+          eq(unitEconomicsTabs.userId, args.userId),
+          workspaceScopeCondition(unitEconomicsTabs.workspaceId, tabScope),
+        ),
+      )
       .catch(() => [] as Array<{ pageKey: string; label: string }>),
     listBoards({ tenantId: args.tenantId, userId: args.userId }).catch(() => []),
   ]);
@@ -60,20 +76,64 @@ export async function listSectionContextSources(args: {
   tenantId: string;
   userId: string;
   currentPageKey: string;
+  workspace?: ActiveWorkspaceScope;
 }): Promise<SectionContextSourceDto[]> {
-  const { tenantId, userId, currentPageKey } = args;
+  const { tenantId, userId, currentPageKey, workspace } = args;
+  const reportScope = workspace ? activeWorkspaceScope(workspace) : undefined;
+  // Обе половины union'а тянут активный + default кабинет, лишнее отсекается
+  // фильтром ниже: иначе 'board-*' страница с отчётами, но без строки layout,
+  // пропадала бы из пикера в не-default кабинете.
+  const reportWorkspaceFilter = workspace
+    ? or(
+        // активный кабинет (+ legacy NULL, если активный и есть default)
+        workspaceScopeCondition(sectionAiReports.workspaceId, reportScope),
+        // + default-кабинет — из него берём только общие ('board-*') страницы
+        eq(sectionAiReports.workspaceId, workspace.defaultId),
+      )
+    : undefined;
 
-  const [savedRows, reportRows, customLabels] = await Promise.all([
+  const [savedRowsAll, reportRowsAll, customLabels] = await Promise.all([
     db
-      .select({ pageKey: blockLayouts.pageKey })
+      .select({ pageKey: blockLayouts.pageKey, workspaceId: blockLayouts.workspaceId })
       .from(blockLayouts)
-      .where(and(eq(blockLayouts.tenantId, tenantId), eq(blockLayouts.userId, userId))),
+      .where(
+        and(
+          eq(blockLayouts.tenantId, tenantId),
+          eq(blockLayouts.userId, userId),
+          workspace
+            ? inArray(blockLayouts.workspaceId, [workspace.activeId, workspace.defaultId])
+            : undefined,
+        ),
+      ),
     db
-      .select({ pageKey: sectionAiReports.pageKey })
+      .select({ pageKey: sectionAiReports.pageKey, workspaceId: sectionAiReports.workspaceId })
       .from(sectionAiReports)
-      .where(and(eq(sectionAiReports.tenantId, tenantId), eq(sectionAiReports.userId, userId))),
-    buildCustomLabels({ tenantId, userId }),
+      .where(
+        and(
+          eq(sectionAiReports.tenantId, tenantId),
+          eq(sectionAiReports.userId, userId),
+          reportWorkspaceFilter,
+        ),
+      ),
+    buildCustomLabels({ tenantId, userId, workspace }),
   ]);
+
+  // Изоляция кабинетов: страницы активного + ОБЩИЕ ('board-*') из default.
+  const savedRows = workspace
+    ? savedRowsAll.filter(
+        (r) => r.workspaceId === workspace.activeId || isSharedPageKey(r.pageKey),
+      )
+    : savedRowsAll;
+
+  // Та же изоляция для отчётов (+ legacy NULL — только в default-кабинете).
+  const reportRows = workspace
+    ? reportRowsAll.filter(
+        (r) =>
+          r.workspaceId === workspace.activeId ||
+          (r.workspaceId === workspace.defaultId && isSharedPageKey(r.pageKey)) ||
+          (r.workspaceId === null && reportScope?.includeLegacy === true),
+      )
+    : reportRowsAll;
 
   const pageKeys = Array.from(
     new Set<string>([
@@ -87,12 +147,21 @@ export async function listSectionContextSources(args: {
 
   const sources = await Promise.all(
     pageKeys.map(async (pageKey): Promise<SectionContextSourceDto> => {
+      const pageScope = workspace ? pageWorkspaceScope(workspace, pageKey) : undefined;
       const [layout, reports] = await Promise.all([
-        loadLayout({ tenantId, userId, pageKey }).catch(() => ({
+        loadLayout({
+          tenantId,
+          userId,
+          pageKey,
+          workspaceId: pageScope?.workspaceId,
+          workspaceTemplate: pageScope?.template,
+        }).catch(() => ({
           blocks: [] as BlockInstance[],
           hiddenSections: [] as string[],
         })),
-        listSectionReports({ tenantId, userId, pageKey }).catch(() => []),
+        listSectionReports({ tenantId, userId, pageKey, workspace: pageScope }).catch(
+          () => [],
+        ),
       ]);
       const blocks = layout.blocks.slice(0, MAX_BLOCKS_PER_SECTION).map(toSnapshot);
       const last = reports[0];
@@ -136,15 +205,23 @@ export async function resolveExternalSources(args: {
   userId: string;
   selections: Array<{ pageKey: string; mode: 'report' | 'blocks' }>;
   customLabels?: Record<string, string>;
+  workspace?: ActiveWorkspaceScope;
 }): Promise<ExternalSourceContext[]> {
-  const { tenantId, userId, selections } = args;
-  const customLabels = args.customLabels ?? (await buildCustomLabels({ tenantId, userId }));
+  const { tenantId, userId, selections, workspace } = args;
+  const customLabels =
+    args.customLabels ?? (await buildCustomLabels({ tenantId, userId, workspace }));
 
   const resolved = await Promise.all(
     selections.map(async (sel): Promise<ExternalSourceContext | null> => {
       const label = resolvePageLabel(sel.pageKey, customLabels);
+      const pageScope = workspace ? pageWorkspaceScope(workspace, sel.pageKey) : undefined;
       if (sel.mode === 'report') {
-        const reports = await listSectionReports({ tenantId, userId, pageKey: sel.pageKey }).catch(() => []);
+        const reports = await listSectionReports({
+          tenantId,
+          userId,
+          pageKey: sel.pageKey,
+          workspace: pageScope,
+        }).catch(() => []);
         const last = reports[0];
         if (!last) return null;
         return {
@@ -157,7 +234,13 @@ export async function resolveExternalSources(args: {
           },
         };
       }
-      const layout = await loadLayout({ tenantId, userId, pageKey: sel.pageKey }).catch(() => ({
+      const layout = await loadLayout({
+        tenantId,
+        userId,
+        pageKey: sel.pageKey,
+        workspaceId: pageScope?.workspaceId,
+        workspaceTemplate: pageScope?.template,
+      }).catch(() => ({
         blocks: [] as BlockInstance[],
         hiddenSections: [] as string[],
       }));

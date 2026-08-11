@@ -3,11 +3,13 @@
 //   POST { sourceBlockId, sourcePageKey } — нормализованная ImportTable источника.
 
 import { NextResponse, type NextRequest } from 'next/server';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { auth } from '@/lib/auth';
 import { db } from '@/lib/db/client';
 import { blockLayouts } from '@/lib/db/schema/block-layouts';
 import { loadLayout } from '@/lib/blocks/queries';
+import { getPageWorkspaceScope, getWorkspaceScope } from '@/lib/workspaces/active';
+import { isSharedPageKey } from '@/lib/workspaces/scope';
 import type { BlockInstance } from '@/lib/blocks/types';
 import {
   blockToImportTable,
@@ -56,16 +58,25 @@ export async function GET() {
     return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
   }
 
-  // Все страницы пользователя с сохранённым layout.
-  const rows = await db
-    .select({ pageKey: blockLayouts.pageKey, blocks: blockLayouts.blocks })
+  // Страницы АКТИВНОГО кабинета (+ общие 'board-*' из default) с сохранённым layout.
+  const scope = await getWorkspaceScope(session.tenantId, session.userId);
+  const allRows = await db
+    .select({
+      pageKey: blockLayouts.pageKey,
+      blocks: blockLayouts.blocks,
+      workspaceId: blockLayouts.workspaceId,
+    })
     .from(blockLayouts)
     .where(
       and(
         eq(blockLayouts.tenantId, session.tenantId),
         eq(blockLayouts.userId, session.userId),
+        inArray(blockLayouts.workspaceId, [scope.activeId, scope.defaultId]),
       ),
     );
+  const rows = allRows.filter(
+    (r) => r.workspaceId === scope.activeId || isSharedPageKey(r.pageKey),
+  );
 
   const sources: Array<{
     blockId: string;
@@ -126,10 +137,18 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Источник импорта — страница АКТИВНОГО кабинета (cross-workspace запрещён).
+  const scope = await getPageWorkspaceScope(
+    session.tenantId,
+    session.userId,
+    sourcePageKey,
+  );
   const layout = await loadLayout({
     tenantId: session.tenantId,
     userId: session.userId,
     pageKey: sourcePageKey,
+    workspaceId: scope.workspaceId,
+    workspaceTemplate: scope.template,
   });
   const block = layout.blocks.find((b) => b.id === sourceBlockId);
   if (!block) {

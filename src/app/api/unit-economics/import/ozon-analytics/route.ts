@@ -13,6 +13,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { auth } from '@/lib/auth';
 import { loadLayout } from '@/lib/blocks/queries';
+import { getPageWorkspaceScope } from '@/lib/workspaces/active';
 import {
   OzonAnalyticsBlockConfigSchema,
   resolvePeriod,
@@ -44,10 +45,18 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Источник импорта — страница АКТИВНОГО кабинета (cross-workspace запрещён).
+  const scope = await getPageWorkspaceScope(
+    session.tenantId,
+    session.userId,
+    sourcePageKey,
+  );
   const layout = await loadLayout({
     tenantId: session.tenantId,
     userId: session.userId,
     pageKey: sourcePageKey,
+    workspaceId: scope.workspaceId,
+    workspaceTemplate: scope.template,
   });
   const sourceBlock = layout.blocks.find((b) => b.id === sourceBlockId);
   if (!sourceBlock) {

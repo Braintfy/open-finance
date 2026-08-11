@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { listBoards, getBoard, boardPageKey } from '@/lib/boards/queries';
 import { loadLayout } from '@/lib/blocks/queries';
+import { getPageWorkspaceScope } from '@/lib/workspaces/active';
 import { BoardClient } from './board-client';
 
 export default async function BoardPage({
@@ -32,10 +33,16 @@ export default async function BoardPage({
     redirect('/app/boards');
   }
 
+  // Доски ОБЩИЕ между кабинетами → раскладка всегда из default-кабинета
+  // (isSharedPageKey('board-*') === true).
+  const pageKey = boardPageKey(boardId);
+  const scope = await getPageWorkspaceScope(session.tenantId, session.userId, pageKey);
   const layout = await loadLayout({
     tenantId: session.tenantId,
     userId: session.userId,
-    pageKey: boardPageKey(boardId),
+    pageKey,
+    workspaceId: scope.workspaceId,
+    workspaceTemplate: scope.template,
   });
 
   return (
@@ -43,6 +50,7 @@ export default async function BoardPage({
       tenantId={session.tenantId}
       board={board}
       allBoards={allBoards}
+      workspaceId={scope.workspaceId}
       initialBlocks={layout.blocks}
     />
   );

@@ -1,16 +1,36 @@
 // PURPOSE: Блок «Ozon · Остатки по кластерам» — географические кластеры
-// (источник Performance API `/api/client/cluster/list` + Seller
-// `/v1/analytics/stock_on_warehouses`). Опционально показывает заказы/
+// (источник Seller API `POST /v1/cluster/list` + Seller
+// `POST /v2/analytics/stock_on_warehouses`). Опционально показывает заказы/
 // выручку за период по кластерам (через сопоставление
-// `ozon_orders.raw->>'warehouseName'` → ozon_warehouse_stocks.cluster).
+// `ozon_orders.raw->'analytics_data'->>'warehouse_name'` → справочник
+// ozon_clusters). Вся агрегация — на сервере, см. cluster-stocks-v2/route.ts.
+//
+// Этап 2a LK_V2_PLAN: два разреза — «Кластеры» и «Склады» (иерархия
+// кластер→склады с раскрытием). Разрез хранится в config (`groupBy`), как и
+// набор раскрытых кластеров (`expandedClusters`). Топ-N складов на кластер
+// отбирает СЕРВЕР по той же метрике, по которой отсортирована таблица, —
+// поэтому смена сортировки в режиме складов вызывает рефетч.
 
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { z } from 'zod';
-import { Map as MapIcon, RefreshCw, AlertCircle, ExternalLink, Lock, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
+import {
+  Map as MapIcon,
+  RefreshCw,
+  AlertCircle,
+  ExternalLink,
+  Lock,
+  ArrowUp,
+  ArrowDown,
+  ArrowUpDown,
+  ChevronRight,
+  ChevronDown,
+  Warehouse,
+} from 'lucide-react';
 import Link from 'next/link';
 import { Card } from '@/components/ui/card';
+import { useBlockDensity } from '@/components/blocks/block-size';
 import {
   PeriodPicker,
   resolvePeriod,
@@ -27,6 +47,13 @@ import type {
   BlockRenderProps,
   BlockSettingsFormProps,
 } from '../types';
+import {
+  isWarehouseSortKey,
+  DEFAULT_WAREHOUSE_LIMIT,
+  MAX_WAREHOUSE_LIMIT,
+  type WarehouseAggRow,
+  type WarehouseSortKey,
+} from '@/lib/marketplaces/ozon/cluster-agg';
 import type {
   OzonClusterStocksResponse,
   OzonClusterStocksRow,
@@ -34,6 +61,7 @@ import type {
 
 const CLUSTER_COLUMN_KEYS = [
   'clusterName',
+  'warehouseName',
   'totalStock',
   'freeStock',
   'reservedStock',
@@ -66,10 +94,22 @@ export const OzonWarehouseClustersBlockConfigSchema = z.object({
       'dsiDays',
     ]),
   showShareBar: z.boolean().default(true),
+  /** Разрез таблицы. Дефолт 'cluster' — поведение до Этапа 2a. */
+  groupBy: z.enum(['cluster', 'warehouse']).default('cluster'),
+  /** rowKey кластеров, раскрытых в режиме складов. */
+  expandedClusters: z.array(z.string()).default([]),
+  /** Топ-N складов на кластер (у крупных продавцов складов сотни). */
+  warehouseLimit: z
+    .number()
+    .int()
+    .min(1)
+    .max(MAX_WAREHOUSE_LIMIT)
+    .default(DEFAULT_WAREHOUSE_LIMIT),
 });
 export type OzonWarehouseClustersBlockConfig = z.infer<
   typeof OzonWarehouseClustersBlockConfigSchema
 >;
+export type GroupBy = OzonWarehouseClustersBlockConfig['groupBy'];
 
 function parseConfig(raw: unknown): OzonWarehouseClustersBlockConfig {
   return OzonWarehouseClustersBlockConfigSchema.parse(raw ?? {});
@@ -77,6 +117,7 @@ function parseConfig(raw: unknown): OzonWarehouseClustersBlockConfig {
 
 const COLUMN_LABELS: Record<ClusterColumnKey, { label: string; right?: boolean }> = {
   clusterName: { label: 'Кластер' },
+  warehouseName: { label: 'Склад' },
   totalStock: { label: 'Всего, шт', right: true },
   freeStock: { label: 'Свободно, шт', right: true },
   reservedStock: { label: 'В резерве, шт', right: true },
@@ -92,10 +133,13 @@ type Sort = { key: ClusterColumnKey; dir: 'asc' | 'desc' } | null;
 
 function sortRows(rows: OzonClusterStocksRow[], sort: Sort): OzonClusterStocksRow[] {
   if (!sort) return rows;
+  // У строк кластеров нет поля warehouseName — сортируем их по имени кластера
+  // (иначе клик по «Склад» ничего бы не делал).
+  const key = sort.key === 'warehouseName' ? 'clusterName' : sort.key;
   const out = [...rows];
   out.sort((a, b) => {
-    const av = (a as unknown as Record<string, unknown>)[sort.key];
-    const bv = (b as unknown as Record<string, unknown>)[sort.key];
+    const av = (a as unknown as Record<string, unknown>)[key];
+    const bv = (b as unknown as Record<string, unknown>)[key];
     if (typeof av === 'number' && typeof bv === 'number') {
       return sort.dir === 'asc' ? av - bv : bv - av;
     }
@@ -106,6 +150,81 @@ function sortRows(rows: OzonClusterStocksRow[], sort: Sort): OzonClusterStocksRo
   return out;
 }
 
+/**
+ * Нормализованная строка для рендера ячеек: у кластера и у склада одинаковый
+ * набор метрик, различаются только подписи. Без неё пришлось бы дублировать
+ * `formatCell` под два типа строк.
+ */
+type CellRow = {
+  clusterName: string;
+  clusterType: string | null;
+  warehouseName: string;
+  freeStock: number;
+  promisedStock: number;
+  reservedStock: number;
+  totalStock: number;
+  skuCount: number;
+  ordersInPeriod: number;
+  revenueInPeriod: number;
+  sharePct: number;
+};
+
+function pluralWarehouses(n: number): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return `${n} склад`;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return `${n} склада`;
+  return `${n} складов`;
+}
+
+function clusterToCell(row: OzonClusterStocksRow, groupBy: GroupBy): CellRow {
+  return {
+    clusterName: row.clusterName,
+    clusterType: row.clusterType,
+    warehouseName:
+      groupBy === 'warehouse' && (row.warehousesTotal ?? 0) > 0
+        ? pluralWarehouses(row.warehousesTotal ?? 0)
+        : '',
+    freeStock: row.freeStock,
+    promisedStock: row.promisedStock,
+    reservedStock: row.reservedStock,
+    totalStock: row.totalStock,
+    skuCount: row.skuCount,
+    ordersInPeriod: row.ordersInPeriod,
+    revenueInPeriod: row.revenueInPeriod,
+    sharePct: row.sharePct,
+  };
+}
+
+/** Плоский список строк таблицы: кластер + (если раскрыт) его склады. */
+type DisplayRow =
+  | {
+      kind: 'cluster';
+      key: string;
+      cell: CellRow;
+      row: OzonClusterStocksRow;
+      expandable: boolean;
+      isExpanded: boolean;
+    }
+  | { kind: 'warehouse'; key: string; cell: CellRow }
+  | { kind: 'rest'; key: string; cell: CellRow };
+
+function warehouseToCell(wh: WarehouseAggRow): CellRow {
+  return {
+    clusterName: '',
+    clusterType: null,
+    warehouseName: wh.warehouseName,
+    freeStock: wh.freeStock,
+    promisedStock: wh.promisedStock,
+    reservedStock: wh.reservedStock,
+    totalStock: wh.totalStock,
+    skuCount: wh.skuCount,
+    ordersInPeriod: wh.ordersInPeriod,
+    revenueInPeriod: wh.revenueInPeriod,
+    sharePct: wh.sharePct,
+  };
+}
+
 function fmtNum(v: number): string {
   return v.toLocaleString('ru-RU');
 }
@@ -114,10 +233,12 @@ function fmtRub(v: number): string {
   return Math.round(v).toLocaleString('ru-RU') + ' ₽';
 }
 
-function formatCell(row: OzonClusterStocksRow, key: ClusterColumnKey): string {
+function formatCell(row: CellRow, key: ClusterColumnKey): string {
   switch (key) {
     case 'clusterName':
       return row.clusterName;
+    case 'warehouseName':
+      return row.warehouseName;
     case 'totalStock':
       return fmtNum(row.totalStock);
     case 'freeStock':
@@ -163,12 +284,12 @@ function ClusterEmptyState({
       </div>
       <ul className="space-y-1 text-left text-[11px]">
         <li className={needsStocks ? 'text-rose-700 dark:text-rose-300' : 'opacity-60 line-through'}>
-          • «Остатки по складам» (Seller API <code>/v1/analytics/stock_on_warehouses</code>):
+          • «Остатки по складам» (Seller API <code>/v2/analytics/stock_on_warehouses</code>):
           {' '}
           <span className="tabular-nums">{meta.warehouseStocksCount} строк</span>
         </li>
         <li className={needsClusters ? 'text-amber-700 dark:text-amber-300' : 'opacity-60 line-through'}>
-          • «Кластеры» (Performance API <code>/api/client/cluster/list</code>):
+          • «Кластеры» (Seller API <code>/v1/cluster/list</code>):
           {' '}
           <span className="tabular-nums">{meta.clustersCount} кластеров</span>
         </li>
@@ -189,10 +310,59 @@ function ClusterEmptyState({
   );
 }
 
+/** Сегментированный переключатель разреза «Кластеры | Склады». */
+function GroupByToggle({
+  value,
+  onChange,
+  compact,
+}: {
+  value: GroupBy;
+  onChange: (next: GroupBy) => void;
+  compact: boolean;
+}) {
+  const items: Array<{ key: GroupBy; label: string; Icon: typeof MapIcon; title: string }> = [
+    { key: 'cluster', label: 'Кластеры', Icon: MapIcon, title: 'Разрез по географическим кластерам' },
+    {
+      key: 'warehouse',
+      label: 'Склады',
+      Icon: Warehouse,
+      title: 'Разрез по складам внутри кластеров (FBO)',
+    },
+  ];
+  return (
+    <div className="inline-flex shrink-0 overflow-hidden rounded-md border border-border/60">
+      {items.map(({ key, label, Icon, title }) => {
+        const active = value === key;
+        return (
+          <button
+            key={key}
+            type="button"
+            onClick={() => onChange(key)}
+            title={title}
+            aria-pressed={active}
+            className={
+              'inline-flex items-center gap-1 px-2 py-1 text-[11px] transition ' +
+              (active
+                ? 'bg-primary/10 font-medium text-foreground'
+                : 'text-muted-foreground hover:bg-accent hover:text-foreground')
+            }
+          >
+            <Icon className="h-3 w-3 shrink-0" />
+            {!compact && <span>{label}</span>}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function ClusterKpiStrip({
   totals,
+  warehouses,
 }: {
   totals: OzonClusterStocksResponse['totals'];
+  /** Не-null только в разрезе «Склады». */
+  warehouses: OzonClusterStocksResponse['meta']['warehouses'];
 }) {
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-border/40 bg-muted/20 px-3 py-2">
@@ -228,12 +398,37 @@ function ClusterKpiStrip({
           </div>
         </>
       )}
+      {warehouses && (
+        <>
+          <div className="h-6 w-px bg-border/40" />
+          <div className="flex flex-col">
+            <span className="text-[10px] text-muted-foreground">Складов</span>
+            <span
+              className="text-[13px] font-semibold tabular-nums leading-tight"
+              title={`С остатком: ${warehouses.withStock} · С заказами за период: ${warehouses.withOrders}`}
+            >
+              {fmtNum(warehouses.total)}
+              {warehouses.soldOutWithOrders > 0 && (
+                <span
+                  className="ml-1 text-[10px] font-normal text-amber-600 dark:text-amber-400"
+                  title="Склады с продажами за период, но с нулевым остатком (выбиты в ноль)"
+                >
+                  · {warehouses.soldOutWithOrders} в нуле
+                </span>
+              )}
+            </span>
+          </div>
+        </>
+      )}
     </div>
   );
 }
 
-function RenderOzonWarehouseClusters({ instance }: BlockRenderProps) {
+function RenderOzonWarehouseClusters({ instance, onConfigChange }: BlockRenderProps) {
   const config = useMemo(() => parseConfig(instance.config), [instance.config]);
+  const density = useBlockDensity();
+  // Компактная шапка на узких блоках: переключатель без подписей.
+  const compact = density === 'xs' || density === 'sm';
   const {
     period,
     setOverride: setPeriodOverride,
@@ -265,12 +460,62 @@ function RenderOzonWarehouseClusters({ instance }: BlockRenderProps) {
   const [sort, setSort] = useState<Sort>({ key: 'totalStock', dir: 'desc' });
   const mountedRef = useRef(true);
 
+  // Разрез и раскрытые кластеры живут в config (переживают перезагрузку) и
+  // при наличии onConfigChange являются ЕДИНСТВЕННЫМ источником правды — иначе
+  // локальная тень навсегда замаскировала бы внешние правки конфига (форма
+  // настроек, AI-tool update_block_config). Тень включается только в превью
+  // (onConfigChange нет) — там переключатель работает, но не персистится.
+  const canPersist = Boolean(onConfigChange);
+  const [uiGroupBy, setUiGroupBy] = useState<GroupBy | null>(null);
+  const [uiExpanded, setUiExpanded] = useState<string[] | null>(null);
+  const groupBy: GroupBy = canPersist ? config.groupBy : (uiGroupBy ?? config.groupBy);
+  const expanded = useMemo(
+    () => new Set(canPersist ? config.expandedClusters : (uiExpanded ?? config.expandedClusters)),
+    [canPersist, uiExpanded, config.expandedClusters],
+  );
+
+  const patchConfig = useCallback(
+    (patch: Partial<OzonWarehouseClustersBlockConfig>) => {
+      onConfigChange?.({ ...config, ...patch } as unknown as Record<string, unknown>);
+    },
+    [config, onConfigChange],
+  );
+
+  const setGroupBy = useCallback(
+    (next: GroupBy) => {
+      if (canPersist) patchConfig({ groupBy: next });
+      else setUiGroupBy(next);
+    },
+    [canPersist, patchConfig],
+  );
+
+  const toggleExpanded = useCallback(
+    (rowKey: string) => {
+      const next = expanded.has(rowKey)
+        ? Array.from(expanded).filter((k) => k !== rowKey)
+        : [...Array.from(expanded), rowKey];
+      if (canPersist) patchConfig({ expandedClusters: next });
+      else setUiExpanded(next);
+    },
+    [canPersist, expanded, patchConfig],
+  );
+
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
     };
   }, []);
+
+  // Топ-N складов отбирает сервер, поэтому метрику сортировки надо ему
+  // передать: иначе склад, выбитый в ноль, но с большой выручкой, обрезался бы
+  // лимитом «топ-20 по остатку» именно тогда, когда его и ищут.
+  // `sharePct` пропорциональна остатку → маппим на totalStock.
+  const serverSort: { key: WarehouseSortKey; dir: 'asc' | 'desc' } | null = useMemo(() => {
+    if (groupBy !== 'warehouse' || !sort) return null;
+    const key = sort.key === 'sharePct' ? 'totalStock' : sort.key;
+    return isWarehouseSortKey(key) ? { key, dir: sort.dir } : null;
+  }, [groupBy, sort]);
 
   const fetchData = useCallback(async () => {
     if (!config.accountId) {
@@ -286,7 +531,15 @@ function RenderOzonWarehouseClusters({ instance }: BlockRenderProps) {
         accountId: config.accountId,
         from: range.from.toISOString(),
         to: range.to.toISOString(),
+        groupBy,
       });
+      if (groupBy === 'warehouse') {
+        params.set('warehouseLimit', String(config.warehouseLimit));
+        if (serverSort) {
+          params.set('warehouseSort', serverSort.key);
+          params.set('warehouseSortDir', serverSort.dir);
+        }
+      }
       const res = await fetch(
         `/api/marketplaces/ozon/cluster-stocks-v2?${params}`,
       );
@@ -303,7 +556,15 @@ function RenderOzonWarehouseClusters({ instance }: BlockRenderProps) {
     } finally {
       if (mountedRef.current) setLoading(false);
     }
-  }, [config.accountId, period.preset, period.customFrom, period.customTo]);
+  }, [
+    config.accountId,
+    config.warehouseLimit,
+    period.preset,
+    period.customFrom,
+    period.customTo,
+    groupBy,
+    serverSort,
+  ]);
 
   useEffect(() => {
     if (!periodReady) return;
@@ -338,6 +599,7 @@ function RenderOzonWarehouseClusters({ instance }: BlockRenderProps) {
     ordersInPeriod: totals?.ordersInPeriod ?? 0,
     revenueInPeriod: totals?.revenueInPeriod ?? 0,
     clustersCount: rows.length,
+    warehousesCount: data?.meta.warehouses?.total ?? 0,
     label: instance.appearance?.title ?? 'Ozon · Остатки по кластерам',
     __money: 'revenueInPeriod',
     __labels:
@@ -345,11 +607,67 @@ function RenderOzonWarehouseClusters({ instance }: BlockRenderProps) {
       'freeStock=Свободно (шт),reservedStock=В резерве (шт),' +
       'promisedStock=Ожидается (шт),skuCount=SKU,' +
       'ordersInPeriod=Заказов / период,revenueInPeriod=Выручка / период,' +
-      'clustersCount=Кластеров',
+      'clustersCount=Кластеров,warehousesCount=Складов',
   });
 
-  const visibleCols: ClusterColumnKey[] =
-    config.visibleColumns.length > 0 ? config.visibleColumns : ['clusterName', 'totalStock'];
+  // Колонка «Склад» имеет смысл только в разрезе складов: в режиме кластеров
+  // её убираем, в режиме складов — принудительно добавляем (иначе строки
+  // складов остались бы безымянными, если галка снята в настройках блока).
+  const visibleCols: ClusterColumnKey[] = useMemo(() => {
+    const base: ClusterColumnKey[] =
+      config.visibleColumns.length > 0
+        ? config.visibleColumns
+        : ['clusterName', 'totalStock'];
+    if (groupBy === 'cluster') return base.filter((k) => k !== 'warehouseName');
+    if (base.includes('warehouseName')) return base;
+    const idx = base.indexOf('clusterName');
+    const out = [...base];
+    out.splice(idx >= 0 ? idx + 1 : 0, 0, 'warehouseName');
+    return out;
+  }, [config.visibleColumns, groupBy]);
+
+  const expandableKeys = useMemo(
+    () => rows.filter((r) => (r.warehousesTotal ?? 0) > 0).map((r) => r.rowKey),
+    [rows],
+  );
+  const allExpanded =
+    expandableKeys.length > 0 && expandableKeys.every((k) => expanded.has(k));
+
+  const displayRows = useMemo<DisplayRow[]>(() => {
+    const out: DisplayRow[] = [];
+    for (const row of rows) {
+      const expandable = groupBy === 'warehouse' && (row.warehousesTotal ?? 0) > 0;
+      const isExpanded = expandable && expanded.has(row.rowKey);
+      out.push({
+        kind: 'cluster',
+        key: row.rowKey,
+        row,
+        cell: clusterToCell(row, groupBy),
+        expandable,
+        isExpanded,
+      });
+      if (!isExpanded) continue;
+      for (const wh of row.warehouses ?? []) {
+        out.push({
+          kind: 'warehouse',
+          key: `${row.rowKey}:${wh.warehouseName}`,
+          cell: warehouseToCell(wh),
+        });
+      }
+      const hidden = row.hiddenWarehouses;
+      if (hidden) {
+        out.push({
+          kind: 'rest',
+          key: `${row.rowKey}:__rest__`,
+          cell: {
+            ...warehouseToCell({ ...hidden, warehouseName: '' }),
+            warehouseName: `ещё ${pluralWarehouses(hidden.count)}`,
+          },
+        });
+      }
+    }
+    return out;
+  }, [rows, groupBy, expanded]);
 
   // Когда стоки есть, но справочник кластеров пуст — все ряды идут в
   // «Без кластера». Показываем banner, чтобы пользователь понял почему.
@@ -379,6 +697,22 @@ function RenderOzonWarehouseClusters({ instance }: BlockRenderProps) {
           </button>
         )}
         <div className="ml-auto flex items-center gap-1.5">
+          <GroupByToggle value={groupBy} onChange={setGroupBy} compact={compact} />
+          {groupBy === 'warehouse' && rows.length > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                const next = allExpanded ? [] : expandableKeys;
+                if (canPersist) patchConfig({ expandedClusters: next });
+                else setUiExpanded(next);
+              }}
+              className="inline-flex items-center gap-1 rounded-md border border-border/60 px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+              title={allExpanded ? 'Свернуть все кластеры' : 'Развернуть все кластеры'}
+            >
+              {allExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+              {!compact && <span>{allExpanded ? 'Свернуть' : 'Развернуть'}</span>}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => fetchData()}
@@ -390,13 +724,16 @@ function RenderOzonWarehouseClusters({ instance }: BlockRenderProps) {
           </button>
         </div>
       </div>
-      {data?.totals && rows.length > 0 && <ClusterKpiStrip totals={data.totals} />}
+      {data?.totals && rows.length > 0 && (
+        <ClusterKpiStrip totals={data.totals} warehouses={data.meta.warehouses} />
+      )}
       {showClustersBanner && (
         <div className="flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
           <AlertCircle className="h-3 w-3 shrink-0" />
           <span>
-            Справочник кластеров пуст (Performance API). Остатки сгруппированы
-            «Без кластера» — запустите стейдж «Кластеры» для геогруппировки.
+            Справочник кластеров пуст (Seller API <code>/v1/cluster/list</code>).
+            Остатки сгруппированы «Без кластера» — запустите стейдж «Кластеры»
+            для геогруппировки.
           </span>
         </div>
       )}
@@ -440,107 +777,164 @@ function RenderOzonWarehouseClusters({ instance }: BlockRenderProps) {
               </tr>
             </thead>
             <tbody className="divide-y divide-border/40">
-              {rows.map((row) => (
-                <tr key={(row.clusterId ?? row.clusterName) + ':row'} className="hover:bg-accent/20">
-                  {visibleCols.map((key) => {
-                    const def = COLUMN_LABELS[key];
-                    if (key === 'clusterName') {
-                      const isNoCluster = !row.clusterId;
-                      return (
-                        <td key={key} className="px-2 py-1.5 font-medium">
-                          <div
-                            title={
-                              isNoCluster
-                                ? 'Включает заказы из складов, чьи названия не совпали ни с одним кластером в справочнике. Для корректной разбивки запустите стейдж «Кластеры».'
-                                : undefined
+              {displayRows.map((d) => {
+                const cell = d.cell;
+                const isChild = d.kind !== 'cluster';
+                return (
+                  <tr
+                    key={d.key}
+                    className={
+                      isChild
+                        ? 'bg-muted/15 text-[11px] text-muted-foreground hover:bg-accent/20'
+                        : 'hover:bg-accent/20'
+                    }
+                  >
+                    {visibleCols.map((key) => {
+                      const def = COLUMN_LABELS[key];
+                      if (key === 'clusterName') {
+                        if (isChild) {
+                          // Имя склада живёт в колонке «Склад» — здесь только отступ.
+                          return <td key={key} className="px-2 py-1" />;
+                        }
+                        const row = d.row;
+                        const isNoCluster = !row.clusterId;
+                        return (
+                          <td key={key} className="px-2 py-1.5 font-medium">
+                            <div className="flex items-start gap-1">
+                              {d.expandable && (
+                                <button
+                                  type="button"
+                                  onClick={() => toggleExpanded(row.rowKey)}
+                                  className="mt-[1px] shrink-0 rounded text-muted-foreground hover:text-foreground"
+                                  title={
+                                    d.isExpanded
+                                      ? 'Свернуть склады кластера'
+                                      : `Показать склады (${row.warehousesTotal ?? 0})`
+                                  }
+                                  aria-expanded={d.isExpanded}
+                                >
+                                  {d.isExpanded ? (
+                                    <ChevronDown className="h-3 w-3" />
+                                  ) : (
+                                    <ChevronRight className="h-3 w-3" />
+                                  )}
+                                </button>
+                              )}
+                              <span className="flex flex-col">
+                                <span
+                                  title={
+                                    isNoCluster
+                                      ? 'Включает заказы из складов, чьи названия не совпали ни с одним кластером в справочнике. Для корректной разбивки запустите стейдж «Кластеры».'
+                                      : undefined
+                                  }
+                                >
+                                  {row.clusterName}
+                                  {isNoCluster && (
+                                    <span className="ml-1 text-[9px] text-muted-foreground/60">ⓘ</span>
+                                  )}
+                                </span>
+                                {row.clusterType && (
+                                  <span className="text-[10px] text-muted-foreground">
+                                    {row.clusterType}
+                                  </span>
+                                )}
+                              </span>
+                            </div>
+                          </td>
+                        );
+                      }
+                      if (key === 'warehouseName') {
+                        return (
+                          <td
+                            key={key}
+                            className={
+                              isChild
+                                ? 'px-2 py-1 pl-5 ' +
+                                  (d.kind === 'rest' ? 'italic opacity-70' : '')
+                                : 'px-2 py-1.5 text-[10px] text-muted-foreground'
                             }
+                            title={d.kind === 'warehouse' ? cell.warehouseName : undefined}
                           >
-                            {row.clusterName}
-                            {isNoCluster && (
-                              <span className="ml-1 text-[9px] text-muted-foreground/60">ⓘ</span>
-                            )}
-                          </div>
-                          {row.clusterType && (
-                            <div className="text-[10px] text-muted-foreground">
-                              {row.clusterType}
+                            {cell.warehouseName}
+                          </td>
+                        );
+                      }
+                      if (key === 'totalStock') {
+                        const total = cell.totalStock;
+                        const freePct = total > 0 ? (cell.freeStock / total) * 100 : 0;
+                        const resPct = total > 0 ? (cell.reservedStock / total) * 100 : 0;
+                        const promPct = total > 0 ? (cell.promisedStock / total) * 100 : 0;
+                        return (
+                          <td key={key} className="px-2 py-1.5 text-right tabular-nums">
+                            <div className="flex flex-col items-end gap-0.5">
+                              <span>{fmtNum(total)}</span>
+                              {total > 0 && (
+                                <div
+                                  className="flex h-[3px] w-full max-w-[56px] overflow-hidden rounded-full"
+                                  title={`Свободно: ${fmtNum(cell.freeStock)} · Резерв: ${fmtNum(cell.reservedStock)} · Ожидается: ${fmtNum(cell.promisedStock)}`}
+                                >
+                                  <div className="h-full bg-emerald-500" style={{ width: `${freePct}%` }} />
+                                  <div className="h-full bg-amber-400" style={{ width: `${resPct}%` }} />
+                                  <div className="h-full bg-sky-400" style={{ width: `${promPct}%` }} />
+                                </div>
+                              )}
                             </div>
-                          )}
-                        </td>
-                      );
-                    }
-                    if (key === 'totalStock') {
-                      const total = row.totalStock;
-                      const freePct = total > 0 ? (row.freeStock / total) * 100 : 0;
-                      const resPct = total > 0 ? (row.reservedStock / total) * 100 : 0;
-                      const promPct = total > 0 ? (row.promisedStock / total) * 100 : 0;
-                      return (
-                        <td key={key} className="px-2 py-1.5 text-right tabular-nums">
-                          <div className="flex flex-col items-end gap-0.5">
-                            <span>{fmtNum(total)}</span>
-                            {total > 0 && (
-                              <div
-                                className="flex h-[3px] w-full max-w-[56px] overflow-hidden rounded-full"
-                                title={`Свободно: ${fmtNum(row.freeStock)} · Резерв: ${fmtNum(row.reservedStock)} · Ожидается: ${fmtNum(row.promisedStock)}`}
-                              >
-                                <div className="h-full bg-emerald-500" style={{ width: `${freePct}%` }} />
-                                <div className="h-full bg-amber-400" style={{ width: `${resPct}%` }} />
-                                <div className="h-full bg-sky-400" style={{ width: `${promPct}%` }} />
+                          </td>
+                        );
+                      }
+                      if (key === 'sharePct' && config.showShareBar) {
+                        return (
+                          <td key={key} className="px-2 py-1.5 text-right tabular-nums">
+                            <div className="flex items-center justify-end gap-2">
+                              <div className="h-1.5 w-16 overflow-hidden rounded-full bg-muted">
+                                <div
+                                  className="h-full rounded-full bg-primary/60"
+                                  style={{ width: `${Math.min(cell.sharePct, 100)}%` }}
+                                />
                               </div>
-                            )}
-                          </div>
-                        </td>
-                      );
-                    }
-                    if (key === 'sharePct' && config.showShareBar) {
-                      return (
-                        <td key={key} className="px-2 py-1.5 text-right tabular-nums">
-                          <div className="flex items-center justify-end gap-2">
-                            <div className="h-1.5 w-16 overflow-hidden rounded-full bg-muted">
-                              <div
-                                className="h-full rounded-full bg-primary/60"
-                                style={{ width: `${Math.min(row.sharePct, 100)}%` }}
-                              />
+                              <span>{cell.sharePct.toFixed(1)}%</span>
                             </div>
-                            <span>{row.sharePct.toFixed(1)}%</span>
-                          </div>
-                        </td>
-                      );
-                    }
-                    if (key === 'dsiDays') {
-                      const dsi = row.ordersInPeriod > 0
-                        ? Math.round(row.totalStock / (row.ordersInPeriod / periodDays))
-                        : null;
-                      const dsiCls = dsi === null
-                        ? 'text-muted-foreground'
-                        : dsi < 7
-                          ? 'text-red-600 dark:text-red-400 font-medium'
-                          : dsi < 14
-                            ? 'text-amber-600 dark:text-amber-400'
-                            : 'text-emerald-600 dark:text-emerald-400';
+                          </td>
+                        );
+                      }
+                      if (key === 'dsiDays') {
+                        const dsi =
+                          cell.ordersInPeriod > 0
+                            ? Math.round(cell.totalStock / (cell.ordersInPeriod / periodDays))
+                            : null;
+                        const dsiCls =
+                          dsi === null
+                            ? 'text-muted-foreground'
+                            : dsi < 7
+                              ? 'text-red-600 dark:text-red-400 font-medium'
+                              : dsi < 14
+                                ? 'text-amber-600 dark:text-amber-400'
+                                : 'text-emerald-600 dark:text-emerald-400';
+                        return (
+                          <td
+                            key={key}
+                            className={'px-2 py-1.5 text-right tabular-nums ' + dsiCls}
+                            title={dsi !== null ? `${dsi} дн. запаса при текущем темпе продаж` : 'Нет данных о продажах за период'}
+                          >
+                            {dsi !== null ? `${dsi} дн.` : '—'}
+                          </td>
+                        );
+                      }
                       return (
                         <td
                           key={key}
-                          className={'px-2 py-1.5 text-right tabular-nums ' + dsiCls}
-                          title={dsi !== null ? `${dsi} дн. запаса при текущем темпе продаж` : 'Нет данных о продажах за период'}
+                          className={
+                            'px-2 py-1.5 tabular-nums ' +
+                            (def.right ? 'text-right' : 'text-left')
+                          }
                         >
-                          {dsi !== null ? `${dsi} дн.` : '—'}
+                          {formatCell(cell, key)}
                         </td>
                       );
-                    }
-                    return (
-                      <td
-                        key={key}
-                        className={
-                          'px-2 py-1.5 tabular-nums ' +
-                          (def.right ? 'text-right' : 'text-left')
-                        }
-                      >
-                        {formatCell(row, key)}
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
+                    })}
+                  </tr>
+                );
+              })}
             </tbody>
             {totals && (
               <tfoot className="sticky bottom-0 border-t border-border/60 bg-muted/80 backdrop-blur text-[10px] font-medium text-muted-foreground">
@@ -549,6 +943,10 @@ function RenderOzonWarehouseClusters({ instance }: BlockRenderProps) {
                     const def = COLUMN_LABELS[key];
                     let content: React.ReactNode = '';
                     if (key === 'clusterName') content = <span className="font-semibold text-foreground text-[10px]">Итого</span>;
+                    else if (key === 'warehouseName')
+                      content = data?.meta.warehouses
+                        ? pluralWarehouses(data.meta.warehouses.total)
+                        : '';
                     else if (key === 'totalStock') content = fmtNum(totals.totalStock);
                     else if (key === 'freeStock') content = fmtNum(totals.freeStock);
                     else if (key === 'reservedStock') content = fmtNum(totals.reservedStock);
@@ -578,6 +976,7 @@ function RenderOzonWarehouseClusters({ instance }: BlockRenderProps) {
 }
 
 const COL_DESCRIPTIONS: Partial<Record<ClusterColumnKey, string>> = {
+  warehouseName: 'Только в разрезе «Склады» (там всегда включена)',
   dsiDays: 'Дней до исчерпания при текущем темпе',
   ordersInPeriod: 'За выбранный период',
   revenueInPeriod: 'За выбранный период',
@@ -632,6 +1031,58 @@ function SettingsForm({ config, onChange }: BlockSettingsFormProps) {
           })}
         </div>
       </div>
+      <div className="space-y-1.5">
+        <p className="text-[11px] font-medium text-muted-foreground">
+          Разрез по умолчанию
+        </p>
+        <div className="flex gap-1">
+          {(['cluster', 'warehouse'] as const).map((key) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() =>
+                onChange({ ...parsed, groupBy: key } as unknown as Record<string, unknown>)
+              }
+              className={
+                'rounded-md border px-2 py-1 text-[12px] transition ' +
+                (parsed.groupBy === key
+                  ? 'border-primary/40 bg-primary/10 font-medium text-foreground'
+                  : 'border-border/60 text-muted-foreground hover:bg-accent')
+              }
+            >
+              {key === 'cluster' ? 'Кластеры' : 'Склады'}
+            </button>
+          ))}
+        </div>
+        <p className="text-[10px] text-muted-foreground opacity-70">
+          Переключается и прямо в шапке блока — выбор сохраняется здесь же.
+        </p>
+      </div>
+      <label className="flex flex-col gap-1 text-[12px]">
+        <span className="text-[11px] font-medium text-muted-foreground">
+          Складов на кластер (топ-N)
+        </span>
+        <select
+          value={parsed.warehouseLimit}
+          onChange={(e) =>
+            onChange({
+              ...parsed,
+              warehouseLimit: Number(e.target.value),
+            } as unknown as Record<string, unknown>)
+          }
+          className="w-32 rounded-md border border-border/60 bg-background px-2 py-1 text-[12px]"
+        >
+          {[10, 20, 50, 100, MAX_WAREHOUSE_LIMIT].map((n) => (
+            <option key={n} value={n}>
+              {n}
+            </option>
+          ))}
+        </select>
+        <span className="text-[10px] text-muted-foreground opacity-70">
+          Отбор — на сервере по текущей сортировке таблицы. Остальные склады
+          сворачиваются в строку «ещё N складов».
+        </span>
+      </label>
       <label className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-[12px] hover:bg-accent/40">
         <input
           type="checkbox"
@@ -657,7 +1108,7 @@ export const UnitOzonWarehouseClustersBlock: BlockDef = {
   type: 'unit.ozon-warehouse-clusters',
   displayName: 'Ozon · Остатки по кластерам',
   description:
-    'Географические кластеры Ozon: остатки (свободно/резерв/ожидается), доля, заказы и выручка за период.',
+    'Географические кластеры Ozon с разрезом по складам: остатки (свободно/резерв/ожидается), доля, заказы и выручка за период.',
   category: 'tables',
   icon: MapIcon,
   defaultSize: { w: 12, h: 6 },

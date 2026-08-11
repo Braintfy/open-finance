@@ -1,5 +1,12 @@
 // PURPOSE: CRUD queries для unit_economics_tabs + seed-логика дефолтов.
 // Используется страницей /unit-economics и API роутами /api/unit-economics/tabs.
+//
+// Воркспейсы (Этап 3): вкладки скоупятся на АКТИВНЫЙ кабинет — у каждого свой
+// набор вкладок и свои раскладки. Скоуп резолвится вызывающим кодом
+// (getActiveWorkspacePageScope) и передаётся сюда параметром `workspace`.
+// Без него — фолбэк на default-кабинет (обратная совместимость).
+// Legacy-строки с workspace_id IS NULL (до миграций 0010/0011) видны только в
+// default-кабинете — см. workspaceScopeCondition.
 
 import { and, asc, eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
@@ -9,6 +16,11 @@ import {
   type UnitEconomicsTab,
 } from '@/lib/db/schema/unit-economics-tabs';
 import { blockLayouts } from '@/lib/db/schema/block-layouts';
+import {
+  getOrCreateDefaultWorkspace,
+  workspaceScopeCondition,
+} from '@/lib/workspaces/queries';
+import type { PageWorkspaceScope } from '@/lib/workspaces/scope';
 
 export type TabRecord = {
   id: string;
@@ -32,29 +44,44 @@ function toRecord(row: UnitEconomicsTab): TabRecord {
   };
 }
 
-/** Возвращает все НЕ-скрытые вкладки пользователя. Делает seed дефолтов
- * если у пользователя пока ничего не было. */
+/** Резолвит скоуп кабинета: явный аргумент или DEFAULT-кабинет пары (tenant,user). */
+async function resolveScope(args: {
+  tenantId: string;
+  userId: string;
+  workspace?: PageWorkspaceScope;
+}): Promise<PageWorkspaceScope> {
+  if (args.workspace) return args.workspace;
+  const def = await getOrCreateDefaultWorkspace(args.tenantId, args.userId);
+  return { workspaceId: def.id, template: def.template, includeLegacy: true };
+}
+
+/** Возвращает все НЕ-скрытые вкладки кабинета. Делает seed дефолтов
+ * если в этом кабинете пока ничего не было. */
 export async function listTabs(args: {
   tenantId: string;
   userId: string;
+  workspace?: PageWorkspaceScope;
 }): Promise<TabRecord[]> {
+  const scope = await resolveScope(args);
+  const scoped = and(
+    eq(unitEconomicsTabs.tenantId, args.tenantId),
+    eq(unitEconomicsTabs.userId, args.userId),
+    workspaceScopeCondition(unitEconomicsTabs.workspaceId, scope),
+  );
+
   const rows = await db
     .select()
     .from(unitEconomicsTabs)
-    .where(
-      and(
-        eq(unitEconomicsTabs.tenantId, args.tenantId),
-        eq(unitEconomicsTabs.userId, args.userId),
-      ),
-    )
+    .where(scoped)
     .orderBy(asc(unitEconomicsTabs.order));
 
   if (rows.length === 0) {
-    // Seed дефолтов.
+    // Seed дефолтов в текущем кабинете.
     await db.insert(unitEconomicsTabs).values(
       DEFAULT_UNIT_TABS.map((t) => ({
         tenantId: args.tenantId,
         userId: args.userId,
+        workspaceId: scope.workspaceId,
         pageKey: t.pageKey,
         label: t.label,
         icon: t.icon,
@@ -66,12 +93,7 @@ export async function listTabs(args: {
     const seeded = await db
       .select()
       .from(unitEconomicsTabs)
-      .where(
-        and(
-          eq(unitEconomicsTabs.tenantId, args.tenantId),
-          eq(unitEconomicsTabs.userId, args.userId),
-        ),
-      )
+      .where(scoped)
       .orderBy(asc(unitEconomicsTabs.order));
     return seeded.filter((r) => !r.hidden).map(toRecord);
   }
@@ -87,10 +109,12 @@ export async function createTab(args: {
   label: string;
   icon?: string | null;
   cloneFromPageKey?: string;
+  workspace?: PageWorkspaceScope;
 }): Promise<TabRecord> {
   const newPageKey = `unit-economics-custom-${nanoid8()}`;
+  const scope = await resolveScope(args);
 
-  // Определяем порядок: после самой большой order.
+  // Определяем порядок: после самой большой order в этом кабинете.
   const existing = await db
     .select({ order: unitEconomicsTabs.order })
     .from(unitEconomicsTabs)
@@ -98,6 +122,7 @@ export async function createTab(args: {
       and(
         eq(unitEconomicsTabs.tenantId, args.tenantId),
         eq(unitEconomicsTabs.userId, args.userId),
+        workspaceScopeCondition(unitEconomicsTabs.workspaceId, scope),
       ),
     );
   const maxOrder = existing.reduce((m, r) => Math.max(m, r.order), -1);
@@ -107,6 +132,7 @@ export async function createTab(args: {
     .values({
       tenantId: args.tenantId,
       userId: args.userId,
+      workspaceId: scope.workspaceId,
       pageKey: newPageKey,
       label: args.label,
       icon: args.icon ?? null,
@@ -116,8 +142,10 @@ export async function createTab(args: {
     })
     .returning();
 
-  // Clone layout если попросили.
+  // Clone layout если попросили — источник и копия в ОДНОМ кабинете
+  // (cross-workspace клонирование вкладок запрещено, как и @-ссылки).
   if (args.cloneFromPageKey) {
+    const wsId = scope.workspaceId;
     const [src] = await db
       .select()
       .from(blockLayouts)
@@ -125,6 +153,7 @@ export async function createTab(args: {
         and(
           eq(blockLayouts.tenantId, args.tenantId),
           eq(blockLayouts.userId, args.userId),
+          eq(blockLayouts.workspaceId, wsId),
           eq(blockLayouts.pageKey, args.cloneFromPageKey),
         ),
       )
@@ -133,6 +162,7 @@ export async function createTab(args: {
       await db.insert(blockLayouts).values({
         tenantId: args.tenantId,
         userId: args.userId,
+        workspaceId: wsId,
         pageKey: newPageKey,
         blocks: src.blocks,
         hiddenSections: src.hiddenSections,
@@ -192,6 +222,7 @@ export async function deleteTab(args: {
   tenantId: string;
   userId: string;
   id: string;
+  workspace?: PageWorkspaceScope;
 }): Promise<{ deleted: boolean; kind: 'default' | 'custom' | null }> {
   const [tab] = await db
     .select()
@@ -205,6 +236,15 @@ export async function deleteTab(args: {
     )
     .limit(1);
   if (!tab) return { deleted: false, kind: null };
+
+  const scope = await resolveScope(args);
+  // Изоляция кабинетов: вкладку чужого кабинета не удаляем (legacy NULL —
+  // считается принадлежащей default-кабинету, см. includeLegacy).
+  const tabWorkspaceId = tab.workspaceId ?? null;
+  const belongsToScope =
+    tabWorkspaceId === scope.workspaceId ||
+    (tabWorkspaceId === null && scope.includeLegacy);
+  if (!belongsToScope) return { deleted: false, kind: null };
 
   if (tab.kind === 'default') {
     await db
@@ -220,13 +260,14 @@ export async function deleteTab(args: {
     return { deleted: true, kind: 'default' };
   }
 
-  // Custom: чистим layout + сам tab.
+  // Custom: чистим layout (только в кабинете вкладки) + сам tab.
   await db
     .delete(blockLayouts)
     .where(
       and(
         eq(blockLayouts.tenantId, args.tenantId),
         eq(blockLayouts.userId, args.userId),
+        eq(blockLayouts.workspaceId, tabWorkspaceId ?? scope.workspaceId),
         eq(blockLayouts.pageKey, tab.pageKey),
       ),
     );

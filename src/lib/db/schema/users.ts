@@ -1,6 +1,12 @@
 // PURPOSE: Пользователи и связь с tenants (multi-tenant + RBAC)
-import { pgTable, uuid, text, timestamp, varchar, boolean } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, timestamp, varchar, boolean, jsonb } from 'drizzle-orm/pg-core';
 import { tenants } from './tenants';
+
+/** Персональные настройки пользователя (JSONB). Мержится через `|| ...::jsonb`. */
+export type UserSettings = {
+  /** ID активного воркспейса («кабинета»). Резолвится resolveActiveWorkspace(). */
+  activeWorkspaceId?: string;
+};
 
 export const users = pgTable('users', {
   id: uuid('id').defaultRandom().primaryKey(),
@@ -20,6 +26,8 @@ export const users = pgTable('users', {
   // version = идентификатор редакции политики на момент согласия.
   consentVersion: varchar('consent_version', { length: 20 }),
   consentAt: timestamp('consent_at'),
+  // Персональные настройки (активный воркспейс и т.п.). Мержить через `|| ...::jsonb`.
+  settings: jsonb('settings').$type<UserSettings>().default({}),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });

@@ -7,6 +7,7 @@ import {
   listTransactions,
 } from '@/lib/cashflow/queries';
 import { loadLayout } from '@/lib/blocks/queries';
+import { getPageWorkspaceScope } from '@/lib/workspaces/active';
 import { CashflowClient } from './cashflow-client';
 
 export default async function CashflowPage() {
@@ -16,6 +17,7 @@ export default async function CashflowPage() {
   const now = new Date();
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
+  const scope = await getPageWorkspaceScope(session.tenantId, session.userId, 'cashflow');
   const [summary, topIncome, topExpense, recent, layout] = await Promise.all([
     getCashflowSummary(session.tenantId, monthStart),
     getTopCategories(session.tenantId, 'income', 5),
@@ -25,12 +27,15 @@ export default async function CashflowPage() {
       tenantId: session.tenantId,
       userId: session.userId,
       pageKey: 'cashflow',
+      workspaceId: scope.workspaceId,
+      workspaceTemplate: scope.template,
     }),
   ]);
 
   return (
     <CashflowClient
       tenantId={session.tenantId}
+      workspaceId={scope.workspaceId}
       initialBlocks={layout.blocks}
       summary={summary}
       topIncome={topIncome}

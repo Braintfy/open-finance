@@ -5,11 +5,13 @@
 // (incoming/outgoing). НЕ вычисляет агрегаты — в отличие от /api/blocks/sources,
 // который для UI-пикера дополнительно резолвит фактические значения полей.
 import { NextResponse } from 'next/server';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { auth } from '@/lib/auth';
 import { db } from '@/lib/db/client';
 import { blockLayouts } from '@/lib/db/schema/block-layouts';
 import { loadLayout } from '@/lib/blocks/queries';
+import { getWorkspaceScope } from '@/lib/workspaces/active';
+import { isSharedPageKey, pageWorkspaceScope } from '@/lib/workspaces/scope';
 import type { BlockInstance } from '@/lib/blocks/types';
 
 /** Парсит ref вида "blockId", "blockId.field", "pageKey:blockId.field". */
@@ -166,35 +168,58 @@ type RelationPage = {
 };
 
 export async function GET() {
-  const session = await auth();
-  if (!session?.tenantId || !session.userId) {
-    return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
+  try {
+    const session = await auth();
+    if (!session?.tenantId || !session.userId) {
+      return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
+    }
+    const tenantId = session.tenantId;
+    const userId = session.userId;
+
+    // Берём все pageKey из дефолтов + те, что юзер уже сохранил В АКТИВНОМ кабинете
+    // (+ ОБЩИЕ 'board-*' из default-кабинета) — cross-workspace связей не бывает.
+    const scope = await getWorkspaceScope(tenantId, userId);
+    const savedRows = await db
+      .select({ pageKey: blockLayouts.pageKey, workspaceId: blockLayouts.workspaceId })
+      .from(blockLayouts)
+      .where(
+        and(
+          eq(blockLayouts.tenantId, tenantId),
+          eq(blockLayouts.userId, userId),
+          inArray(blockLayouts.workspaceId, [scope.activeId, scope.defaultId]),
+        ),
+      );
+    const saved = savedRows.filter(
+      (r) => r.workspaceId === scope.activeId || isSharedPageKey(r.pageKey),
+    );
+    const pageKeys: string[] = Array.from(
+      new Set([...DEFAULT_PAGE_KEYS, ...saved.map((r) => r.pageKey)]),
+    );
+
+    const pages: RelationPage[] = await Promise.all(
+      pageKeys.map(async (pageKey) => {
+        const pageScope = pageWorkspaceScope(scope, pageKey);
+        const layout = await loadLayout({
+          tenantId,
+          userId,
+          pageKey,
+          workspaceId: pageScope.workspaceId,
+          workspaceTemplate: pageScope.template,
+        });
+        const blocks: RelationBlock[] = layout.blocks.map((b) => ({
+          blockId: b.id,
+          type: b.type,
+          typeLabel: typeLabel(b.type),
+          label: String(b.appearance?.title ?? b.config?.title ?? typeLabel(b.type)),
+          outgoing: blockOutgoingRefs(b, pageKey),
+        }));
+        return { pageKey, pageLabel: pageLabel(pageKey), blocks };
+      }),
+    );
+
+    return NextResponse.json({ ok: true, pages });
+  } catch (error) {
+    console.error('[api/blocks/relations] GET failed:', error);
+    return NextResponse.json({ ok: false, error: 'Internal error' }, { status: 500 });
   }
-  const tenantId = session.tenantId;
-  const userId = session.userId;
-
-  // Берём все pageKey из дефолтов + те, что юзер уже сохранил.
-  const saved = await db
-    .select({ pageKey: blockLayouts.pageKey })
-    .from(blockLayouts)
-    .where(and(eq(blockLayouts.tenantId, tenantId), eq(blockLayouts.userId, userId)));
-  const pageKeys: string[] = Array.from(
-    new Set([...DEFAULT_PAGE_KEYS, ...saved.map((r) => r.pageKey)]),
-  );
-
-  const pages: RelationPage[] = await Promise.all(
-    pageKeys.map(async (pageKey) => {
-      const layout = await loadLayout({ tenantId, userId, pageKey });
-      const blocks: RelationBlock[] = layout.blocks.map((b) => ({
-        blockId: b.id,
-        type: b.type,
-        typeLabel: typeLabel(b.type),
-        label: String(b.appearance?.title ?? b.config?.title ?? typeLabel(b.type)),
-        outgoing: blockOutgoingRefs(b, pageKey),
-      }));
-      return { pageKey, pageLabel: pageLabel(pageKey), blocks };
-    }),
-  );
-
-  return NextResponse.json({ ok: true, pages });
 }

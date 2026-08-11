@@ -28,6 +28,10 @@ import { LogoutButton } from '@/components/logout-button';
 import { CommandPalette } from '@/components/command-palette';
 import { loadLayout } from '@/lib/blocks/queries';
 import { listPinnedBoards } from '@/lib/boards/queries';
+import { listWorkspaces } from '@/lib/workspaces/queries';
+import { getWorkspaceScope, getPageWorkspaceScope } from '@/lib/workspaces/active';
+import { listWorkspaceTemplates } from '@/lib/blocks/default-layouts';
+import { WorkspaceSwitcher } from '@/components/workspaces/workspace-switcher';
 import { GlobalSyncIndicator } from '@/components/marketplaces/global-sync-indicator';
 import { APP_VERSION } from '@/lib/version';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -63,8 +67,13 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-10 shrink-0 items-center justify-between border-b border-border/60 bg-background px-4">
-          <div className="flex items-center gap-3">
-            <span className="text-xs text-muted-foreground">{session.email}</span>
+          <div className="flex min-w-0 items-center gap-3">
+            <Suspense fallback={<Skeleton className="h-6 w-32 rounded" />}>
+              <WorkspaceSwitcherSlot session={session} />
+            </Suspense>
+            <span className="hidden truncate text-xs text-muted-foreground sm:inline">
+              {session.email}
+            </span>
             <CommandPalette />
           </div>
           <LogoutButton />
@@ -76,6 +85,30 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   );
 }
 
+// Async-секция шапки: список кабинетов + активный (кука/users.settings).
+// Стримится в <Suspense>, чтобы резолв воркспейсов не блокировал отрисовку оболочки.
+async function WorkspaceSwitcherSlot({ session }: { session: Session }) {
+  if (!session.tenantId || !session.userId) return null;
+
+  const [list, scope] = await Promise.all([
+    listWorkspaces({ tenantId: session.tenantId, userId: session.userId }).catch(() => []),
+    getWorkspaceScope(session.tenantId, session.userId).catch(() => null),
+  ]);
+  if (list.length === 0 || !scope) return null;
+
+  return (
+    <WorkspaceSwitcher
+      workspaces={list.map((w) => ({ id: w.id, name: w.name, isDefault: w.isDefault }))}
+      activeId={scope.activeId}
+      templates={listWorkspaceTemplates().map((t) => ({
+        id: t.id,
+        label: t.label,
+        description: t.description,
+      }))}
+    />
+  );
+}
+
 // Async-секция навигации: единственное место в оболочке, которое ходит в БД.
 // Завёрнута в <Suspense> → не задерживает отрисовку рамки/хедера/контента.
 async function SidebarNav({ session, isAdmin }: { session: Session; isAdmin: boolean }) {
@@ -83,10 +116,20 @@ async function SidebarNav({ session, isAdmin }: { session: Session; isAdmin: boo
   let pinnedBoards: Array<{ id: string; name: string }> = [];
 
   if (session.tenantId && session.userId) {
+    // 'nav' — ОБЩАЯ раскладка сайдбара: всегда default-кабинет (isSharedPageKey).
+    const navScope = await getPageWorkspaceScope(
+      session.tenantId,
+      session.userId,
+      'nav',
+    ).catch(() => null);
     const [navLayout, pins] = await Promise.all([
-      loadLayout({ tenantId: session.tenantId, userId: session.userId, pageKey: 'nav' }).catch(
-        () => null,
-      ),
+      loadLayout({
+        tenantId: session.tenantId,
+        userId: session.userId,
+        pageKey: 'nav',
+        workspaceId: navScope?.workspaceId,
+        workspaceTemplate: navScope?.template,
+      }).catch(() => null),
       listPinnedBoards({ tenantId: session.tenantId, userId: session.userId }).catch(() => []),
     ]);
     if (navLayout) hidden = new Set(navLayout.hiddenSections ?? []);

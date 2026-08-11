@@ -61,9 +61,18 @@ export function AddBlockDialog({
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 4, h: 2 });
   const [tab, setTab] = useState<'params' | 'appearance' | 'size'>('params');
 
-  const recommended = listRecommendedForPage(pageKey);
-  const all = listAllBlocks();
-  const presets = listPresetsForPage(pageKey);
+  // `hidden`-блоки не предлагаем в каталоге (ни в рекомендуемых, ни в категориях,
+  // ни в поиске) — но уже размещённые инстансы такого типа работают как раньше,
+  // поэтому фильтруем только здесь, а не в listAllBlocks/getBlockDef.
+  const recommended = useMemo(
+    () => listRecommendedForPage(pageKey).filter((b) => !b.hidden),
+    [pageKey],
+  );
+  const all = useMemo(() => listAllBlocks().filter((b) => !b.hidden), []);
+  const presets = useMemo(
+    () => listPresetsForPage(pageKey).filter((p) => !getBlockDef(p.baseType)?.hidden),
+    [pageKey],
+  );
 
   function reset() {
     setStep('pick');
@@ -210,11 +219,10 @@ function PickStep({
   );
 
   // В режиме «все» исключаем рекомендованные, чтобы они не дублировались
-  const recommendedTypes = new Set(recommended.map((b) => b.type));
-  const otherBlocks = useMemo(
-    () => filteredAll.filter((b) => !recommendedTypes.has(b.type)),
-    [filteredAll, recommendedTypes],
-  );
+  const otherBlocks = useMemo(() => {
+    const recommendedTypes = new Set(recommended.map((b) => b.type));
+    return filteredAll.filter((b) => !recommendedTypes.has(b.type));
+  }, [filteredAll, recommended]);
 
   const groupByCategory = (blocks: BlockDef[]) =>
     blocks.reduce<Record<BlockCategory, BlockDef[]>>(
