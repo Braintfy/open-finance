@@ -3,11 +3,11 @@
 > Первый файл AI-агента в новой сессии. Триггер: «загрузи контекст Open Finance» / «прогрев of».
 > Остальная документация — **по запросу**, не по умолчанию.
 
-## Bootstrap (3 шага, ~9K токенов)
+## Bootstrap (3 шага, ~36K токенов)
 
-1. **`START.md`** (этот файл) — карта проекта, правила, маршрутизация.
-2. **`MEMORY.md`** (~5K токенов) — текущее состояние, инварианты, активные грабли.
-3. **`git -C /Users/firay/open-finance/open-finance log --oneline -20`** — последние коммиты.
+1. **`START.md`** (этот файл, ~5K токенов) — карта проекта, правила, маршрутизация.
+2. **`MEMORY.md`** (**~30K токенов**, 450+ строк — основная стоимость bootstrap'а) — текущее состояние, инварианты, активные грабли.
+3. **`git -C /Users/firay/open-finance/open-finance log --oneline -20`** (~0.5K) — последние коммиты.
 
 После этого можно работать любой сложности. Дальше — **только релевантное конкретной задаче** (см. таблицу маршрутизации).
 
@@ -25,46 +25,54 @@
 
 ## Жёсткие правила (MUST NOT)
 
-- НЕ делать `git add/commit/push` — давать команды пользователю.
-- НЕ запускать DB-миграции — давать команды.
-- НЕ коммитить `.env`, секреты, ключи, токены.
-- НЕ использовать `npm`/`yarn` — только `pnpm`.
-- НЕ использовать Prisma — только Drizzle ORM.
-- НЕ использовать Vercel AI SDK — только своя обёртка `src/lib/ai/providers/`.
-- НЕ делать DB-запрос без `tenant_id`.
-- НЕ писать SQL из AI напрямую — только через Tools Layer (`src/lib/ai/tools/`).
-- НЕ делать глубокую вложенность `src/features/x/y/z` — модули плоско в `src/modules/`.
-- НЕ использовать `import * as X` — только явные импорты.
-- НЕ использовать системные `alert/confirm/prompt` — только Dialog/AlertDialog.
-- Новые исходники начинать с `// PURPOSE: ...`.
+> Канон набора — `.cursor/rules/project-context.mdc`. Те же 14 пунктов в `CLAUDE.md`, `AGENTS.md`, `MEMORY.md`. **Меняешь одно — правишь все пять файлов.**
+
+1. НЕ делать `git add/commit/push` — давать команды пользователю.
+2. НЕ запускать DB-миграции (`db:push`/`db:migrate`) — давать команды.
+3. НЕ коммитить `.env`, секреты, ключи, токены.
+4. НЕ использовать `npm`/`yarn` — только `pnpm`.
+5. НЕ использовать Prisma — только Drizzle ORM.
+6. НЕ использовать Vercel AI SDK — только своя обёртка `src/lib/ai/providers/`.
+7. НЕ делать DB-запрос без `tenant_id`; `tenantId` — ТОЛЬКО из сессии (`requireTenant()`/`requireTenantRoute()`, `docs/TENANT_SCOPING.md`).
+8. НЕ писать SQL из AI напрямую — только через Tools Layer (`src/lib/ai/tools/`).
+9. НЕ делать глубокую вложенность `src/features/x/y/z` — домены в `src/lib/<домен>/` + `src/components/<домен>/` + `src/app/api/<домен>/` (`src/modules/` — исторический каркас, кода там нет).
+10. НЕ использовать `import * as X` — только явные импорты.
+11. НЕ использовать системные `alert/confirm/prompt` — только Dialog/AlertDialog.
+12. Новые исходники начинать с `// PURPOSE: ...`.
+13. Интерактивные CLI-команды запускать неинтерактивно (`-y`/`--yes`/`--force`).
+14. Удаление данных — ВСЕГДА с подтверждением пользователя + проверка `tenant_id` в запросе.
 
 ## Стек (1 строка)
 
-Next.js 15 App Router + TS + Tailwind + shadcn/ui + Drizzle ORM + Postgres 16 + pgvector + Redis 7 + BullMQ + Ollama/OpenAI-compat AI providers + NDJSON streaming. Node ≥20, pnpm 9.12.3.
+Next.js 15 App Router + TS + Tailwind + shadcn/ui + Drizzle ORM + Postgres 16 + pgvector + свой JWT-auth (`jose`+`bcryptjs`) + свои AI-провайдеры (Ollama / OpenAI-compat / YandexGPT / GigaChat) + NDJSON streaming. Node ≥20, pnpm 9.12.3.
+
+**Чего НЕТ, хотя часто предполагают:** NextAuth и Google OAuth (свой JWT, API лишь совместим по именам), Redis/BullMQ (`src/lib/redis.ts` — in-memory shim; контейнер `redis:7` в compose поднимается, но приложение к нему не ходит), S3-SDK, TipTap (реально `@mdxeditor/editor`), `node-imap` (свой IMAP поверх `net`/`tls` + `mailparser`), grammY, Sentry/Prometheus/Grafana, univer/handsontable (своя таблица на `fast-formula-parser` + `xlsx`), tesseract.js, Whisper. Полная разбивка «есть / shim / план» — `CLAUDE.md` раздел «Стек». Источник правды — `package.json`.
 
 ## Структура src/
 
 ```
 src/
 ├── app/                  Next.js App Router (pages, api/)
-│   ├── (app)/            authenticated shell (dashboard, cashflow, inbox, boards, unit-economics, marketplace, settings, admin)
+│   ├── app/              authenticated shell (dashboard, cashflow, inbox, boards, unit-economics, marketplace, marketplaces, settings, admin, onboarding) — обычный сегмент `/app/*`, не route-group
 │   ├── (auth)/           login/register/forgot
 │   └── api/              auth, blocks, cashflow, inbox, ai, boards, marketplaces, currency
 ├── components/blocks/    BlockGrid shell, chrome, dialogs, relations overlay
 ├── components/marketplaces/  GlobalSyncIndicator, SyncAllButton, OzonSyncDialog
 ├── components/unit-economics/  калькуляторы, sync UI, biding picker, analytics table
 ├── components/micro-agent/  AI dialog
+├── components/workspaces/  workspace-switcher («кабинеты»)
 ├── components/ui/        shadcn primitives
-├── lib/ai/               providers, micro-agent, tools, vision, memory (TODO)
+├── lib/ai/               providers, micro-agent, vision, prompts; orchestrator.ts + tools/ + memory/ — КАРКАС (Этап 4 PLAN.md, зарегистрирован 1 tool)
 ├── lib/blocks/           types, registry, catalog/, values, relations, source-binding
 ├── lib/boards/           Boards CRUD
 ├── lib/currency/         CBR fetch, queries
 ├── lib/db/               Drizzle client + schema/
+├── lib/workspaces/       «кабинеты»: scope, active, queries
 ├── lib/inbox/            IMAP, MIME, crypto, queries
 ├── lib/marketplaces/     Ozon Seller API + Performance API
 ├── lib/unit-economics/   tariffs, calculate, bindings, store-formula
 ├── lib/env.ts            typed env
-└── modules/              business modules (cashflow, inbox, communications)
+└── modules/              исторический каркас (только README, кода/импортов нет) — реестр модулей в lib/modules/registry.ts
 ```
 
 ## Маршрутизация задач
@@ -74,13 +82,13 @@ src/
 | Тип задачи | Что читать |
 |---|---|
 | **BlockGrid / новый block** | `src/lib/blocks/{types,registry}.ts`, `src/components/blocks/block-grid.tsx`, нужный файл из `src/lib/blocks/catalog/`. Cursor подтянет `.cursor/rules/blocks.mdc`. |
-| **Воркспейсы («кабинеты») / активный кабинет / шаблоны** | `src/lib/workspaces/{scope,active,queries}.ts`, `src/lib/blocks/default-layouts.ts` (WORKSPACE_TEMPLATES), `src/app/api/workspaces/**`, `src/components/workspaces/workspace-switcher.tsx`, раздел «Воркспейсы» в `MEMORY.md`. Инвариант: `nav`+`board-*` всегда в default-кабинете. |
+| **Воркспейсы («кабинеты») / активный кабинет / шаблоны** | **Канон — `docs/LK_V2_PLAN.md`**; конспект — раздел «Воркспейсы» в `MEMORY.md`. Код: `src/lib/workspaces/{scope,active,queries}.ts`, `src/lib/blocks/default-layouts.ts` (WORKSPACE_TEMPLATES), `src/app/api/workspaces/**`, `src/components/workspaces/workspace-switcher.tsx`. Инвариант: `nav`+`board-*` всегда в default-кабинете; пользовательские раскладки/вкладки скоупятся по `workspace_id`, uniq `(workspace_id, page_key)`. |
 | **AI-чат, streaming, micro-agent** | `src/app/api/ai/chat/route.ts`, `src/components/micro-agent/micro-agent-dialog.tsx`, `src/lib/ai/providers/{ollama,openai-compat,proxy}.ts`. Rules: `ai-tools.mdc`. |
 | **Новый AI tool** | `src/lib/ai/tools/index.ts` + пример `src/lib/ai/tools/query-inbox-messages.ts`, `docs/AI_TOOLS.md`. Rules: `ai-tools.mdc`. |
 | **AI Vision (распознавание чеков/счетов)** | `src/lib/ai/vision/{types,router}.ts`, `providers/{claude,openai,yandex,tesseract,mock}.ts`, `docs/AI_VISION.md`. |
 | **Inbox / IMAP** | `src/lib/inbox/{imap,mime,crypto,queries}.ts`, `src/lib/blocks/catalog/inbox-channel-feed.tsx`, `docs/EMAIL_BEGET.md`. |
 | **Курсы валют** | `src/lib/currency/{types,queries,sources/cbr}.ts`, `src/lib/blocks/catalog/currency-rates.tsx`, `src/app/api/currency/rates/{route,refresh/route}.ts`, `drizzle/init/06-currency.sql`. |
-| **Ozon Seller API / Performance API** | `src/lib/marketplaces/{types,crypto,queries,use-accounts}.ts`, `src/lib/marketplaces/ozon/{client,endpoints,types,upsert,upsert-plan,sync/*}.ts`, `src/app/api/marketplaces/**`, `src/app/(app)/settings/integrations/*`, `src/components/marketplaces/*`. Rules: `marketplaces.mdc`. При работе с API смотреть `OZON_API_VERSION_MAP` в `endpoints.ts`. **`OzonClient.post()` lenient** (warning + raw на Zod fail) — `{ strict: true }` для критичных. **Sync upsert идемпотентен через `planUnitProductUpsertFromOzon()`** (pure function, unit-тесты в `scripts/test-ozon-upsert.ts`). |
+| **Ozon Seller API / Performance API** | `src/lib/marketplaces/{types,crypto,queries,use-accounts}.ts`, `src/lib/marketplaces/ozon/{client,endpoints,types,upsert,upsert-plan,sync/*}.ts`, `src/app/api/marketplaces/**`, `src/app/app/settings/integrations/*`, `src/components/marketplaces/*`. Rules: `marketplaces.mdc`. При работе с API смотреть `OZON_API_VERSION_MAP` в `endpoints.ts`. **`OzonClient.post()` lenient** (warning + raw на Zod fail) — `{ strict: true }` для критичных. **Sync upsert идемпотентен через `planUnitProductUpsertFromOzon()`** (pure function, unit-тесты в `scripts/test-ozon-upsert.ts`). |
 | **Ozon Analytics (per-product, KPI, ABC, campaigns)** | Блоки `unit.ozon-*` в `src/lib/blocks/catalog/`, `src/components/unit-economics/ozon-analytics-*`, `src/app/api/marketplaces/ozon/{kpi,timeseries,top-ads,abc,campaigns,search-phrases,cluster-stocks-v2}/route.ts`. Все используют MSC `query-period.ts`. Ads totals — `src/lib/marketplaces/ozon/ads-totals.ts`. Rules: `marketplaces.mdc`. |
 | **Roadmap marketplace-интеграций** | `docs/MARKETPLACES_FUTURE_PLAN.md`, `docs/OZON_ADS_GAP.md`, `docs/MARKETPLACES_OZON_PERFORMANCE.md`. |
 | **Unit Economics (калькуляторы, multi-table, my store)** | `src/lib/unit-economics/{types,bindings,store-formula,ozon-to-my-store}.ts`, директории `src/lib/unit-economics/{ozon,yandex}/` (calculate, tariffs-*), `src/components/unit-economics/*`, `src/app/api/unit-economics/**`. Rules: `unit-economics.mdc`. |
@@ -88,13 +96,17 @@ src/
 | **KPI Grid** | `src/lib/blocks/catalog/kpi-grid.tsx`, `docs/KPI_GRID.md`. |
 | **Periods / page-period header / useBlockPeriod** | `src/lib/blocks/use-block-period.ts`, `src/lib/blocks/page-period-context.tsx`, `src/components/blocks/page-period-header.tsx`, `docs/PAGE_PERIODS.md` — **читать при добавлении нового блока с периодом**. |
 | **Cashflow / транзакции** | `src/lib/cashflow/*`, `src/modules/cashflow/*`, `src/app/api/cashflow/*`, `docs/CASHFLOW_BLOCKS.md`. |
-| **Boards** | `src/lib/db/schema/boards.ts`, `src/lib/boards/queries.ts`, `src/app/(app)/boards/*`, `drizzle/init/03-boards.sql`. |
+| **Boards** | `src/lib/db/schema/boards.ts`, `src/lib/boards/queries.ts`, `src/app/app/boards/*`, `drizzle/init/03-boards.sql`. |
 | **DB schema / миграции** | `src/lib/db/schema/*`, `drizzle/init/*.sql`. После изменений: дать `pnpm db:generate && pnpm db:push`. Rules: `drizzle.mdc`. |
-| **Auth / NextAuth v5** | `src/lib/auth/*`, `src/app/(auth)/*`, `src/middleware.ts`. Rules: `security.mdc`. |
+| **Auth (свой JWT, NextAuth НЕ установлен)** | `src/lib/auth/{index,actions,session,password,guards}.ts` (`jose` + `bcryptjs`, `authDriver='minimal'`), `src/app/(auth)/*`, `src/middleware.ts`. Tenant-гейт — `requireTenant()`/`requireTenantRoute()` + `docs/TENANT_SCOPING.md`. Rules: `security.mdc`. |
 | **Биллинг (Т-Касса/CloudPayments)** | `src/lib/billing/*`, `docs/BILLING.md`. Rules: `security.mdc`. |
-| **Безопасность / секреты / 152-ФЗ** | `docs/SECURITY.md` (**ОБЯЗАТЕЛЬНО** при работе с секретами/сетью/биллингом). Rules: `security.mdc` auto-loads на соотв. файлы. |
-| **Tauri / desktop** | `docs/DESKTOP_STRATEGY.md`, `docs/LICENSING.md`. |
+| **Безопасность / секреты / 152-ФЗ** | `docs/SECURITY.md` (**ОБЯЗАТЕЛЬНО** при работе с секретами/сетью/биллингом), `docs/SECURITY_AUDIT.md` (статусы находок I1-I7), `docs/SMARTCAPTCHA.md`. Rules: `security.mdc` auto-loads на соотв. файлы. |
+| **Tenant-изоляция / cross-tenant ревью** | `docs/TENANT_SCOPING.md` (review-gate `requireTenant()`/`requireTenantRoute()` вместо Postgres RLS), `src/lib/auth/guards.ts`, проверка `pnpm check:tenant-isolation`. |
+| **Деплой на прод (Raspberry Pi 5)** | `docs/DEPLOY_RPI5.md` — фазы A-H первого деплоя; **рутина обновления уже задеплоенного — §10 «Рутина обновления»**. Сопутствующее: `deploy/xray/README.md` (VLESS), `docs/VPN_FOR_AI.md`. |
+| **Tauri / desktop** | `docs/DESKTOP_STRATEGY.md` (выбор стека), `docs/DESKTOP_PLAN.md` (план работ), `docs/LICENSING.md`. |
 | **Локальный AI / Ollama / VPN** | `docs/LOCAL_AI.md`, `docs/VPN_FOR_AI.md`. |
+| **Иерархия AI-промптов** | `docs/AI_PROMPT_LAYERS.md`, `src/lib/ai/prompt-resolver.ts`. Rules: `ai-tools.mdc`. |
+| **Планы ЛК v2 (воркспейсы, блоки, VLESS)** | `docs/LK_V2_PLAN.md` — канон по этапам. |
 | **Стратегия продукта** | `PLAN.md` — **только нужный раздел через `Read offset+limit`**, не файл целиком (1427 строк). |
 | **История релизов** | `git log --oneline -30` или `Read CHANGELOG.md offset=1 limit=100`. НЕ весь файл (~4K строк). |
 | **Историческая память (v0.10-v0.22)** | `docs/memory-archive/` — конкретный файл версии по запросу. |
@@ -116,13 +128,9 @@ pnpm typecheck && pnpm build            # проверка
 
 ## После значимых изменений (обязательно)
 
-1. `pnpm build` — должен пройти.
-2. Обновить `MEMORY.md` (если изменились ключевые файлы/инварианты/грабли).
-3. Добавить запись в `CHANGELOG.md`.
-4. Дать пользователю git-команды (`git add -A && git commit -m "..." && git push origin main`) — **не выполнять самому**.
-5. (Опц.) Ключевые решения → agentmemory MCP `memory_save` (mempalace и `sync-mempalace.sh` deprecated).
+**Канон — `.claude/skills/of-end-session/SKILL.md` (7 шагов). Не пересказывать его здесь — читать оттуда.**
 
-Полный ритуал — `.claude/skills/of-end-session/SKILL.md` (канон).
+Оглавление: верификация → `CHANGELOG.md` → `MEMORY.md` → **`LEARNING_LOG.md`** → инвариант-файлы + анти-дрейф чек → (опц.) agentmemory → git-команды пользователю (**самому не выполнять**).
 
 ## AI memory — agentmemory (с v0.22.4)
 

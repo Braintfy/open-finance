@@ -40,6 +40,7 @@ function heuristicParse(text: string, hint: VisionHint): ExtractedData {
 export const tesseractVisionProvider: VisionProvider = {
   id: 'tesseract',
   label: 'Tesseract.js (локально)',
+  requiresVpn: false, // OCR выполняется в процессе, наружу не ходит
   supports: (mt) => ['image/jpeg', 'image/png', 'image/webp', 'image/bmp'].includes(mt),
   async recognize(
     input: VisionInput,

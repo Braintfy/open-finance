@@ -159,8 +159,12 @@ const STAGE_LABELS: Record<OzonStageKind, { title: string; hint: string }> = {
     hint: 'Performance API /cluster/list — карта warehouse → cluster для блока «Остатки по кластерам»',
   },
   warehouseStocks: {
-    title: 'Остатки по складам',
-    hint: 'Seller /v1/analytics/stock_on_warehouses — остатки по конкретным складам (свободно/резерв/ожидается)',
+    title: 'Остатки по складам (FBO)',
+    hint: 'Seller /v2/analytics/stock_on_warehouses — остатки по складам фулфилмента Ozon (свободно/резерв/ожидается)',
+  },
+  fbsWarehouseStocks: {
+    title: 'Остатки по своим складам (FBS)',
+    hint: 'Seller /v1/warehouse/list + /v1/product/info/stocks-by-warehouse/fbs — остатки на складах продавца (FBS/rFBS)',
   },
 };
 

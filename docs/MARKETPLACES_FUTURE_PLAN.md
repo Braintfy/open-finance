@@ -43,7 +43,7 @@
 
 **Файлы:**
 - Новые: `src/lib/queues/ozon-sync.ts`, `src/workers/ozon-sync.ts`, `src/lib/queues/index.ts` (общий queue registry).
-- Изменения: `src/lib/marketplaces/queries.ts` (хелпер `findAccountsNeedingSync`), `src/app/(app)/settings/integrations/integrations-client.tsx` (UI расписания), `package.json` scripts (`worker:ozon-sync`), `docker-compose.yml`.
+- Изменения: `src/lib/marketplaces/queries.ts` (хелпер `findAccountsNeedingSync`), `src/app/app/settings/integrations/integrations-client.tsx` (UI расписания), `package.json` scripts (`worker:ozon-sync`), `docker-compose.yml`.
 
 **Срок:** 1–2 недели.
 

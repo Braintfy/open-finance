@@ -4,6 +4,8 @@
 // Контракт: VisionProvider.recognize(file, hint) → ExtractedData.
 // Router выбирает реализацию по tenant settings (vision.provider).
 
+import type { ProxyConfig } from '@/lib/ai/providers/proxy';
+
 export type VisionHint = 'receipt' | 'invoice' | 'contract' | 'auto';
 
 export type ExtractedItem = {
@@ -44,6 +46,13 @@ export type VisionInput =
 export type VisionContext = {
   tenantId: string;
   userId: string;
+  /**
+   * tenant.settings.aiProxy — HTTP-прокси (обычно локальный Xray 127.0.0.1:10809).
+   * Применяется только провайдерами с requiresVpn=true (claude/openai);
+   * yandex/tesseract/mock игнорируют. Резолвится на вызывающей стороне
+   * (см. /api/inbox/messages/[id]/recognize).
+   */
+  proxy?: ProxyConfig;
 };
 
 export type VisionProvider = {
@@ -51,6 +60,11 @@ export type VisionProvider = {
   id: string;
   /** Человекочитаемое название. */
   label: string;
+  /**
+   * API провайдера недоступен из РФ напрямую → запросы идут через ctx.proxy,
+   * если он включён. Семантика та же, что у PROVIDER_META.requiresVpn для чата.
+   */
+  requiresVpn: boolean;
   /** Может ли провайдер обработать изображение этого mime-type. */
   supports: (mimeType: string) => boolean;
   /** Основной метод. */

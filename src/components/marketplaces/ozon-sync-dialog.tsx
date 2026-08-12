@@ -57,6 +57,7 @@ type StageKey =
   | 'turnover'
   | 'clusters'
   | 'warehouseStocks'
+  | 'fbsWarehouseStocks'
   | 'perfCampaigns'
   | 'perfSkuStats'
   | 'perfCpoDaily'
@@ -107,9 +108,15 @@ const STAGES_CATALOG: StageMeta[] = [
   },
   {
     key: 'warehouseStocks',
-    label: 'Остатки по складам',
+    label: 'Остатки по складам (FBO)',
     dateAware: false,
-    hint: 'Снимок остатков по складам Ozon. Не зависит от даты.',
+    hint: 'Снимок остатков по складам фулфилмента Ozon. Не зависит от даты.',
+  },
+  {
+    key: 'fbsWarehouseStocks',
+    label: 'Остатки по своим складам (FBS)',
+    dateAware: false,
+    hint: 'Снимок остатков на складах продавца (FBS/rFBS). Не зависит от даты.',
   },
 ];
 

@@ -23,8 +23,12 @@ import {
   TurnoverResponseSchema,
   AnalyticsDataResponseSchema,
   StockOnWarehousesResponseSchema,
+  WarehouseListResponseSchema,
+  StocksByWarehouseFbsResponseSchema,
   type AnalyticsDataResponse,
   type StockOnWarehousesRow,
+  type FbsWarehouse,
+  type StocksByWarehouseFbsRow,
 } from './types';
 
 export const OZON_API_VERSION_MAP = {
@@ -41,6 +45,12 @@ export const OZON_API_VERSION_MAP = {
   // v2 заменяет deprecated `/v1/analytics/stock_on_warehouses` (тот же
   // запрос/ответ, новый путь — см. docs.ozon.ru/api/seller).
   analyticsStockOnWarehouses: '/v2/analytics/stock_on_warehouses',
+  // Этап 2b LK_V2_PLAN: FBS-склады продавца. `stock_on_warehouses` (выше)
+  // отдаёт ТОЛЬКО FBO-склады Ozon, поэтому собственные склады продавца
+  // (у крупных селлеров их больше, чем FBO) требуют отдельной пары вызовов:
+  // список складов + остатки по ним.
+  warehouseList: '/v1/warehouse/list',
+  productStocksByWarehouseFbs: '/v1/product/info/stocks-by-warehouse/fbs',
   // Справочник географических кластеров. Раньше пытались бить по
   // Performance API (`/api/client/cluster/list`) — оттуда приходил 404,
   // эндпойнт живёт ТОЛЬКО в Seller API.
@@ -278,6 +288,130 @@ export async function analyticsStockOnWarehouses(
 
   const rows = data?.result?.rows ?? data?.rows ?? [];
   return { rows };
+}
+
+// ---- FBS-склады продавца (Этап 2b) ---------------------------------------
+
+/** Нормализованный элемент справочника FBS/rFBS-складов продавца. */
+export type FbsWarehouseItem = {
+  /** int64 из Ozon, храним строкой (в JSON он приходит и числом, и строкой). */
+  warehouseId: string;
+  name: string;
+  /**
+   * `'rFBS'` если склад помечен `is_rfbs`, иначе `'FBS'`. Пишется в
+   * `ozon_warehouse_stocks.warehouse_type` — по нему в блоке видно, что
+   * склад собственный, а не фулфилмент Ozon.
+   */
+  warehouseType: 'FBS' | 'rFBS';
+  status: string | null;
+};
+
+/**
+ * Список собственных складов продавца (FBS/rFBS) — Seller API
+ * `POST /v1/warehouse/list`. Тело запроса пустое.
+ *
+ * Ответ у Ozon встречается в трёх формах (все поддержаны схемой):
+ * `{result: [...]}`, `{result: {warehouses: [...]}}`, `{warehouses: [...]}`.
+ *
+ * Клиент намеренно lenient (без `{strict: true}`): схема целиком из
+ * `.optional()` + `.passthrough()`, а провал справочника складов не должен
+ * ронять весь стейдж — остатки FBS всё равно несут `warehouse_name`.
+ */
+export async function getFbsWarehouseList(
+  client: OzonClient,
+): Promise<FbsWarehouseItem[]> {
+  const data = (await client.post(
+    OZON_API_VERSION_MAP.warehouseList,
+    {},
+    WarehouseListResponseSchema,
+  )) as
+    | {
+        result?: FbsWarehouse[] | { warehouses?: FbsWarehouse[] };
+        warehouses?: FbsWarehouse[];
+      }
+    | undefined;
+
+  const list: FbsWarehouse[] = Array.isArray(data?.result)
+    ? data.result
+    : (data?.result as { warehouses?: FbsWarehouse[] } | undefined)?.warehouses ??
+      data?.warehouses ??
+      [];
+
+  const out: FbsWarehouseItem[] = [];
+  for (const w of list) {
+    const id = w.warehouse_id !== undefined ? String(w.warehouse_id) : '';
+    if (!id) continue;
+    out.push({
+      warehouseId: id,
+      name: (w.name ?? '').trim() || `Склад ${id}`,
+      warehouseType: w.is_rfbs === true ? 'rFBS' : 'FBS',
+      status: w.status ?? null,
+    });
+  }
+  return out;
+}
+
+/**
+ * Максимум SKU в одном запросе `/v1/product/info/stocks-by-warehouse/fbs`.
+ * Пагинации у метода нет — «страница» задаётся размером списка SKU,
+ * поэтому вызывающий код (стейдж) режет свой список на чанки.
+ */
+export const FBS_STOCKS_SKU_CHUNK = 500;
+
+/** Остаток одного SKU на одном FBS-складе. */
+export type FbsWarehouseStockRow = {
+  sku: string;
+  productId: string | null;
+  warehouseId: string;
+  warehouseName: string;
+  /** Доступно к продаже. */
+  present: number;
+  reserved: number;
+  raw: Record<string, unknown>;
+};
+
+/**
+ * Остатки по собственным складам продавца — Seller API
+ * `POST /v1/product/info/stocks-by-warehouse/fbs`.
+ *
+ * Вход: массив SKU (int64; отправляем строками — grpc-gateway принимает обе
+ * формы). Пагинации нет: сколько SKU передали, столько и обработается,
+ * поэтому длинные списки режутся по `FBS_STOCKS_SKU_CHUNK`.
+ *
+ * Ответ: `{ result: [{ sku | fbs_sku, product_id, present, reserved,
+ * warehouse_id, warehouse_name }] }`. `fbs_sku` — legacy-идентификатор до
+ * унификации FBO/FBS SKU (2022); читаем `sku`, при его отсутствии — `fbs_sku`.
+ * SKU без остатков на FBS в ответе просто не появляются.
+ */
+export async function getStocksByWarehouseFbs(
+  client: OzonClient,
+  args: { sku: string[] },
+): Promise<FbsWarehouseStockRow[]> {
+  if (args.sku.length === 0) return [];
+  const data = (await client.post(
+    OZON_API_VERSION_MAP.productStocksByWarehouseFbs,
+    { sku: args.sku },
+    StocksByWarehouseFbsResponseSchema,
+  )) as { result?: StocksByWarehouseFbsRow[] } | undefined;
+
+  const rows = data?.result ?? [];
+  const out: FbsWarehouseStockRow[] = [];
+  for (const r of rows) {
+    const skuRaw = r.sku ?? r.fbs_sku;
+    const sku = skuRaw !== undefined && skuRaw !== null ? String(skuRaw) : '';
+    const warehouseId = r.warehouse_id !== undefined ? String(r.warehouse_id) : '';
+    if (!sku || !warehouseId) continue;
+    out.push({
+      sku,
+      productId: r.product_id !== undefined ? String(r.product_id) : null,
+      warehouseId,
+      warehouseName: (r.warehouse_name ?? '').trim(),
+      present: Number(r.present ?? 0),
+      reserved: Number(r.reserved ?? 0),
+      raw: r as unknown as Record<string, unknown>,
+    });
+  }
+  return out;
 }
 
 // ---- /v1/cluster/list (Seller API) ---------------------------------------

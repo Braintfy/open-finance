@@ -25,7 +25,7 @@ allowed-tools:
 3. **Стриминг:** NDJSON, события `start/token/done/error/aborted`. Top-level try/catch.
 4. **Структурный ответ ИИ:** zod-схема на сервере + терпимый `extractJson` на клиенте (fenced/unfenced).
 5. **История отчётов — в БД, не в config блока:** таблица `<scope>_ai_reports` (через `/of-db-change`), лимит 10 на скоуп, при превышении `409 {needsOverwrite, oldest}` → UI подтверждает перезапись. Queries-модуль + CRUD `/api/ai/<scope>-reports[/[reportId]]`.
-6. **Trust boundary кросс-контекста:** текущая страница — можно live-снапшот клиента (`page-snapshot.ts`); ДРУГИЕ разделы/блоки — клиент шлёт только refs `{pageKey, blockId, mode}`, тело резолвит сервер из БД (scoped tenant+user).
+6. **Trust boundary кросс-контекста:** текущая страница — можно live-снапшот клиента (`src/lib/blocks/page-snapshot.ts` — файл лежит в blocks-слое, не в `src/lib/ai/`); ДРУГИЕ разделы/блоки — клиент шлёт только refs `{pageKey, blockId, mode}`, тело резолвит сервер из БД (scoped tenant+user).
 7. **Паритет токенов:** одна pure-функция сборки контекста для клиент-счётчика и сервер-промпта (стиль `assembleSectionContext` в `src/lib/ai/section-insights.ts`). `js-tiktoken` — lazy client-only import (`js-tiktoken/lite` + ranks динамически).
 8. **Разделение server/client:** shared типы и pure-логика — в файле без `'use client'`; типы из route-файлов — только `import type`.
 9. **UI-модалка:** панели в shell — `key={blockId/pageKey}`, иначе прилипает state прошлого скоупа. Data-driven диалоги (`sources/loading/error` пропсами), один fetch в родителе.

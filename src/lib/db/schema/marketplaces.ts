@@ -70,6 +70,12 @@ export type OzonSyncSettings = {
    */
   clusters?: boolean;
   warehouseStocks?: boolean;
+  /**
+   * Sync остатков по СОБСТВЕННЫМ складам продавца (FBS/rFBS) через Seller
+   * `/v1/warehouse/list` + `/v1/product/info/stocks-by-warehouse/fbs`.
+   * Пишет в тот же `ozon_warehouse_stocks`, но с `source='FBS'`.
+   */
+  fbsWarehouseStocks?: boolean;
   perfPhrases?: boolean;
   /** Окно perf-статистики в днях. По умолчанию 30 (max 62 — лимит Ozon API). */
   perfWindowDays?: number;
@@ -167,7 +173,9 @@ export type SyncJobKind =
   | 'perfPhrases'
   | 'analyticsData'
   | 'clusters'
-  | 'warehouseStocks';
+  | 'warehouseStocks'
+  // 18 символов — влезает в varchar(20) колонки ozon_sync_jobs.kind.
+  | 'fbsWarehouseStocks';
 
 export type SyncJobStatus = 'pending' | 'running' | 'success' | 'partial' | 'error';
 
@@ -559,10 +567,26 @@ export const ozonClusters = pgTable(
 );
 
 /**
- * Остатки FBO по складам из Seller `/v1/analytics/stock_on_warehouses`.
- * Каждая строка — `(account, sku, warehouse_name)`. Кластер и его название
- * подставляются при upsert через справочник `ozon_clusters` (если есть);
- * иначе остаются null и UI группирует такие строки в «Без кластера».
+ * Источник остатка строки `ozon_warehouse_stocks`:
+ *  - `FBO` — фулфилмент Ozon, Seller `/v2/analytics/stock_on_warehouses`;
+ *  - `FBS` — собственные склады продавца (в т.ч. rFBS), Seller
+ *    `/v1/warehouse/list` + `/v1/product/info/stocks-by-warehouse/fbs`.
+ *
+ * Значения в ВЕРХНЕМ регистре (в отличие от `ozon_orders.scheme`, где
+ * исторически 'fbo'/'fbs') — сравнение схем всегда через явный upper/lower.
+ */
+export type OzonStockSource = 'FBO' | 'FBS';
+
+/**
+ * Остатки по складам: FBO из Seller `/v2/analytics/stock_on_warehouses`
+ * и FBS/rFBS из `/v1/product/info/stocks-by-warehouse/fbs` (Этап 2b).
+ * Каждая строка — `(account, sku, warehouse_name, source)`. Кластер и его
+ * название подставляются при upsert через справочник `ozon_clusters`
+ * (только для FBO); иначе остаются null.
+ *
+ * FBS-склады в справочник кластеров Ozon не входят вообще — блок
+ * группирует их отдельной псевдо-строкой «FBS (свои склады)», а не мешает
+ * с нерезолвнутыми FBO в «Без кластера».
  */
 export const ozonWarehouseStocks = pgTable(
   'ozon_warehouse_stocks',
@@ -574,19 +598,28 @@ export const ozonWarehouseStocks = pgTable(
     accountId: uuid('account_id')
       .notNull()
       .references(() => marketplaceAccounts.id, { onDelete: 'cascade' }),
-    /** SKU из Ozon (FBO). */
+    /** SKU из Ozon. */
     sku: varchar('sku', { length: 200 }).notNull(),
     /** offer_id / артикул продавца. */
     offerId: varchar('offer_id', { length: 200 }),
     /** Название склада (например «Хоругвино»). */
     warehouseName: varchar('warehouse_name', { length: 200 }).notNull(),
+    /**
+     * 'FBO' | 'FBS'. DEFAULT 'FBO' — все строки, существовавшие до Этапа 2b,
+     * приходили только из FBO-эндпоинта, поэтому бэкфилл не нужен.
+     */
+    source: text('source').$type<OzonStockSource>().notNull().default('FBO'),
+    /** ID склада (есть только у FBS: int64 из `/v1/warehouse/list`). */
+    warehouseId: bigint('warehouse_id', { mode: 'number' }),
+    /** 'FBS' | 'rFBS' для собственных складов; у FBO null. */
+    warehouseType: text('warehouse_type'),
     /** Кластер (если резолвится через ozon_clusters). */
     clusterId: varchar('cluster_id', { length: 50 }),
     clusterName: varchar('cluster_name', { length: 200 }),
     clusterType: varchar('cluster_type', { length: 40 }),
     /** Доступно к продаже. */
     freeToSellAmount: integer('free_to_sell_amount').notNull().default(0),
-    /** Ожидается (в пути). */
+    /** Ожидается (в пути). У FBS всегда 0 — Ozon такого поля не отдаёт. */
     promisedAmount: integer('promised_amount').notNull().default(0),
     /** Зарезервировано. */
     reservedAmount: integer('reserved_amount').notNull().default(0),
@@ -596,9 +629,18 @@ export const ozonWarehouseStocks = pgTable(
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
   (t) => [
-    uniqueIndex('ozon_warehouse_stocks_uniq').on(t.accountId, t.sku, t.warehouseName),
+    // `source` в ключе обязателен: один и тот же SKU может лежать и на
+    // FBO-складе Ozon, и на одноимённом складе продавца.
+    uniqueIndex('ozon_warehouse_stocks_uniq').on(
+      t.accountId,
+      t.sku,
+      t.warehouseName,
+      t.source,
+    ),
     index('ozon_warehouse_stocks_tenant_idx').on(t.tenantId),
     index('ozon_warehouse_stocks_account_cluster_idx').on(t.accountId, t.clusterId),
+    // Стейджи чистят своё окно по (account, source), блок фильтрует по нему же.
+    index('ozon_warehouse_stocks_account_source_idx').on(t.accountId, t.source),
   ],
 );
 

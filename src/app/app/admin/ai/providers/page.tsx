@@ -18,6 +18,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { VpnCard } from './vpn-card';
 
 const PROVIDERS = [
   { id: 'openai', label: 'OpenAI (ChatGPT)', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', signupUrl: 'https://platform.openai.com/api-keys' },
@@ -544,6 +545,9 @@ export default function AiProvidersPage({ embedded = false }: { embedded?: boole
           </div>
         </CardContent>
       </Card>
+
+      {/* ─────────── VLESS / Xray (управление VPN на хосте) ─────────── */}
+      <VpnCard />
 
       {/* ─────────── Сохранить ─────────── */}
       <div className={saveClass}>

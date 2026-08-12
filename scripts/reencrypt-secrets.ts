@@ -1,5 +1,6 @@
 // PURPOSE: Одноразовая перешифровка секретов (marketplace_accounts.api_key_enc /
-// perf_client_secret_enc, inbox_channels.secret) на актуальные ключи из .env.local.
+// perf_client_secret_enc, inbox_channels.secret, tenants.settings.aiVpn.linkEnc /
+// subscriptionUrlEnc) на актуальные ключи из .env.local.
 // Нужна после смены MARKETPLACE_SECRET_KEY / INBOX_SECRET_KEY: старые записи
 // расшифровываются legacy-кандидатами (LEGACY_SECRET_KEYS через запятую +
 // dev-fallback) и сохраняются заново актуальным primary-ключом.
@@ -160,6 +161,46 @@ async function main() {
       } catch (e) {
         failed += 1;
         console.error(`✗ inbox_channels(${name}).secret: ${(e as Error).message}`);
+      }
+    }
+
+    // tenants.settings.aiVpn — секреты VLESS (шифруются тем же marketplace-ключом,
+    // см. src/lib/ai/vpn/admin.ts → encryptSecret из marketplaces/crypto).
+    const tenantRows = await sql<
+      { id: string; name: string; settings: Record<string, unknown> | null }[]
+    >`SELECT id, name, settings FROM tenants WHERE settings ? 'aiVpn'`;
+
+    for (const t of tenantRows) {
+      const settings = (t.settings ?? {}) as Record<string, unknown>;
+      const vpn = settings.aiVpn as Record<string, unknown> | undefined;
+      if (!vpn) continue;
+      let touched = false;
+
+      for (const field of ['linkEnc', 'subscriptionUrlEnc'] as const) {
+        const payload = vpn[field];
+        if (typeof payload !== 'string' || !payload) continue;
+        try {
+          const next = reencrypt(payload, marketplacePrimary);
+          if (next) {
+            vpn[field] = next;
+            touched = true;
+            changed += 1;
+            console.log(`✓ tenants(${t.name}).aiVpn.${field} — перешифрован`);
+          } else {
+            console.log(`= tenants(${t.name}).aiVpn.${field} — уже на актуальном ключе`);
+          }
+        } catch (e) {
+          failed += 1;
+          console.error(`✗ tenants(${t.name}).aiVpn.${field}: ${(e as Error).message}`);
+        }
+      }
+
+      if (touched) {
+        // Мержим ТОЛЬКО изменённое поддерево (jsonb ||), а не перезаписываем весь
+        // settings: в том же объекте живут aiProxy/marketplace/inbox-ветки, которые
+        // мог поменять другой процесс, пока скрипт перешифровывал ключи.
+        const patch = { aiVpn: vpn };
+        await sql`UPDATE tenants SET settings = COALESCE(settings, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb, updated_at = ${new Date()} WHERE id = ${t.id}`;
       }
     }
 

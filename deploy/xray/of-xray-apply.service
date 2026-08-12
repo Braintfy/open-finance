@@ -1,0 +1,38 @@
+# PURPOSE: Одноразовая привилегированная задача: валидирует spool-конфиг,
+# прогоняет `xray run -test`, ставит его в /usr/local/etc/xray/config.json и
+# перезапускает xray. Запускается только по of-xray-apply.path (не по запросу web).
+# Установка: /etc/systemd/system/of-xray-apply.service (см. README.md)
+[Unit]
+Description=Apply Open Finance Xray spool config
+After=network.target
+# Не даём зациклиться, если конфиг раз за разом невалиден.
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/local/sbin/of-xray-apply.sh
+TimeoutStartSec=120
+
+# Путь к spool-директории; должен совпадать с XRAY_SPOOL_PATH приложения.
+Environment=XRAY_SPOOL_DIR=/var/lib/open-finance/xray
+Environment=XRAY_CONFIG_PATH=/usr/local/etc/xray/config.json
+Environment=XRAY_BIN=/usr/local/bin/xray
+Environment=XRAY_SERVICE=xray
+Environment=XRAY_HTTP_PORT=10809
+# Если Xray работает от отдельной группы — конфиг ставится 0640 root:<группа>.
+# Environment=XRAY_GROUP=xray
+
+# Минимальная песочница: нужен только spool и каталог конфигов Xray.
+ProtectHome=yes
+ProtectSystem=full
+ReadWritePaths=/var/lib/open-finance/xray /usr/local/etc/xray
+PrivateTmp=yes
+NoNewPrivileges=no
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

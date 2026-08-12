@@ -27,6 +27,9 @@ const STAGE_TITLES: Record<string, string> = {
   perfPhrases: 'Поисковые фразы',
   turnover: 'Оборачиваемость',
   analyticsData: 'Аналитика продаж',
+  clusters: 'Кластеры регионов',
+  warehouseStocks: 'Остатки по складам (FBO)',
+  fbsWarehouseStocks: 'Остатки по своим складам (FBS)',
 };
 
 type ActiveJob = {

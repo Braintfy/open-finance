@@ -33,6 +33,7 @@ import { syncPerfPhrasesStage } from './perf-phrases';
 import { syncAnalyticsDataStage } from './analytics-data';
 import { syncClustersStage } from './clusters';
 import { syncWarehouseStocksStage } from './warehouse-stocks';
+import { syncFbsWarehouseStocksStage } from './fbs-warehouse-stocks';
 import type { StageContext, StageResult } from './types';
 import {
   OZON_FULL_STAGES,
@@ -55,6 +56,7 @@ const STAGE_RUNNERS: Record<OzonStageKind, (ctx: StageContext) => Promise<StageR
   turnover: syncTurnoverStage,
   clusters: syncClustersStage,
   warehouseStocks: syncWarehouseStocksStage,
+  fbsWarehouseStocks: syncFbsWarehouseStocksStage,
   perfCampaigns: syncPerfCampaignsStage,
   perfSkuStats: syncPerfSkuStatsStage,
   perfCpoDaily: syncPerfCpoDailyStage,

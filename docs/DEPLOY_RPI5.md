@@ -28,10 +28,12 @@ Redis, MinIO, Adminer из docker-compose **НЕ поднимаем**: код и
 
 ## 2. Фаза A — фиксы в репо ДО деплоя (на dev-машине)
 
-Найдены аудитом, без них деплой сломается или прокси не заработает:
+Найдены аудитом, без них деплой сломается или прокси не заработает.
 
-1. **`pnpm add undici`** — БЛОКЕР: AI-прокси реализован через `undici.ProxyAgent` (`src/lib/ai/providers/proxy.ts`), но пакета нет в зависимостях → при включении прокси любой внешний AI-запрос падает «Пакет undici не установлен».
-2. **docker-compose: монтировать только `01-extensions.sql`** — БЛОКЕР первого запуска: сейчас в `/docker-entrypoint-initdb.d` монтируется весь `drizzle/init/`, и на пустом volume контейнер падает (`03-boards.sql` → `relation "tenants" does not exist`, exit 3). Заменить на `- ./drizzle/init/01-extensions.sql:/docker-entrypoint-initdb.d/01-extensions.sql:ro`.
+> **Пункты 1-2 уже ВЫПОЛНЕНЫ** (коммит `3f7245e`): `undici` в `dependencies`, в `docker-entrypoint-initdb.d` монтируется только `01-extensions.sql`. Оставлены для истории — проверять, а не переделывать.
+
+1. ✅ **`pnpm add undici`** — AI-прокси реализован через `undici.ProxyAgent` (`src/lib/ai/providers/proxy.ts`); без пакета любой внешний AI-запрос падал «Пакет undici не установлен».
+2. ✅ **docker-compose: монтировать только `01-extensions.sql`** — раньше в `/docker-entrypoint-initdb.d` монтировался весь `drizzle/init/`, и на пустом volume контейнер падал (`03-boards.sql` → `relation "tenants" does not exist`, exit 3). Сейчас смонтирован ровно `- ./drizzle/init/01-extensions.sql:/docker-entrypoint-initdb.d/01-extensions.sql:ro`. **Следствие: остальные `02…17-*.sql` применяются ВРУЧНУЮ всегда** (см. Фазу D).
 3. (Желательно) `/api/health` — сейчас статичный JSON с захардкоженной версией '0.4.0' без проверки БД; сделать реальный чек Postgres для мониторинга.
 4. (Желательно) `failStaleSyncJobs` добивает только `pending`; job, убитый рестартом в `running`, висит вечно — расширить на `running` старше N минут.
 

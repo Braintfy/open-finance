@@ -9,6 +9,10 @@
 // инвариант «строка кластера == Σ её складов», объединение «склады с
 // остатком ∪ склады с заказами», лимит топ-N со свёрнутым хвостом.
 //
+// Часть 1c (Этап 2b) — источник FBO/FBS: псевдо-строка «FBS (свои склады)»,
+// раздельность её и «Без кластера», резолв заказов с FBS-складов, разбиение
+// `all == FBO + FBS`.
+//
 // Часть 2 — прогон боевого `loadOzonClusterStocks()` на дев-БД (read-only)
 // плюс сравнение со СТАРОЙ логикой (raw->>'warehouseName' + case-sensitive
 // JOIN через снапшот остатков), чтобы видеть распределение выручки ДО/ПОСЛЕ.
@@ -24,9 +28,12 @@ import { eq, sql } from 'drizzle-orm';
 import {
   attachWarehousesToClusters,
   buildClusterRows,
+  isStockSourceFilter,
   normalizeWarehouseName,
   resolveOrdersToClusters,
   resolveOrdersToWarehouses,
+  FBS_LABEL,
+  FBS_ROW_KEY,
   NO_CLUSTER_LABEL,
   NO_WAREHOUSE_LABEL,
   type ClusterAggRow,
@@ -488,6 +495,275 @@ function runWarehouseUnitTests(): void {
   );
 }
 
+// ------------------------------------------- unit tests: источник FBO/FBS (2b)
+
+/**
+ * Фикстуры Этапа 2b: к FBO-миру добавлены собственные склады продавца.
+ * У FBS-строк `clusterId === null` — ровно как в снапшоте (стейдж
+ * `fbsWarehouseStocks` кластеры не резолвит).
+ */
+function buildSourceFixtures() {
+  const base = buildFixtures();
+
+  const fbsWarehouses = new Set(
+    ['Мой склад Москва', 'Мой склад Казань'].map(normalizeWarehouseName),
+  );
+
+  const fbsClusterStocks: ClusterStockAgg[] = [
+    {
+      clusterId: null,
+      clusterName: null,
+      clusterType: null,
+      source: 'FBS',
+      free: 30,
+      promised: 0,
+      reserved: 4,
+      skuCount: 5,
+    },
+  ];
+  // Нерезолвнутый FBO-склад: должен остаться в «Без кластера», а не уехать
+  // в строку FBS — это два разных смысла.
+  const unresolvedFboStocks: ClusterStockAgg[] = [
+    {
+      clusterId: null,
+      clusterName: null,
+      clusterType: null,
+      source: 'FBO',
+      free: 7,
+      promised: 0,
+      reserved: 0,
+      skuCount: 2,
+    },
+  ];
+
+  const fbsWarehouseStocks: WarehouseStockAgg[] = [
+    {
+      warehouseName: 'Мой склад Москва',
+      clusterId: null,
+      clusterName: null,
+      clusterType: null,
+      source: 'FBS',
+      free: 20,
+      promised: 0,
+      reserved: 4,
+      skuCount: 4,
+    },
+    {
+      warehouseName: 'Мой склад Казань',
+      clusterId: null,
+      clusterName: null,
+      clusterType: null,
+      source: 'FBS',
+      free: 10,
+      promised: 0,
+      reserved: 0,
+      skuCount: 1,
+    },
+  ];
+
+  // Тот же нерезолвнутый FBO-остаток, но в разрезе склада: без него
+  // инвариант «Σ складов == строка» падал бы из-за дырки в фикстуре, а не
+  // из-за кода (в бою оба среза считаются из одной и той же таблицы).
+  const unresolvedFboWarehouseStocks: WarehouseStockAgg[] = [
+    {
+      warehouseName: 'НЕИЗВЕСТНЫЙ_РФЦ',
+      clusterId: null,
+      clusterName: null,
+      clusterType: null,
+      source: 'FBO',
+      free: 7,
+      promised: 0,
+      reserved: 0,
+      skuCount: 2,
+    },
+  ];
+
+  const fbsOrders: OrdersByWarehouse[] = [
+    { warehouseName: 'МОЙ СКЛАД МОСКВА', orders: 6, revenueRub: 4200 },
+  ];
+
+  return {
+    ...base,
+    fbsWarehouses,
+    fbsClusterStocks,
+    unresolvedFboStocks,
+    unresolvedFboWarehouseStocks,
+    fbsWarehouseStocks,
+    fbsOrders,
+  };
+}
+
+function runSourceUnitTests(): void {
+  console.log('\n=== Unit: cluster-agg · источник FBO/FBS (Этап 2b) ===');
+
+  const {
+    directory,
+    stockFallback,
+    orders,
+    stocks,
+    warehouseStocks,
+    fbsWarehouses,
+    fbsClusterStocks,
+    unresolvedFboStocks,
+    unresolvedFboWarehouseStocks,
+    fbsWarehouseStocks,
+    fbsOrders,
+  } = buildSourceFixtures();
+
+  check(
+    'isStockSourceFilter принимает all/FBO/FBS и режет мусор',
+    isStockSourceFilter('all') &&
+      isStockSourceFilter('FBO') &&
+      isStockSourceFilter('FBS') &&
+      !isStockSourceFilter('fbs') &&
+      !isStockSourceFilter('drop table'),
+  );
+
+  // ---- source='all': оба источника в одной таблице ----
+  const allStocks = [...stocks, ...unresolvedFboStocks, ...fbsClusterStocks];
+  const allOrders = [...orders, ...fbsOrders];
+  const resolvedAll = resolveOrdersToClusters(
+    allOrders,
+    directory,
+    stockFallback,
+    fbsWarehouses,
+  );
+  const rowsAll = buildClusterRows(allStocks, resolvedAll);
+  const byNameAll = new Map(rowsAll.map((r) => [r.clusterName, r]));
+
+  const fbsRow = byNameAll.get(FBS_LABEL);
+  check(
+    'FBS-остатки уходят в отдельную строку «FBS (свои склады)»',
+    fbsRow?.rowKey === FBS_ROW_KEY && fbsRow?.totalStock === 34,
+    JSON.stringify(fbsRow),
+  );
+  check(
+    'заказы с FBS-склада попадают в ту же строку, а не в «Без кластера»',
+    fbsRow?.ordersInPeriod === 6 && fbsRow?.revenueInPeriod === 4200,
+    JSON.stringify(fbsRow),
+  );
+  check(
+    'нерезолвнутый FBO-склад остаётся в «Без кластера» (смыслы не смешаны)',
+    byNameAll.get(NO_CLUSTER_LABEL)?.totalStock === 7 &&
+      byNameAll.get(NO_CLUSTER_LABEL)?.revenueInPeriod === 900,
+    JSON.stringify(byNameAll.get(NO_CLUSTER_LABEL)),
+  );
+  check(
+    'FBS-склад не попал в диагностику «нерезолвящиеся склады»',
+    !resolvedAll.unresolvedWarehouses.includes('МОЙ СКЛАД МОСКВА'),
+    JSON.stringify(resolvedAll.unresolvedWarehouses),
+  );
+
+  const totalRevenueAll = rowsAll.reduce((s, r) => s + r.revenueInPeriod, 0);
+  check(
+    'выручка обоих источников сохраняется без потерь',
+    eq2(totalRevenueAll, allOrders.reduce((s, o) => s + o.revenueRub, 0)),
+    String(totalRevenueAll),
+  );
+
+  // ---- source='FBO' / 'FBS': фильтр отдаёт непересекающиеся половины ----
+  // Фильтр физически живёт в SQL (cluster-stocks-query), здесь эмулируем его
+  // ровно тем же способом: срез входа по source + по scheme заказа.
+  const rowsFbo = buildClusterRows(
+    allStocks.filter((s) => (s.source ?? 'FBO') === 'FBO'),
+    resolveOrdersToClusters(orders, directory, stockFallback, fbsWarehouses),
+  );
+  const rowsFbs = buildClusterRows(
+    allStocks.filter((s) => s.source === 'FBS'),
+    resolveOrdersToClusters(fbsOrders, directory, stockFallback, fbsWarehouses),
+  );
+
+  check(
+    'source=FBO не показывает строку FBS',
+    rowsFbo.every((r) => r.rowKey !== FBS_ROW_KEY),
+    rowsFbo.map((r) => r.clusterName).join(', '),
+  );
+  check(
+    'source=FBS показывает ТОЛЬКО свои склады',
+    rowsFbs.length === 1 &&
+      rowsFbs[0].rowKey === FBS_ROW_KEY &&
+      rowsFbs[0].totalStock === 34 &&
+      rowsFbs[0].revenueInPeriod === 4200,
+    JSON.stringify(rowsFbs),
+  );
+  check(
+    'FBO + FBS == all (остаток и выручка бьются)',
+    eq2(
+      rowsFbo.reduce((s, r) => s + r.totalStock, 0) +
+        rowsFbs.reduce((s, r) => s + r.totalStock, 0),
+      rowsAll.reduce((s, r) => s + r.totalStock, 0),
+    ) &&
+      eq2(
+        rowsFbo.reduce((s, r) => s + r.revenueInPeriod, 0) +
+          rowsFbs.reduce((s, r) => s + r.revenueInPeriod, 0),
+        totalRevenueAll,
+      ),
+  );
+  check(
+    'sharePct пересчитывается от знаменателя своего среза (FBS = 100%)',
+    eq2(rowsFbs[0].sharePct, 100),
+    String(rowsFbs[0]?.sharePct),
+  );
+
+  // ---- groupBy=warehouse: FBS-строка тоже раскрывается по складам ----
+  const bucketsAll = resolveOrdersToWarehouses(
+    allOrders,
+    directory,
+    stockFallback,
+    fbsWarehouses,
+  );
+  const hierarchical = attachWarehousesToClusters(
+    rowsAll,
+    [...warehouseStocks, ...unresolvedFboWarehouseStocks, ...fbsWarehouseStocks],
+    bucketsAll,
+  );
+  const fbsHier = hierarchical.find((r) => r.rowKey === FBS_ROW_KEY);
+  check(
+    'строка FBS раскрывается на конкретные склады продавца',
+    fbsHier?.warehousesTotal === 2 &&
+      (fbsHier?.warehouses ?? [])
+        .map((w) => w.warehouseName)
+        .sort()
+        .join(',') === 'Мой склад Казань,Мой склад Москва',
+    JSON.stringify((fbsHier?.warehouses ?? []).map((w) => w.warehouseName)),
+  );
+  check(
+    'заказ с FBS-склада лёг именно на свой склад (регистр не помешал)',
+    (fbsHier?.warehouses ?? []).find((w) => w.warehouseName === 'Мой склад Москва')
+      ?.revenueInPeriod === 4200,
+    JSON.stringify(fbsHier?.warehouses),
+  );
+
+  let invariantOk = true;
+  let invariantDetail = '';
+  for (const row of hierarchical) {
+    const s = sumWarehouses(row);
+    if (
+      !eq2(s.totalStock, row.totalStock) ||
+      !eq2(s.ordersInPeriod, row.ordersInPeriod) ||
+      !eq2(s.revenueInPeriod, row.revenueInPeriod)
+    ) {
+      invariantOk = false;
+      invariantDetail = `${row.clusterName}: Σскладов=${s.totalStock}/${s.ordersInPeriod}/${s.revenueInPeriod} vs кластер=${row.totalStock}/${row.ordersInPeriod}/${row.revenueInPeriod}`;
+    }
+  }
+  check(
+    'инвариант «Σ складов == строка» держится и с FBS в наборе',
+    invariantOk,
+    invariantDetail,
+  );
+
+  // Регрессия: без множества FBS-складов заказ с «Мой склад Москва» уезжает
+  // в «Без кластера» и рвётся пополам с собственным остатком.
+  const withoutFbsSet = resolveOrdersToClusters(allOrders, directory, stockFallback);
+  check(
+    'регрессия: без множества FBS-складов заказ уходит в «Без кластера»',
+    withoutFbsSet.unknownWarehouse.revenue === 900 + 4200 &&
+      withoutFbsSet.fbs.revenue === 0,
+    String(withoutFbsSet.unknownWarehouse.revenue),
+  );
+}
+
 // ---------------------------------------------------------------- live check
 
 /** Старая (сломанная) логика — воспроизводим 1:1 для сравнения ДО/ПОСЛЕ. */
@@ -732,6 +1008,62 @@ async function runLive(filterAccountId: string | null): Promise<void> {
       }
     }
 
+    // ---- Этап 2b: разбиение по источнику остатков ----
+    const [fboOnly, fbsOnly] = await Promise.all([
+      loadOzonClusterStocks({
+        tenantId: acc.tenantId,
+        accountId: acc.id,
+        fromIso,
+        toIso,
+        source: 'FBO',
+      }),
+      loadOzonClusterStocks({
+        tenantId: acc.tenantId,
+        accountId: acc.id,
+        fromIso,
+        toIso,
+        source: 'FBS',
+      }),
+    ]);
+    console.log('  Источники остатков:');
+    console.log(
+      `    строк FBO=${after.meta.bySource.fbo}, FBS=${after.meta.bySource.fbs}` +
+        ` · остаток FBO=${fmt(fboOnly.totals.totalStock)}, FBS=${fmt(
+          fbsOnly.totals.totalStock,
+        )}` +
+        ` · выручка FBO=${fmt(fboOnly.totals.revenueInPeriod)} ₽, FBS=${fmt(
+          fbsOnly.totals.revenueInPeriod,
+        )} ₽`,
+    );
+    if (after.meta.bySource.fbs === 0) {
+      console.log(
+        '    (FBS-остатков нет — стейдж fbsWarehouseStocks ещё не запускался либо своих складов нет)',
+      );
+    }
+    check(
+      'live: FBO + FBS == all по остатку',
+      eq2(
+        fboOnly.totals.totalStock + fbsOnly.totals.totalStock,
+        after.totals.totalStock,
+      ),
+      `${fboOnly.totals.totalStock} + ${fbsOnly.totals.totalStock} vs ${after.totals.totalStock}`,
+    );
+    check(
+      'live: FBO + FBS == all по выручке периода (scheme — полное разбиение)',
+      eq2(
+        fboOnly.totals.revenueInPeriod + fbsOnly.totals.revenueInPeriod,
+        after.totals.revenueInPeriod,
+      ),
+      `${Math.round(fboOnly.totals.revenueInPeriod)} + ${Math.round(
+        fbsOnly.totals.revenueInPeriod,
+      )} vs ${Math.round(after.totals.revenueInPeriod)}`,
+    );
+    check(
+      'live: в разрезе FBS нет строк географических кластеров',
+      fbsOnly.rows.every((r) => r.clusterId === null),
+      fbsOnly.rows.map((r) => r.clusterName).join(', '),
+    );
+
     const truncated = byWarehouse.rows.filter((r) => r.hiddenWarehouses);
     console.log(
       `    кластеров со складами: ${
@@ -761,6 +1093,7 @@ async function main() {
 
   runUnitTests();
   runWarehouseUnitTests();
+  runSourceUnitTests();
   if (!unitOnly) {
     try {
       await runLive(filterAccountId);

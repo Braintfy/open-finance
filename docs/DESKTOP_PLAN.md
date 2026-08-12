@@ -28,7 +28,7 @@
 |---|---|---|
 | C1 | `next.config.mjs`: `output:'export'` (TAURI_BUILD) **убивает API routes и middleware** — а у нас 84 API-роута | Static export НЕ подходит. Решение: **Next.js standalone-сервер как sidecar-процесс** на `localhost:<random-port>`, Tauri-окно открывает его |
 | C2 | БД: Postgres 16 + pgvector, весь код на Drizzle + местами raw SQL с PG-синтаксисом | Миграция на SQLite = переписывание всего data-layer. Для v1 — **embedded Postgres** (бинарь-sidecar), данные в app-data. SQLite — отдельный спайк (Фаза 0 решает) |
-| C3 | Redis + BullMQ используются для sync-джобов маркетплейсов | Локально Redis нет → нужна in-process замена очереди (или embedded redis-совместимый). Инвентаризация — Фаза 0 |
+| C3 | **Констрейнт снят/упрощён:** Redis и BullMQ фактически НЕ используются — `src/lib/redis.ts` уже in-memory shim (`ioredis`/`bullmq` не в зависимостях), sync-джобы гоняются fire-and-forget через `runFullSync`. Контейнер `redis:7` в compose поднимается «на вырост» | Отдельная in-process очередь для десктопа не нужна прямо сейчас; адаптер очереди делать, только если web-режим реально переедет на BullMQ. Инвентаризация — Фаза 0 |
 | C4 | MinIO/S3 — файлы Inbox | Заменить на локальную ФС-папку через storage-адаптер |
 | C5 | Мультитенантность + auth (JWT cookie) во всех запросах | Не выпиливать: **desktop-режим = авто-provision одного tenant+user + авто-сессия**. Tenant-скоуп (`docs/TENANT_SCOPING.md`) сохраняется как есть |
 | C6 | Бизнес-логика уже в `src/lib/` (правило из `docs/DESKTOP_STRATEGY.md`) | Переиспользуем; desktop-специфику класть в `src/lib/desktop/` и `apps/desktop/` |

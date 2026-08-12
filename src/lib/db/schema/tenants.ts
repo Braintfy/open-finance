@@ -61,6 +61,44 @@ export type TenantSettings = {
     password?: string;
   };
   /**
+   * VLESS/Xray-VPN, которым управляет суперадмин из /app/admin/ai/providers.
+   * Web-процесс только ПИШЕТ spool-конфиг (XRAY_SPOOL_PATH); применяет root-овый
+   * systemd path-юнит (deploy/xray/of-xray-apply.path). См. docs/LK_V2_PLAN.md «Этап 4».
+   *
+   * СЕКРЕТЫ: linkEnc / subscriptionUrlEnc зашифрованы encryptSecret (AES-256-GCM,
+   * src/lib/marketplaces/crypto.ts) и НИКОГДА не отдаются наружу — только
+   * host:port + первые 8 символов отпечатка (maskVlessLink/maskSubscriptionUrl).
+   */
+  aiVpn?: {
+    enabled: boolean;
+    /** Источник конфигурации: одна ссылка или URL подписки со списком серверов. */
+    mode: 'link' | 'subscription';
+    /** vless://… — зашифровано. Только для mode='link'. */
+    linkEnc?: string;
+    /** https://… — зашифровано. Только для mode='subscription'. */
+    subscriptionUrlEnc?: string;
+    /** Кэш метаданных серверов подписки — БЕЗ секретов (нет uuid/ключей/путей). */
+    servers?: Array<{
+      id: string;
+      label: string;
+      host: string;
+      port: number;
+      fingerprint8: string;
+    }>;
+    /** id выбранного сервера из servers[]. */
+    selectedServerId?: string;
+    /** ISO-время последнего успешного фетча подписки. */
+    lastFetchedAt?: string;
+    /** Полный sha256-отпечаток конфига, записанного в spool. */
+    appliedFingerprint?: string;
+    /** ISO-время записи spool-конфига web-процессом. */
+    appliedAt?: string;
+    /** Публичные метаданные применённого сервера (для статус-блока в UI). */
+    appliedServer?: { label: string; host: string; port: number; fingerprint8: string };
+    /** Последняя ошибка (фетч подписки / разбор ссылки / запись spool). */
+    lastError?: string;
+  };
+  /**
    * Иерархия промптов для AI: разделы, блоки, точечные связи.
    * Каждый уровень — override поверх code defaults (BLOCK_SKILLS, SECTION_DEFAULTS).
    * Пустая строка = сброс к дефолту (не сохраняем — DELETE).

@@ -13,18 +13,26 @@
 
 ## Tech Stack
 
+Источник правды — `package.json`. Полная разбивка «есть / shim / план» — `CLAUDE.md` раздел «Стек».
+
+**Есть сейчас:**
 - **Frontend:** Next.js 15 App Router + TypeScript + Tailwind + shadcn/ui
-- **DB:** PostgreSQL 16 + pgvector (RAG) + Drizzle ORM
-- **AI:** Claude / OpenAI / Yandex GPT / Ollama (через свою обёртку, не Vercel AI SDK)
-- **Cache:** Redis 7 + BullMQ
-- **Desktop:** Tauri 2.0 (Phase 2)
-- **Mobile:** React Native + Expo (Phase 3)
+- **DB:** PostgreSQL 16 + pgvector + Drizzle ORM (клиенты `pg` / `postgres`)
+- **Auth:** свой JWT-cookie (`jose` + `bcryptjs`, `authDriver='minimal'`) — **NextAuth НЕ установлен**, API лишь совместим по именам; Google OAuth нет
+- **AI:** своя обёртка `src/lib/ai/providers/` (Ollama, OpenAI-compat, YandexGPT, GigaChat), не Vercel AI SDK
+- **Прочее:** Recharts, react-grid-layout + dnd-kit, `@xyflow/react`, `@mdxeditor/editor`, `fast-formula-parser` + `xlsx`, свой IMAP поверх `net`/`tls` + `mailparser`, `nodemailer`
+
+**Нет, хотя часто предполагают:** Redis/BullMQ (`src/lib/redis.ts` — in-memory shim, контейнер `redis:7` в compose не используется приложением), S3-SDK, TipTap, `node-imap`, grammY, Sentry/Prometheus/Grafana, univer/handsontable, tesseract.js, Whisper.
+
+**План:** Tauri 2.0 (Phase 2), React Native + Expo (Phase 3), реальный биллинг Т-Касса/CloudPayments.
 
 ## Bootstrap новой сессии (триггер — «загрузи контекст Open Finance»)
 
-1. `START.md` — карта проекта, маршрутизация по типу задачи (~3K токенов).
-2. `MEMORY.md` — текущее состояние, ключевые файлы, грабли (~5K токенов).
-3. `git -C /Users/firay/open-finance/open-finance log --oneline -20` — свежие коммиты.
+1. `START.md` — карта проекта, маршрутизация по типу задачи (~5K токенов).
+2. `MEMORY.md` — текущее состояние, ключевые файлы, грабли (**~30K токенов**, 450+ строк — не «компактный» файл).
+3. `git -C /Users/firay/open-finance/open-finance log --oneline -20` — свежие коммиты (~0.5K).
+
+Итого ≈ **36K токенов**.
 
 Дальше — только релевантное конкретной задаче. **НЕ грузить** `CHANGELOG.md` (~4K строк) и `PLAN.md` (~1.4K строк) целиком по умолчанию.
 
@@ -47,48 +55,50 @@
 
 ### MUST NOT
 
+> Канон набора — `.cursor/rules/project-context.mdc` (обычный markdown, читается любым агентом). Те же пункты в `CLAUDE.md`, `START.md`, `MEMORY.md`. **Меняешь одно — правишь все пять файлов.**
+
 - Никогда не делать `git add/commit/push` — давать команды пользователю.
-- Никогда не запускать миграции автоматически.
+- Никогда не запускать миграции автоматически (`db:push`/`db:migrate`).
 - Никогда не коммитить `.env`, секреты, ключи (см. `docs/SECURITY.md`).
+- Не использовать `npm`/`yarn` — только `pnpm`.
 - Не использовать Prisma (мы на Drizzle).
 - Не использовать Vercel AI SDK (своя обёртка для AI).
+- Не делать DB-запрос без `tenant_id`; `tenantId` — только из сессии (`requireTenant()`/`requireTenantRoute()`).
+- Не писать SQL из AI напрямую — только через Tools Layer.
 - Не делать глубокую вложенность (`src/features/x/y/z/...`).
 - Не использовать `import * as X` (явные импорты).
 - Не использовать системные `alert/confirm/prompt` — только Dialog/AlertDialog.
+- **Интерактивные CLI-команды** запускать неинтерактивно: `-y` / `--yes` / `--force`.
+- **Удаление данных** — всегда с подтверждением пользователя и с проверкой `tenant_id` в запросе.
 
 ## File Naming
 
-- Components: `PascalCase.tsx` (`UserCard.tsx`)
+- Components: `kebab-case.tsx` (`block-grid.tsx`, `add-block-dialog.tsx`, `workspace-switcher.tsx`) — так названы 81 из 83 файлов в `src/components/`. Экспортируемый компонент внутри — PascalCase, имя файла — нет. Единственное исключение: обёртки сторонней библиотеки в `src/components/blocks/markdown/` (`InitializedMDXEditor.tsx`, `ForwardRefEditor.tsx`) — новые файлы так не называть.
 - Utilities: `kebab-case.ts` (`format-currency.ts`)
 - DB schemas: `kebab-case.ts` (`memory-chunks.ts`)
 - AI tools: `verb-noun.ts` (`create-transaction.ts`)
 
 ## Project Structure (упрощённо)
 
+Детальное дерево — в `START.md` (канон). Здесь только 1-й уровень:
+
 ```
 src/
 ├── app/                  Next.js App Router
-├── modules/              Бизнес-модули (плоско)
-│   ├── cashflow/
-│   ├── inbox/
-│   └── communications/
-├── components/           UI компоненты
-│   ├── ui/               shadcn/ui примитивы
-│   ├── blocks/           BlockGrid shell
-│   ├── marketplaces/     Ozon sync UI
-│   └── unit-economics/   Калькуляторы
-└── lib/
-    ├── db/               Drizzle schemas + client
-    ├── ai/               AI orchestrator + tools + memory (RAG)
-    │   ├── orchestrator.ts
-    │   ├── providers/
-    │   ├── tools/
-    │   ├── vision/
-    │   └── memory/
-    ├── blocks/           BlockGrid types, registry, catalog
-    ├── marketplaces/     Ozon Seller + Performance API
-    ├── unit-economics/   Tariffs, calculate, bindings
-    └── env.ts            type-safe env
+│   ├── app/              все внутренние страницы (/app/*) — обычный сегмент, НЕ route-group
+│   ├── (auth)/           login/register/forgot/reset
+│   └── api/              API routes
+├── components/           UI (ui/ = shadcn, blocks/, marketplaces/, unit-economics/, workspaces/, micro-agent/)
+├── lib/
+│   ├── db/               Drizzle schemas + client
+│   ├── ai/               providers/, vision/, prompts/, micro-agent/ + orchestrator.ts и memory/ (КАРКАС, Этап 4 PLAN.md)
+│   ├── blocks/           BlockGrid types, registry, catalog
+│   ├── workspaces/       «кабинеты»: scope, active, queries
+│   ├── marketplaces/     Ozon Seller + Performance API
+│   ├── unit-economics/   Tariffs, calculate, bindings
+│   └── env.ts            type-safe env
+└── modules/              исторический каркас (только README, кода и импортов нет) —
+                          реальный реестр модулей: src/lib/modules/registry.ts
 ```
 
 ## Common Patterns
@@ -150,25 +160,20 @@ export const myBlock: BlockDef = {
 
 ## Cursor IDE — path-scoped rules
 
-В дополнение к этому файлу Cursor автоматически подгружает:
+В дополнение к этому файлу Cursor автоматически подгружает `.cursor/rules/*.mdc`. **Точные globs — во frontmatter самих файлов** (ниже — ориентир):
 
-- **`.cursor/rules/project-context.mdc`** (`alwaysApply: true`) — короткий always-on контекст.
-- **`.cursor/rules/blocks.mdc`** — при работе с `src/lib/blocks/**`, `src/components/blocks/**`.
-- **`.cursor/rules/ai-tools.mdc`** — при работе с `src/lib/ai/**`.
-- **`.cursor/rules/marketplaces.mdc`** — при работе с `src/lib/marketplaces/**`.
-- **`.cursor/rules/drizzle.mdc`** — при работе с `src/lib/db/**`, `drizzle/**`.
-- **`.cursor/rules/security.mdc`** — при работе с auth/crypto/billing.
-- **`.cursor/rules/unit-economics.mdc`** — при работе с `src/lib/unit-economics/**`.
+- **`project-context.mdc`** (`alwaysApply: true`) — короткий always-on контекст.
+- **`blocks.mdc`** — `src/lib/blocks/**`, `src/components/blocks/**`.
+- **`ai-tools.mdc`** — `src/lib/ai/**`, `src/app/api/ai/**`, `src/components/micro-agent/**`.
+- **`marketplaces.mdc`** — `src/lib/marketplaces/**`, `src/app/api/marketplaces/**`, `src/components/{marketplaces/**,unit-economics/ozon-*}`, `src/app/app/settings/integrations/**`.
+- **`drizzle.mdc`** — `src/lib/db/**`, `drizzle/**`.
+- **`security.mdc`** — `src/lib/auth/**`, crypto-модули, `src/middleware.ts`, `src/lib/billing/**`, `src/lib/env.ts`, `.env*`, `src/app/(auth)/**`, `src/app/api/{auth,billing}/**`.
+- **`unit-economics.mdc`** — `src/lib/unit-economics/**`, `src/components/unit-economics/**`, `src/app/api/unit-economics/**`, `src/app/app/unit-economics/**`, `src/lib/blocks/catalog/unit-*.tsx`.
 
 Не-Cursor агентам читать `.cursor/rules/*.mdc` напрямую как обычный markdown — это **единый источник доменных правил**, в основных файлах они не дублируются.
 
 ## После значимых изменений
 
-Канон — `.claude/skills/of-end-session/SKILL.md`. Резюме:
+**Канон — `.claude/skills/of-end-session/SKILL.md` (7 шагов).** Это обычный markdown — читается любым агентом. Не пересказывать, читать оттуда.
 
-1. `pnpm build` (или `pnpm typecheck`).
-2. Обновить `MEMORY.md` (если изменились ключевые файлы/инварианты/грабли).
-3. Записать новую граблю в `LEARNING_LOG.md`.
-4. Добавить запись в `CHANGELOG.md`.
-5. Дать пользователю git-команды для коммита (не выполнять самому).
-6. (Опц.) Ключевые решения → agentmemory `memory_save` (`./scripts/sync-mempalace.sh` deprecated).
+Оглавление: верификация → `CHANGELOG.md` → `MEMORY.md` → **`LEARNING_LOG.md`** → инвариант-файлы + анти-дрейф чек → (опц.) agentmemory `memory_save` → git-команды пользователю (**самому не выполнять**).

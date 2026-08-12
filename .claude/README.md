@@ -6,8 +6,8 @@
 
 ```
 .claude/
-├── settings.proposed.json   ПРЕДЛОЖЕНИЕ permissions+hooks — активируется пользователем:
-│                            mv .claude/settings.proposed.json .claude/settings.json
+├── settings.json            permissions + hooks — АКТИВЕН (активирован пользователем).
+│                            Агент его не правит: изменения предлагать пользователю текстом.
 ├── agents/                  сабагенты (роль + «первым шагом прочитай свой .mdc»)
 │   ├── of-code-reviewer.md        read-only ревью диффа по инвариантам проекта
 │   ├── of-security-reviewer.md    read-only security-ревью (security.mdc + docs/SECURITY.md)
@@ -46,3 +46,5 @@
 2. Не хардкодить версии/числа строк/счётчики файлов.
 3. При изменении инвариантов — сначала `.mdc`, потом проверка ссылок здесь.
 4. Регулярный контроль — `Workflow({ name: 'of-rules-audit' })`.
+5. **`.claude/worktrees/` исключать из любого поиска по обвязке** (`grep -r --exclude-dir=worktrees`, `rg -g '!.claude/worktrees'`): там лежат git-worktree'ы агентов с ПОЛНОЙ копией `.claude/` на другом коммите. Иначе аудит видит две расходящиеся версии правил, а правка может уйти «не в то» дерево. Отработанные worktree'ы удалять: `git worktree list` → `git worktree remove <path>` (команду выполняет пользователь).
+6. **Пути в globs `.mdc` проверять на существование** — внутренние страницы живут в `src/app/app/**`; route-группы `(app)` нет с v0.42.0, такой glob молча отключает правило.

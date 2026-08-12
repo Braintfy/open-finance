@@ -24,15 +24,24 @@ allowed-tools:
 2. **Контракт:**
 
 ```typescript
-export const myTool = {
+import { z } from 'zod';
+import type { Tool } from '@/lib/ai/types';
+
+export const myTool: Tool = {
   name: 'do_something',
   description: 'Кратко что делает (по-русски, для LLM)',
-  parameters: zodToJsonSchema(z.object({ /* ... */ })),
+  // Сырая Zod-схема. НЕ `zodToJsonSchema(...)`: тип `Tool` объявляет
+  // `parameters: TParams extends z.ZodTypeAny`, а пакета `zod-to-json-schema`
+  // в проекте нет — не добавлять зависимость.
+  parameters: z.object({ /* ... */ }),
   handler: async (args, ctx) => {
     // ctx: tenantId, userId, requestId — tenant isolation через ctx.tenantId ВСЕГДА
+    // (Postgres RLS нет, БД сама НЕ защитит — см. docs/TENANT_SCOPING.md)
   },
 };
 ```
+
+Канон контракта — `.cursor/rules/ai-tools.mdc`; живой образец — `src/lib/ai/tools/query-inbox-messages.ts`.
 
 3. **Регистрация:** `src/lib/ai/tools/index.ts` — без неё Orchestrator tool не видит.
 4. **Мутации:** только внутри handler через Drizzle с `ctx.tenantId`; для отменяемых действий продумать inverseAction/audit (схема `ai_audit_log` готова в `src/lib/db/schema/ai.ts`).

@@ -60,24 +60,29 @@ export function listVisionProviders(): Array<{
   id: VisionProviderId;
   label: string;
   available: boolean;
+  /** Нужен VPN/прокси из РФ (см. VisionContext.proxy). */
+  requiresVpn: boolean;
   reason?: string;
 }> {
   return [
     {
       id: 'claude',
       label: claudeVisionProvider.label,
+      requiresVpn: claudeVisionProvider.requiresVpn,
       available: !!process.env.ANTHROPIC_API_KEY,
       reason: process.env.ANTHROPIC_API_KEY ? undefined : 'Нет ANTHROPIC_API_KEY',
     },
     {
       id: 'openai',
       label: openaiVisionProvider.label,
+      requiresVpn: openaiVisionProvider.requiresVpn,
       available: !!process.env.OPENAI_API_KEY,
       reason: process.env.OPENAI_API_KEY ? undefined : 'Нет OPENAI_API_KEY',
     },
     {
       id: 'yandex',
       label: yandexVisionProvider.label,
+      requiresVpn: yandexVisionProvider.requiresVpn,
       available:
         !!process.env.YANDEX_FOLDER_ID &&
         !!(process.env.YANDEX_IAM_TOKEN || process.env.YANDEX_API_KEY),
@@ -89,12 +94,14 @@ export function listVisionProviders(): Array<{
     {
       id: 'tesseract',
       label: tesseractVisionProvider.label,
+      requiresVpn: tesseractVisionProvider.requiresVpn,
       available: true,
       reason: 'tesseract.js устанавливается отдельно (pnpm add tesseract.js)',
     },
     {
       id: 'mock',
       label: mockVisionProvider.label,
+      requiresVpn: mockVisionProvider.requiresVpn,
       available: true,
       reason: 'Для тестов и разработки',
     },

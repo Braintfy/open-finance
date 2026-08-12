@@ -394,6 +394,84 @@ export const StockOnWarehousesResponseSchema = z
 
 export type StockOnWarehousesRow = z.infer<typeof StockOnWarehousesRowSchema>;
 
+// ---- /v1/warehouse/list (FBS/rFBS склады продавца) ------------------------
+//
+// Ozon Seller API — grpc-gateway, поэтому int64 в JSON приходит и числом,
+// и строкой: `warehouse_id` всегда через `z.union([string, number])`.
+// Все поля optional + `.passthrough()`: клиент lenient, а форма ответа у
+// Ozon исторически дрейфует (см. `/v1/cluster/list`, где `clusters` на
+// части аккаунтов зовётся `list`).
+
+export const FbsWarehouseSchema = z
+  .object({
+    warehouse_id: z.union([z.string(), z.number()]).optional(),
+    name: z.string().optional(),
+    /** `true` — rFBS-склад (доставка силами продавца). */
+    is_rfbs: z.boolean().optional(),
+    /** created / new / disabled / ... — статус склада в кабинете. */
+    status: z.string().optional(),
+    /**
+     * Тип первой мили. Ozon отдаёт его двумя формами: строкой
+     * ('DropOff' | 'Pickup') либо объектом `{ first_mile_type: 'DropOff' }`.
+     */
+    first_mile_type: z
+      .union([
+        z.string(),
+        z
+          .object({ first_mile_type: z.string().optional() })
+          .passthrough(),
+      ])
+      .optional(),
+    is_kgt: z.boolean().optional(),
+    is_economy: z.boolean().optional(),
+  })
+  .passthrough();
+
+export const WarehouseListResponseSchema = z
+  .object({
+    /** Каноническая форма: `{ result: [ ... ] }`. */
+    result: z
+      .union([
+        z.array(FbsWarehouseSchema),
+        z
+          .object({ warehouses: z.array(FbsWarehouseSchema).optional() })
+          .passthrough(),
+      ])
+      .optional(),
+    /** Встречается и плоский вариант без обёртки `result`. */
+    warehouses: z.array(FbsWarehouseSchema).optional(),
+  })
+  .passthrough();
+
+export type FbsWarehouse = z.infer<typeof FbsWarehouseSchema>;
+
+// ---- /v1/product/info/stocks-by-warehouse/fbs -----------------------------
+//
+// Вход — список SKU (до FBS_STOCKS_SKU_CHUNK за запрос), пагинации нет.
+// Ответ: `{ result: [{ sku, fbs_sku, present, product_id, reserved,
+// warehouse_id, warehouse_name }] }`. `fbs_sku` — legacy-поле до унификации
+// FBO/FBS SKU, у части аккаунтов заполнено только оно.
+
+export const StocksByWarehouseFbsRowSchema = z
+  .object({
+    sku: z.union([z.string(), z.number()]).optional(),
+    fbs_sku: z.union([z.string(), z.number()]).optional(),
+    product_id: z.union([z.string(), z.number()]).optional(),
+    present: z.number().optional(),
+    reserved: z.number().optional(),
+    warehouse_id: z.union([z.string(), z.number()]).optional(),
+    warehouse_name: z.string().optional(),
+  })
+  .passthrough();
+
+export const StocksByWarehouseFbsResponseSchema = z
+  .object({
+    result: z.array(StocksByWarehouseFbsRowSchema).optional(),
+  })
+  .passthrough();
+
+export type StocksByWarehouseFbsRow = z.infer<typeof StocksByWarehouseFbsRowSchema>;
+
 export type ProductListItem = z.infer<typeof ProductListItemSchema>;
 export type ProductInfo = z.infer<typeof ProductInfoSchema>;
 export type PricesItem = z.infer<typeof PricesItemSchema>;

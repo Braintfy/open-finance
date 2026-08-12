@@ -34,6 +34,11 @@ const envSchema = z.object({
   AI_PROXY_USERNAME: z.string().optional(),
   AI_PROXY_PASSWORD: z.string().optional(),
 
+  // Xray/VLESS: spool-конфиг, который пишет web-процесс (0600). Его подхватывает
+  // root-овый systemd path-юнит (deploy/xray/of-xray-apply.path) и применяет на хосте.
+  // У приложения НЕТ sudo/exec — только запись в этот файл.
+  XRAY_SPOOL_PATH: z.string().min(1).default('/var/lib/open-finance/xray/config.json'),
+
   // Storage (S3-совместимое)
   S3_ENDPOINT: z.string().url().optional().or(z.literal('')),
   S3_BUCKET: z.string().optional(),
@@ -114,6 +119,7 @@ export const env = envSchema.parse({
   AI_PROXY_URL: process.env.AI_PROXY_URL,
   AI_PROXY_USERNAME: process.env.AI_PROXY_USERNAME,
   AI_PROXY_PASSWORD: process.env.AI_PROXY_PASSWORD,
+  XRAY_SPOOL_PATH: process.env.XRAY_SPOOL_PATH,
   S3_ENDPOINT: process.env.S3_ENDPOINT,
   S3_BUCKET: process.env.S3_BUCKET,
   S3_ACCESS_KEY: process.env.S3_ACCESS_KEY,

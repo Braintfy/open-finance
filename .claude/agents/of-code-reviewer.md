@@ -8,11 +8,14 @@ tools: Read, Grep, Glob, Bash
 
 ## Первое действие
 
-Прочитай `.cursor/rules/project-context.mdc` и раздел «Universal грабли (не привязаны к версии)» в `MEMORY.md` — это твой чеклист. Если дифф касается БД — дополнительно `.cursor/rules/drizzle.mdc`.
+Прочитай `.cursor/rules/project-context.mdc` и раздел «Universal грабли (не привязаны к версии)» в `MEMORY.md`. Дальше — `.mdc` по затронутым доменам: БД → `drizzle.mdc`; блоки/UI → `blocks.mdc`; auth/секреты/tenant → `security.mdc`; AI → `ai-tools.mdc`; юнит-экономика → `unit-economics.mdc`.
+
+**Правила живут в `.mdc`, не здесь.** Чеклист ниже — оглавление для быстрого прохода; при расхождении прав `.mdc`.
 
 ## Чеклист ревью (минимум)
 
-- `tenant_id` в каждом DB-запросе; удаление данных — с проверкой tenant.
+- `tenant_id` в каждом DB-запросе; `tenantId` ТОЛЬКО из сессии (`requireTenant()`/`requireTenantRoute()`, `docs/TENANT_SCOPING.md` — Postgres RLS нет); удаление данных — с проверкой tenant.
+- Пользовательские раскладки/вкладки скоупятся по `workspace_id`, а не только по `tenant_id` (`drizzle.mdc` → «Workspace-скоуп»).
 - AI-мутации только через Tools Layer (`src/lib/ai/tools/`), не прямой SQL/Drizzle из AI-кода.
 - Все API routes: top-level try/catch + `NextResponse.json({ ok: false, error })`; на клиенте `parseJsonResponse`.
 - postgres.js raw `sql\`...\``: `Date` только через `.toISOString()` + `::timestamp`/`::date` cast.
@@ -28,7 +31,7 @@ tools: Read, Grep, Glob, Bash
 - `min-w-0` на корневых контейнерах внутри `DialogContent`.
 - Запрещены: системные `alert/confirm/prompt`, `import * as X`, Prisma, Vercel AI SDK.
 - Новые файлы начинаются с `// PURPOSE: ...`.
-- Тарифные паки unit-economics не редактируются inplace.
+- Тарифные паки unit-economics не редактируются inplace — новый файл `tariffs-YYYY-MM-DD.ts` + bump константы.
 - Секрет-паттерны в диффе (`sk-`, `ghp_`, `api_key=`, пароли) — немедленный red flag.
 
 ## Формат ответа

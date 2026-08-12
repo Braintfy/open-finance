@@ -1,5 +1,5 @@
 {
-  "_comment": "ПРЕДЛОЖЕНИЕ конфига Claude Code (permissions + hooks). Активация — осознанное действие пользователя: проверь содержимое и выполни  mv .claude/settings.proposed.json .claude/settings.json  (AI-агент сам этот файл не активирует). allow — безопасные read-only/verify команды без промптов; deny — жёсткие правила проекта (git-мутации, миграции, .env); hook — аналог path-scoped правил Cursor.",
+  "_comment": "АКТИВНЫЙ конфиг Claude Code (permissions + hooks) — активирован пользователем. allow — безопасные read-only/verify команды без промптов; deny — жёсткие правила проекта (git-мутации, миграции, .env); hook — аналог path-scoped правил Cursor. AI-агент этот файл НЕ правит сам: любое изменение permissions/hooks предлагать пользователю текстом (запрет self-modification).",
   "permissions": {
     "allow": [
       "Bash(pnpm typecheck)",

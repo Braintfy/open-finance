@@ -29,6 +29,14 @@ export type OzonClusterStocksTotals = {
   warehouseStocksCount: number;
 };
 
+/**
+ * Итоги остатков по обоим источникам сразу (FBO + FBS).
+ *
+ * Фильтра `source` здесь намеренно нет: значение показывается в модалке
+ * привязок для блока, у которого дефолт `source='all'`. Если появится
+ * потребность в per-source значении — параметр добавлять сюда, а не в SQL
+ * вызывающего.
+ */
 export async function getOzonClusterStocksTotals(
   tenantId: string,
   accountId: string | null,

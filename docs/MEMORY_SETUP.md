@@ -239,9 +239,9 @@ echo "AGENTMEMORY_AUTO_COMPRESS=true" >> ~/.agentmemory/.env
 
 С agentmemory bootstrap не меняется — приоритет всё ещё static-файлы:
 
-1. **`START.md`** — карта проекта (~3K токенов).
-2. **`MEMORY.md`** — текущее состояние (~5K токенов).
-3. **`git log --oneline -20`**.
+1. **`START.md`** — карта проекта (~5K токенов).
+2. **`MEMORY.md`** — текущее состояние (**~30K токенов**).
+3. **`git log --oneline -20`** (~0.5K). Итого ≈ 36K.
 4. (Авто через MCP, если `AGENTMEMORY_INJECT_CONTEXT=true`) — agentmemory вернёт ~1900 токенов наиболее релевантного контекста.
 
 Если agentmemory недоступен — bootstrap всё равно работает на static-файлах. **MCP добавляет ценность, но не блокирует работу.**

@@ -66,6 +66,7 @@ function heuristicParse(text: string, hint: VisionHint): ExtractedData {
 export const yandexVisionProvider: VisionProvider = {
   id: 'yandex',
   label: 'Yandex Vision (OCR)',
+  requiresVpn: false, // Yandex Cloud доступен из РФ напрямую — прокси не нужен
   supports: (mt) => ['image/jpeg', 'image/png', 'application/pdf'].includes(mt),
   async recognize(
     input: VisionInput,

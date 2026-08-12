@@ -1,16 +1,17 @@
 # MEMORY.md — Open Finance
 
-> Compact handoff проекта. Читается **вторым** шагом bootstrap'а (после `START.md`). Цель — ~5K токенов, полный рабочий контекст без reverse-engineering.
+> Handoff проекта. Читается **вторым** шагом bootstrap'а (после `START.md`): полный рабочий контекст без reverse-engineering.
+> **Фактический размер: 475 строк ≈ 31K токенов** (измерено `js-tiktoken`/cl100k) — это основная стоимость bootstrap'а. Бюджет по `.claude/skills/of-end-session/SKILL.md` — 400-450 строк; при превышении выносить старые разделы в `docs/memory-archive/`, а не занижать оценку в шапке.
 > Историю версий смотри в `docs/memory-archive/` (читать **только по запросу**, не на старте).
 
 ## Bootstrap новой сессии (триггер «загрузи контекст Open Finance»)
 
-1. **`START.md`** — карта проекта, жёсткие правила, маршрутизация задач (~3K токенов).
-2. **`MEMORY.md`** (этот файл) — текущее состояние, ключевые файлы, активные грабли (~5K токенов).
+1. **`START.md`** — карта проекта, жёсткие правила, маршрутизация задач (~5K токенов).
+2. **`MEMORY.md`** (этот файл) — текущее состояние, ключевые файлы, активные грабли (**~30K токенов**).
 3. **`git -C /Users/firay/open-finance/open-finance log --oneline -20`** — последние коммиты (~0.5K токенов).
-4. (Опц.) **agentmemory MCP `memory_smart_search`** — точечно для исторических вопросов («когда мы перешли с X на Y»). См. `docs/MEMORY_SETUP.md`.
+4. (Опц., вне обязательных 3 шагов) **agentmemory MCP `memory_smart_search`** — точечно для исторических вопросов («когда мы перешли с X на Y»). См. `docs/MEMORY_SETUP.md`.
 
-После 3 шагов = ~8-9K токенов и можно работать любой сложности. Дальше — **только релевантное конкретной задаче** (см. таблицу маршрутизации в `START.md`).
+После обязательных 3 шагов = **≈36K токенов** и можно работать любой сложности. Дальше — **только релевантное конкретной задаче** (см. таблицу маршрутизации в `START.md`).
 
 ## Что НЕ загружать по умолчанию
 
@@ -26,13 +27,9 @@ Context7: `mcp0_resolve-library-id` → `mcp0_query-docs`. Не более 3 в�
 
 ## После значимых изменений
 
-Канон ритуала — `.claude/skills/of-end-session/SKILL.md`. Резюме:
+**Канон ритуала — `.claude/skills/of-end-session/SKILL.md` (7 шагов). Не пересказывать здесь — читать оттуда.**
 
-1. `pnpm build` — должен пройти.
-2. Обновить `MEMORY.md` (если изменились ключевые файлы/инварианты/грабли).
-3. Добавить запись в `CHANGELOG.md`.
-4. Дать пользователю git-команды (`git add -A && git commit -m "..." && git push origin main`) — **не выполнять самому**.
-5. (Опц.) Ключевые решения → agentmemory `memory_save` (`./scripts/sync-mempalace.sh` deprecated).
+Оглавление: верификация → `CHANGELOG.md` → `MEMORY.md` (+ `wc -l`, бюджет 400-450 строк) → **`LEARNING_LOG.md`** → инвариант-файлы + анти-дрейф чек → (опц.) agentmemory `memory_save` → git-команды пользователю (**самому не выполнять**).
 
 ## Идентичность проекта
 
@@ -46,18 +43,22 @@ Context7: `mcp0_resolve-library-id` → `mcp0_query-docs`. Не более 3 в�
 
 ## Жёсткие правила
 
+> Канон набора — `.cursor/rules/project-context.mdc`. Те же 14 пунктов в `CLAUDE.md`, `START.md`, `AGENTS.md`. **Меняешь одно — правишь все пять файлов.**
+
+- **Git:** не делать `git add/commit/push` — давать команды пользователю.
+- **БД-миграции:** не запускать автоматически (`db:push`/`db:migrate`) — давать команды.
+- **Секреты:** не коммитить `.env`, ключи, пароли (см. `docs/SECURITY.md`).
 - **Package manager:** только `pnpm`. Не `npm`/`yarn`.
 - **ORM:** только Drizzle. **Не Prisma.**
 - **AI SDK:** своя обёртка `src/lib/ai/providers/`. **Не Vercel AI SDK.**
-- **Multi-tenant:** `tenant_id` в каждой таблице и каждом DB-запросе.
+- **Multi-tenant:** `tenant_id` в каждой таблице и каждом DB-запросе; `tenantId` — ТОЛЬКО из сессии (`requireTenant()`/`requireTenantRoute()`, `docs/TENANT_SCOPING.md`). Postgres RLS не используется.
 - **AI-мутации:** только через Tools Layer (`src/lib/ai/tools/`). Не прямой SQL из AI.
-- **Git:** не делать `git add/commit/push` — давать команды пользователю.
-- **БД-миграции:** не запускать автоматически — давать команды.
-- **Секреты:** не коммитить `.env`, ключи, пароли (см. `docs/SECURITY.md`).
-- **Новые файлы:** начинать с `// PURPOSE: ...`.
+- **Структура:** без `src/features/x/y/z`; домены — `src/lib/<домен>/` + `src/components/<домен>/` + `src/app/api/<домен>/` (`src/modules/` — исторический каркас, только README).
 - **Импорты:** явные, без `import * as X`.
-- **Структура:** плоско в `src/modules/{name}/`, не `src/features/x/y/z`.
 - **UI:** не использовать системные `alert/confirm/prompt` — только Dialog/AlertDialog.
+- **Новые файлы:** начинать с `// PURPOSE: ...`.
+- **Интерактивные CLI-команды:** `-y` / `--yes` / `--force` где возможно.
+- **Удаление данных:** всегда с подтверждением пользователя + проверка `tenant_id` в запросе.
 
 ## Актуальный стек
 
@@ -67,8 +68,11 @@ Context7: `mcp0_resolve-library-id` → `mcp0_query-docs`. Не более 3 в�
 | UI | Tailwind, shadcn/ui/Radix, Lucide, next-themes (light) |
 | State | Zustand + TanStack Query |
 | DB SaaS | PostgreSQL 16 + pgvector, Drizzle ORM |
-| Cache/Queue | Redis 7 + BullMQ |
-| AI | Ollama local + OpenAI-compat (Claude/OpenRouter/VseGPT/Custom) через свою обёртку |
+| Auth | Свой JWT-cookie (`jose` + `bcryptjs`, `authDriver='minimal'`). **NextAuth НЕ установлен** — совместимы только имена экспортов; Google OAuth нет |
+| Cache/Queue | **In-memory shim** `src/lib/redis.ts` (`ioredis`/`bullmq` НЕ установлены). Контейнер `redis:7` в compose поднимается, приложение к нему не ходит |
+| AI | Ollama local + OpenAI-compat (Claude/OpenRouter/VseGPT/Custom) + YandexGPT + GigaChat через свою обёртку |
+| Email | Свой IMAP поверх `net`/`tls` + `mailparser` (in), `nodemailer` (out). `node-imap` НЕ установлен |
+| Markdown | `@mdxeditor/editor` (не TipTap) |
 | AI streaming | NDJSON from `/api/ai/chat` |
 | Spreadsheet | `fast-formula-parser` + custom |
 | Charts | Recharts |
@@ -81,7 +85,7 @@ Context7: `mcp0_resolve-library-id` → `mcp0_query-docs`. Не более 3 в�
 ```
 src/
 ├── app/                  Next.js App Router + API routes
-│   ├── (app)/            authenticated shell
+│   ├── app/              authenticated shell (`/app/*`, обычный сегмент — не route-group)
 │   ├── (auth)/           login/register/forgot
 │   └── api/              auth, blocks, cashflow, inbox, ai, boards, marketplaces, currency
 ├── components/
@@ -107,7 +111,7 @@ docs/memory-archive/      исторические разделы MEMORY.md (п�
 
 ## Агентная обвязка `.claude/` (v0.41.0)
 
-Карта — `.claude/README.md`. Состав: 9 скилов (`of-verify`, `of-end-session` — **канон ритуала конца сессии**, `of-run-tests`, `of-new-block`, `of-db-change`, `of-new-ai-route`, `of-new-ai-tool`, `of-ozon-column`, `of-memory`), 7 сабагентов (`of-code-reviewer`, `of-security-reviewer`, `of-{blocks,ai,ozon,db,unit-economics}-dev`), 3 воркфлоу (`of-test-sweep`, `of-review`, `of-rules-audit`), `settings.proposed.json` (активирует пользователь через `mv` в `settings.json`) + PreToolUse-хук `scripts/claude-rules-hint.sh` (аналог path-scoped правил Cursor, дедуп раз в сессию на домен).
+Карта — `.claude/README.md`. Состав: 9 скилов (`of-verify`, `of-end-session` — **канон ритуала конца сессии**, `of-run-tests`, `of-new-block`, `of-db-change`, `of-new-ai-route`, `of-new-ai-tool`, `of-ozon-column`, `of-memory`), 7 сабагентов (`of-code-reviewer`, `of-security-reviewer`, `of-{blocks,ai,ozon,db,unit-economics}-dev`), 3 воркфлоу (`of-test-sweep`, `of-review`, `of-rules-audit`), `settings.json` (permissions+hooks, **активен**; агент его сам не правит — изменения предлагает пользователю) + PreToolUse-хук `scripts/claude-rules-hint.sh` (аналог path-scoped правил Cursor, дедуп раз в сессию на домен).
 
 **Инварианты обвязки (не нарушать):**
 - Доменные правила живут ТОЛЬКО в `.cursor/rules/*.mdc` — скилы/агенты на них ссылаются, копии текста правил запрещены (уже было 4 дрейфующих копии до v0.41.0).
@@ -161,7 +165,7 @@ docs/memory-archive/      исторические разделы MEMORY.md (п�
 
 - **Схема:** `workspaces` (`src/lib/db/schema/workspaces.ts`: uniq `(tenant_id,user_id,slug)`, template `seller-ozon|blank`); `block_layouts.workspace_id NOT NULL` + uniq `(workspace_id,page_key)`; `unit_economics_tabs.workspace_id NOT NULL` (0011) + uniq `(workspace_id,page_key)`; `block_ai_reports`/`section_ai_reports.workspace_id` **nullable** (legacy NULL-отчёты видны только в default-кабинете, правило `includeLegacy`); `users.settings jsonb` (`activeWorkspaceId`). Миграции: `drizzle/0010_workspaces.sql` (двухфазная, бэкфилл «Кабинет 1») + `0011_workspace_ue_tabs.sql` (UE-вкладки NOT NULL + swap uniq; **накатывать вместе с 0010**) + идемпотентный миррор `drizzle/init/16-workspaces.sql`.
 - **Скоупинг-ядро:** `src/lib/workspaces/scope.ts` (pure: `WORKSPACE_COOKIE='of_active_workspace'`, `isSharedPageKey` = `nav`+`board-*` → ВСЕГДА default-кабинет, `pageWorkspaceScope`/`activeWorkspaceScope`) + `active.ts` (React `cache()`: кука → users.settings → default) + `queries.ts` (CRUD, клон копирует раскладки+UE-вкладки и пропускает общие, `workspaceScopeCondition`). **AI-отчёты роуты используют `getPageWorkspaceScope`** (board-* отчёты общие); `getActiveWorkspacePageScope` — только UE-вкладки.
-- **API/UI:** `/api/workspaces` CRUD + `/api/workspace/active` (httpOnly-кука+settings); `workspace-switcher.tsx` в шапке `app/layout.tsx` (Dialog rename, AlertDialog delete, создание пустой/шаблон/клон). `blocks/layout/[pageKey]` принимает `?workspaceId=` с валидацией принадлежности — BlockGrid шлёт его во всех вызовах (`layoutUrl`), это защита от `flushSave()` на unmount ПОСЛЕ смены куки (один ремоунт по `key={workspaceId+pageKey}` не спасал). Изоляция @-ссылок: sources/relations/UE-импорты перечисляют страницы только активного кабинета + общие `board-*`.
+- **API/UI:** `/api/workspaces` CRUD + `/api/workspace/active` (httpOnly-кука+settings); `workspace-switcher.tsx` в шапке `src/app/app/layout.tsx` (Dialog rename, AlertDialog delete, создание пустой/шаблон/клон). `blocks/layout/[pageKey]` принимает `?workspaceId=` с валидацией принадлежности — BlockGrid шлёт его во всех вызовах (`layoutUrl`), это защита от `flushSave()` на unmount ПОСЛЕ смены куки (один ремоунт по `key={workspaceId+pageKey}` не спасал). Изоляция @-ссылок: sources/relations/UE-импорты перечисляют страницы только активного кабинета + общие `board-*`.
 - **Шаблоны:** `WORKSPACE_TEMPLATES` в `src/lib/blocks/default-layouts.ts` (вынос DEFAULT_LAYOUTS из registry, импортируемо без client-catalog; `getDefaultLayout(pageKey, template?)`); `seller-ozon` = новый дефолт-дашборд (ozon-kpi/chart/analytics/warehouse-clusters(warehouse)/abc/data-health + примеры), `blank` — все страницы пустые. Smoke `scripts/test-workspace-templates.ts` (38).
 - **Инварианты:** upsert раскладки target = uniq `(workspace_id,page_key)` — tenant_id в target невозможен (ON CONFLICT обязан совпадать с индексом), защита = валидация workspaceId вызывающим (`resolveWorkspaceId`→default либо `getWorkspaceById` tenant+user). `BlockInstanceSchema` НЕ содержит workspace_id (он вне блока).
 
@@ -181,26 +185,32 @@ docs/memory-archive/      исторические разделы MEMORY.md (п�
 
 ## Реализованные страницы
 
-- **`/dashboard`** — BlockGrid с KPI и navigation cards.
-- **`/cashflow`** — CRUD/import транзакций, KPI, top categories, chart.
-- **`/inbox`** — BlockGrid с двумя `inbox.channel-feed` блоками.
-- **`/boards`**, **`/boards/[boardId]`** — персональные доски, `pageKey = board-{boardId}`.
-- **`/unit-economics`** — 4 default-вкладки + custom через `unit_economics_tabs` (v0.22.0).
-- **`/marketplace`** — каталог всех блоков (browse-only, кнопки disabled).
-- **`/marketplaces/ozon`** — header `SyncAllButton` → `OzonSyncDialog` (v0.22.2).
-- **`/settings`** — visibility toggles, форматирование, разделы.
-- **`/settings/integrations`** — подключение Ozon Seller API, тогглы sync, тест/sync/история job'ов + AccountCard «Догрузить» через `OzonSyncDialog` (v0.22.2).
-- **`/admin/ai/{local-models,providers,system-prompt}`** — admin AI.
-- **`/reset-password`** — Suspense + useSearchParams.
+> Все внутренние страницы живут под префиксом **`/app/*`** (с v0.42.0). Актуальный список — `find src/app/app -name page.tsx`.
 
-## Активные грабли (последние версии v0.21-v0.25)
+- **`/app/dashboard`** — BlockGrid с KPI и navigation cards.
+- **`/app/cashflow`** — CRUD/import транзакций, KPI, top categories, chart.
+- **`/app/inbox`** — BlockGrid с двумя `inbox.channel-feed` блоками.
+- **`/app/boards`**, **`/app/boards/[boardId]`** — персональные доски, `pageKey = board-{boardId}`.
+- **`/app/unit-economics`** — 4 default-вкладки + custom через `unit_economics_tabs`.
+- **`/app/marketplace`** — каталог всех блоков (browse-only, кнопки disabled).
+- **`/app/marketplaces/ozon`** — header `SyncAllButton` → `OzonSyncDialog`.
+- **`/app/settings`** — visibility toggles, форматирование, разделы.
+- **`/app/settings/integrations`** — подключение Ozon Seller API, тогглы sync, тест/sync/история job'ов + AccountCard «Догрузить» через `OzonSyncDialog`.
+- **`/app/settings/ai`** — персональные AI-настройки (ключи провайдеров).
+- **`/app/admin`**, **`/app/admin/deletion-requests`**, **`/app/admin/ai/{local-models,providers,system-prompt}`** — админка.
+- **`/app/onboarding`** — упрощённый визард после регистрации.
+- **`/login`, `/register`, `/forgot-password`, `/reset-password`** — auth на корне (`src/app/(auth)/`); `/reset-password` — Suspense + useSearchParams.
+- **`/`** — лендинг, **`/privacy`** — публичная страница политики.
 
-> Исторические грабли (v0.10-v0.20) — в `docs/memory-archive/`.
+## Активные грабли (последние версии)
 
-- **Сырой NUL-байт в исходнике + грабли ревю-инфраструктуры (v0.48.0)** — в `cluster-agg.ts` разделитель составного ключа попал в файл сырым байтом 0x00: typecheck/рантайм молчат, но `file` детектит «data», grep отвечает «Binary file matches», git показывает диффы как «Binary files differ». Управляющие символы в строках — ТОЛЬКО эскейпами (`\x00`/` `). Проверка: `LC_ALL=C grep -c $'\x00' <файл>`. Вторая грабля той же сессии: verify-агенты воркфлоу `of-review` могут умирать по лимитам — тогда реальные находки выпадают из финального отчёта как «неверифицированные»; при `<failures>` в нотификации читать `journal.jsonl` воркфлоу и доверифицировать руками.
+> Диапазон в заголовке НЕ хардкодим — записи ниже отсортированы по убыванию версии.
+> Исторические грабли (v0.10-v0.22) — в `docs/memory-archive/` (`v0.10-v0.16`, `v0.17`, `v0.18`, `v0.19-v0.20`, `v0.21-v0.22`).
+
+- **Сырой NUL-байт в исходнике + грабли ревю-инфраструктуры (v0.48.0)** — в `cluster-agg.ts` разделитель составного ключа попал в файл сырым байтом 0x00: typecheck/рантайм молчат, но `file` детектит «data», grep отвечает «Binary file matches», git показывает диффы как «Binary files differ». Управляющие символы в строках — ТОЛЬКО эскейпами (`\x00`/`\0`). Проверка (bash НЕ умеет передавать NUL в аргументе, поэтому `grep $'\x00'` = пустой паттерн и матчит всё): `file <файл>` → «data» вместо «UTF-8 text», либо `tr -d '\0' < файл | cmp -s - файл || echo "есть NUL"`. Вторая грабля той же сессии: verify-агенты воркфлоу `of-review` могут умирать по лимитам — тогда реальные находки выпадают из финального отчёта как «неверифицированные»; при `<failures>` в нотификации читать `journal.jsonl` воркфлоу и доверифицировать руками.
 - **Ротация секрет-ключей + fire-and-forget sync (v0.47.1)** — смена `INBOX_SECRET_KEY`/`MARKETPLACE_SECRET_KEY` ломает расшифровку сохранённых кредов (AES-GCM auth fail: «Unsupported state or unable to authenticate data») → `runFullSync` падал до `setSyncJobRunning`, job висел `pending` навсегда («подготовка к синхронизации» в UI). Фиксы: try/catch-обёртка `runFullSync` (финализация error), кандидаты ключей в `decryptSecret` (primary→legacy→dev-fallback dev-only), `failStaleSyncJobs` (>10 мин pending→error) в `GET /jobs/active`. После ротации ключей — `pnpm admin:reencrypt-secrets` (`scripts/reencrypt-secrets.ts`, старые ключи в `LEGACY_SECRET_KEYS`; покрывает marketplace_accounts + inbox_channels).
 - **`/app`-префикс + глобальные скелетоны + TanStack Query (v0.42.0)** — три блока работы.
-  - **Маршруты `/app`:** все внутренние страницы под `/app/*` (route-group `src/app/(app)/` стал реальным сегментом `src/app/app/`; тот же `layout.tsx` оборачивает `/app/*`). Auth (`/login`…), лендинг `/`, `/api/*` — на корне. `next.config.mjs` `redirects()` (выполняется ДО middleware) форвардит старые пути → закладки живы. **Грабля: настоящий гейт миграции путей — grep, а не типы.** `typedRoutes` включён только при `!isTurbo` и видит лишь `Route`-JSX `<Link>`; `string`-конфиги (nav-массивы, `command-palette`, `pageHref()`, e-mail `templates.ts`, AI-промпт `block-capabilities.ts`, переменные-href) типам невидимы → обязателен `grep -P "['\"\`]/(dashboard|cashflow|...)" src`. Персистентные nav-card `config.href` в `block_layouts` (jsonb): `normalizeNavHref()` в `navigate-card.tsx` чинит на рендере + разовый SQL `drizzle/data/2026-06-19_app-prefix-navcards.sql` (render-нормализация делает SQL некритичным).
+  - **Маршруты `/app`:** все внутренние страницы под `/app/*` (route-group `src/app/app/` стал реальным сегментом `src/app/app/`; тот же `layout.tsx` оборачивает `/app/*`). Auth (`/login`…), лендинг `/`, `/api/*` — на корне. `next.config.mjs` `redirects()` (выполняется ДО middleware) форвардит старые пути → закладки живы. **Грабля: настоящий гейт миграции путей — grep, а не типы.** `typedRoutes` включён только при `!isTurbo` и видит лишь `Route`-JSX `<Link>`; `string`-конфиги (nav-массивы, `command-palette`, `pageHref()`, e-mail `templates.ts`, AI-промпт `block-capabilities.ts`, переменные-href) типам невидимы → обязателен `grep -P "['\"\`]/(dashboard|cashflow|...)" src`. Персистентные nav-card `config.href` в `block_layouts` (jsonb): `normalizeNavHref()` в `navigate-card.tsx` чинит на рендере + разовый SQL `drizzle/data/2026-06-19_app-prefix-navcards.sql` (render-нормализация делает SQL некритичным).
   - **Скелетоны:** `src/components/ui/skeleton.tsx` (база), `src/components/blocks/block-skeleton.tsx` (`'use client'`, density-aware варианты `stat/kpiGrid/chart/table/list/calculator/map/generic`), `block-grid-skeleton.tsx` (статич. сетка для route-loading), `use-block-loading.ts` (контракт `useReportBlockLoading`). Route `src/app/app/loading.tsx`. `skeletonVariant` — **строка** в `BLOCK_META`/`BlockDef`/`withMeta` (карта `SKELETON_VARIANT_BY_TYPE`, RSC-safe как `iconName`; компонент в BlockDef НЕ класть). `BlockChrome` рисует overlay-скелет на **первую** загрузку (`z-[5]`, `pointer-events-none`, **сиблинг** контента — не внутри edit-mode обёртки; refetch оставляет родной спиннер). **Грабля: route `loading.tsx` НЕ покрывает холодный вход**, пока async-`layout.tsx` сам `await`'ит БД (он рендерит Suspense-границу) → B0-фикс: статичная оболочка после дешёвого `auth()`, DB-навигация (`loadLayout('nav')`+`listPinnedBoards`, `Promise.all`) под `<Suspense>`. **Cashflow/kpi.grid — overlay no-op** (гидрируются данными RSC, `CashflowDataContext.loading` всегда `false`) → `useReportBlockLoading` ставим ТОЛЬКО в client-fetch блоки (Ozon ×11, inbox-feed, currency).
   - **TanStack Query** (был в deps, не использовался): `src/components/query-provider.tsx` в корневом layout (`staleTime 60с`, `gcTime 5мин`). `useMarketplaceAccounts` → `useQuery` (общий queryKey → 5 дублей запроса аккаунтов на дашборде Ozon схлопнулись в 1). `useTransition` на переключении вкладок «Юнит-экономика» (ремоунт грида без блика).
   - **Отложено (Этап 3c):** per-block `useQuery`-кэш тяжёлых Ozon-блоков (staleTime на контент аналитики/KPI/чарта) — см. `PLAN.md` → «Отложенные задачи». Нужен живой сервер для проверки sync-refresh/period.
@@ -225,7 +235,7 @@ docs/memory-archive/      исторические разделы MEMORY.md (п�
   3. **Сохранение активной вкладки `/unit-economics`** — `?tab=<slug>` через `window.location.search` + `history.replaceState`. Slug = `defaultKey` для built-in (`ozon`, `ozon-multi`, `yandex`, `my-store`) или `pageKey` для custom. Тот же паттерн в `admin/ai/local-models/page.tsx`. **Грабли:** избегать `useSearchParams` (требует Suspense, M.L220) — `window.location.search` достаточно. **НИКОГДА не читать `window` в `useState`-инициализаторе** (v0.24.5 hotfix): SSR-default разойдётся с client-state → hydration mismatch + регенерация поддерева. Правильно: `useState(ssrSafeDefault)` + `useEffect(() => { if (urlValue !== default) setActive(urlValue); }, [])`. См. `unit-economics-client.tsx` L113-130.
   4. **Inbox encoding bug** — кастомный `mime.ts` не умел nested multipart → сырые QP/MIME-блоки в DB. Фикс: `mailparser.simpleParser` (battle-tested). **Грабли:** для email-парсинга всегда `mailparser`, не кастомный код. `mime.ts` deprecated, оставлен для legacy.
   5. **Inbox HTML rendering** — новая колонка `body_html` (`text`, optional). Sanitize через `src/lib/inbox/sanitize-html.ts` (DOMPurify + `<img src>` → `data-src` + placeholder). Картинки в DB НЕ хранятся, грузятся on-demand по клику на «Загрузить». Рендерер `EmailHtmlBody` в `inbox-channel-feed.tsx` (prose container). Sync limit 50→200 (`?limit=N` clamp 1..500). Existing messages чинятся через upsert по `external_id` одним кликом «Синхронизировать (200)» — отдельный backfill-скрипт не нужен. **Грабли:** `@tailwindcss/typography` plugin теперь обязателен для `prose` классов в email rendering. **`isomorphic-dompurify` тащит `jsdom` → Next.js webpack ломается на `browser/default-stylesheet.css`** (mangled `__dirname`); используем `dompurify` (browser-only) с SSR-guard `if (typeof window === 'undefined') return no-op`.
-- **AI layer (v0.24.0)** — центральный composer `resolvePromptStack()` в `src/lib/ai/prompt-resolver.ts`. 4-уровневая иерархия (global → section → block-skill → user supplement). 28 block skills в `src/lib/ai/prompts/block-skills/`. Per-user ключи в `user_ai_credentials` (таблица, `pnpm db:push`). `getActiveCredentials()` в `src/lib/ai/user-keys.ts` — user > tenant > Ollama. `BlockInstance.aiPromptSupplement` (max 500) — новый user-input; `aiPrompt` deprecated как fallback. AI слой: `/api/ai/chat` использует `resolvePromptStack()` + `getActiveCredentials()`. **Новые провайдеры:** DeepSeek (openai-compat), Yandex GPT (`src/lib/ai/providers/yandex-gpt.ts`), GigaChat OAuth2 (`gigachat.ts`). **Section AI:** `<SectionAiButton>` в headers 6 разделов → `SectionAiDialog` → `POST /api/ai/analyze-section`. `PROVIDER_META[]` содержит `requiresVpn` для UI-ярлыков. Документация: `docs/AI_PROMPT_LAYERS.md`. **Правило: все новые AI-маршруты используют `resolvePromptStack()`, не прямой `buildMicroAgentSystemPrompt()`**.
+- **AI layer (v0.24.0)** — центральный composer `resolvePromptStack()` в `src/lib/ai/prompt-resolver.ts`. 4-уровневая иерархия (global → section → block-skill → user supplement). block skills по типу блока в `src/lib/ai/prompts/block-skills/` (число не хардкодим — считать по файлам). Per-user ключи в `user_ai_credentials` (таблица, `pnpm db:push`). `getActiveCredentials()` в `src/lib/ai/user-keys.ts` — user > tenant > Ollama. `BlockInstance.aiPromptSupplement` (max 500) — новый user-input; `aiPrompt` deprecated как fallback. AI слой: `/api/ai/chat` использует `resolvePromptStack()` + `getActiveCredentials()`. **Новые провайдеры:** DeepSeek (openai-compat), Yandex GPT (`src/lib/ai/providers/yandex-gpt.ts`), GigaChat OAuth2 (`gigachat.ts`). **Section AI:** `<SectionAiButton>` в headers 6 разделов → `SectionAiDialog` → `POST /api/ai/analyze-section`. `PROVIDER_META[]` содержит `requiresVpn` для UI-ярлыков. Документация: `docs/AI_PROMPT_LAYERS.md`. **Правило: все новые AI-маршруты используют `resolvePromptStack()`, не прямой `buildMicroAgentSystemPrompt()`**.
 - **Block settings UI design system (v0.23.15)** — `src/components/blocks/settings/` содержит shared примитивы (`SettingsToggleRow`, `KopecksRow`, `SettingsSegmented`, `SettingsSliderRow`, `SettingsSection`) и `SourceBlockPicker` (единый пикер с period badge, collapsible cells, lazy loading). Все `SettingsForm` компоненты (computed, sheet, cashflow KPI, stat-custom, chart-cashflow, custom-data) мигрированы. `BlockReferencePicker` перешёл от UUID → labels через `cand.labels[field]`. Одиночный `_sourceBlockPickerCache` вместо двух модульных кэшей. **Правило: в новых SettingsForm — только примитивы из settings/**. README в папке.
 - **Per-cell linking from «Данные» (v0.23.14)** — `custom.data` публикует ячейки как `rowId.colId` поля. `__cellFields` маркер перечисляет ключи. Лимит 200. API route тоже добавляет per-cell поля с `group: 'Ячейки'`. Пикер показывает их в раскрываемой секции «Ячейки». Общий cache `_sourceBlockPickerCache` (из settings/source-block-picker.tsx).
 - **Kopecks convention (v0.23.13)** — Единое правило: все деньги в `useBlockValuePublisher` публикуются в КОПЕЙКАХ (× 100). `formatRublesWithSettings` всегда делит на 100. Нарушители до v0.23.13: `custom-data` (рублёвые колонки), `unit-ozon-kpi` (revenue/ads/aov/cpo), `unit-ozon-campaigns` (expenseRub/ordersRub). Исправлены. `custom-data` дисплей (`formatCustomDataRubles`) принимает рубли без ÷100 — эта цепочка отдельна от publisher-а и остаётся верной. **Правило для новых блоков: если колонка/поле = деньги → × 100 перед публикацией.**
@@ -253,7 +263,7 @@ docs/memory-archive/      исторические разделы MEMORY.md (п�
   - Тесты — `scripts/test-fill-handle.ts` (35 кейсов: shift, `#REF!`, SUM-range, @-tokens, [Row].col, направления, binding/литерал).
 - **UI polish (v0.23.3)** — 4 правки:
   1. **`custom.data` showKopecks теперь работает для всех числовых форматов** (раньше — только rubles). `formatColumnValue` обновлён: `number/percent` теряют дробную часть при `showKopecks=false`. **v0.23.3 fix:** text-колонки с формульными числами тоже форматируются (раньше `String(16.666…)` с точкой). Per-column / per-row override через `Column.showKopecks?: boolean | null` и `Row.showKopecks?: boolean | null` (3-state). Резолвер — `resolveShowKopecks(row, col, blockDefault)`, block-level — `resolveBlockShowKopecks` (default `true`, `null` → global). UI — bulk-toolbar: «Десятичные» popover (Show/Hide/Inherit) когда выделены строки/колонки.
-  2. **Sticky-сайдбар** в `src/app/(app)/layout.tsx` (`<aside>` → `sticky top-0 self-start h-screen overflow-y-auto`). Document скроллится, нав остаётся видна.
+  2. **Sticky-сайдбар** в `src/app/app/layout.tsx` (`<aside>` → `sticky top-0 self-start h-screen overflow-y-auto`). Document скроллится, нав остаётся видна.
   3. **Автоверсия из CHANGELOG.md** — `next.config.mjs` парсит `^##\s*\[?(x.y.z)` и инжектит `NEXT_PUBLIC_APP_VERSION`. UI читает через `src/lib/version.ts` (`APP_VERSION`). Сайдбар и лендинг (`src/app/page.tsx`) обновлены — хардкод убран.
   4. **AI/Settings hotzone-reveal** — `block-chrome.tsx` toolbar (AI/Settings/Delete) переведён с JS `showControls`-стейта на CSS-pattern (зеркало resize-hotzone): `data-toolbar-hotzone` в правом верхнем углу + правило `:has([data-toolbar-hotzone]:hover) .block-toolbar { opacity: 1 }` в `block-grid.css`. Drag-handle остался на JS-hover.
 - **Unified period system (v0.23.0)** — `src/lib/blocks/use-block-period.ts` — единый хук для блоков с периодом. `period`/`isOverride`/`setOverride`/`resetToGlobal` API. `PagePeriodContext` расширен `registerBlock`/`unregisterBlock`/`countOverridden`/`resetAllOverrides` — registry в `useRef` чтобы не вызывать re-render всего поддерева. `PagePeriodHeader` показывает warning «Мастер-настройка» (dismissable через `localStorage`) + кнопку «Сбросить локальные (N)» через `useSyncExternalStore`. 9 Ozon-блоков + `cashflow.transactions` + `kpi.grid` мигрированы. `cashflow.transactions` теперь применяет `effectivePeriod` к fetch (раньше игнорировал). `BlockDef.usesPeriod?: boolean` flag в registry → `pageHasGlobalBoundBlocks` auto-show панели. Lock-badge `<Lock /> свой` на каждом overridden-блоке. Документация — `docs/PAGE_PERIODS.md`.
@@ -290,7 +300,7 @@ docs/memory-archive/      исторические разделы MEMORY.md (п�
 - **`useBlockValuePublisher` ВЫШЕ early-returns.** Иначе rules-of-hooks падает в build.
 - **`useMemo`/`useState`/`useEffect` ВЫШЕ density early-returns** в Block-Render.
 - **`DndContext` с `id={useId()}`** при >1 на странице.
-- **Версионирование тарифов unit-economics** — никогда не редактировать существующий tariff pack inplace; добавлять новый `ozon_2026_05_xx.ts`.
+- **Версионирование тарифов unit-economics** — никогда не редактировать существующий tariff pack inplace; добавлять НОВЫЙ ФАЙЛ `tariffs-YYYY-MM-DD.ts` рядом со старым (`src/lib/unit-economics/{ozon,yandex}/`) и бампать константу; её ЗНАЧЕНИЕ имеет вид `ozon_YYYY_MM_DD` — это не имя файла.
 - **Sticky cells** `bg-card` (НЕ `/95`), `overflow:hidden isolate`, z-index header `45`, totals `35`, body `30`, sticky totals `36`. На последней sticky-колонке `boxShadow: '1px 0 0 0 var(--border)'`.
 - **`appearance.borderColor` через `boxShadow inset` перекрывается** — использовать absolute-overlay `<div className="pointer-events-none absolute inset-0 z-20" style={{boxShadow: 'inset 0 0 0 2px {color}'}}>` (ниже z-30 chrome controls).
 - **Палитры через `flex flex-wrap gap-1.5 shrink-0`** (НЕ `grid-cols-12 gap-1`).
@@ -302,6 +312,14 @@ docs/memory-archive/      исторические разделы MEMORY.md (п�
 - **`{` в JSX-тексте** — `&#123;` или `{'{id}'}` (TS+React парсит `{}` как expression даже в `<p>`).
 - **`Pure-helper'ы для smoke-тестов** — выносить в отдельный модуль без импорта `db client`, иначе `pnpm tsx` падает на `ZodError: DATABASE_URL Required`.
 
+## VPN / VLESS (v0.50.0, Этап 4 LK_V2_PLAN)
+
+- **Ядро:** `src/lib/ai/vpn/{vless,subscription,ip-guard,spool,admin}.ts` — парсер vless:// и подписок, `buildXrayConfig` (inbound строго `http 127.0.0.1:10809`, `log.access:"none"`), SSRF-гард, атомарная запись spool, гейт/шифрование/аудит. Смоук `scripts/test-vless-parse.ts` (14).
+- **API/UI:** `/api/admin/ai/vpn{,/apply,/subscription,/status}` (super_admin + rate-limit + `aiAuditLog`), карточка `src/app/app/admin/ai/providers/vpn-card.tsx` (режимы «Ссылка | Подписка»). Настройки — `tenants.settings.aiVpn` (ссылка/URL шифрованы; `servers[]` только метаданные). Ссылка наружу НИКОГДА не отдаётся.
+- **Хост-путь:** `deploy/xray/{of-xray-apply.sh,.path,.service,README.md}` — web пишет spool, root-овый path-юнит валидирует и применяет. Инварианты и грабли (TOCTOU, symlink, allowlist, SSRF hex-IPv6, `mktemp --suffix=.json`) — в `.cursor/rules/security.mdc` §VLESS/Xray.
+- **Vision через прокси:** `src/lib/ai/vision/proxy-fetch.ts` для провайдеров с `requiresVpn` (claude/openai); yandex/tesseract/mock — напрямую. Доки: `docs/VPN_FOR_AI.md` (актуален), `deploy/xray/README.md`.
+- **На Pi установлено и проверено сквозным прогоном** (v0.50.0): юниты enabled, spool `firay:firay 0700`, конфиг Xray `root:nogroup 0640`, `status.json → ok/applied`.
+
 ## AI Micro-Agent runtime
 
 - `src/app/api/ai/chat/route.ts` — NDJSON streaming, `resolvePromptStack()`, `getActiveCredentials()`, `parseAction()`.
@@ -310,10 +328,10 @@ docs/memory-archive/      исторические разделы MEMORY.md (п�
 - `src/lib/ai/prompt-resolver.ts` — `resolvePromptStack()` (все AI-routes).
 - `src/lib/ai/user-keys.ts` — `getActiveCredentials()` (user > tenant > Ollama).
 - `src/lib/ai/sections.ts` — 6 SECTION_GROUPS + `resolveSectionGroup()`.
-- `src/lib/ai/prompts/` — block-skills (28 типов), section-defaults, pointwise.
+- `src/lib/ai/prompts/` — block-skills (по типу блока, см. `src/lib/ai/prompts/block-skills/`), section-defaults, pointwise.
 - `src/components/blocks/section-ai-button.tsx` + `section-ai-dialog.tsx` — AI Анализ раздела.
 - `src/app/api/ai/analyze-section/route.ts` — section analysis NDJSON stream.
-- `src/app/(app)/settings/ai/` — per-user AI настройки (ключи).
+- `src/app/app/settings/ai/` — per-user AI настройки (ключи).
 - `src/app/api/ai/credentials/route.ts` — CRUD per-user ключей.
 - События: `start`, `token`, `done`, `error`, `aborted`.
 - Приоритет промптов: `aiPromptSupplement (max 500) > aiPrompt (deprecated) > legacy config.blockPrompt`.
@@ -330,11 +348,12 @@ docs/memory-archive/      исторические разделы MEMORY.md (п�
 
 ## Marketplace Integrations (краткая навигация)
 
-- **Foundation (v0.17.0):** `src/lib/db/schema/marketplaces.ts`, `src/lib/marketplaces/{types,crypto,queries}.ts`, `src/lib/marketplaces/ozon/{client,endpoints,types,upsert,upsert-plan}.ts`, `sync/{products,prices,stocks,orders,realization,transactions,turnover,analytics-data,clusters,warehouse-stocks,perf-{campaigns,sku-stats,cpo-daily,expense-daily}}.ts`.
-- **Settings:** `src/app/(app)/settings/integrations/{page,integrations-client}.tsx`.
+- **Foundation (v0.17.0):** `src/lib/db/schema/marketplaces.ts`, `src/lib/marketplaces/{types,crypto,queries}.ts`, `src/lib/marketplaces/ozon/{client,endpoints,types,upsert,upsert-plan}.ts`, `sync/{products,prices,stocks,orders,realization,transactions,turnover,analytics-data,clusters,warehouse-stocks,fbs-warehouse-stocks,perf-{campaigns,sku-stats,cpo-daily,expense-daily}}.ts`.
+- **Остатки FBO+FBS (v0.49.0, Этап 2b/2c):** `ozon_warehouse_stocks.source ('FBO'|'FBS') + warehouse_id + warehouse_type`, uniq `(account,sku,warehouse_name,source)` (миграция 0012 + init/17). Стейдж `fbsWarehouseStocks`; окно снапшота чистится по `(tenant,account,source)` ТОЛЬКО через `replaceWarehouseStocksWindow()` (транзакция, батчи 500, дедуп). Блок остатков: сегмент «Все|FBO|FBS» (`config.source`), FBS — псевдо-кластер «FBS (свои склады)» (не «Без кластера»), `meta.bySource`. `/v1/product/info/stocks-by-warehouse/fbs` без пагинации (чанки SKU по 500). Детали-грабли — `marketplaces.mdc` §Seller API.
+- **Settings:** `src/app/app/settings/integrations/{page,integrations-client}.tsx`.
 - **Блоки sync UI:** `src/components/unit-economics/{ozon-sync-button,ozon-sync-settings-form,ozon-sync-preview-dialog,ozon-sync-section}.tsx` + `ozon-sync-diff.ts`.
 - **Universal sync dialog:** `src/components/marketplaces/ozon-sync-dialog.tsx` + `ozon-sync-presets.ts` (v0.22.1+).
-- **Global sync indicator:** `src/components/marketplaces/global-sync-indicator.tsx` (mount в `(app)/layout.tsx`).
+- **Global sync indicator:** `src/components/marketplaces/global-sync-indicator.tsx` (mount в `src/app/app/layout.tsx`).
 - **Analytics:** `src/app/api/marketplaces/analytics/ozon/route.ts`, `src/app/api/marketplaces/ozon/{kpi,timeseries,top-ads,abc,campaigns,search-phrases,cluster-stocks-v2}/route.ts`. Все используют MSC `query-period.ts`.
 - **Ads totals:** `src/lib/marketplaces/ozon/ads-totals.ts` (`getOzonAdsTotals`). Priority: `expense → performance (CPC+CPO) → transactions-heuristic → none`.
 - **Подробности по версиям:** `docs/memory-archive/v0.17.md`, `v0.18.md`.
@@ -363,9 +382,9 @@ docs/memory-archive/      исторические разделы MEMORY.md (п�
 
 ## Inbox / Currency / Boards (краткая навигация)
 
-- **Inbox MVP** (v0.10-v0.19, parser v0.24.4, render v0.29.0): `src/lib/{inbox,db/schema/inbox}.ts`, `src/lib/blocks/catalog/inbox-{channel-feed,dashboard}.tsx`. IMAP test/sync (Beget STARTTLS fallback). AES-256-GCM (`INBOX_SECRET_KEY`). **Парсинг через `mailparser.simpleParser`** (v0.24.4) — nested multipart, charset, encoded-words, QP/base64. **`body_html` колонка**. **Рендер HTML письма — sandboxed `<iframe srcdoc>`** (v0.29.0): `sanitizeEmailHtml` (DOMPurify, разрешены `<style>`/class/id/font для достоверной вёрстки + скрытия preheader) + `buildEmailSrcDoc` (charset utf-8, `<base target=_blank>`, гейтинг картинок). `sandbox` без `allow-scripts`/`allow-same-origin` — JS писем не исполняется. Картинки on-demand с внешних URL по кнопке (в DB не хранятся). **`lib/inbox/clean-text.ts`** — `decodeEntities`/`cleanPreview`/`cleanPlainTextBody` против preheader-мусора `&zwnj;`. Sync default 200, `?limit=N` clamp 1..500. AI Vision: `AiRecognizePanel` + `/api/inbox/messages/[id]/recognize`.
+- **Inbox MVP** (v0.10-v0.19, parser v0.24.4, render v0.29.0): `src/lib/inbox/*` + `src/lib/db/schema/inbox.ts`, `src/lib/blocks/catalog/inbox-{channel-feed,dashboard}.tsx`. IMAP test/sync (Beget STARTTLS fallback). AES-256-GCM (`INBOX_SECRET_KEY`). **Парсинг через `mailparser.simpleParser`** (v0.24.4) — nested multipart, charset, encoded-words, QP/base64. **`body_html` колонка**. **Рендер HTML письма — sandboxed `<iframe srcdoc>`** (v0.29.0): `sanitizeEmailHtml` (DOMPurify, разрешены `<style>`/class/id/font для достоверной вёрстки + скрытия preheader) + `buildEmailSrcDoc` (charset utf-8, `<base target=_blank>`, гейтинг картинок). `sandbox` без `allow-scripts`/`allow-same-origin` — JS писем не исполняется. Картинки on-demand с внешних URL по кнопке (в DB не хранятся). **`lib/inbox/clean-text.ts`** — `decodeEntities`/`cleanPreview`/`cleanPlainTextBody` против preheader-мусора `&zwnj;`. Sync default 200, `?limit=N` clamp 1..500. AI Vision: `AiRecognizePanel` + `/api/inbox/messages/[id]/recognize`.
 - **Currency** (v0.16.0): `src/lib/{db/schema/currency,currency}/*`, `src/lib/blocks/catalog/currency-rates.tsx`. ЦБ через `cbr-xml-daily.ru`, lazy-refresh 23h. **Курс НЕ money-формат.**
-- **Boards** (foundation): `src/lib/{db/schema,boards}/*`, `src/app/(app)/boards/*`, `boardPageKey(id) → 'board-{id}'`.
+- **Boards** (foundation): `src/lib/{db/schema,boards}/*`, `src/app/app/boards/*`, `boardPageKey(id) → 'board-{id}'`.
 
 ## Дизайн-система
 
@@ -413,8 +432,10 @@ pnpm typecheck
 pnpm build
 pnpm lint
 
-# Smoke-тесты (через Shell с required_permissions: ["all"])
-pnpm tsx scripts/test-{unit-economics,ozon-upsert,ozon-sync-diff,ozon-analytics,ozon-sync-presets,ozon-sync-incremental,source-binding,sheet-import-export,ozon-perf-{campaigns,period}}.ts
+# Smoke-тесты (через Shell с required_permissions: ["all"]).
+# Карта «домен → тесты» и прогон всех — канон `.claude/skills/of-run-tests/SKILL.md`.
+# Список тестов здесь НЕ дублируем: `ls scripts/test-*.ts`
+pnpm tsx scripts/test-unit-economics.ts
 ```
 
 ## Что отложили (см. PLAN.md)
@@ -439,10 +460,15 @@ pnpm tsx scripts/test-{unit-economics,ozon-upsert,ozon-sync-diff,ozon-analytics,
 - `docs/memory-archive/*` — историческая память.
 - `docs/MEMPALACE_RUNBOOK.md` — legacy mempalace (deprecated с v0.22.4; актуальная память — `docs/MEMORY_SETUP.md`).
 - `docs/SECURITY.md` — **обязательно** при работе с секретами/сетью/биллингом.
-- `docs/DEPLOY_RPI5.md` — **канон прод-деплоя на минисервер Raspberry Pi 5 16GB** (v0.47.2): фазы, реестр граблей, рутина обновления. Роли: пользователь прошивает ОС/даёт SSH, Claude настраивает и деплоит (исполнение — Opus 5).
+- `docs/DEPLOY_RPI5.md` — **канон прод-деплоя на минисервер Raspberry Pi 5 16GB**: фазы A-H, реестр граблей, рутина обновления (§10). Версию-ярлык не хардкодим — актуальность смотреть в самом документе. Роли: пользователь прошивает ОС/даёт SSH, Claude настраивает и деплоит (исполнение — Opus 5).
 - `docs/CASHFLOW_BLOCKS.md`, `docs/KPI_GRID.md`, `docs/CUSTOM_DATA_BLOCK.md`, `docs/UNIT_ECONOMICS_TABS.md` — блочные системы.
 - `docs/AI_TOOLS.md`, `docs/AI_VISION.md` — AI integration.
 - `docs/MARKETPLACES_OZON_PERFORMANCE.md`, `docs/MARKETPLACES_FUTURE_PLAN.md`, `docs/OZON_ADS_GAP.md` — Ozon.
-- `docs/BILLING.md`, `docs/LICENSING.md`, `docs/DESKTOP_STRATEGY.md`, `docs/ONBOARDING.md` — продуктовое.
-- `docs/EMAIL_BEGET.md`, `docs/LOCAL_AI.md`, `docs/VPN_FOR_AI.md`, `docs/ARCHITECTURE.md`, `docs/MODULES.md` — инфраструктура.
+- `docs/LK_V2_PLAN.md` — **канон ЛК v2**: воркспейсы («кабинеты»), переработка блоков, VLESS-VPN (этапы).
+- `docs/TENANT_SCOPING.md`, `docs/SECURITY_AUDIT.md`, `docs/SMARTCAPTCHA.md` — tenant-гейт I1 и аудит безопасности.
+- `docs/AI_PROMPT_LAYERS.md`, `docs/AI_ENVIRONMENT_BLUEPRINT.md` — иерархия промптов и перенос схемы «памяти и правил».
+- `docs/PAGE_PERIODS.md` — единая система периодов.
+- `docs/BILLING.md`, `docs/LICENSING.md`, `docs/DESKTOP_STRATEGY.md`, `docs/DESKTOP_PLAN.md`, `docs/PERSONAL_USE.md`, `docs/ONBOARDING.md` — продуктовое.
+- `docs/EMAIL_BEGET.md`, `docs/LOCAL_AI.md`, `docs/VPN_FOR_AI.md`, `docs/ARCHITECTURE.md` — инфраструктура (`docs/ARCHITECTURE.md` — целевая карта, часть блоков ещё план).
+- `docs/MODULES.md` — исторический (описывает `src/modules/` + tRPC, которых в проекте нет); реальный реестр — `src/lib/modules/registry.ts`.
 - `LEARNING_LOG.md` — append-only AI learnings (новые грабли пишутся сюда, раз в неделю → MEMORY.md).

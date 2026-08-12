@@ -9,7 +9,8 @@
 //   pnpm tsx scripts/test-ozon-warehouse-stocks.ts <accountId>
 //   pnpm tsx scripts/test-ozon-warehouse-stocks.ts <accountId> --live
 //     ↑ --live дополнительно дёргает Seller API напрямую:
-//        POST /v1/cluster/list и POST /v2/analytics/stock_on_warehouses
+//        POST /v1/cluster/list, POST /v2/analytics/stock_on_warehouses и
+//        (Этап 2b) POST /v1/warehouse/list + /v1/product/info/stocks-by-warehouse/fbs,
 //        чтобы воспроизвести 404/empty без полного sync-пайплайна.
 //
 // Скрипт read-only (write в БД не делает).
@@ -27,6 +28,9 @@ import { OzonClient } from '../src/lib/marketplaces/ozon/client';
 import {
   getClusterListSeller,
   analyticsStockOnWarehouses,
+  getFbsWarehouseList,
+  getStocksByWarehouseFbs,
+  productInfoStocks,
 } from '../src/lib/marketplaces/ozon/endpoints';
 
 async function main() {
@@ -119,6 +123,40 @@ async function main() {
     );
     console.log(`  warehouse_stocks last fetch:          ${stocksAgg.last_fetch ?? '(never)'}`);
 
+    // Разбивка по источнику (Этап 2b). Отдельным запросом с try/catch:
+    // на БД без миграции 0012 колонки `source` ещё нет, и остальная
+    // диагностика не должна из-за этого падать.
+    let fbsRows: number | null = null;
+    try {
+      type SourceRow = { source: string; cnt: number; warehouses: number };
+      const srcResult = await db.execute<SourceRow>(sql`
+        SELECT source, COUNT(*)::int AS cnt,
+               COUNT(DISTINCT warehouse_name)::int AS warehouses
+        FROM ${ozonWarehouseStocks}
+        WHERE tenant_id = ${acc.tenantId} AND account_id = ${acc.id}
+        GROUP BY source
+        ORDER BY source
+      `);
+      const srcRows: SourceRow[] = Array.isArray(srcResult)
+        ? (srcResult as SourceRow[])
+        : ((srcResult as unknown as { rows: SourceRow[] }).rows ?? []);
+      fbsRows = srcRows.find((r) => r.source === 'FBS')?.cnt ?? 0;
+      console.log(
+        `  по источникам:                        ${
+          srcRows.length === 0
+            ? '(нет строк)'
+            : srcRows
+                .map((r) => `${r.source}: ${r.cnt} строк / ${r.warehouses} складов`)
+                .join(', ')
+        }`,
+      );
+    } catch (e) {
+      console.log(
+        '  по источникам:                        (колонки source нет — примените миграцию 0012_ozon_fbs_stocks)',
+        e instanceof Error ? `[${e.message}]` : '',
+      );
+    }
+
     // 2. clusters
     const clustersResult = await db.execute<{ cnt: number }>(sql`
       SELECT COUNT(*)::int AS cnt FROM ${ozonClusters}
@@ -193,6 +231,42 @@ async function main() {
         } catch (e) {
           console.error('  POST /v2/analytics/stock_on_warehouses: ✗', e instanceof Error ? e.message : e);
         }
+        // Этап 2b: собственные склады продавца. Проверяем ту же пару вызовов,
+        // что делает стейдж fbsWarehouseStocks.
+        try {
+          const own = await getFbsWarehouseList(client);
+          console.log(
+            `  POST /v1/warehouse/list:                ✓ складов=${own.length}`,
+            own
+              .slice(0, 3)
+              .map((w) => `${w.warehouseId}:${w.name} (${w.warehouseType})`)
+              .join(', '),
+          );
+          // Пробный запрос остатков по первым SKU каталога: у метода нет
+          // пагинации, «страница» — это список SKU во входе.
+          const catalog = await productInfoStocks(client, { limit: 100 });
+          const skus = (catalog.items ?? [])
+            .map((i) => (i.sku ? String(i.sku) : ''))
+            .filter(Boolean)
+            .slice(0, 50);
+          if (skus.length === 0) {
+            console.log('  POST /v1/product/info/stocks-by-warehouse/fbs: пропуск (нет SKU в каталоге)');
+          } else {
+            const fbsStocks = await getStocksByWarehouseFbs(client, { sku: skus });
+            console.log(
+              `  POST /v1/product/info/stocks-by-warehouse/fbs: ✓ строк=${fbsStocks.length} (по ${skus.length} SKU)`,
+              fbsStocks
+                .slice(0, 2)
+                .map((r) => `${r.sku}@${r.warehouseName}=${r.present}`)
+                .join(', '),
+            );
+          }
+        } catch (e) {
+          console.error(
+            '  FBS-склады (warehouse/list + stocks-by-warehouse/fbs): ✗',
+            e instanceof Error ? e.message : e,
+          );
+        }
       } catch (e) {
         console.error('  Live API check skipped: cannot decrypt api_key:', e instanceof Error ? e.message : e);
       }
@@ -205,6 +279,12 @@ async function main() {
     }
     if (clustersCount === 0) {
       diags.push('▶ Запустите sync-стейдж «Кластеры» (cluster_list)');
+    }
+    if (fbsRows === 0) {
+      diags.push(
+        '▶ FBS-остатков нет: запустите стейдж «Остатки по своим складам (FBS)» ' +
+          '(или у продавца просто нет своих складов)',
+      );
     }
     if (stocksAgg.cnt > 0 && stocksAgg.with_cluster === 0) {
       diags.push('⚠ warehouse_stocks есть, но все cluster_id=NULL → проверьте маппинг warehouse_name → cluster в sync/clusters.ts');

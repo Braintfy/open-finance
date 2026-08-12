@@ -1,5 +1,7 @@
 // PURPOSE: Claude Vision provider — использует Anthropic Messages API с
 // image content blocks. Требует ANTHROPIC_API_KEY (или tenant.aiKeys.anthropic).
+// requiresVpn: api.anthropic.com из РФ недоступен → запрос идёт через
+// ctx.proxy (tenant aiProxy / локальный Xray), если он включён.
 
 import type {
   VisionProvider,
@@ -9,6 +11,7 @@ import type {
   ExtractedData,
 } from '../types';
 import { buildExtractionPrompt, parseExtractedJson } from '../types';
+import { fetchViaProxy, getVisionDispatcher } from '../proxy-fetch';
 
 const DEFAULT_MODEL = 'claude-3-5-sonnet-20241022';
 
@@ -26,44 +29,50 @@ async function fetchImageBase64(input: VisionInput): Promise<{ base64: string; m
 export const claudeVisionProvider: VisionProvider = {
   id: 'claude',
   label: 'Claude 3.5 Sonnet (Anthropic)',
+  requiresVpn: true,
   supports: (mt) => ['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(mt),
   async recognize(
     input: VisionInput,
     hint: VisionHint,
-    _ctx: VisionContext,
+    ctx: VisionContext,
   ): Promise<ExtractedData> {
-    void _ctx;
     const start = Date.now();
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) throw new Error('ANTHROPIC_API_KEY не задан');
 
+    // Скачивание вложения — напрямую (внутренний трафик), API Anthropic — через прокси.
     const { base64, mediaType } = await fetchImageBase64(input);
     const prompt = buildExtractionPrompt(hint);
+    const dispatcher = await getVisionDispatcher(ctx, 'claude');
 
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
+    const resp = await fetchViaProxy(
+      'https://api.anthropic.com/v1/messages',
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: process.env.ANTHROPIC_VISION_MODEL ?? DEFAULT_MODEL,
+          max_tokens: 1500,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'image',
+                  source: { type: 'base64', media_type: mediaType, data: base64 },
+                },
+                { type: 'text', text: prompt },
+              ],
+            },
+          ],
+        }),
       },
-      body: JSON.stringify({
-        model: process.env.ANTHROPIC_VISION_MODEL ?? DEFAULT_MODEL,
-        max_tokens: 1500,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'image',
-                source: { type: 'base64', media_type: mediaType, data: base64 },
-              },
-              { type: 'text', text: prompt },
-            ],
-          },
-        ],
-      }),
-    });
+      dispatcher,
+    );
     if (!resp.ok) {
       const text = await resp.text();
       throw new Error(`Claude API ${resp.status}: ${text.slice(0, 200)}`);

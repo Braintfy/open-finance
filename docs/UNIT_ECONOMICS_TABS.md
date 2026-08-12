@@ -1,10 +1,10 @@
 # Юнит-экономика — CRUD-вкладки
 
-> Версия: v0.22.0 · Schema: [src/lib/db/schema/unit-economics-tabs.ts](../src/lib/db/schema/unit-economics-tabs.ts) · API: [src/app/api/unit-economics/tabs/route.ts](../src/app/api/unit-economics/tabs/route.ts) · UI: [src/app/(app)/unit-economics/unit-economics-client.tsx](../src/app/(app)/unit-economics/unit-economics-client.tsx)
+> Schema: [src/lib/db/schema/unit-economics-tabs.ts](../src/lib/db/schema/unit-economics-tabs.ts) · API: [src/app/api/unit-economics/tabs/route.ts](../src/app/api/unit-economics/tabs/route.ts) · UI: [src/app/app/unit-economics/unit-economics-client.tsx](../src/app/app/unit-economics/unit-economics-client.tsx)
 
 ## TL;DR
 
-Раньше вкладки в `/unit-economics` были hardcoded (Ozon, Ozon Multi, Yandex, My Store). С v0.22.0 — динамические, tenant + user-scoped. Пользователь может **переименовывать**, **создавать новые** (пустые или клонированные из существующих), **дублировать** и **удалять**. Каждая вкладка соответствует уникальному `pageKey`, под который сохраняется отдельный `block_layouts` row.
+Раньше вкладки в `/app/unit-economics` были hardcoded (Ozon, Ozon Multi, Yandex, My Store). Теперь динамические и **workspace-scoped** (с v0.48.0 — раньше были tenant+user-scoped). Пользователь может **переименовывать**, **создавать новые** (пустые или клонированные из существующих), **дублировать** и **удалять**. Каждая вкладка соответствует уникальному `pageKey`, под который сохраняется отдельный `block_layouts` row.
 
 ## Схема БД
 
@@ -20,13 +20,18 @@ pgTable('unit_economics_tabs', {
   order: integer().notNull().default(0),
   kind: text({ enum: ['default', 'custom'] }).notNull().default('custom'),
   defaultKey: text('default_key'), // для default: 'ozon' | 'ozon-multi' | 'yandex' | 'my-store'
+  workspaceId: uuid('workspace_id').notNull()
+    .references(() => workspaces.id, { onDelete: 'cascade' }),
+  hidden: boolean().notNull().default(false),   // мягкое удаление default-вкладки
   createdAt, updatedAt,
-}, (t) => ({
-  unique: uniqueIndex('uet_tenant_user_pk').on(t.tenantId, t.userId, t.pageKey),
-}));
+}, (t) => [
+  uniqueIndex('unit_economics_tabs_workspace_page_idx').on(t.workspaceId, t.pageKey),
+]);
 ```
 
-Уникальный constraint `(tenantId, userId, pageKey)` — один пользователь не может иметь два таба с одинаковым `pageKey`.
+> Сокращённо — точная схема в `src/lib/db/schema/unit-economics-tabs.ts`.
+
+Уникальный constraint — **`(workspaceId, pageKey)`** (миграция 0011; раньше было `(tenantId, userId, pageKey)`). Переезд понадобился, чтобы default-вкладки (`unit-economics-ozon` и т.п.) можно было засидить во ВТОРОМ кабинете того же пользователя. `tenant_id`/`user_id` в таблице остались, но уникальность и выборка идут по воркспейсу.
 
 ## Default vs custom tabs
 

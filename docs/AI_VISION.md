@@ -23,8 +23,17 @@ src/lib/ai/vision/
 type VisionProvider = {
   id: 'claude' | 'openai' | 'yandex' | 'tesseract' | 'mock';
   label: string;
+  /** API недоступен из РФ → запрос идёт через ctx.proxy (tenant aiProxy / Xray). */
+  requiresVpn: boolean;
   supports: (mimeType: string) => boolean;
   recognize: (input: VisionInput, hint: VisionHint, ctx: VisionContext) => Promise<ExtractedData>;
+};
+
+type VisionContext = {
+  tenantId: string;
+  userId: string;
+  /** tenants.settings.aiProxy — резолвит роут recognize, только для requiresVpn. */
+  proxy?: ProxyConfig;
 };
 
 type ExtractedData = {
@@ -141,6 +150,15 @@ pnpm tsx scripts/test-vision-router.ts
 ```
 
 Проверяет: getVisionProvider env/override/fallback, listVisionProviders, parseExtractedJson (markdown unwrap, messy text), mock provider.
+
+## VPN/прокси
+
+Claude и OpenAI (`requiresVpn: true`) ходят в API через `ctx.proxy` — это
+`tenants.settings.aiProxy` (обычно локальный Xray `http://127.0.0.1:10809`), который
+резолвит роут `/api/inbox/messages/[id]/recognize`. Общий код —
+`src/lib/ai/vision/proxy-fetch.ts` (тот же undici-dispatcher, что у чата).
+Yandex/Tesseract/Mock прокси не используют; скачивание вложения тоже идёт напрямую.
+Подробности — `docs/VPN_FOR_AI.md`.
 
 ## Безопасность и лимиты
 

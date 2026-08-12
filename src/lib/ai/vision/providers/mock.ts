@@ -6,6 +6,7 @@ import type { VisionProvider, ExtractedData } from '../types';
 export const mockVisionProvider: VisionProvider = {
   id: 'mock',
   label: 'Mock (для тестов)',
+  requiresVpn: false, // сети нет вообще
   supports: () => true,
   recognize: async (input, hint): Promise<ExtractedData> => {
     const start = Date.now();

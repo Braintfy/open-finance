@@ -35,6 +35,9 @@ export const OZON_FULL_STAGES = [
   'turnover',
   'clusters',
   'warehouseStocks',
+  // Идёт сразу за FBO-остатками: обе пишут в ozon_warehouse_stocks, но в
+  // непересекающиеся окна (source='FBO' / 'FBS').
+  'fbsWarehouseStocks',
   'perfCampaigns',
   'perfSkuStats',
   'perfCpoDaily',
@@ -69,6 +72,7 @@ export const DEFAULT_OZON_SYNC_SETTINGS: Required<
     | 'analyticsWindowDays'
     | 'clusters'
     | 'warehouseStocks'
+    | 'fbsWarehouseStocks'
   >
 > = {
   products: true,
@@ -93,6 +97,9 @@ export const DEFAULT_OZON_SYNC_SETTINGS: Required<
   analyticsData: true,
   clusters: true,
   warehouseStocks: true,
+  // Дефолт как у остальных snapshot-стейджей: у продавцов без своих складов
+  // `/v1/warehouse/list` просто вернёт пустой список (стейдж ok, 0 строк).
+  fbsWarehouseStocks: true,
   // Без Premium даты ограничены 3 месяцами; для Premium Plus можно больше,
   // но 90 дней — разумный baseline для блока аналитики.
   analyticsWindowDays: 90,
@@ -122,6 +129,7 @@ export const OzonSyncSettingsSchema = z
     analyticsWindowDays: z.number().int().min(1).max(365).optional(),
     clusters: z.boolean().optional(),
     warehouseStocks: z.boolean().optional(),
+    fbsWarehouseStocks: z.boolean().optional(),
   })
   .strict();
 

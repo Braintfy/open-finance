@@ -342,7 +342,9 @@ export const memoryChunks = pgTable("memory_chunks", {
 
 ### Tools Layer
 
-**Принцип:** AI не пишет SQL и не дёргает Drizzle напрямую. Он использует **типизированные инструменты** — функции с JSON-схемами.
+**Принцип:** AI не пишет SQL и не дёргает Drizzle напрямую. Он использует **типизированные инструменты** — функции с Zod-схемами.
+
+> Реализованный канон отличается от эскиза ниже: `parameters` — **сырая Zod-схема** (`z.object({...})`), без `zodToJsonSchema` (такого пакета в проекте нет). См. `.cursor/rules/ai-tools.mdc` и `src/lib/ai/tools/query-inbox-messages.ts`.
 
 ```typescript
 // src/lib/ai/tools/index.ts
@@ -350,13 +352,13 @@ export const aiTools = [
   {
     name: 'create_transaction',
     description: 'Создать запись о транзакции (доход/расход)',
-    parameters: zodToJsonSchema(z.object({
+    parameters: z.object({
       amount: z.number(),
       category: z.string(),
       description: z.string(),
       date: z.string().datetime(),
       type: z.enum(['income', 'expense']),
-    })),
+    }),
     handler: async (args, ctx) => createTransaction(args, ctx.tenantId),
   },
   {
@@ -1070,8 +1072,8 @@ interface PaymentProvider {
 - [ ] Next.js 15 + TypeScript + Tailwind + shadcn/ui
 - [ ] Docker Compose (PostgreSQL 16 + Redis 7)
 - [ ] **Drizzle ORM** schema (tenants, users, roles, transactions, categories, modules, blocks, deadlines)
-- [ ] Auth (NextAuth.js / Auth.js v5 — credentials + Google OAuth)
-- [ ] RLS policies через `.enableRLS()` + tenant middleware
+- [x] Auth — **реализовано иначе:** свой JWT-cookie (`jose` + `bcryptjs`, `authDriver='minimal'`), API совместим с NextAuth v5 по именам. Google OAuth пока не сделан.
+- [x] Tenant-изоляция — **реализована иначе:** по аудиту I1 выбран **review-gate** `requireTenant()`/`requireTenantRoute()` вместо Postgres RLS (`docs/TENANT_SCOPING.md`, `docs/SECURITY_AUDIT.md`). Сниппеты `.enableRLS()` выше в этом файле — исторический эскиз, в коде их нет.
 - [ ] Layout: sidebar + header + responsive (3-колоночная сетка как Linear)
 
 ### Этап 2 — UX-фундамент + Excel-блоки + Дашборд (3 недели)

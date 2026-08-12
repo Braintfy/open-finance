@@ -16,9 +16,30 @@
 export const NO_CLUSTER_ROW_KEY = '__no_cluster__';
 /** Строка-заглушка для заказов, у которых склад вообще не указан (FBS). */
 export const NO_WAREHOUSE_ROW_KEY = '__no_warehouse__';
+/**
+ * Псевдо-кластер для собственных складов продавца (Этап 2b).
+ *
+ * FBS-склады физически не входят в географические кластеры Ozon
+ * (`/v1/cluster/list` — это карта фулфилмента Ozon), поэтому в «настоящий»
+ * кластер они не резолвятся никогда. Если бы они падали в «Без кластера»,
+ * эта строка смешивала бы два разных смысла: «склад Ozon, которого нет в
+ * справочнике» (проблема данных, чинится стейджем `clusters`) и «свой склад
+ * продавца» (нормальное состояние). Поэтому у них отдельная строка.
+ */
+export const FBS_ROW_KEY = '__fbs__';
 
 export const NO_CLUSTER_LABEL = 'Без кластера';
 export const NO_WAREHOUSE_LABEL = 'Склад не указан';
+export const FBS_LABEL = 'FBS (свои склады)';
+
+/** Источник остатка: фулфилмент Ozon или собственный склад продавца. */
+export type StockSource = 'FBO' | 'FBS';
+/** Фильтр блока/API: `'all'` — оба источника вместе. */
+export type StockSourceFilter = 'all' | StockSource;
+
+export function isStockSourceFilter(v: string): v is StockSourceFilter {
+  return v === 'all' || v === 'FBO' || v === 'FBS';
+}
 
 /**
  * Единая нормализация имени склада для матчинга между источниками.
@@ -65,6 +86,8 @@ export type ClusterStockAgg = {
   reserved: number;
   /** COUNT(DISTINCT sku) внутри кластера. */
   skuCount: number;
+  /** `'FBS'` уводит строку в псевдо-кластер «FBS». По умолчанию 'FBO'. */
+  source?: StockSource;
 };
 
 /** Заказы периода, сгруппированные по имени склада (сырое имя из raw). */
@@ -83,6 +106,8 @@ export type ResolvedOrders = {
   unknownWarehouse: Bucket;
   /** Склад не указан вовсе (FBS-постинги без analytics_data). */
   noWarehouse: Bucket;
+  /** Заказы со складов продавца (псевдо-кластер «FBS»). */
+  fbs: Bucket;
   /** Имена складов, которые не удалось сопоставить (для диагностики в meta). */
   unresolvedWarehouses: string[];
   /** Справочные данные кластеров, встреченных при резолве (для строк без остатков). */
@@ -129,11 +154,18 @@ export type WarehouseOrdersBucket = {
  *
  * Раньше резолв шёл ТОЛЬКО через снапшот остатков — из-за этого любой склад,
  * с которого были продажи, но нет текущего остатка, падал в «Без кластера».
+ *
+ * `fbsWarehouses` (Этап 2b) — нормализованные имена собственных складов
+ * продавца (из снапшота `source='FBS'`). Проверяется ПЕРЕД справочником:
+ * иначе заказ с FBS-склада оседал бы в «Без кластера», пока его остаток
+ * лежит в строке «FBS», и одна и та же физическая точка была бы разорвана
+ * между двумя строками таблицы.
  */
 export function resolveOrdersToWarehouses(
   rows: OrdersByWarehouse[],
   directory: Map<string, ClusterRef>,
   stockFallback: Map<string, ClusterRef>,
+  fbsWarehouses?: ReadonlySet<string>,
 ): WarehouseOrdersBucket[] {
   // Один и тот же склад приходит из SQL несколькими строками (разный регистр
   // сырого имени) — схлопываем по нормализованному ключу.
@@ -154,6 +186,15 @@ export function resolveOrdersToWarehouses(
         clusterType: null,
         warehouseKey: '',
         warehouseName: NO_WAREHOUSE_LABEL,
+      };
+    } else if (fbsWarehouses?.has(warehouseKey)) {
+      seed = {
+        rowKey: FBS_ROW_KEY,
+        clusterId: null,
+        clusterName: FBS_LABEL,
+        clusterType: null,
+        warehouseKey,
+        warehouseName: rawName,
       };
     } else {
       const ref = directory.get(warehouseKey) ?? stockFallback.get(warehouseKey) ?? null;
@@ -197,11 +238,16 @@ export function foldWarehouseOrdersToClusters(
   const refs = new Map<string, ClusterRef>();
   const unknownWarehouse = emptyBucket();
   const noWarehouse = emptyBucket();
+  const fbs = emptyBucket();
   const unresolved = new Set<string>();
 
   for (const b of buckets) {
     if (b.rowKey === NO_WAREHOUSE_ROW_KEY) {
       addTo(noWarehouse, b.orders, b.revenue);
+      continue;
+    }
+    if (b.rowKey === FBS_ROW_KEY) {
+      addTo(fbs, b.orders, b.revenue);
       continue;
     }
     if (b.rowKey === NO_CLUSTER_ROW_KEY) {
@@ -229,6 +275,7 @@ export function foldWarehouseOrdersToClusters(
     byClusterId,
     unknownWarehouse,
     noWarehouse,
+    fbs,
     unresolvedWarehouses: Array.from(unresolved).sort(),
     refs,
   };
@@ -239,9 +286,10 @@ export function resolveOrdersToClusters(
   rows: OrdersByWarehouse[],
   directory: Map<string, ClusterRef>,
   stockFallback: Map<string, ClusterRef>,
+  fbsWarehouses?: ReadonlySet<string>,
 ): ResolvedOrders {
   return foldWarehouseOrdersToClusters(
-    resolveOrdersToWarehouses(rows, directory, stockFallback),
+    resolveOrdersToWarehouses(rows, directory, stockFallback, fbsWarehouses),
   );
 }
 
@@ -256,7 +304,22 @@ export type WarehouseStockAgg = {
   reserved: number;
   /** COUNT(DISTINCT sku) в пределах склада. */
   skuCount: number;
+  /** `'FBS'` уводит склад в псевдо-кластер «FBS». По умолчанию 'FBO'. */
+  source?: StockSource;
 };
+
+/**
+ * Ключ строки-кластера для агрегата остатков.
+ *
+ * Единая точка для обоих разрезов: `buildClusterRows` (кластеры) и
+ * `attachWarehousesToClusters` (склады) обязаны раскладывать один и тот же
+ * остаток в одну и ту же строку, иначе Σ складов перестанет сходиться
+ * с кластером.
+ */
+function stockRowKey(s: { clusterId: string | null; source?: StockSource }): string {
+  if (s.clusterId) return s.clusterId;
+  return s.source === 'FBS' ? FBS_ROW_KEY : NO_CLUSTER_ROW_KEY;
+}
 
 /** Строка склада внутри кластера (`groupBy='warehouse'`). */
 export type WarehouseAggRow = {
@@ -337,9 +400,12 @@ export type ClusterAggRow = {
  * Без объединения выручка кластеров, где товар распродан в ноль, просто
  * исчезала бы из ответа и `totals.revenueInPeriod` не сходился с фактом.
  *
- * Две отдельные псевдо-строки вместо прежней общей «Без кластера»:
- *  - «Без кластера»    — склад известен, но его нет в справочнике кластеров;
- *  - «Склад не указан» — у заказа вообще нет имени склада (FBS-постинги).
+ * Три отдельные псевдо-строки вместо прежней общей «Без кластера»:
+ *  - «Без кластера»     — склад известен, но его нет в справочнике кластеров;
+ *  - «Склад не указан»  — у заказа вообще нет имени склада (FBS-постинги
+ *    без `analytics_data`);
+ *  - «FBS (свои склады)» — собственные склады продавца (Этап 2b): в кластеры
+ *    Ozon они не входят по своей природе, а не из-за пробела в данных.
  */
 export function buildClusterRows(
   stocks: ClusterStockAgg[],
@@ -371,10 +437,14 @@ export function buildClusterRows(
   };
 
   for (const s of stocks) {
-    const key = s.clusterId ?? NO_CLUSTER_ROW_KEY;
+    const key = stockRowKey(s);
     const row = ensure(key, {
       clusterId: s.clusterId,
-      clusterName: s.clusterId ? s.clusterName ?? `Кластер ${s.clusterId}` : NO_CLUSTER_LABEL,
+      clusterName: s.clusterId
+        ? s.clusterName ?? `Кластер ${s.clusterId}`
+        : key === FBS_ROW_KEY
+          ? FBS_LABEL
+          : NO_CLUSTER_LABEL,
       clusterType: s.clusterType,
     });
     row.freeStock += Number(s.free ?? 0);
@@ -413,6 +483,16 @@ export function buildClusterRows(
       });
       row.ordersInPeriod += orders.noWarehouse.orders;
       row.revenueInPeriod += orders.noWarehouse.revenue;
+    }
+
+    if (orders.fbs.orders > 0 || orders.fbs.revenue > 0) {
+      const row = ensure(FBS_ROW_KEY, {
+        clusterId: null,
+        clusterName: FBS_LABEL,
+        clusterType: null,
+      });
+      row.ordersInPeriod += orders.fbs.orders;
+      row.revenueInPeriod += orders.fbs.revenue;
     }
   }
 
@@ -525,7 +605,7 @@ export function attachWarehousesToClusters(
   };
 
   for (const s of stocks) {
-    const rowKey = s.clusterId ?? NO_CLUSTER_ROW_KEY;
+    const rowKey = stockRowKey(s);
     const warehouseKey = normalizeWarehouseName(s.warehouseName);
     const row = ensure(rowKey, warehouseKey, (s.warehouseName ?? '').trim() || '—');
     row.freeStock += Number(s.free ?? 0);

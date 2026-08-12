@@ -10,6 +10,10 @@
 // набор раскрытых кластеров (`expandedClusters`). Топ-N складов на кластер
 // отбирает СЕРВЕР по той же метрике, по которой отсортирована таблица, —
 // поэтому смена сортировки в режиме складов вызывает рефетч.
+//
+// Этап 2b LK_V2_PLAN: переключатель источника «Все | FBO | FBS» (config
+// `source`, тоже персистится). FBS — собственные склады продавца; они не
+// входят в кластеры Ozon и собираются в псевдо-строку «FBS (свои склады)».
 
 'use client';
 
@@ -96,6 +100,11 @@ export const OzonWarehouseClustersBlockConfigSchema = z.object({
   showShareBar: z.boolean().default(true),
   /** Разрез таблицы. Дефолт 'cluster' — поведение до Этапа 2a. */
   groupBy: z.enum(['cluster', 'warehouse']).default('cluster'),
+  /**
+   * Источник остатков (Этап 2b): фулфилмент Ozon, свои склады продавца или
+   * оба сразу. Дефолт 'all' — поведение до появления FBS-стейджа.
+   */
+  source: z.enum(['all', 'FBO', 'FBS']).default('all'),
   /** rowKey кластеров, раскрытых в режиме складов. */
   expandedClusters: z.array(z.string()).default([]),
   /** Топ-N складов на кластер (у крупных продавцов складов сотни). */
@@ -110,6 +119,13 @@ export type OzonWarehouseClustersBlockConfig = z.infer<
   typeof OzonWarehouseClustersBlockConfigSchema
 >;
 export type GroupBy = OzonWarehouseClustersBlockConfig['groupBy'];
+export type SourceFilter = OzonWarehouseClustersBlockConfig['source'];
+
+const SOURCE_OPTIONS: Array<{ key: SourceFilter; label: string; title: string }> = [
+  { key: 'all', label: 'Все', title: 'Остатки Ozon (FBO) и склады продавца (FBS) вместе' },
+  { key: 'FBO', label: 'FBO', title: 'Только фулфилмент Ozon' },
+  { key: 'FBS', label: 'FBS', title: 'Только собственные склады продавца (FBS/rFBS)' },
+];
 
 function parseConfig(raw: unknown): OzonWarehouseClustersBlockConfig {
   return OzonWarehouseClustersBlockConfigSchema.parse(raw ?? {});
@@ -269,6 +285,10 @@ function ClusterEmptyState({
 }) {
   const needsStocks = meta.warehouseStocksCount === 0;
   const needsClusters = meta.clustersCount === 0;
+  // В разрезе «Только FBS» справочник кластеров не нужен вовсе — свои склады
+  // в кластеры Ozon не входят; нужен стейдж FBS-остатков.
+  const fbsOnly = meta.source === 'FBS';
+  const needsFbsStage = (meta.bySource?.fbs ?? 0) === 0;
   const lastFetch = meta.lastWarehouseStocksFetchAt
     ? new Date(meta.lastWarehouseStocksFetchAt).toLocaleString('ru-RU')
     : null;
@@ -278,21 +298,33 @@ function ClusterEmptyState({
       <div className="space-y-1">
         <div className="font-medium text-foreground">Нет данных для отображения</div>
         <div className="max-w-md">
-          Для блока «Остатки по кластерам» нужно запустить два стейджа
-          синхронизации:
+          {fbsOnly
+            ? 'Для среза FBS нужно запустить стейдж синхронизации:'
+            : 'Для блока «Остатки по кластерам» нужно запустить два стейджа синхронизации:'}
         </div>
       </div>
       <ul className="space-y-1 text-left text-[11px]">
-        <li className={needsStocks ? 'text-rose-700 dark:text-rose-300' : 'opacity-60 line-through'}>
-          • «Остатки по складам» (Seller API <code>/v2/analytics/stock_on_warehouses</code>):
-          {' '}
-          <span className="tabular-nums">{meta.warehouseStocksCount} строк</span>
-        </li>
-        <li className={needsClusters ? 'text-amber-700 dark:text-amber-300' : 'opacity-60 line-through'}>
-          • «Кластеры» (Seller API <code>/v1/cluster/list</code>):
-          {' '}
-          <span className="tabular-nums">{meta.clustersCount} кластеров</span>
-        </li>
+        {fbsOnly ? (
+          <li className={needsFbsStage ? 'text-rose-700 dark:text-rose-300' : 'opacity-60 line-through'}>
+            • «Остатки по своим складам (FBS)» (Seller API{' '}
+            <code>/v1/product/info/stocks-by-warehouse/fbs</code>):
+            {' '}
+            <span className="tabular-nums">{meta.bySource?.fbs ?? 0} строк</span>
+          </li>
+        ) : (
+          <>
+            <li className={needsStocks ? 'text-rose-700 dark:text-rose-300' : 'opacity-60 line-through'}>
+              • «Остатки по складам» (Seller API <code>/v2/analytics/stock_on_warehouses</code>):
+              {' '}
+              <span className="tabular-nums">{meta.warehouseStocksCount} строк</span>
+            </li>
+            <li className={needsClusters ? 'text-amber-700 dark:text-amber-300' : 'opacity-60 line-through'}>
+              • «Кластеры» (Seller API <code>/v1/cluster/list</code>):
+              {' '}
+              <span className="tabular-nums">{meta.clustersCount} кластеров</span>
+            </li>
+          </>
+        )}
       </ul>
       {lastFetch && (
         <div className="text-[10px] opacity-60">
@@ -326,7 +358,7 @@ function GroupByToggle({
       key: 'warehouse',
       label: 'Склады',
       Icon: Warehouse,
-      title: 'Разрез по складам внутри кластеров (FBO)',
+      title: 'Разрез по складам внутри кластеров',
     },
   ];
   return (
@@ -349,6 +381,55 @@ function GroupByToggle({
           >
             <Icon className="h-3 w-3 shrink-0" />
             {!compact && <span>{label}</span>}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * Переключатель источника «Все | FBO | FBS».
+ *
+ * Отдельный сегмент рядом с разрезом, а не пункт в настройках: пользователь
+ * переключает его так же часто, как период, — сравнивать «свои склады против
+ * фулфилмента» это основной сценарий блока после Этапа 2b.
+ */
+function SourceToggle({
+  value,
+  onChange,
+  fbsRows,
+}: {
+  value: SourceFilter;
+  onChange: (next: SourceFilter) => void;
+  /** Сколько FBS-строк вообще есть у аккаунта (для подсказки «не синкали»). */
+  fbsRows: number;
+}) {
+  return (
+    <div className="inline-flex shrink-0 overflow-hidden rounded-md border border-border/60">
+      {SOURCE_OPTIONS.map(({ key, label, title }) => {
+        const active = value === key;
+        const noFbsData = key === 'FBS' && fbsRows === 0;
+        return (
+          <button
+            key={key}
+            type="button"
+            onClick={() => onChange(key)}
+            title={
+              noFbsData
+                ? 'Остатков FBS нет. Запустите стейдж «Остатки по своим складам (FBS)» в настройках синхронизации.'
+                : title
+            }
+            aria-pressed={active}
+            className={
+              'px-2 py-1 text-[11px] transition ' +
+              (active
+                ? 'bg-primary/10 font-medium text-foreground'
+                : 'text-muted-foreground hover:bg-accent hover:text-foreground') +
+              (noFbsData && !active ? ' opacity-50' : '')
+            }
+          >
+            {label}
           </button>
         );
       })}
@@ -467,8 +548,10 @@ function RenderOzonWarehouseClusters({ instance, onConfigChange }: BlockRenderPr
   // (onConfigChange нет) — там переключатель работает, но не персистится.
   const canPersist = Boolean(onConfigChange);
   const [uiGroupBy, setUiGroupBy] = useState<GroupBy | null>(null);
+  const [uiSource, setUiSource] = useState<SourceFilter | null>(null);
   const [uiExpanded, setUiExpanded] = useState<string[] | null>(null);
   const groupBy: GroupBy = canPersist ? config.groupBy : (uiGroupBy ?? config.groupBy);
+  const source: SourceFilter = canPersist ? config.source : (uiSource ?? config.source);
   const expanded = useMemo(
     () => new Set(canPersist ? config.expandedClusters : (uiExpanded ?? config.expandedClusters)),
     [canPersist, uiExpanded, config.expandedClusters],
@@ -485,6 +568,14 @@ function RenderOzonWarehouseClusters({ instance, onConfigChange }: BlockRenderPr
     (next: GroupBy) => {
       if (canPersist) patchConfig({ groupBy: next });
       else setUiGroupBy(next);
+    },
+    [canPersist, patchConfig],
+  );
+
+  const setSource = useCallback(
+    (next: SourceFilter) => {
+      if (canPersist) patchConfig({ source: next });
+      else setUiSource(next);
     },
     [canPersist, patchConfig],
   );
@@ -532,6 +623,7 @@ function RenderOzonWarehouseClusters({ instance, onConfigChange }: BlockRenderPr
         from: range.from.toISOString(),
         to: range.to.toISOString(),
         groupBy,
+        source,
       });
       if (groupBy === 'warehouse') {
         params.set('warehouseLimit', String(config.warehouseLimit));
@@ -563,6 +655,7 @@ function RenderOzonWarehouseClusters({ instance, onConfigChange }: BlockRenderPr
     period.customFrom,
     period.customTo,
     groupBy,
+    source,
     serverSort,
   ]);
 
@@ -673,6 +766,8 @@ function RenderOzonWarehouseClusters({ instance, onConfigChange }: BlockRenderPr
   // «Без кластера». Показываем banner, чтобы пользователь понял почему.
   const showClustersBanner =
     !!data &&
+    // В разрезе «Только FBS» справочник кластеров ни на что не влияет.
+    data.meta.source !== 'FBS' &&
     data.meta.warehouseStocksCount > 0 &&
     data.meta.clustersCount === 0;
 
@@ -697,6 +792,11 @@ function RenderOzonWarehouseClusters({ instance, onConfigChange }: BlockRenderPr
           </button>
         )}
         <div className="ml-auto flex items-center gap-1.5">
+          <SourceToggle
+            value={source}
+            onChange={setSource}
+            fbsRows={data?.meta.bySource?.fbs ?? 0}
+          />
           <GroupByToggle value={groupBy} onChange={setGroupBy} compact={compact} />
           {groupBy === 'warehouse' && rows.length > 0 && (
             <button
@@ -1058,6 +1158,35 @@ function SettingsForm({ config, onChange }: BlockSettingsFormProps) {
           Переключается и прямо в шапке блока — выбор сохраняется здесь же.
         </p>
       </div>
+      <div className="space-y-1.5">
+        <p className="text-[11px] font-medium text-muted-foreground">
+          Источник остатков
+        </p>
+        <div className="flex gap-1">
+          {SOURCE_OPTIONS.map(({ key, label, title }) => (
+            <button
+              key={key}
+              type="button"
+              title={title}
+              onClick={() =>
+                onChange({ ...parsed, source: key } as unknown as Record<string, unknown>)
+              }
+              className={
+                'rounded-md border px-2 py-1 text-[12px] transition ' +
+                (parsed.source === key
+                  ? 'border-primary/40 bg-primary/10 font-medium text-foreground'
+                  : 'border-border/60 text-muted-foreground hover:bg-accent')
+              }
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <p className="text-[10px] text-muted-foreground opacity-70">
+          FBS — собственные склады продавца (стейдж «Остатки по своим складам»).
+          Фильтр применяется и к остаткам, и к заказам периода.
+        </p>
+      </div>
       <label className="flex flex-col gap-1 text-[12px]">
         <span className="text-[11px] font-medium text-muted-foreground">
           Складов на кластер (топ-N)
@@ -1108,7 +1237,7 @@ export const UnitOzonWarehouseClustersBlock: BlockDef = {
   type: 'unit.ozon-warehouse-clusters',
   displayName: 'Ozon · Остатки по кластерам',
   description:
-    'Географические кластеры Ozon с разрезом по складам: остатки (свободно/резерв/ожидается), доля, заказы и выручка за период.',
+    'Географические кластеры Ozon с разрезом по складам и фильтром FBO/FBS: остатки (свободно/резерв/ожидается), доля, заказы и выручка за период.',
   category: 'tables',
   icon: MapIcon,
   defaultSize: { w: 12, h: 6 },

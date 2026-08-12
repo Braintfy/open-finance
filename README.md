@@ -26,12 +26,18 @@
 
 ## Стек
 
+Актуальный источник правды — `package.json`; разбивка «есть / shim / план» — [`CLAUDE.md`](./CLAUDE.md#стек).
+
+**Сейчас:**
 - **Frontend:** Next.js 15 + TypeScript + Tailwind + shadcn/ui
 - **DB:** PostgreSQL 16 + pgvector + Drizzle ORM
-- **AI:** Claude / OpenAI / Yandex GPT / Ollama (своя обёртка)
-- **Cache:** Redis 7 + BullMQ
-- **Desktop:** Tauri 2.0 (Phase 2)
-- **Mobile:** React Native + Expo (Phase 3)
+- **Auth:** свой JWT-cookie (`jose` + `bcryptjs`) — NextAuth не используется
+- **AI:** Ollama / OpenAI-compat (в т.ч. Claude через VPN) / Yandex GPT / GigaChat — своя обёртка, не Vercel AI SDK
+- **Таблицы/файлы:** `fast-formula-parser` + `xlsx`, `@mdxeditor/editor`, Recharts, react-grid-layout
+
+**Пока не подключено:** Redis/BullMQ (в `src/lib/redis.ts` in-memory shim — контейнер `redis:7` в compose поднимается «на вырост»), S3-SDK для MinIO, Sentry.
+
+**План:** Tauri 2.0 (Phase 2), React Native + Expo (Phase 3).
 
 ## Быстрый старт
 
@@ -48,8 +54,13 @@ pnpm docker:up
 # 4. Применить схему БД
 pnpm db:push
 
-# 5. Применить HNSW и FTS индексы (вручную, drizzle-kit их не умеет)
-docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev < drizzle/init/02-vector-indexes.sql
+# 5. Применить init-SQL: индексы и DDL, которые drizzle-kit не умеет.
+#    Автоматом при первом старте контейнера отрабатывает ТОЛЬКО 01-extensions.sql,
+#    остальные (02…17) применяются вручную ВСЕГДА — см. раздел «Применение миграций БД».
+for f in drizzle/init/*.sql; do
+  case "$f" in */01-extensions.sql) continue;; esac
+  docker exec -i openfinance-postgres psql -v ON_ERROR_STOP=1 -U openfinance_user -d openfinance_dev < "$f"
+done
 
 # 6. (Опционально) Локальный AI — Ollama. См. docs/LOCAL_AI.md
 brew install ollama && brew services start ollama && ollama pull qwen2.5:7b
@@ -76,12 +87,20 @@ Adminer (web UI для Postgres): [http://localhost:8081](http://localhost:8081)
 
 ## Применение миграций БД
 
-Drizzle-схема (таблицы) применяется через `pnpm db:push`. SQL-файлы из `drizzle/init/` — индексы и DDL, которые drizzle-kit не умеет, — применяются вручную через `docker exec`:
+Drizzle-схема (таблицы) применяется через `pnpm db:push`. SQL-файлы из `drizzle/init/` — индексы и DDL, которые drizzle-kit не умеет.
+
+> **Автоматически выполняется ТОЛЬКО `drizzle/init/01-extensions.sql`** — в `docker-entrypoint-initdb.d` смонтирован ровно один этот файл (см. `docker-compose.yml`; так сделано намеренно, коммит `3f7245e`). **Все остальные `02…17-*.sql` применяются ВРУЧНУЮ, всегда** — и на свежей БД, и на работающей.
 
 ```bash
-# Локально (Docker)
+# Локально (Docker) — применить ВСЕ init-файлы кроме 01 (он уже отработал в initdb), по порядку
+for f in drizzle/init/*.sql; do
+  case "$f" in */01-extensions.sql) continue;; esac
+  echo "== $f"
+  docker exec -i openfinance-postgres psql -v ON_ERROR_STOP=1 -U openfinance_user -d openfinance_dev < "$f"
+done
+
+# Или поштучно
 docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev < drizzle/init/02-vector-indexes.sql
-docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev < drizzle/init/09-marketplaces-analytics.sql
 
 # Проверить что таблица создалась
 docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev -c '\d ozon_analytics_daily'
@@ -90,7 +109,7 @@ docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev 
 docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev -c 'DROP TABLE IF EXISTS ozon_analytics_daily;'
 ```
 
-> Файлы из `drizzle/init/*.sql` автоматически выполняются при **первом** запуске Postgres-контейнера (через `docker-entrypoint-initdb.d`). На уже работающей БД их нужно применять вручную командой выше.
+Актуальный список файлов — `ls drizzle/init/` (сейчас 17: `01-extensions` … `16-workspaces`, `17-ozon-fbs-stocks`). Числа в README не перечисляем поимённо, чтобы список не протухал.
 
 ## Деплой на Ubuntu-сервер
 
@@ -139,9 +158,12 @@ pnpm build
 pnpm docker:up                # postgres:5434, redis:6380, minio, adminer
 pnpm db:push                  # таблицы через Drizzle
 
-# SQL-индексы и DDL (по очереди, при добавлении новых файлов в drizzle/init/)
-docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev < drizzle/init/02-vector-indexes.sql
-docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev < drizzle/init/09-marketplaces-analytics.sql
+# SQL-индексы и DDL: initdb выполняет ТОЛЬКО 01-extensions.sql,
+# остальные (02…17 и все новые) — вручную, по порядку
+for f in drizzle/init/*.sql; do
+  case "$f" in */01-extensions.sql) continue;; esac
+  docker exec -i openfinance-postgres psql -v ON_ERROR_STOP=1 -U openfinance_user -d openfinance_dev < "$f"
+done
 ```
 
 ### 4. systemd-сервис для Next.js
@@ -272,7 +294,12 @@ open-finance/
 - [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — карта архитектуры
 - [`docs/LOCAL_AI.md`](./docs/LOCAL_AI.md) — локальный AI через Ollama в dev
 - [`docs/PERSONAL_USE.md`](./docs/PERSONAL_USE.md) — инструкция для личного self-hosted инстанса
+- [`docs/DEPLOY_RPI5.md`](./docs/DEPLOY_RPI5.md) — деплой на Raspberry Pi 5 (фазы A-H, рутина обновления в §10)
+- [`docs/LK_V2_PLAN.md`](./docs/LK_V2_PLAN.md) — план ЛК v2: воркспейсы, переработка блоков, VLESS-VPN
+- [`docs/TENANT_SCOPING.md`](./docs/TENANT_SCOPING.md) — tenant-гейт `requireTenant()` (вместо Postgres RLS)
+- [`docs/SECURITY_AUDIT.md`](./docs/SECURITY_AUDIT.md) — аудит безопасности, статусы находок I1-I7
 - [`docs/DESKTOP_PLAN.md`](./docs/DESKTOP_PLAN.md) — план local-first десктоп-приложения (оркестрация для AI-агента)
+- [`docs/DESKTOP_STRATEGY.md`](./docs/DESKTOP_STRATEGY.md) — выбор стека десктопа (Tauri vs Electron)
 - [`docs/ONBOARDING.md`](./docs/ONBOARDING.md) — спецификация onboarding-визарда
 - [`FEED.md`](./FEED.md) — заготовки постов для Telegram-канала
 - [`CHANGELOG.md`](./CHANGELOG.md) — история изменений

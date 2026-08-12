@@ -25,14 +25,16 @@ pnpm tsx scripts/test-<name>.ts     # exit 1 при провале, в выво�
 
 | Домен изменений | Скрипты `scripts/test-*` |
 |---|---|
-| Ozon API / sync / аналитика | `ozon-upsert`, `ozon-sync-diff`, `ozon-sync-presets`, `ozon-sync-incremental`, `ozon-analytics`, `ozon-import-mapping`, `ozon-perf-{client,campaigns,period}`, `ozon-warehouse-stocks` (CSV-парсер дополнительно проверяется `scripts/debug-ozon-perf-csv.ts`) |
+| Ozon API / sync / аналитика | `ozon-upsert`, `ozon-sync-diff`, `ozon-sync-presets`, `ozon-sync-incremental`, `ozon-analytics`, `ozon-import-mapping`, `ozon-perf-{client,campaigns,period}`, `ozon-warehouse-stocks`, `ozon-cluster-agg`, `ozon-ai-insights-parse` (CSV-парсер дополнительно проверяется `scripts/debug-ozon-perf-csv.ts`) |
 | Блоки / формулы / sheet / custom.data | `custom-data-formulas`, `sheet-fill`, `sheet-import-export`, `block-import-export`, `fill-handle`, `formula-pick-mode`, `source-binding`, `source-context`, `virtual-sources`, `blockgrid-responsive` |
 | Периоды | `block-period`, `page-period-context`, `period-panel-visibility`, `period-picker` |
 | Юнит-экономика / Мой магазин | `unit-economics`, `my-store-compute`, `decimal-resolution`, `unit-tabs-crud` |
 | KPI / cashflow | `kpi-grid-config`, `cashflow-kpi`, `tinkoff-import` |
-| AI | `prompt-resolver`, `vision-router` |
+| AI | `prompt-resolver`, `vision-router`, `ozon-ai-insights-parse` |
+| Воркспейсы («кабинеты») | `workspace-templates` |
+| VPN / VLESS | `vless-parse` |
 
-Если домен неочевиден — `ls scripts/ | grep '^test-'` и выбрать по именам.
+Если домен неочевиден — `ls scripts/ | grep '^test-'` и выбрать по именам. **Карту не считать полной**: при добавлении нового `scripts/test-*.ts` дописывать сюда строку (иначе домен молча выпадает из прогонов).
 
 ## Прогон всех
 

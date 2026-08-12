@@ -23,11 +23,11 @@ const DIFF_INSTRUCTION = base
 const DIMENSIONS = [
   {
     key: 'tenant-sql',
-    rules: `Сначала прочитай ${ROOT}/.cursor/rules/drizzle.mdc. Проверяй: tenant_id в каждом DB-запросе и каждой новой таблице; top-level try/catch + NextResponse.json({ok:false,error}) во всех routes; Date в raw sql только через toISOString()+::timestamp; JSONB merge через || c JSON.stringify; onConflictDoUpdate с COALESCE-fallback; регистрация новых таблиц в schema/index.ts.`,
+    rules: `Сначала прочитай ${ROOT}/.cursor/rules/drizzle.mdc и ${ROOT}/docs/TENANT_SCOPING.md — правила там, ниже только фокус измерения. Проверяй: tenant_id в каждом DB-запросе и каждой новой таблице; tenantId ТОЛЬКО из сессии (requireTenant()/requireTenantRoute(), Postgres RLS в проекте нет); workspace_id для пользовательских раскладок/вкладок (uniq (workspace_id, page_key)); top-level try/catch + NextResponse.json({ok:false,error}) во всех routes; Date в raw sql только через toISOString()+::timestamp; JSONB merge через || c JSON.stringify; onConflictDoUpdate с COALESCE-fallback; регистрация новых таблиц в schema/index.ts.`,
   },
   {
     key: 'blocks-react',
-    rules: `Сначала прочитай ${ROOT}/.cursor/rules/blocks.mdc. Проверяй: hooks (useBlockValuePublisher/useMemo/useState/useEffect) выше early-returns; parseConfig только через useMemo; BlockDef не через RSC props (iconName string); DndContext id={useId()}; пользовательский выбор персистится через onConfigChange; нативный select в шапках запрещён (DropdownSelect); min-w-0 в DialogContent; sticky-конвенции (bg-card, z-index 45/36/35/30, PIN_SHADOW); window/localStorage не в useState-инициализаторе; import type из route-файлов; key={blockId} в shell-модалках.`,
+    rules: `Сначала прочитай ${ROOT}/.cursor/rules/blocks.mdc — правила там, ниже только фокус измерения. Проверяй: hooks (useBlockValuePublisher/useMemo/useState/useEffect) выше early-returns; parseConfig только через useMemo; BlockDef не через RSC props (iconName string); DndContext id={useId()}; пользовательский выбор персистится через onConfigChange; нативный select в шапках запрещён (DropdownSelect); min-w-0 в DialogContent; sticky-конвенции (bg-card, z-index 45/36/35/30, PIN_SHADOW); window/localStorage не в useState-инициализаторе; import type из route-файлов; key={blockId} в shell-модалках.`,
   },
   {
     key: 'money-format',
@@ -35,11 +35,11 @@ const DIMENSIONS = [
   },
   {
     key: 'security',
-    rules: `Сначала прочитай ${ROOT}/.cursor/rules/security.mdc и ${ROOT}/docs/SECURITY.md. Проверяй: секреты/ключи/токены/пароли в диффе (sk-*, ghp_*, api_key=); .env-файлы; bcryptjs в edge/middleware; api_key только AES-256-GCM + maskSecret на клиент/в логи; новые env → src/lib/env.ts и .env.example; хардкод URL/ключей.`,
+    rules: `Сначала прочитай ${ROOT}/.cursor/rules/security.mdc и ${ROOT}/docs/SECURITY.md — правила там, ниже только фокус измерения. Проверяй: секреты/ключи/токены/пароли в диффе (sk-*, ghp_*, api_key=); .env-файлы; bcryptjs в edge/middleware; api_key только AES-256-GCM + maskSecret на клиент/в логи; новые env → src/lib/env.ts и .env.example; хардкод URL/ключей.`,
   },
   {
     key: 'ai-layer',
-    rules: `Сначала прочитай ${ROOT}/.cursor/rules/ai-tools.mdc. Проверяй: новые AI-маршруты через resolvePromptStack() + getActiveCredentials(); NDJSON (start/token/done/error/aborted); AI-мутации только через Tools Layer (регистрация в tools/index.ts); cross-section контекст — серверный резолв по refs (телу клиента не доверять); паритет токенов через общий билдер; js-tiktoken lazy client-only.`,
+    rules: `Сначала прочитай ${ROOT}/.cursor/rules/ai-tools.mdc — правила там, ниже только фокус измерения. Проверяй: новые AI-маршруты через resolvePromptStack() + getActiveCredentials(); NDJSON (start/token/done/error/aborted); AI-мутации только через Tools Layer (регистрация в tools/index.ts); cross-section контекст — серверный резолв по refs (телу клиента не доверять); паритет токенов через общий билдер; js-tiktoken lazy client-only.`,
   },
 ]
 

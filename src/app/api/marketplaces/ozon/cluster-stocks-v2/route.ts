@@ -23,8 +23,12 @@
 //
 // Этап 2a LK_V2_PLAN: `?groupBy=warehouse` — иерархия кластер→склады.
 // Схема БД не менялась: разрез по складам берётся из уже существующей колонки
-// `ozon_warehouse_stocks.warehouse_name` (FBO-only) и имени склада заказа.
-// FBS-склады появятся в Этапе 2b (там нужна миграция).
+// `ozon_warehouse_stocks.warehouse_name` и имени склада заказа.
+//
+// Этап 2b LK_V2_PLAN: `?source=all|FBO|FBS`. Собственные склады продавца
+// синкает стейдж `fbsWarehouseStocks` (`source='FBS'` в той же таблице);
+// в географические кластеры Ozon они не входят и группируются отдельной
+// псевдо-строкой «FBS (свои склады)».
 
 import { NextResponse, type NextRequest } from 'next/server';
 import { auth } from '@/lib/auth';
@@ -36,9 +40,11 @@ import {
 } from '@/lib/marketplaces/ozon/cluster-stocks-query';
 import {
   isWarehouseSortKey,
+  isStockSourceFilter,
   DEFAULT_WAREHOUSE_LIMIT,
   MAX_WAREHOUSE_LIMIT,
   type ClusterAggRow,
+  type StockSourceFilter,
   type WarehouseAggRow,
 } from '@/lib/marketplaces/ozon/cluster-agg';
 
@@ -55,6 +61,8 @@ export type OzonClusterStocksResponse = {
    * в обоих режимах.
    */
   groupBy: OzonClusterStocksGroupBy;
+  /** Применённый фильтр источника остатков (Этап 2b). Дублируется в `meta`. */
+  source: StockSourceFilter;
   rows: OzonClusterStocksRow[];
   totals: OzonClusterStocksTotals;
   period: { from: string; to: string } | null;
@@ -93,6 +101,11 @@ export async function GET(req: NextRequest) {
     const warehouseSortDir =
       url.searchParams.get('warehouseSortDir') === 'asc' ? 'asc' : 'desc';
 
+    // Дефолт 'all' — обратная совместимость: до Этапа 2b параметра не было,
+    // а в таблице лежали только FBO-строки.
+    const rawSource = url.searchParams.get('source') ?? '';
+    const source: StockSourceFilter = isStockSourceFilter(rawSource) ? rawSource : 'all';
+
     const { rows, totals, meta } = await loadOzonClusterStocks({
       tenantId: session.tenantId,
       accountId,
@@ -102,11 +115,13 @@ export async function GET(req: NextRequest) {
       warehouseLimit,
       warehouseSort,
       warehouseSortDir,
+      source,
     });
 
     return NextResponse.json({
       ok: true,
       groupBy,
+      source,
       rows,
       totals,
       period: fromIso && toIso ? { from: fromIso, to: toIso } : null,

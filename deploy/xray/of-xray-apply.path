@@ -1,0 +1,15 @@
+# PURPOSE: Наблюдает за spool-конфигом, который пишет админка Open Finance,
+# и запускает of-xray-apply.service. Единственный мост между непривилегированным
+# web-процессом и привилегированной установкой конфига Xray.
+# Установка: /etc/systemd/system/of-xray-apply.path (см. README.md)
+[Unit]
+Description=Watch Open Finance Xray spool config
+Documentation=file:///opt/open-finance/deploy/xray/README.md
+
+[Path]
+# Триггер на закрытие файла после записи и на mv во время атомарной подмены.
+PathChanged=/var/lib/open-finance/xray/config.json
+Unit=of-xray-apply.service
+
+[Install]
+WantedBy=multi-user.target
