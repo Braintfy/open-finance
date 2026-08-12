@@ -25,13 +25,21 @@ if not path:
 
 # Порядок важен: специфичные области раньше общих (catalog/unit-* → unit-economics, не blocks).
 RULES = [
+    (("src/lib/ai/vpn/", "src/app/api/admin/ai/vpn", "vpn-card", "deploy/xray/"),
+     "vless", ".cursor/rules/security.mdc — раздел «VLESS/Xray — граница доверия web→root» "
+              "(НЕ ai-tools.mdc) плюс deploy/xray/README.md"),
     (("src/lib/auth/", "src/app/(auth)/", "src/middleware.ts", "src/lib/billing/",
       "src/lib/inbox/crypto", "src/lib/marketplaces/crypto", "src/lib/env.ts",
-      "src/app/api/auth/", "src/app/api/billing/", "/.env"),
+      "src/lib/legal.ts", "src/app/api/auth/", "src/app/api/billing/",
+      "src/app/api/admin/", "src/app/app/admin/", "deploy/", "/.env"),
      "security", ".cursor/rules/security.mdc и ОБЯЗАТЕЛЬНО docs/SECURITY.md"),
+    (("src/lib/workspaces/", "src/app/api/workspaces/", "src/components/workspaces/"),
+     "workspaces", ".cursor/rules/drizzle.mdc (раздел «Workspace-скоуп») "
+                   "и .cursor/rules/blocks.mdc (раздел «Workspace-скоуп раскладок»)"),
     (("src/lib/db/", "drizzle/"),
      "drizzle", ".cursor/rules/drizzle.mdc"),
     (("src/lib/marketplaces/", "src/app/api/marketplaces/", "src/components/marketplaces/",
+      "src/app/app/marketplaces/", "src/app/app/settings/integrations/",
       "src/components/unit-economics/ozon-"),
      "marketplaces", ".cursor/rules/marketplaces.mdc"),
     (("src/lib/ai/", "src/app/api/ai/", "src/components/micro-agent/"),

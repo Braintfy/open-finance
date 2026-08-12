@@ -44,3 +44,9 @@ CREATE INDEX IF NOT EXISTS "inbox_messages_channel_idx"
 
 CREATE UNIQUE INDEX IF NOT EXISTS "inbox_messages_channel_external_idx"
   ON "inbox_messages" ("channel_id", "external_id");
+
+-- AI Vision: результаты распознавания чеков/счетов/договоров.
+-- Миррор миграции 0003_outstanding_energizer (идемпотентно, безопасно повторять).
+ALTER TABLE "inbox_messages" ADD COLUMN IF NOT EXISTS "ai_extracted" jsonb;
+ALTER TABLE "inbox_messages" ADD COLUMN IF NOT EXISTS "ai_provider" varchar(20);
+ALTER TABLE "inbox_messages" ADD COLUMN IF NOT EXISTS "ai_extracted_at" timestamp;

@@ -32,7 +32,18 @@ import {
   FBS_DROPOFF_LABELS,
   FBS_SHIPMENT_SPEED_LABELS,
   FBS_CLUSTER_BY_KEY,
-} from '@/lib/unit-economics/ozon/tariffs-2026-04-07';
+} from '@/lib/unit-economics/ozon/tariffs-2026-08-30';
+import {
+  FBS_DROPOFF_OPTIONS,
+  FBO_ACCEPTANCE_HINT,
+  LOCAL_CLUSTER_HINT,
+  LOCALITY_DISCOUNT_HINT,
+  LOCALITY_DISCOUNT_LABEL,
+  fbsSpeedOptions,
+  normalizeFbsSpeed,
+  paymentDeferralOptions,
+  remapFbsSpeed,
+} from '@/lib/unit-economics/ozon/fbs-ui-options';
 import { migrateOzonRaw } from '@/lib/unit-economics/ozon/migrate';
 import { useBlockValuePublisher } from '@/lib/blocks/values';
 import { useFormatSettings, formatRublesWithSettings } from '@/lib/format-settings';
@@ -99,7 +110,9 @@ const SECTIONS: Array<{
     title: 'Реклама и соинвест',
     fields: [
       { key: 'drrPct', label: 'ДРР', unit: '%' },
-      { key: 'coInvestPct', label: 'Соинвест (баллы)', unit: '%', max: 100 },
+      // Соинвест/СПП — скидка ЗА СЧЁТ Ozon: снижает только цену для покупателя
+      // и налоговую базу, прибыль продавца не увеличивает.
+      { key: 'coInvestPct', label: 'Соинвест Ozon (СПП)', unit: '%', max: 100 },
       { key: 'overheadPerUnit', label: 'Прочие расходы', unit: '₽', money: true },
     ],
   },
@@ -122,8 +135,12 @@ const SECTIONS: Array<{
   },
 ];
 
+// Соинвеста/СПП здесь НЕТ намеренно: скидка идёт за счёт Ozon, в прибыль
+// продавца не входит (до тарифов ozon_2026_08_30 строка «Соинвест Ozon»
+// показывалась со знаком «+» и завышала итог). Справочные «цена с СПП» и
+// «экономия покупателя» выводятся отдельным блоком под P&L.
 const PNL_LINES: Array<{ key: keyof ReturnType<typeof calculateOzon>; label: string; sign?: '+' | '-' }> = [
-  { key: 'buyerPrice', label: 'Цена покупателя', sign: '+' },
+  { key: 'buyerPrice', label: 'Выручка продавца', sign: '+' },
   { key: 'commission', label: 'Комиссия Ozon', sign: '-' },
   { key: 'acquiring', label: 'Эквайринг', sign: '-' },
   { key: 'logistics', label: 'Логистика', sign: '-' },
@@ -134,7 +151,6 @@ const PNL_LINES: Array<{ key: keyof ReturnType<typeof calculateOzon>; label: str
   { key: 'tax', label: 'Налог', sign: '-' },
   { key: 'cogs', label: 'Себестоимость', sign: '-' },
   { key: 'overhead', label: 'Прочие расходы', sign: '-' },
-  { key: 'coInvestSavings', label: 'Соинвест Ozon', sign: '+' },
 ];
 
 const TAX_MODE_LABELS: Record<TaxMode, string> = {
@@ -235,6 +251,10 @@ function RenderOzonCalculator({ instance, onConfigChange }: BlockRenderProps) {
   const positive = results.profitPerUnit > 0;
   const isFbs = inputs.mode === 'fbs';
   const taxMode = inputs.taxMode ?? 'usn_income';
+  const dropoffPoint = inputs.fbsDropoffPoint ?? 'sorting_center';
+  // Сохранённые legacy-скорости ('fast'/'standard'/'slow') приводим к ключу
+  // актуальной сетки с ТЕМ ЖЕ эффектом в п.п. — иначе дроп-даун показал бы «—».
+  const shipmentSpeed = normalizeFbsSpeed(inputs.fbsShipmentSpeed, dropoffPoint);
 
   return (
     <Card className="flex h-full flex-col overflow-hidden">
@@ -259,11 +279,11 @@ function RenderOzonCalculator({ instance, onConfigChange }: BlockRenderProps) {
           {isFbs && (
             <span
               className="inline-flex max-w-[420px] items-center truncate rounded border border-border/60 bg-background px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground"
-              title={`Точка сдачи · ${FBS_DROPOFF_LABELS[inputs.fbsDropoffPoint ?? 'sorting_center']}, скорость · ${FBS_SHIPMENT_SPEED_LABELS[inputs.fbsShipmentSpeed ?? 'standard']}, кластеры · ${summarizeClusters(inputs.fbsClusters)}`}
+              title={`Точка сдачи · ${FBS_DROPOFF_LABELS[dropoffPoint]}, скорость · ${FBS_SHIPMENT_SPEED_LABELS[shipmentSpeed]}, кластеры · ${summarizeClusters(inputs.fbsClusters)}`}
             >
               <span className="truncate">
-                {FBS_DROPOFF_LABELS[inputs.fbsDropoffPoint ?? 'sorting_center']} ·{' '}
-                {FBS_SHIPMENT_SPEED_LABELS[inputs.fbsShipmentSpeed ?? 'standard']} ·{' '}
+                {FBS_DROPOFF_LABELS[dropoffPoint]} ·{' '}
+                {FBS_SHIPMENT_SPEED_LABELS[shipmentSpeed]} ·{' '}
                 {summarizeClusters(inputs.fbsClusters)}
               </span>
             </span>
@@ -276,7 +296,12 @@ function RenderOzonCalculator({ instance, onConfigChange }: BlockRenderProps) {
           <span className="inline-flex items-center rounded border border-border/60 bg-background px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
             Налог: {TAX_MODE_LABELS[taxMode]} {Number(inputs.taxRatePct ?? 0)}%
           </span>
-          <span className="text-[10px] text-muted-foreground">v{OZON_TARIFF_VERSION}</span>
+          <span
+            className="text-[10px] text-muted-foreground"
+            title={`Тарифный пакет ${OZON_TARIFF_VERSION}`}
+          >
+            Тарифы {OZON_TARIFF_VERSION.replace(/^ozon_/, '').replace(/_/g, '-')}
+          </span>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
           <OzonSyncButton
@@ -318,53 +343,68 @@ function RenderOzonCalculator({ instance, onConfigChange }: BlockRenderProps) {
           <>
             <DropdownSelect
               label="Точка сдачи"
-              value={inputs.fbsDropoffPoint ?? 'sorting_center'}
-              options={Object.entries(FBS_DROPOFF_LABELS).map(([v, l]) => ({ value: v, label: l }))}
-              onChange={(v) => setInput('fbsDropoffPoint', v as OzonFbsDropoffPoint)}
+              value={dropoffPoint}
+              options={FBS_DROPOFF_OPTIONS}
+              onChange={(v) => {
+                const next = v as OzonFbsDropoffPoint;
+                // Сетки скоростей у «СЦ/курьер» и «ПВЗ/ППЗ» разные — переносим
+                // выбор в ближайший по эффекту пункт новой сетки одним persist'ом.
+                setInputs({
+                  fbsDropoffPoint: next,
+                  fbsShipmentSpeed: remapFbsSpeed(shipmentSpeed, dropoffPoint, next),
+                });
+              }}
             />
             <DropdownSelect
               label="Скорость отгрузки"
-              value={inputs.fbsShipmentSpeed ?? 'standard'}
-              options={Object.entries(FBS_SHIPMENT_SPEED_LABELS).map(([v, l]) => ({ value: v, label: l }))}
+              value={shipmentSpeed}
+              options={fbsSpeedOptions(dropoffPoint)}
               onChange={(v) => setInput('fbsShipmentSpeed', v as OzonFbsShipmentSpeed)}
             />
             <ClusterSelector
               label="Кластеры FBS"
               value={inputs.fbsClusters}
               onChange={(next) => setInput('fbsClusters', next)}
+              localityDiscount={Boolean(inputs.localityDiscount)}
             />
-            <button
-              type="button"
-              onClick={() => setInput('freeAcceptance', !inputs.freeAcceptance)}
-              className={
-                'inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] transition-colors ' +
-                (inputs.freeAcceptance
-                  ? 'border-primary/40 bg-primary/10 text-primary'
-                  : 'border-border/60 bg-background text-muted-foreground hover:text-foreground')
-              }
-              title="Бесплатная приёмка партии Ozon"
-            >
-              <span className="h-2 w-2 rounded-full" style={{ background: inputs.freeAcceptance ? 'currentColor' : '#d1d5db' }} />
-              <span>Бесплатная приёмка</span>
-            </button>
           </>
         )}
         {inputs.mode === 'fbo' && (
           <button
             type="button"
-            onClick={() => setInput('highVolumeDiscount', !inputs.highVolumeDiscount)}
+            onClick={() => setInput('freeAcceptance', !inputs.freeAcceptance)}
             className={
               'inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] transition-colors ' +
-              (inputs.highVolumeDiscount
+              (inputs.freeAcceptance
                 ? 'border-primary/40 bg-primary/10 text-primary'
                 : 'border-border/60 bg-background text-muted-foreground hover:text-foreground')
             }
-            title=">50 заказов FBO за 7 дней — снижение логистики на 15%"
+            title={FBO_ACCEPTANCE_HINT}
           >
-            <span className="h-2 w-2 rounded-full" style={{ background: inputs.highVolumeDiscount ? 'currentColor' : '#d1d5db' }} />
-            <span>{'>50 заказов'}</span>
+            <span className="h-2 w-2 rounded-full" style={{ background: inputs.freeAcceptance ? 'currentColor' : '#d1d5db' }} />
+            <span>Бесплатная приёмка FBO</span>
           </button>
         )}
+        <button
+          type="button"
+          onClick={() => setInput('localityDiscount', !inputs.localityDiscount)}
+          className={
+            'inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] transition-colors ' +
+            (inputs.localityDiscount
+              ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
+              : 'border-border/60 bg-background text-muted-foreground hover:text-foreground')
+          }
+          title={LOCALITY_DISCOUNT_HINT}
+        >
+          <span className="h-2 w-2 rounded-full" style={{ background: inputs.localityDiscount ? 'currentColor' : '#d1d5db' }} />
+          <span>{LOCALITY_DISCOUNT_LABEL}</span>
+        </button>
+        <DropdownSelect
+          label="Отсрочка выплат"
+          value={String(Number(inputs.paymentDeferralDays ?? 0))}
+          options={paymentDeferralOptions(Number(inputs.paymentDeferralDays ?? 0))}
+          onChange={(v) => setInput('paymentDeferralDays', Number(v))}
+        />
         <button
           type="button"
           onClick={() => setInput('isLocalCluster', !inputs.isLocalCluster)}
@@ -374,10 +414,10 @@ function RenderOzonCalculator({ instance, onConfigChange }: BlockRenderProps) {
               ? 'border-primary/40 bg-primary/10 text-primary'
               : 'border-border/60 bg-background text-muted-foreground hover:text-foreground')
           }
-          title="Локальный кластер (используется как fallback при пустом выборе кластеров)"
+          title={LOCAL_CLUSTER_HINT}
         >
           <span className="h-2 w-2 rounded-full" style={{ background: inputs.isLocalCluster ? 'currentColor' : '#d1d5db' }} />
-          <span>Локальный</span>
+          <span>Локальный склад (×1)</span>
         </button>
         <DropdownSelect
           label="Налог"
@@ -466,7 +506,7 @@ function RenderOzonCalculator({ instance, onConfigChange }: BlockRenderProps) {
             <Metric
               label="Цена с СПП"
               value={fmt(results.priceWithSpp)}
-              hint="Цена покупателя после скидки"
+              hint="Платит покупатель (скидка за счёт Ozon)"
             />
             <Metric label="Прибыль с партии" value={fmt(results.profitPerBatch)} />
             <Metric
@@ -487,8 +527,6 @@ function RenderOzonCalculator({ instance, onConfigChange }: BlockRenderProps) {
             <div className="overflow-hidden rounded border border-border/50 text-[11px]">
               {PNL_LINES.map((line) => {
                 const v = (results[line.key] as number) ?? 0;
-                // Соинвест показываем только если > 0 (иначе строка пустая)
-                if (line.key === 'coInvestSavings' && !(v > 0)) return null;
                 const isPositive = line.sign === '+';
                 return (
                   <div key={line.key} className="flex items-center justify-between gap-2 border-b border-border/30 px-2 py-1 last:border-0 odd:bg-muted/20">
@@ -531,6 +569,14 @@ function RenderOzonCalculator({ instance, onConfigChange }: BlockRenderProps) {
                 </span>
               </div>
             </div>
+            {results.coInvestSavings > 0 && (
+              <div className="mt-1 rounded border border-dashed border-border/60 px-2 py-1 text-[10px] leading-snug text-muted-foreground">
+                Справочно: цена с СПП <span className="tabular-nums text-foreground/80">{fmt(results.priceWithSpp)}</span>
+                {' · '}экономия покупателя за счёт Ozon{' '}
+                <span className="tabular-nums text-foreground/80">{fmt(results.coInvestSavings)}</span>. В прибыль
+                продавца не входит — уменьшает только цену для покупателя и налоговую базу.
+              </div>
+            )}
           </div>
         </div>
       </div>

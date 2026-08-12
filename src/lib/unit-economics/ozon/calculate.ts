@@ -1,21 +1,35 @@
 // PURPOSE: Чистый расчёт Ozon юнит-экономики.
 // Без сторонних зависимостей; принимает OzonInputs, возвращает OzonResults.
-// Логистика — multi-cluster weighted-sum (см. computeLogistics).
+// Логистика — multi-cluster weighted-sum (см. computeForwardLogistics).
+//
+// Модель выручки и расходов (тарифы ozon_2026_08_30):
+//  - Выручка продавца = `buyerPrice` (цена после ЕГО скидки).
+//  - СПП/соинвест — скидка за счёт Ozon: уменьшает только `priceWithSpp`
+//    и налоговую базу, НЕ уменьшает расходы и НЕ увеличивает прибыль.
+//  - Логистика/приёмка начисляются на ЗАКАЗ → на выкупленную единицу
+//    делятся на процент выкупа. Исключение — приёмка FBO (на единицу).
+//  - НДС ИЗВЛЕКАЕТСЯ из цены покупателя, а не начисляется сверху.
 
 import type { OzonInputs, OzonResults, TaxMode, OzonFbsClusterShare } from '../types';
 import { clamp, round2, safeNumber } from '../types';
 import {
   OZON_TARIFF_VERSION,
   autoCommissionPct,
+  fboAcceptanceFee,
   fboLogisticsCost,
+  fbsDropoffAcceptanceFee,
   fbsLogisticsCost,
-  FBS_FAST_SHIPMENT_COMMISSION_BUMP_PCT,
-  HIGH_VOLUME_FBO_DISCOUNT,
+  fbsShipmentSpeedCommissionPp,
+  isLocalityDiscountExcluded,
+  LOCALITY_COMMISSION_DISCOUNT_PP,
   NON_LOCAL_CLUSTER_MULTIPLIER,
-  PAID_ACCEPTANCE_FEE_PER_UNIT_RUB,
+  paymentDeferralDiscountPp,
   RETURN_LOGISTICS_PCT_OF_FORWARD,
   FBS_CLUSTER_BY_KEY,
-} from './tariffs-2026-04-07';
+} from './tariffs-2026-08-30';
+
+/** Минимальный налог для УСН «Доходы минус расходы» — 1% от доходов. */
+const USN_MIN_TAX_RATE = 0.01;
 
 export const OZON_DEFAULT_INPUTS: OzonInputs = {
   mode: 'fbo',
@@ -26,10 +40,14 @@ export const OZON_DEFAULT_INPUTS: OzonInputs = {
   volumeL: 1,
   isLocalCluster: true,
   highVolumeDiscount: false,
+  localityDiscount: false,
+  paymentDeferralDays: 0,
   fbsDropoffPoint: 'sorting_center',
   fbsShipmentSpeed: 'standard',
   fbsClusters: [],
-  commissionMode: 'auto',
+  // 'manual' — то, что де-факто делают оба UI-блока. Режим 'auto' оставлен
+  // рабочим (autoCommissionPct), но по умолчанию не включается.
+  commissionMode: 'manual',
   commissionPct: 16,
   extraCommissionPct: 0,
   acquiringPct: 1.5,
@@ -55,65 +73,92 @@ export const OZON_DEFAULT_INPUTS: OzonInputs = {
 };
 
 /**
- * Налог на одну продажу.
- * - usn_income (УСН Доходы): taxRatePct% от цены покупателя.
- * - usn_income_minus (УСН Д-Р): taxRatePct% от max(0, buyerPrice - documentedExpensesPerUnit).
- *   Если documentedExpensesPerUnit=0 — фактически как usn_income.
- * - osno: taxRatePct% от цены (упрощение для v1; реальный НДС считается отдельно через vatPct).
+ * Налог на одну продажу. База — доход без НДС (`netRevenue`).
+ * - usn_income (УСН Доходы): ставка% от дохода без НДС.
+ * - usn_income_minus (УСН Д-Р): ставка% от (доход − расходы), но не меньше
+ *   минимального налога 1% от дохода.
+ * - osno: ставка% от дохода без НДС (упрощение; сам НДС считается отдельно
+ *   строкой `vat`). См. отчёт — база налога на прибыль требует уточнения.
  * - none: 0.
  */
 function calcTax(
-  buyerPrice: number,
-  documentedExpensesPerUnit: number,
+  netRevenue: number,
+  deductibleExpenses: number,
   mode: TaxMode,
   ratePct: number,
 ): number {
   if (mode === 'none') return 0;
   const rate = clamp(safeNumber(ratePct), 0, 100) / 100;
   if (mode === 'usn_income_minus') {
-    const taxable = Math.max(0, buyerPrice - documentedExpensesPerUnit);
-    return taxable * rate;
+    const taxable = Math.max(0, netRevenue - deductibleExpenses);
+    const minTax = Math.max(0, netRevenue) * USN_MIN_TAX_RATE;
+    return Math.max(taxable * rate, minTax);
   }
-  return buyerPrice * rate;
+  return Math.max(0, netRevenue) * rate;
 }
 
 /**
- * Multi-cluster логистика: weighted-sum по выбранным кластерам.
+ * Multi-cluster прямая логистика на ЗАКАЗ: weighted-sum по выбранным кластерам.
  * Если `fbsClusters` пуст — fallback к single-cluster через `isLocalCluster`.
  *
  * Доли нормализуются — если сумма != 100%, расчёт делится на фактическую сумму
  * (защита от частичного выбора, не превращающего пустые кластеры в "всё локально").
  */
-function computeLogistics(
-  inputs: OzonInputs,
-  baseLogistics: number,
-  highVolumeMultiplier: number,
-): number {
-  const clusters: OzonFbsClusterShare[] = Array.isArray(inputs.fbsClusters)
-    ? inputs.fbsClusters.filter((c) => c && typeof c.key === 'string' && safeNumber(c.sharePct) > 0)
-    : [];
+function computeForwardLogistics(inputs: OzonInputs, baseLogistics: number): number {
+  const clusters = activeClusters(inputs);
   if (clusters.length === 0 || inputs.mode === 'fbo') {
     const clusterMultiplier = inputs.isLocalCluster ? 1 : NON_LOCAL_CLUSTER_MULTIPLIER;
-    return baseLogistics * clusterMultiplier * highVolumeMultiplier;
+    return baseLogistics * clusterMultiplier;
   }
   const totalShare = clusters.reduce((acc, c) => acc + safeNumber(c.sharePct), 0);
-  if (totalShare <= 0) return baseLogistics * highVolumeMultiplier;
+  if (totalShare <= 0) return baseLogistics;
   let weighted = 0;
   for (const c of clusters) {
     const meta = FBS_CLUSTER_BY_KEY[c.key];
     const local = meta?.local ?? false;
     const multiplier = local ? 1 : NON_LOCAL_CLUSTER_MULTIPLIER;
     const share = safeNumber(c.sharePct) / totalShare;
-    weighted += baseLogistics * multiplier * highVolumeMultiplier * share;
+    weighted += baseLogistics * multiplier * share;
   }
   return weighted;
 }
 
+function activeClusters(inputs: OzonInputs): OzonFbsClusterShare[] {
+  return Array.isArray(inputs.fbsClusters)
+    ? inputs.fbsClusters.filter((c) => c && typeof c.key === 'string' && safeNumber(c.sharePct) > 0)
+    : [];
+}
+
+/**
+ * Доля отгрузок, на которую распространяется скидка за локальность (0..1).
+ * Исключения — Москва/МО+ДВ, СПб+СЗО, Беларусь. Для multi-cluster FBS
+ * считается доля неисключённых кластеров, иначе смотрим на `inputs.cluster`.
+ */
+function localityEligibleShare(inputs: OzonInputs): number {
+  const clusters = activeClusters(inputs);
+  if (inputs.mode === 'fbs' && clusters.length > 0) {
+    const total = clusters.reduce((acc, c) => acc + safeNumber(c.sharePct), 0);
+    if (total <= 0) return 0;
+    const eligible = clusters
+      .filter((c) => !isLocalityDiscountExcluded(c.key))
+      .reduce((acc, c) => acc + safeNumber(c.sharePct), 0);
+    return eligible / total;
+  }
+  return isLocalityDiscountExcluded(inputs.cluster) ? 0 : 1;
+}
+
 export function calculateOzon(rawInputs: Partial<OzonInputs>): OzonResults {
   const inputs: OzonInputs = { ...OZON_DEFAULT_INPUTS, ...rawInputs };
+
+  // Выручка продавца — цена после ЕГО скидки. СПП её не уменьшает.
   const buyerPrice = round2(
     safeNumber(inputs.price) * (1 - clamp(safeNumber(inputs.discountPct), 0, 100) / 100),
   );
+  // Цена, которую фактически платит покупатель (скидка за счёт Ozon).
+  const coInvest = clamp(safeNumber(inputs.coInvestPct), 0, 100) / 100;
+  const priceWithSpp = round2(buyerPrice * (1 - coInvest));
+  // Справочно: сколько скидки оплатил Ozon. НЕ участвует в P&L продавца.
+  const coInvestSavings = round2(buyerPrice - priceWithSpp);
 
   // Buyout derived из returnsPct + cancelPct, либо legacy buyoutPct если оба 0.
   const returnsPct = clamp(safeNumber(inputs.returnsPct), 0, 100);
@@ -126,17 +171,27 @@ export function calculateOzon(rawInputs: Partial<OzonInputs>): OzonResults {
   const buyout = effectiveBuyoutPct / 100;
   const lossShare = 1 - buyout;
 
+  // ----- Комиссия -----
   const baseCommissionPct =
     inputs.commissionMode === 'auto'
       ? autoCommissionPct(buyerPrice, safeNumber(inputs.commissionPct))
       : safeNumber(inputs.commissionPct);
-  // FBS: быстрая отгрузка (12–24ч) добавляет фиксированный % к комиссии.
-  const fastShipmentBumpPct =
-    inputs.mode === 'fbs' && inputs.fbsShipmentSpeed === 'fast'
-      ? FBS_FAST_SHIPMENT_COMMISSION_BUMP_PCT
+  // FBS: скорость отгрузки даёт скидку (быстро) или штраф (медленно), п.п.
+  const speedPp =
+    inputs.mode === 'fbs'
+      ? fbsShipmentSpeedCommissionPp(
+          inputs.fbsDropoffPoint ?? 'sorting_center',
+          inputs.fbsShipmentSpeed ?? 'standard',
+        )
       : 0;
+  // Скидка за локальность — 3 п.п., пропорционально доле неисключённых кластеров.
+  const localityPp = inputs.localityDiscount
+    ? -LOCALITY_COMMISSION_DISCOUNT_PP * localityEligibleShare(inputs)
+    : 0;
+  // Скидка за отсрочку выплат — 0.45 п.п. за каждые 14 дней.
+  const deferralPp = -paymentDeferralDiscountPp(safeNumber(inputs.paymentDeferralDays));
   const totalCommissionPct = clamp(
-    baseCommissionPct + safeNumber(inputs.extraCommissionPct) + fastShipmentBumpPct,
+    baseCommissionPct + safeNumber(inputs.extraCommissionPct) + speedPp + localityPp + deferralPp,
     0,
     100,
   );
@@ -144,18 +199,25 @@ export function calculateOzon(rawInputs: Partial<OzonInputs>): OzonResults {
 
   const acquiring = round2((buyerPrice * clamp(safeNumber(inputs.acquiringPct), 0, 100)) / 100);
 
+  // ----- Логистика и приёмка -----
   const baseLogistics =
     inputs.mode === 'fbo'
       ? fboLogisticsCost(safeNumber(inputs.volumeL, 1))
       : fbsLogisticsCost(safeNumber(inputs.volumeL, 1));
-  const highVolumeMultiplier =
-    inputs.mode === 'fbo' && inputs.highVolumeDiscount ? 1 - HIGH_VOLUME_FBO_DISCOUNT : 1;
-  const logisticsRaw = computeLogistics(inputs, baseLogistics, highVolumeMultiplier);
-  const acceptanceFee =
-    !inputs.freeAcceptance && inputs.mode === 'fbs' ? PAID_ACCEPTANCE_FEE_PER_UNIT_RUB : 0;
-  const logistics = round2(logisticsRaw + acceptanceFee);
+  // Прямая логистика начисляется на ЗАКАЗ; на выкупленную единицу приходится
+  // 1/buyout заказов (за невыкупы прямая логистика тоже уплачена).
+  const forwardPerOrder = computeForwardLogistics(inputs, baseLogistics);
+  const acceptance =
+    inputs.mode === 'fbs'
+      ? // приёмка по точке сдачи — на заказ, значит делится на выкуп
+        fbsDropoffAcceptanceFee(inputs.fbsDropoffPoint ?? 'sorting_center') / buyout
+      : // FBO: «обработка в составе грузоместа» — разово на единицу поставки
+        inputs.freeAcceptance
+        ? 0
+        : fboAcceptanceFee(safeNumber(inputs.volumeL, 1));
+  const logistics = round2(forwardPerOrder / buyout + acceptance);
 
-  // Доставка до ПВЗ — только FBO; учитывает выкуп (логистика на 1 проданную единицу).
+  // Доставка до ПВЗ — только FBO; учитывает выкуп (на 1 проданную единицу).
   let deliveryPvz = 0;
   if (inputs.mode === 'fbo') {
     const cap = safeNumber(inputs.deliveryPvzCap, 25);
@@ -164,10 +226,11 @@ export function calculateOzon(rawInputs: Partial<OzonInputs>): OzonResults {
     deliveryPvz = round2(raw / buyout);
   }
 
-  // Возврат: на каждую проданную единицу приходится lossShare возвратов/отмен,
-  // каждый стоит как часть прямой логистики + обработка.
+  // Обратная логистика: на каждую ВЫКУПЛЕННУЮ единицу приходится
+  // (1 − buyout)/buyout возвратов/отмен, каждый стоит часть прямой логистики
+  // ЗАКАЗА плюс обработка возврата.
   const returns = round2(
-    (logistics * RETURN_LOGISTICS_PCT_OF_FORWARD + safeNumber(inputs.returnProcessing)) *
+    (forwardPerOrder * RETURN_LOGISTICS_PCT_OF_FORWARD + safeNumber(inputs.returnProcessing)) *
       (lossShare / buyout),
   );
 
@@ -180,24 +243,25 @@ export function calculateOzon(rawInputs: Partial<OzonInputs>): OzonResults {
     sales > 0 ? safeNumber(inputs.indirectExpensesMonth) / sales : 0;
   const overhead = round2(safeNumber(inputs.overheadPerUnit) + indirectPerUnit);
 
-  const vat = round2((buyerPrice * clamp(safeNumber(inputs.vatPct), 0, 100)) / 100);
+  // ----- Налоги -----
+  // НДС извлекается из цены покупателя (он уже «сидит» в цене), а не сверху.
+  const vatRate = clamp(safeNumber(inputs.vatPct), 0, 100);
+  const vat = round2((priceWithSpp * vatRate) / (100 + vatRate));
+  // Доход для целей налога — то, что заплатил покупатель, без НДС.
+  const netRevenue = round2(priceWithSpp - vat);
 
-  // Расходы до соинвеста и налога — для расчёта компенсации баллами.
-  const expensesGross =
-    commission + acquiring + logistics + deliveryPvz + returns + ads + cogs + overhead + vat;
-  const coInvestSavings = round2(
-    (expensesGross * clamp(safeNumber(inputs.coInvestPct), 0, 100)) / 100,
-  );
-  const expensesAfterCoInvest = expensesGross - coInvestSavings;
-
-  // Документально подтверждённые расходы на единицу — для УСН Д-Р.
+  const expensesBeforeTax =
+    commission + acquiring + logistics + deliveryPvz + returns + ads + cogs + overhead;
+  // Дополнительные документально подтверждённые расходы (сверх статей расчёта).
   const documentedPerUnit =
     sales > 0 ? safeNumber(inputs.documentedExpensesMonth) / sales : 0;
   const tax = round2(
-    calcTax(buyerPrice, documentedPerUnit, inputs.taxMode, inputs.taxRatePct),
+    calcTax(netRevenue, expensesBeforeTax + documentedPerUnit, inputs.taxMode, inputs.taxRatePct),
   );
 
-  const profitPerUnit = round2(buyerPrice - expensesAfterCoInvest - tax);
+  // НДС — отдельная строка расхода (инвариант проекта), поэтому в прибыль
+  // он входит вычетом, а не через уменьшение выручки.
+  const profitPerUnit = round2(buyerPrice - expensesBeforeTax - vat - tax);
   const marginPct = buyerPrice > 0 ? round2((profitPerUnit / buyerPrice) * 100) : 0;
   const roiPct = cogs > 0 ? round2((profitPerUnit / cogs) * 100) : 0;
 
@@ -213,7 +277,7 @@ export function calculateOzon(rawInputs: Partial<OzonInputs>): OzonResults {
 
   return {
     buyerPrice,
-    priceWithSpp: buyerPrice,
+    priceWithSpp,
     commission,
     acquiring,
     logistics,

@@ -8,12 +8,12 @@
 ### Bootstrap новой сессии (триггер пользователя — «загрузи контекст Open Finance»)
 
 1. **`START.md`** — карта проекта, hard-rules, маршрутизация по типу задачи (~5K токенов).
-2. **`MEMORY.md`** — handoff с текущим состоянием (**~30K токенов**, 450+ строк — файл большой, «компактным» больше не является).
+2. **`MEMORY.md`** — handoff с текущим состоянием (**~13,8K токенов**, ~370 строк; нарративы вынесены в `docs/memory-archive/`).
 3. **`git -C /Users/firay/open-finance/open-finance log --oneline -20`** — последние коммиты (~0.5K).
 
 4. (Опц., вне обязательных трёх) **agentmemory MCP `memory_smart_search`** — точечно для исторических вопросов («когда/почему перешли с X на Y»). См. `docs/MEMORY_SETUP.md` (mempalace deprecated с v0.22.4).
 
-Итого bootstrap (шаги 1-3) ≈ **36K токенов**. Цифры измерены (`js-tiktoken`, cl100k), не оценены на глаз — при заметном росте `MEMORY.md` перемерить и обновить здесь, в `START.md`, `AGENTS.md`, `.cursor/rules/project-context.mdc` и в шапке `MEMORY.md`.
+Итого bootstrap (шаги 1-3) ≈ **19K токенов**. Цифры измерены (`js-tiktoken`, o200k_base — 2026-08-12), не оценены на глаз — при заметном росте `MEMORY.md` перемерить и обновить здесь, в `START.md`, `AGENTS.md`, `.cursor/rules/project-context.mdc` и в шапке `MEMORY.md`.
 
 После этих шагов работа любой сложности. Дальше — **только релевантное конкретной задаче**.
 
@@ -32,11 +32,11 @@
 
 Это экономит ~10K токенов на каждую задачу (вместо загрузки полного `CLAUDE.md` правил, только релевантные подгружаются).
 
-### Claude Code — агентная обвязка `.claude/` (с v0.41.0)
+### Claude Code — агентная обвязка `.claude/`
 
 Полное описание — **`.claude/README.md`**. Принцип: **правила НЕ копируются** — доменные правила живут только в `.cursor/rules/*.mdc`, обвязка на них ссылается. Версии нигде не хардкодятся (источник — первый `## [X.Y.Z]` в `CHANGELOG.md`).
 
-- **Скилы** (`.claude/skills/of-*`): `of-verify` (верификация), `of-end-session` (**канон** ритуала конца сессии — раздел ниже лишь резюме), `of-run-tests`, `of-new-block`, `of-db-change`, `of-new-ai-route`, `of-new-ai-tool`, `of-ozon-column`, `of-memory`.
+- **Скилы** (`.claude/skills/of-*`, актуальный список — `ls .claude/skills`): `of-verify` (верификация), `of-end-session` (**канон** ритуала конца сессии — раздел ниже лишь резюме), `of-run-tests`, `of-new-block`, `of-db-change`, `of-db-migrate` (применение миграций и починка журнала), `of-deploy-pi` (**канон** прод-деплоя на Raspberry Pi), `of-launch-check` (гейт публичного запуска), `of-new-ai-route`, `of-new-ai-tool`, `of-ozon-column`, `of-memory`.
 - **Сабагенты** (`.claude/agents/`): `of-code-reviewer`, `of-security-reviewer` (read-only ревью) + доменные `of-{blocks,ai,ozon,db,unit-economics}-dev` — каждый первым шагом читает свой `.mdc`.
 - **Воркфлоу** (`.claude/workflows/`): `of-test-sweep` (все smoke-тесты параллельно), `of-review` (мультиагентный ревью диффа с адверсариальной верификацией), `of-rules-audit` (аудит дрейфа правил — гонять на минорный релиз).
 - **`.claude/settings.json`** — **активный** конфиг permissions+hooks (allow: read-only/verify команды; deny: git-мутации, миграции, `.env`). Агент его сам НЕ правит — изменения предлагает пользователю текстом. Хук `scripts/claude-rules-hint.sh` — аналог path-scoped правил Cursor.
@@ -57,7 +57,7 @@ Context7: `mcp0_resolve-library-id` → `mcp0_query-docs`. Не более 3 в�
 
 **Канон — скил `.claude/skills/of-end-session/SKILL.md`** (7 шагов, там же детали форматов и бампа версии). Здесь только оглавление шагов — при расхождении прав скил, пересказывать его не надо:
 
-0. верификация зелёная → 1. `CHANGELOG.md` → 2. `MEMORY.md` (+ `wc -l`, бюджет 400-450 строк) → 3. `LEARNING_LOG.md` (новые грабли, append-only) → 4. инвариант-файлы (`START.md`, `.cursor/rules/*.mdc`, `CLAUDE.md`/`AGENTS.md`) + анти-дрейф чек → 5. (опц.) agentmemory `memory_save` → 6. git-команды пользователю (**самому не выполнять**).
+0. верификация зелёная → 1. `CHANGELOG.md` → 2. `MEMORY.md` (+ `LC_ALL=en_US.UTF-8 wc -m`, бюджет ≤ 50 000 символов — НЕ `wc -c`: он считает байты) → 3. `LEARNING_LOG.md` (новые грабли, append-only) → 4. инвариант-файлы (`START.md`, `.cursor/rules/*.mdc`, `CLAUDE.md`/`AGENTS.md`) + анти-дрейф чек → 5. (опц.) agentmemory `memory_save` → 6. git-команды пользователю (**самому не выполнять**).
 
 Git-хуки по умолчанию НЕ установлены (ставятся вручную `./scripts/install-hooks.sh`) — на pre-commit secret-check не полагаться, `git diff` смотреть глазами.
 
@@ -225,7 +225,7 @@ export const createTransactionTool: Tool = {
 ## Документация (читать по запросу задачи, не на старте)
 
 - **`START.md`** — bootstrap новой сессии, карта проекта, роутинг по задачам.
-- **`MEMORY.md`** — компактный handoff с текущим состоянием.
+- **`MEMORY.md`** — handoff с текущим состоянием (~13,8K токенов; детальные нарративы — в `docs/memory-archive/`).
 - **`AGENTS.md`** — для не-Claude AI агентов (Cline, Aider, Continue, Windsurf).
 - **`.cursor/rules/*.mdc`** — Cursor 2026 path-scoped правила (единый источник доменных правил).
 - **`.claude/README.md`** — агентная обвязка Claude Code (скилы, сабагенты, воркфлоу).
@@ -235,7 +235,8 @@ export const createTransactionTool: Tool = {
 Актуальный перечень — `ls docs/`; ниже назначение каждого файла (держать полным).
 
 **Активные планы**
-- `docs/LK_V2_PLAN.md` — **канон** по воркспейсам («кабинетам»), переработке блоков и VLESS-VPN.
+- **`docs/ROADMAP_V2.md`** — **канон дальнейших этапов** (после закрытия `LK_V2_PLAN`): корректность расчётов, финансовый контур, аналитика, цифровизация бизнеса, публичный запуск. Читать при вопросе «что делать дальше».
+- `docs/LK_V2_PLAN.md` — **канон** по воркспейсам («кабинетам»), переработке блоков и VLESS-VPN (этапы 0-4 закрыты, в проде).
 - `docs/DEPLOY_RPI5.md` — деплой на Raspberry Pi 5 (прод-минисервер); **рутина обновления — §10**.
 - `docs/DESKTOP_PLAN.md` — план local-first десктопа (оркестрация для AI-агента); стратегия выбора стека — `docs/DESKTOP_STRATEGY.md`.
 

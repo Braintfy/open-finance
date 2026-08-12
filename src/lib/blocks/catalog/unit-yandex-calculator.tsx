@@ -15,7 +15,14 @@ import { resolveBindingValue } from '@/lib/unit-economics/bindings';
 import type { UnitCellBinding, YandexInputs } from '@/lib/unit-economics/types';
 import { rublesToKopecks } from '@/lib/unit-economics/types';
 import { calculateYandex, YANDEX_DEFAULT_INPUTS } from '@/lib/unit-economics/yandex/calculate';
-import { YANDEX_TARIFF_VERSION } from '@/lib/unit-economics/yandex/tariffs-2026-04-01';
+import {
+  YANDEX_TARIFF_VERSION,
+  fixedTariffPct,
+  shouldUseFixedTariff,
+  specialTariffPct,
+  RETURN_STORAGE_FREE_DAYS,
+  RETURN_STORAGE_PER_DAY_RUB,
+} from '@/lib/unit-economics/yandex/tariffs-2026-07-01';
 import { useBlockValuePublisher } from '@/lib/blocks/values';
 import { useFormatSettings, formatRublesWithSettings } from '@/lib/format-settings';
 
@@ -51,21 +58,23 @@ const SECTIONS: Array<{
     ],
   },
   {
+    // Вес в расчёте не участвует — тарифы ЯМ считаются от объёма (дм³),
+    // поэтому поле «Вес» убрано, чтобы не создавать иллюзию влияния.
     title: 'Габариты',
     fields: [
       { key: 'lengthCm', label: 'Длина', unit: 'см' },
       { key: 'widthCm', label: 'Ширина', unit: 'см' },
       { key: 'heightCm', label: 'Высота', unit: 'см' },
-      { key: 'weightKg', label: 'Вес', unit: 'кг' },
     ],
   },
   {
     title: 'Тарифы',
     fields: [
       { key: 'commissionPct', label: 'Комиссия', unit: '%' },
-      { key: 'acquiringPct', label: 'Эквайринг', unit: '%' },
+      { key: 'acquiringPct', label: 'Перевод платежей', unit: '%' },
       { key: 'fbsFastShipDiscountPct', label: 'Скидка экспресс FBS', unit: 'пп' },
       { key: 'storagePerUnit', label: 'Хранение/ед', unit: '₽', money: true },
+      { key: 'returnStorageDays', label: 'Хранение невыкупа', unit: 'дн' },
     ],
   },
   {
@@ -75,27 +84,60 @@ const SECTIONS: Array<{
       { key: 'vatPct', label: 'НДС', unit: '%', max: 100 },
       { key: 'overheadPerUnit', label: 'Прочие', unit: '₽', money: true },
       { key: 'salesPerMonth', label: 'Продаж/мес', unit: 'шт' },
-      { key: 'batchSize', label: 'Партия', unit: 'шт' },
       { key: 'stock', label: 'Остаток', unit: 'шт' },
       { key: 'buyoutPct', label: 'Выкуп', unit: '%', min: 1, max: 100 },
     ],
   },
 ];
 
+/** Тултипы для полей, у которых поведение не очевидно из подписи. */
+const FIELD_HINTS: Partial<Record<keyof YandexInputs, string>> = {
+  acquiringPct:
+    'Перевод платежей, 1.6–3.3% в зависимости от частоты выплат. Сверх него всегда начисляется «приём платежей» 0.12 ₽ за SKU.',
+  returnStorageDays:
+    `Дней хранения невыкупа до вывоза. Первые ${RETURN_STORAGE_FREE_DAYS} дн. бесплатно, ` +
+    `далее ${RETURN_STORAGE_PER_DAY_RUB} ₽/день за каждый невыкуп.`,
+  fbsFastShipDiscountPct: 'Скидка к средней миле за экспресс-отгрузку FBS, процентные пункты.',
+};
+
+// Выручка продавца = `revenue` (цена в ЛК). Соинвест Маркета снижает только
+// цену покупателя и налоговую базу — раньше строка выручки брала
+// `customerPrice` и занижала верх P&L при включённом соинвесте.
 const PNL_LINES: Array<{ key: keyof ReturnType<typeof calculateYandex>; label: string; sign?: '+' | '-' }> = [
-  { key: 'customerPrice', label: 'Цена покупателя', sign: '+' },
-  { key: 'commission', label: 'Комиссия', sign: '-' },
-  { key: 'acquiring', label: 'Эквайринг', sign: '-' },
+  { key: 'revenue', label: 'Выручка продавца', sign: '+' },
+  { key: 'commission', label: 'Комиссия / размещение', sign: '-' },
+  { key: 'acquiring', label: 'Платежи (перевод + приём)', sign: '-' },
   { key: 'lastMile', label: 'Последняя миля', sign: '-' },
   { key: 'middleMile', label: 'Средняя миля', sign: '-' },
-  { key: 'fulfillment', label: 'Фулфилмент', sign: '-' },
+  // В тарифах ЯМ нет статьи «фулфилмент» — есть «обработка заказа» (25 ₽ FBS).
+  { key: 'orderProcessing', label: 'Обработка заказа', sign: '-' },
   { key: 'storage', label: 'Хранение', sign: '-' },
+  { key: 'returns', label: 'Возвраты (невыкуп)', sign: '-' },
   { key: 'ads', label: 'Реклама', sign: '-' },
   { key: 'vat', label: 'НДС', sign: '-' },
   { key: 'tax', label: 'Налог', sign: '-' },
   { key: 'cogs', label: 'Себестоимость', sign: '-' },
   { key: 'overhead', label: 'Прочие расходы', sign: '-' },
 ];
+
+const SPECIAL_TARIFF_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: 'none', label: 'Базовый (ручная комиссия)' },
+  { value: 'subscription_fby', label: 'Подписка FBY — 9%' },
+  { value: 'subscription_fbs', label: 'Подписка FBS — 16%' },
+  { value: 'subscription_express', label: 'Подписка Express — 9%' },
+];
+
+/**
+ * Опции спецтарифа. «Витрина 5%» отменена с 01.07.2026 и в списке не
+ * показывается, но если она сохранена в конфиге — добавляем пункт с пометкой,
+ * чтобы дроп-даун не рисовал «—» и было видно, что тариф не действует.
+ */
+function specialTariffOptions(current: string): Array<{ value: string; label: string }> {
+  if (SPECIAL_TARIFF_OPTIONS.some((o) => o.value === current)) return SPECIAL_TARIFF_OPTIONS;
+  const legacyLabel =
+    current === 'showcase' ? 'Витрина 5% — отменена с 01.07.2026' : `${current} — не применяется`;
+  return [...SPECIAL_TARIFF_OPTIONS, { value: current, label: legacyLabel }];
+}
 
 function RenderYandexCalculator({ instance, onConfigChange }: BlockRenderProps) {
   const config = parseConfig(instance.config);
@@ -158,6 +200,14 @@ function RenderYandexCalculator({ instance, onConfigChange }: BlockRenderProps) 
   });
 
   const positive = results.profitPerUnit > 0;
+  const specialTariff = String(inputs.specialTariff ?? 'none');
+  // Спецтариф действует только в «своём» режиме и ЗАМЕНЯЕТ ставку комиссии.
+  const specialPct = specialTariffPct(specialTariff, inputs.mode);
+  const specialInactive = specialTariff !== 'none' && specialPct === null;
+  // Фикс-тариф (дешёвые компактные товары) заменяет комиссию + мили + обработку.
+  const fixedPct = shouldUseFixedTariff(results.revenue, results.volume, inputs.mode)
+    ? fixedTariffPct(inputs.mode)
+    : null;
 
   return (
     <Card className="flex h-full flex-col overflow-hidden">
@@ -177,7 +227,40 @@ function RenderYandexCalculator({ instance, onConfigChange }: BlockRenderProps) 
               НДС {Number(inputs.vatPct)}%
             </span>
           )}
-          <span className="text-[10px] text-muted-foreground">v{YANDEX_TARIFF_VERSION}</span>
+          {fixedPct !== null && (
+            <span
+              className="inline-flex items-center rounded border border-blue-500/40 bg-blue-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-blue-600 dark:text-blue-300"
+              title={`Товар до 300 ₽ и до 5 дм³: применён фиксированный тариф ${fixedPct}% от цены — он заменяет комиссию, обе мили и обработку заказа.`}
+            >
+              Фикс. тариф {fixedPct}%
+            </span>
+          )}
+          {specialPct !== null && fixedPct === null && (
+            <span
+              className="inline-flex items-center rounded border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-emerald-700 dark:text-emerald-400"
+              title="Спецтариф заменяет ставку комиссии (не суммируется с ней)."
+            >
+              Спецтариф {specialPct}%
+            </span>
+          )}
+          {specialInactive && (
+            <span
+              className="inline-flex items-center rounded border border-amber-500/50 bg-amber-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-amber-700 dark:text-amber-400"
+              title={
+                specialTariff === 'showcase'
+                  ? 'Спецтариф «Витрина 5%» отменён с 01.07.2026 — расчёт идёт по ручной комиссии.'
+                  : `Спецтариф не действует для модели ${inputs.mode} — расчёт идёт по ручной комиссии.`
+              }
+            >
+              Спецтариф не применён
+            </span>
+          )}
+          <span
+            className="text-[10px] text-muted-foreground"
+            title={`Тарифный пакет ${YANDEX_TARIFF_VERSION}`}
+          >
+            Тарифы {YANDEX_TARIFF_VERSION.replace(/^yandex_/, '').replace(/_/g, '-')}
+          </span>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
           <span>Модель:</span>
@@ -200,13 +283,8 @@ function RenderYandexCalculator({ instance, onConfigChange }: BlockRenderProps) 
           </div>
           <DropdownSelect
             label="Спецтариф"
-            value={String(inputs.specialTariff ?? 'none')}
-            options={[
-              { value: 'none', label: 'Базовый' },
-              { value: 'showcase', label: 'Витрина (5%)' },
-              { value: 'subscription_fby', label: 'Подписка FBY (9%)' },
-              { value: 'subscription_fbs', label: 'Подписка FBS (16%)' },
-            ]}
+            value={specialTariff}
+            options={specialTariffOptions(specialTariff)}
             onChange={(v) => setInput('specialTariff', v)}
           />
           <DropdownSelect
@@ -245,7 +323,10 @@ function RenderYandexCalculator({ instance, onConfigChange }: BlockRenderProps) 
                   const binding = config.bindings[f.key] as UnitCellBinding | undefined;
                   return (
                     <div key={String(f.key)} className="flex items-center justify-between gap-1.5 text-[11px]">
-                      <label className="truncate text-muted-foreground" title={f.label}>
+                      <label
+                        className="truncate text-muted-foreground"
+                        title={FIELD_HINTS[f.key] ?? f.label}
+                      >
                         {f.label}
                         {f.unit && <span className="ml-1 text-muted-foreground/60">({f.unit})</span>}
                       </label>
@@ -336,6 +417,17 @@ function RenderYandexCalculator({ instance, onConfigChange }: BlockRenderProps) 
                 </span>
               </div>
             </div>
+            {results.customerPrice !== results.revenue && (
+              <div className="mt-1 rounded border border-dashed border-border/60 px-2 py-1 text-[10px] leading-snug text-muted-foreground">
+                Справочно: цена покупателя{' '}
+                <span className="tabular-nums text-foreground/80">{fmt(results.customerPrice)}</span> —
+                соинвест Маркета{' '}
+                <span className="tabular-nums text-foreground/80">
+                  {fmt(results.revenue - results.customerPrice)}
+                </span>{' '}
+                идёт за счёт Маркета: в прибыль продавца не входит, уменьшает только налоговую базу.
+              </div>
+            )}
           </div>
         </div>
       </div>

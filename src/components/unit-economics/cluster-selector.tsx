@@ -16,8 +16,10 @@ import { cn } from '@/lib/utils';
 import {
   FBS_CLUSTERS,
   FBS_CLUSTER_BY_KEY,
+  isLocalityDiscountExcluded,
+  LOCALITY_COMMISSION_DISCOUNT_PP,
   OZON_CLUSTER_PRESETS,
-} from '@/lib/unit-economics/ozon/tariffs-2026-04-07';
+} from '@/lib/unit-economics/ozon/tariffs-2026-08-30';
 import type { OzonFbsClusterShare } from '@/lib/unit-economics/types';
 
 type Props = {
@@ -26,6 +28,12 @@ type Props = {
   onChange: (next: OzonFbsClusterShare[]) => void;
   disabled?: boolean;
   triggerClassName?: string;
+  /**
+   * Включена ли скидка за локальность (−3 п.п. к комиссии). Если да —
+   * помечаем кластеры-исключения, чтобы было видно, почему скидка
+   * применяется не ко всему объёму.
+   */
+  localityDiscount?: boolean;
 };
 
 function clamp(n: number, lo: number, hi: number): number {
@@ -62,6 +70,7 @@ export function ClusterSelector({
   onChange,
   disabled,
   triggerClassName,
+  localityDiscount,
 }: Props) {
   const [open, setOpen] = useState(false);
 
@@ -214,9 +223,20 @@ export function ClusterSelector({
                         {isOn ? '✓' : ''}
                       </span>
                       <span className="truncate">{cluster.label}</span>
+                      {localityDiscount && isLocalityDiscountExcluded(cluster.key) && (
+                        <span
+                          className="ml-auto shrink-0 rounded bg-amber-500/15 px-1 text-[9px] tracking-wider text-amber-700 dark:text-amber-400"
+                          title={`Скидка за локальность (−${LOCALITY_COMMISSION_DISCOUNT_PP} п.п. к комиссии) на этот кластер не распространяется`}
+                        >
+                          без −{LOCALITY_COMMISSION_DISCOUNT_PP} п.п.
+                        </span>
+                      )}
                       <span
                         className={cn(
-                          'ml-auto shrink-0 rounded px-1 text-[9px] uppercase tracking-wider',
+                          'shrink-0 rounded px-1 text-[9px] uppercase tracking-wider',
+                          localityDiscount && isLocalityDiscountExcluded(cluster.key)
+                            ? 'ml-1'
+                            : 'ml-auto',
                           cluster.local
                             ? 'bg-muted text-muted-foreground'
                             : 'bg-amber-500/15 text-amber-700 dark:text-amber-400',

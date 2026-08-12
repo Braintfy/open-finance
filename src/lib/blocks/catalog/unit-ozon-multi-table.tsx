@@ -61,7 +61,18 @@ import {
   FBS_DROPOFF_LABELS,
   FBS_SHIPMENT_SPEED_LABELS,
   FBS_CLUSTER_BY_KEY,
-} from '@/lib/unit-economics/ozon/tariffs-2026-04-07';
+} from '@/lib/unit-economics/ozon/tariffs-2026-08-30';
+import {
+  FBS_DROPOFF_OPTIONS,
+  FBO_ACCEPTANCE_HINT,
+  LOCAL_CLUSTER_HINT,
+  LOCALITY_DISCOUNT_HINT,
+  LOCALITY_DISCOUNT_LABEL,
+  fbsSpeedOptions,
+  normalizeFbsSpeed,
+  paymentDeferralOptions,
+  remapFbsSpeed,
+} from '@/lib/unit-economics/ozon/fbs-ui-options';
 import { migrateOzonRaw } from '@/lib/unit-economics/ozon/migrate';
 import { ClusterSelector } from '@/components/unit-economics/cluster-selector';
 import { OzonSyncButton } from '@/components/unit-economics/ozon-sync-button';
@@ -97,8 +108,14 @@ const ClusterShareSchema = z.object({
 
 const GlobalParamsSchema = z.object({
   mode: z.enum(['fbo', 'fbs']).default('fbo'),
-  highVolumeDiscount: z.boolean().default(false),
+  // `highVolumeDiscount` (флаг «>50 заказов FBO») удалён: с тарифов
+  // ozon_2026_08_30 он ни на что не влияет. Старые конфиги не падают —
+  // zod молча отбрасывает неизвестный ключ.
   isLocalCluster: z.boolean().default(true),
+  /** Скидка за локальность: −3 п.п. к комиссии (с 30.08.2026). */
+  localityDiscount: z.boolean().default(false),
+  /** Отсрочка выплат, дни → −0.45 п.п. к комиссии за каждые 14 дней. */
+  paymentDeferralDays: z.number().default(0),
   acquiringPct: z.number().default(1.5),
   deliveryPvzPct: z.number().default(4),
   deliveryPvzCap: z.number().default(25),
@@ -115,8 +132,27 @@ const GlobalParamsSchema = z.object({
   supplyLeadWeeks: z.number().default(4),
   indirectExpensesMonth: z.number().default(0),
   // FBS-only — глобальные для всех строк блока
-  fbsDropoffPoint: z.enum(['sorting_center', 'pickup_point']).default('sorting_center'),
-  fbsShipmentSpeed: z.enum(['fast', 'standard', 'slow']).default('standard'),
+  // Значения должны совпадать с OzonFbsDropoffPoint / OzonFbsShipmentSpeed:
+  // сетки скидок за скорость отгрузки и приёмка по точке сдачи расширились
+  // (тарифы ozon_2026_08_30). Legacy fast/standard/slow остаются валидными.
+  fbsDropoffPoint: z
+    .enum(['sorting_center', 'courier', 'pickup_point', 'utk', 'gorbushka'])
+    .default('sorting_center'),
+  fbsShipmentSpeed: z
+    .enum([
+      'le12h',
+      'h12_24',
+      'h24_36',
+      'h36_48',
+      'in_slot',
+      'h0_24',
+      'h24_48',
+      'gt48h',
+      'fast',
+      'standard',
+      'slow',
+    ])
+    .default('standard'),
   fbsClusters: z.array(ClusterShareSchema).default([]),
 });
 
@@ -258,7 +294,10 @@ type ResultColumn = {
 };
 
 const RESULT_COLUMNS: ResultColumn[] = [
-  { key: 'buyerPrice', label: 'Цена покуп.', format: 'money', w: 100 },
+  // `buyerPrice` — это ВЫРУЧКА продавца (цена после его скидки). То, что
+  // платит покупатель, — `priceWithSpp` (ниже): соинвест идёт за счёт Ozon.
+  { key: 'buyerPrice', label: 'Выручка/ед', format: 'money', w: 100 },
+  { key: 'priceWithSpp', label: 'Цена с СПП', format: 'money', w: 100 },
   { key: 'commission', label: 'Комиссия', format: 'money', w: 90 },
   { key: 'acquiring', label: 'Эквайринг', format: 'money', w: 90 },
   { key: 'logistics', label: 'Логистика', format: 'money', w: 90 },
@@ -323,8 +362,9 @@ function buildInputsForRow(
 ): OzonInputs {
   const merged: Partial<OzonInputs> = { ...OZON_DEFAULT_INPUTS };
   merged.mode = global.mode;
-  merged.highVolumeDiscount = global.highVolumeDiscount;
   merged.isLocalCluster = global.isLocalCluster;
+  merged.localityDiscount = global.localityDiscount;
+  merged.paymentDeferralDays = global.paymentDeferralDays;
   merged.acquiringPct = global.acquiringPct;
   merged.deliveryPvzPct = global.deliveryPvzPct;
   merged.deliveryPvzCap = global.deliveryPvzCap;
@@ -355,6 +395,27 @@ function buildInputsForRow(
         ? manual
         : FIELD_META[field].default ?? 0;
     }
+  }
+
+  // Колонка «Выкуп %» должна перебивать глобальные returnsPct/cancelPct:
+  // calculateOzon выводит выкуп из них и смотрит на buyoutPct только когда
+  // их сумма равна нулю (а дефолт — 5+5). Без этого per-SKU выкуп (в т.ч.
+  // подтянутый из Ozon при синхронизации) молча игнорировался.
+  const buyoutBinding = row.bindings['buyoutPct'] as UnitCellBinding | undefined;
+  const rowBuyout = Number(merged.buyoutPct);
+  const hasRowBuyout =
+    ((buyoutBinding?.mode === 'block_ref' &&
+      resolveBindingValue(buyoutBinding, liveValues) !== null) ||
+      row.inputs['buyoutPct'] !== undefined) &&
+    Number.isFinite(rowBuyout) &&
+    rowBuyout > 0;
+  if (hasRowBuyout) {
+    const loss = Math.min(99, Math.max(0, 100 - rowBuyout));
+    const globalLoss = global.returnsPct + global.cancelPct;
+    // На расчёт влияет только сумма, но пропорцию «возвраты/отмены»
+    // сохраняем, чтобы поля остались осмысленными.
+    merged.returnsPct = globalLoss > 0 ? (loss * global.returnsPct) / globalLoss : loss;
+    merged.cancelPct = globalLoss > 0 ? (loss * global.cancelPct) / globalLoss : 0;
   }
   return merged as OzonInputs;
 }
@@ -412,6 +473,18 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
   const updateGlobal = useCallback(
     <K extends keyof GlobalParams>(key: K, value: GlobalParams[K]) => {
       persist({ global: { ...config.global, [key]: value } });
+    },
+    [config.global, persist],
+  );
+
+  /**
+   * Атомарный апдейт нескольких глобальных параметров. Нужен там, где два поля
+   * связаны (точка сдачи + скорость отгрузки): два `updateGlobal` подряд
+   * замыкают один и тот же `config.global`, и второй перетирает первый.
+   */
+  const updateGlobals = useCallback(
+    (patch: Partial<GlobalParams>) => {
+      persist({ global: { ...config.global, ...patch } });
     },
     [config.global, persist],
   );
@@ -624,9 +697,12 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
     let lossy = 0;
     let marginSum = 0;
     let roiSum = 0;
-    for (const { results } of computed) {
+    for (const { inputs, results } of computed) {
       totalProfitMonth += results.profitPerMonth;
-      totalStockValue += results.cogs * Math.max(0, Number(results.cogs > 0));
+      // Себестоимость остатка = себестоимость единицы × остаток.
+      // Было: `results.cogs * Number(results.cogs > 0)` — то есть просто COGS
+      // за единицу (остаток вообще не участвовал).
+      totalStockValue += results.cogs * Math.max(0, Number(inputs.stock) || 0);
       totalMoneyInGoods += results.moneyInStock;
       marginSum += results.marginPct;
       roiSum += results.roiPct;
@@ -740,6 +816,12 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
   }
 
   // ----- Render -----
+  // Legacy-скорость ('fast'/'standard'/'slow') приводим к ключу актуальной
+  // сетки с тем же эффектом в п.п. — иначе шапка показала бы undefined.
+  const headerShipmentSpeed = normalizeFbsSpeed(
+    config.global.fbsShipmentSpeed,
+    config.global.fbsDropoffPoint,
+  );
   const totalRowWidth =
     STICKY_GROUP_W +
     inputOrder.reduce((acc, f) => acc + (FIELD_META[f].w ?? 80), 0) +
@@ -771,11 +853,11 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
           {config.global.mode === 'fbs' && (
             <span
               className="inline-flex max-w-[420px] items-center truncate rounded border border-border/60 bg-background px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground"
-              title={`Точка сдачи · ${FBS_DROPOFF_LABELS[config.global.fbsDropoffPoint]}, скорость · ${FBS_SHIPMENT_SPEED_LABELS[config.global.fbsShipmentSpeed]}, кластеры (${config.global.fbsClusters.length}) · ${summarizeClusters(config.global.fbsClusters)}`}
+              title={`Точка сдачи · ${FBS_DROPOFF_LABELS[config.global.fbsDropoffPoint]}, скорость · ${FBS_SHIPMENT_SPEED_LABELS[headerShipmentSpeed]}, кластеры (${config.global.fbsClusters.length}) · ${summarizeClusters(config.global.fbsClusters)}`}
             >
               <span className="truncate">
                 {FBS_DROPOFF_LABELS[config.global.fbsDropoffPoint]} ·{' '}
-                {FBS_SHIPMENT_SPEED_LABELS[config.global.fbsShipmentSpeed]} ·{' '}
+                {FBS_SHIPMENT_SPEED_LABELS[headerShipmentSpeed]} ·{' '}
                 {summarizeClusters(config.global.fbsClusters)}
               </span>
             </span>
@@ -788,7 +870,12 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
           <span className="inline-flex items-center rounded border border-border/60 bg-background px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
             Налог: {TAX_MODE_LABELS[config.global.taxMode]} {config.global.taxRatePct}%
           </span>
-          <span className="text-[10px] text-muted-foreground">v{OZON_TARIFF_VERSION}</span>
+          <span
+            className="text-[10px] text-muted-foreground"
+            title={`Тарифный пакет ${OZON_TARIFF_VERSION}`}
+          >
+            Тарифы {OZON_TARIFF_VERSION.replace(/^ozon_/, '').replace(/_/g, '-')}
+          </span>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           {/* Импорт XLSX переехал в настройки блока (таб «Параметры» → секция
@@ -823,6 +910,7 @@ function RenderOzonMultiTable({ instance, onConfigChange }: BlockRenderProps) {
       <GlobalParamsBar
         global={config.global}
         onChange={updateGlobal}
+        onChangeMany={updateGlobals}
       />
 
       <div className="flex-1 overflow-auto">
@@ -1351,11 +1439,14 @@ function BulkFillMenu({ spec }: { spec: BulkFillSpec }) {
 function GlobalParamsBar({
   global,
   onChange,
+  onChangeMany,
 }: {
   global: GlobalParams;
   onChange: <K extends keyof GlobalParams>(key: K, value: GlobalParams[K]) => void;
+  onChangeMany: (patch: Partial<GlobalParams>) => void;
 }) {
   const isFbs = global.mode === 'fbs';
+  const shipmentSpeed = normalizeFbsSpeed(global.fbsShipmentSpeed, global.fbsDropoffPoint);
   return (
     <div className="flex flex-wrap items-center gap-3 border-b border-border/60 bg-muted/20 px-3 py-2 text-[11px]">
       <div className="flex items-center gap-1.5">
@@ -1383,37 +1474,62 @@ function GlobalParamsBar({
           <DropdownSelect
             label="Точка сдачи"
             value={global.fbsDropoffPoint}
-            options={Object.entries(FBS_DROPOFF_LABELS).map(([v, l]) => ({ value: v, label: l }))}
-            onChange={(v) => onChange('fbsDropoffPoint', v as OzonFbsDropoffPoint)}
+            options={FBS_DROPOFF_OPTIONS}
+            onChange={(v) => {
+              const next = v as OzonFbsDropoffPoint;
+              // Смена точки сдачи меняет сетку скоростей — переносим выбор
+              // в ближайший по эффекту пункт одним persist'ом.
+              onChangeMany({
+                fbsDropoffPoint: next,
+                fbsShipmentSpeed: remapFbsSpeed(
+                  shipmentSpeed,
+                  global.fbsDropoffPoint,
+                  next,
+                ) as GlobalParams['fbsShipmentSpeed'],
+              });
+            }}
           />
           <DropdownSelect
             label="Скорость отгрузки"
-            value={global.fbsShipmentSpeed}
-            options={Object.entries(FBS_SHIPMENT_SPEED_LABELS).map(([v, l]) => ({ value: v, label: l }))}
-            onChange={(v) => onChange('fbsShipmentSpeed', v as OzonFbsShipmentSpeed)}
+            value={shipmentSpeed}
+            options={fbsSpeedOptions(global.fbsDropoffPoint)}
+            onChange={(v) =>
+              onChange('fbsShipmentSpeed', v as OzonFbsShipmentSpeed as GlobalParams['fbsShipmentSpeed'])
+            }
           />
           <ClusterSelector
             label="Кластеры FBS"
             value={global.fbsClusters}
             onChange={(next) => onChange('fbsClusters', next)}
-          />
-          <ToggleParam
-            label="Бесплатная приёмка"
-            value={global.freeAcceptance}
-            onChange={(v) => onChange('freeAcceptance', v)}
+            localityDiscount={global.localityDiscount}
           />
         </>
       )}
+      {global.mode === 'fbo' && (
+        <ToggleParam
+          label="Бесплатная приёмка FBO"
+          value={global.freeAcceptance}
+          onChange={(v) => onChange('freeAcceptance', v)}
+          title={FBO_ACCEPTANCE_HINT}
+        />
+      )}
       <ToggleParam
-        label=">50 заказов FBO"
-        value={global.highVolumeDiscount}
-        onChange={(v) => onChange('highVolumeDiscount', v)}
-        disabled={global.mode !== 'fbo'}
+        label={LOCALITY_DISCOUNT_LABEL}
+        value={global.localityDiscount}
+        onChange={(v) => onChange('localityDiscount', v)}
+        title={LOCALITY_DISCOUNT_HINT}
+      />
+      <DropdownSelect
+        label="Отсрочка выплат"
+        value={String(global.paymentDeferralDays)}
+        options={paymentDeferralOptions(global.paymentDeferralDays)}
+        onChange={(v) => onChange('paymentDeferralDays', Number(v))}
       />
       <ToggleParam
-        label="Локальный кластер"
+        label="Локальный склад (×1)"
         value={global.isLocalCluster}
         onChange={(v) => onChange('isLocalCluster', v)}
+        title={LOCAL_CLUSTER_HINT}
       />
       <NumberParam
         label="Эквайринг"
@@ -1512,16 +1628,20 @@ function ToggleParam({
   value,
   onChange,
   disabled,
+  title,
 }: {
   label: string;
   value: boolean;
   onChange: (v: boolean) => void;
   disabled?: boolean;
+  /** Тултип: объясняет знак и величину эффекта параметра. */
+  title?: string;
 }) {
   return (
     <button
       type="button"
       disabled={disabled}
+      title={title}
       onClick={() => onChange(!value)}
       className={
         'inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] transition-colors ' +
