@@ -12,6 +12,7 @@ import { sheetBlockSkills } from './sheet';
 import { ozonBlockSkills } from './ozon';
 import { unitEconomicsBlockSkills } from './unit-economics';
 import { genericBlockSkills } from './generic';
+import { stockBlockSkills } from './stock';
 
 /**
  * Глобальный реестр skill-промптов по типу блока.
@@ -23,6 +24,7 @@ export const BLOCK_SKILLS: Record<string, string> = {
   ...sheetBlockSkills,
   ...ozonBlockSkills,
   ...unitEconomicsBlockSkills,
+  ...stockBlockSkills,
   ...genericBlockSkills,
 };
 
@@ -81,4 +83,7 @@ export const BLOCK_TYPE_META: Array<{ type: string; displayName: string }> = [
   { type: 'unit.ozon-multi-table',    displayName: 'Ozon Мульти-таблица' },
   { type: 'unit.yandex-calculator',   displayName: 'Юнит-экономика Яндекс' },
   { type: 'unit.my-store-table',      displayName: 'Мой магазин' },
+  // Склад · Поставки · Себестоимость
+  { type: 'stock.balances',           displayName: 'Склад · Остатки' },
+  { type: 'stock.docs',               displayName: 'Склад · Документы' },
 ];

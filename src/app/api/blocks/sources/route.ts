@@ -83,6 +83,7 @@ const DEFAULT_PAGE_KEYS = [
   'unit-economics-ozon-multi',
   'unit-economics-yandex',
   'unit-economics-my-store',
+  'warehouse',
 ];
 
 const PAGE_LABELS: Record<string, string> = {
@@ -97,6 +98,7 @@ const PAGE_LABELS: Record<string, string> = {
   'unit-economics-ozon-multi': 'Юнит-экономика · Ozon мульти',
   'unit-economics-yandex': 'Юнит-экономика · Яндекс',
   'unit-economics-my-store': 'Юнит-экономика · Мой магазин',
+  warehouse: 'Склад',
 };
 
 const TYPE_LABELS: Record<string, { label: string; category: string }> = {
@@ -132,6 +134,8 @@ const TYPE_LABELS: Record<string, { label: string; category: string }> = {
   'unit.yandex-calculator': { label: 'Яндекс · калькулятор', category: 'Юнит-экономика' },
   'unit.my-store-table': { label: 'Мой магазин · таблица', category: 'Юнит-экономика' },
   'currency.rates': { label: 'Курсы валют', category: 'Финансы' },
+  'stock.balances': { label: 'Склад · Остатки', category: 'Склад' },
+  'stock.docs': { label: 'Склад · Документы', category: 'Склад' },
 };
 
 /**
@@ -142,6 +146,7 @@ const TYPE_LABELS: Record<string, { label: string; category: string }> = {
 const CATEGORY_ORDER: readonly string[] = [
   'Аналитика Ozon',
   'Маркетплейсы',
+  'Склад',
   'Юнит-экономика',
   'Финансы',
   'KPI',
@@ -1135,6 +1140,30 @@ async function fieldsForBlock(
       }
     }
     return fields;
+  }
+  if (block.type === 'stock.balances') {
+    // Синхронизированы с useBlockValuePublisher в catalog/stock-balances.tsx.
+    // Значения приходят от run-time publisher'а (они зависят от сшивки и
+    // остатков Ozon) — здесь только метки и форматы для модалки привязок.
+    return [
+      { name: 'value', label: 'Деньги в товаре (всего)', value: null, format: 'money' },
+      { name: 'stockValueKopecks', label: 'Деньги в товаре (всего)', value: null, format: 'money' },
+      { name: 'ledgerValueKopecks', label: 'Деньги на своём складе', value: null, format: 'money' },
+      { name: 'itemsCount', label: 'Позиций', value: null, format: 'number' },
+      { name: 'totalQty', label: 'Штук всего', value: null, format: 'number' },
+      { name: 'lowCount', label: 'Заканчивается', value: null, format: 'number' },
+      { name: 'noCostCount', label: 'Без себестоимости', value: null, format: 'number' },
+      { name: 'unmatchedCount', label: 'Не сопоставлено', value: null, format: 'number' },
+    ];
+  }
+  if (block.type === 'stock.docs') {
+    // Зависят от периода блока → значения от run-time publisher'а.
+    return [
+      { name: 'value', label: 'Закуплено за период', value: null, format: 'money' },
+      { name: 'purchasesKopecks', label: 'Закуплено за период', value: null, format: 'money' },
+      { name: 'docsCount', label: 'Приходных документов', value: null, format: 'number' },
+      { name: 'rowsCount', label: 'Документов в ленте', value: null, format: 'number' },
+    ];
   }
   if (block.type === 'cashflow.transactions') {
     // Источник для cashflow-консьюмеров (KPI/chart/top-categories/kpi.grid).

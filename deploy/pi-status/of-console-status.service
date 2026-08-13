@@ -1,0 +1,32 @@
+# PURPOSE: Показывает живую консоль состояния Open Finance на локальном мониторе (tty1).
+# Воткнул монитор — сразу видно, что с сервером, без логина и без сети.
+# Логин-консоль остаётся доступной: Alt+F2 (tty2) и Alt+F3 (tty3).
+# Установка — deploy/pi-status/README.md
+[Unit]
+Description=Open Finance status console on tty1
+After=multi-user.target
+# Забираем tty1 у обычного getty — иначе они будут драться за экран.
+Conflicts=getty@tty1.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/of-status --loop
+User=firay
+# Рисуем прямо в первую консоль
+StandardInput=tty
+StandardOutput=tty
+StandardError=journal
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=no
+Restart=always
+RestartSec=5
+# Приложение не трогаем: только чтение состояния
+NoNewPrivileges=yes
+ProtectHome=read-only
+ProtectSystem=strict
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

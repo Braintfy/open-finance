@@ -30,6 +30,7 @@ const PAGE_LABELS: Record<string, string> = {
   'unit-economics-ozon-multi': 'Юнит · Ozon (мульти)',
   'unit-economics-yandex': 'Юнит · Яндекс',
   'unit-economics-my-store': 'Юнит · Мой магазин',
+  warehouse: 'Склад',
 };
 
 const TYPE_LABELS: Record<string, string> = {
@@ -51,6 +52,8 @@ const TYPE_LABELS: Record<string, string> = {
   'unit.ozon-multi-table': 'Ozon · юнит-таблица',
   'unit.yandex-calculator': 'Яндекс · калькулятор',
   'unit.my-store-table': 'Мой магазин',
+  'stock.balances': 'Склад · Остатки',
+  'stock.docs': 'Склад · Документы',
 };
 
 const DEFAULT_PAGE_KEYS = [
@@ -61,6 +64,7 @@ const DEFAULT_PAGE_KEYS = [
   'unit-economics-ozon-multi',
   'unit-economics-yandex',
   'unit-economics-my-store',
+  'warehouse',
 ];
 
 function pageLabel(pageKey: string): string {

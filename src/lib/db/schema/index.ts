@@ -18,3 +18,5 @@ export * from './ozon-ai-insights';
 export * from './section-ai-reports';
 export * from './block-ai-reports';
 export * from './account-deletion';
+export * from './stock';
+export * from './stock-ledger';

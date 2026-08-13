@@ -169,6 +169,8 @@ export function pageHref(pageKey: string): string {
   if (pageKey === 'taxes') return '/app/taxes';
   if (pageKey === 'deadlines') return '/app/deadlines';
   if (pageKey === 'settings') return '/app/settings';
+  if (pageKey === 'warehouse') return '/app/warehouse';
+  if (pageKey === 'marketplaces-ozon-dashboard') return '/app/marketplaces/ozon';
   if (pageKey.startsWith('unit-economics-')) {
     const slug = pageKey.replace('unit-economics-', '');
     return `/app/unit-economics/${slug}`;

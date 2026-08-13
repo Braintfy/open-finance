@@ -14,6 +14,7 @@ export const PAGE_LABELS: Record<string, string> = {
   'unit-economics-ozon-multi': 'Юнит-экономика · Ozon мульти',
   'unit-economics-yandex': 'Юнит-экономика · Яндекс',
   'unit-economics-my-store': 'Юнит-экономика · Мой магазин',
+  warehouse: 'Склад',
 };
 
 /**

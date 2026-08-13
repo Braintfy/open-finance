@@ -19,6 +19,12 @@ import { marketplaceAccounts } from './marketplaces';
 
 export type UnitMarketplace = 'ozon' | 'yandex';
 
+/**
+ * Источник значения unit_products.cost_kopecks (§2.10 STOCK_MODULE_DESIGN).
+ * 'manual' — дефолт, поведение до модуля «Склад» не меняется.
+ */
+export type UnitCostSource = 'manual' | 'inventory';
+
 export const unitProducts = pgTable(
   'unit_products',
   {
@@ -44,6 +50,20 @@ export const unitProducts = pgTable(
     priceKopecks: integer('price_kopecks').notNull().default(0),
     /** Себестоимость в копейках */
     costKopecks: integer('cost_kopecks').notNull().default(0),
+    /**
+     * Откуда взялась cost_kopecks (docs/STOCK_MODULE_DESIGN.md §2.10):
+     *   'manual'    — ручной ввод / импорт XLSX (ДЕФОЛТ: ничего не меняет ни у кого);
+     *   'inventory' — считает модуль «Склад» (src/lib/stock/writeback.ts).
+     * Только строки с 'inventory' перезаписывает writeback склада. Количества
+     * (stock_marketplace / stock_own) остаются территорией синка Ozon —
+     * см. границу владения в шапке writeback.ts.
+     */
+    costSource: varchar('cost_source', { length: 16 })
+      .$type<UnitCostSource>()
+      .notNull()
+      .default('manual'),
+    /** Когда себестоимость обновлялась последний раз (любым источником). */
+    costUpdatedAt: timestamp('cost_updated_at'),
     volumeL: integer('volume_l_x100').notNull().default(0), // объём * 100 для целого
     /**
      * Ссылка на подключённый маркетплейс-аккаунт (если товар синхронизирован

@@ -36,6 +36,8 @@ import { UnitYandexCalculatorBlock } from './catalog/unit-yandex-calculator';
 import { UnitMyStoreTableBlock } from './catalog/unit-my-store-table';
 import { CurrencyRatesBlock } from './catalog/currency-rates';
 import { MarkdownNoteBlock } from './catalog/markdown-note';
+import { StockBalancesBlock } from './catalog/stock-balances';
+import { StockDocsBlock } from './catalog/stock-docs';
 
 /**
  * Метаданные маркетплейса для каждого блока — tags, recommendedFor, iconName
@@ -230,6 +232,20 @@ const BLOCK_META: Record<
     recommendedFor: ['dashboard', 'boards'],
     iconName: 'NotebookPen',
   },
+  // Модуль «Склад · Поставки · Себестоимость» (docs/STOCK_MODULE_DESIGN.md §7).
+  'stock.balances': {
+    tags: ['stock', 'warehouse', 'inventory', 'cost', 'supply'],
+    recommendedFor: ['warehouse'],
+    iconName: 'Warehouse',
+    skeletonVariant: 'table',
+  },
+  'stock.docs': {
+    tags: ['stock', 'warehouse', 'documents', 'purchases', 'supply'],
+    recommendedFor: ['warehouse'],
+    iconName: 'ClipboardList',
+    usesPeriod: true,
+    skeletonVariant: 'table',
+  },
 };
 
 // Форма скелетона загрузки по типу блока (см. BlockSkeletonVariant в block-skeleton.tsx).
@@ -256,6 +272,8 @@ const SKELETON_VARIANT_BY_TYPE: Record<string, string> = {
   'unit.ozon-campaigns': 'table',
   'unit.ozon-abc': 'table',
   'unit.my-store-table': 'table',
+  'stock.balances': 'table',
+  'stock.docs': 'table',
   'cashflow.top-categories': 'list',
   'cashflow.transactions': 'list',
   'inbox.channel-feed': 'list',
@@ -328,6 +346,8 @@ const ALL_BLOCKS: BlockDef[] = [
   UnitYandexCalculatorBlock,
   UnitMyStoreTableBlock,
   CurrencyRatesBlock,
+  StockBalancesBlock,
+  StockDocsBlock,
   MarkdownNoteBlock,
 ].map(withMeta);
 

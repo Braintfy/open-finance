@@ -7,6 +7,7 @@ export const SECTION_GROUP_IDS = [
   'finance',
   'marketplaces',
   'unit-economics',
+  'stock',
   'inbox',
   'boards',
 ] as const;
@@ -45,6 +46,12 @@ export const SECTION_GROUPS: SectionGroup[] = [
     label: 'Юнит-экономика',
     pageKeys: [/^unit-economics-/],
     description: 'Юнит-экономика: калькуляторы маржи, ROAS, ABC-анализ',
+  },
+  {
+    id: 'stock',
+    label: 'Склад',
+    pageKeys: ['warehouse'],
+    description: 'Склад, поставки и себестоимость: остатки по местам, журнал документов',
   },
   {
     id: 'inbox',

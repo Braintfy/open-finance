@@ -14,6 +14,7 @@ const PAGE_LABELS: Record<string, { label: string; href: string }> = {
   taxes: { label: 'Налоги', href: '/app/taxes' },
   inbox: { label: 'Входящие', href: '/app/inbox' },
   deadlines: { label: 'Дедлайны', href: '/app/deadlines' },
+  warehouse: { label: 'Склад', href: '/app/warehouse' },
 };
 
 type Props = {

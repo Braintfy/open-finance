@@ -22,7 +22,9 @@ allowed-tools:
 
 | Что | Значение |
 |---|---|
-| SSH | `ssh -i ~/.ssh/openfinance_pi firay@192.168.31.225` (mDNS `openfinance.local`, только LAN; passwordless sudo) |
+| SSH | `ssh -i ~/.ssh/openfinance_pi firay@192.168.31.222` — **провод (eth0), основной путь**; passwordless sudo |
+| Резервные адреса | `192.168.31.225` (wlan0, Wi-Fi) и `openfinance.local` (mDNS). Оба живы: провод — метрика 100, Wi-Fi — 600, при обрыве кабеля сервер сам уходит на радио |
+| Доступность | **только LAN.** Вне домашней сети сервер недоступен полностью (в т.ч. для агента) — см. отложенный Tailscale в `docs/ROADMAP_V2.md` |
 | Путь приложения | `/home/firay/open-finance` (**не** `/var/www/...` — план в `DEPLOY_RPI5.md` §6 описывает другой путь, реальный деплой сделан в домашнюю директорию) |
 | Владелец процесса | `firay` |
 | systemd-юнит | `open-finance` (`EnvironmentFile=/home/firay/open-finance/.env.production`) |
@@ -40,7 +42,7 @@ allowed-tools:
 4. **Не идёт ли синк Ozon** (graceful shutdown нет — рестарт посреди синка рвёт job):
 
 ```bash
-ssh -i ~/.ssh/openfinance_pi firay@192.168.31.225 \
+ssh -i ~/.ssh/openfinance_pi firay@192.168.31.222 \
   "docker exec openfinance-postgres psql -U openfinance_user -d openfinance -tAc \
    \"SELECT id, status FROM ozon_sync_jobs WHERE status IN ('pending','running')\""
 ```
@@ -56,7 +58,7 @@ rsync -az --delete \
   --exclude=node_modules --exclude=.next --exclude=.git \
   --exclude='.env*' --exclude='.claude/worktrees' \
   -e "ssh -i ~/.ssh/openfinance_pi" \
-  /Users/firay/open-finance/open-finance/ firay@192.168.31.225:/home/firay/open-finance/
+  /Users/firay/open-finance/open-finance/ firay@192.168.31.222:/home/firay/open-finance/
 ```
 
 - `--exclude='.env*'` **обязателен**: `.env.production` на сервере собран вручную и не должен затираться дев-значениями. `.env.local` на сервере создавать НЕЛЬЗЯ — он молча перебивает `.env.production`.
@@ -85,7 +87,7 @@ NODE_OPTIONS=--max-old-space-size=6144 pnpm build
 
 ```bash
 # 3.1 БЭКАП ПЕРЕД МИГРАЦИЕЙ — обязателен, без исключений
-ssh -i ~/.ssh/openfinance_pi firay@192.168.31.225 \
+ssh -i ~/.ssh/openfinance_pi firay@192.168.31.222 \
   "docker exec openfinance-postgres pg_dump -U openfinance_user -d openfinance -Fc \
    > /home/firay/backup-before-<теги-миграций>.dump && ls -lh /home/firay/backup-before-*.dump"
 
@@ -104,7 +106,7 @@ docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance -v O
 ## 4. Рестарт
 
 ```bash
-ssh -i ~/.ssh/openfinance_pi firay@192.168.31.225 "sudo systemctl restart open-finance"
+ssh -i ~/.ssh/openfinance_pi firay@192.168.31.222 "sudo systemctl restart open-finance"
 ```
 
 **Ровно один инстанс.** Никакого PM2 cluster и второго воркера: rate-limit, token-bucket Ozon (40 RPS), кэши аналитики — всё in-memory per-process; второй процесс ломает лимиты и даёт рассинхрон кэшей.
@@ -112,7 +114,7 @@ ssh -i ~/.ssh/openfinance_pi firay@192.168.31.225 "sudo systemctl restart open-f
 ## 5. Health-чек (обязателен, деплой без него не считается завершённым)
 
 ```bash
-ssh -i ~/.ssh/openfinance_pi firay@192.168.31.225 '
+ssh -i ~/.ssh/openfinance_pi firay@192.168.31.222 '
   systemctl is-active open-finance
   curl -sk -o /dev/null -w "%{http_code}\n" https://localhost/
   journalctl -u open-finance --since "5 min ago" -p err --no-pager | tail -30

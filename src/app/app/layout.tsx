@@ -22,6 +22,7 @@ import {
   Calculator,
   Store,
   BarChart3,
+  Warehouse,
 } from 'lucide-react';
 import { auth } from '@/lib/auth';
 import { LogoutButton } from '@/components/logout-button';
@@ -141,6 +142,7 @@ async function SidebarNav({ session, isAdmin }: { session: Session; isAdmin: boo
     { key: 'inbox', href: '/app/inbox', label: 'Входящие', icon: Inbox },
     { key: 'cashflow', href: '/app/cashflow', label: 'Денежный поток', icon: Wallet },
     { key: 'unit-economics', href: '/app/unit-economics', label: 'Юнит-экономика', icon: Calculator },
+    { key: 'warehouse', href: '/app/warehouse', label: 'Склад', icon: Warehouse },
     { key: 'marketplaces-ozon', href: '/app/marketplaces/ozon', label: 'Аналитика', icon: BarChart3 },
     { key: 'boards', href: '/app/boards', label: 'Мои доски', icon: LayoutGrid },
     { key: 'marketplace', href: '/app/marketplace', label: 'Маркет блоков', icon: Store },
@@ -190,7 +192,7 @@ async function SidebarNav({ session, isAdmin }: { session: Session; isAdmin: boo
 function SidebarNavSkeleton({ isAdmin }: { isAdmin: boolean }) {
   return (
     <>
-      {Array.from({ length: 9 }).map((_, i) => (
+      {Array.from({ length: 10 }).map((_, i) => (
         <div key={i} className="flex items-center gap-2 px-2 py-1.5">
           <Skeleton className="h-3.5 w-3.5 rounded" />
           <Skeleton className="h-3 w-24" />

@@ -232,6 +232,17 @@ export const DEFAULT_LAYOUTS: Record<string, PageLayout> = {
     ],
     hiddenSections: [],
   },
+  // Раздел «Склад» (docs/STOCK_MODULE_DESIGN.md §7). Порядок сверху вниз —
+  // порядок работы: сначала видно, что есть и что заканчивается, потом лента
+  // документов, куда вводится новая поставка.
+  warehouse: {
+    pageKey: 'warehouse',
+    blocks: [
+      { id: 'default-stock-balances', type: 'stock.balances', x: 0, y: 0, w: 12, h: 10 },
+      { id: 'default-stock-docs', type: 'stock.docs', x: 0, y: 10, w: 12, h: 8 },
+    ],
+    hiddenSections: [],
+  },
 };
 
 // ============================================================================
