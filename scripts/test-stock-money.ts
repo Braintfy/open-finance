@@ -11,6 +11,7 @@ import {
   kopecksToRublesInput,
   linesTotalKopecks,
   parseQty,
+  parseSignedQty,
   rublesToKopecks,
 } from '../src/lib/stock/money';
 
@@ -66,6 +67,42 @@ eq(
   true,
   'formatMoney действительно печатает неразрывный пробел (иначе тест выше холостой)',
 );
+
+// ── 2b. Юникод-минусы из чужих выгрузок ─────────────────────────────────────
+// Регресс Релиза 2: parseSignedQty знал про эти символы, а rublesToKopecks —
+// нет. Строка возврата со знаком U+2212 гасила ШТУКИ, но её сумма молча
+// становилась 0 (Number с таким минусом даёт NaN, NaN → 0), и выручка после возврата
+// оставалась завышенной. Символы — ЭСКЕЙПАМИ: литералы неотличимы от дефиса.
+const MINUS = '\u2212'; // математический минус — им печатают Excel и кабинет WB
+const NDASH = '\u2013';
+const MDASH = '\u2014';
+const FIGDASH = '\u2012'; // цифровое тире
+const FWMINUS = '\uFF0D'; // полноширинный минус
+
+eq(rublesToKopecks(`${MINUS}1200`), -120000, 'юникод-минус U+2212 в сумме');
+eq(rublesToKopecks(`${NDASH}19,90`), -1990, 'тире U+2013 в сумме');
+eq(rublesToKopecks(`${MDASH}19,90`), -1990, 'тире U+2014 в сумме');
+eq(rublesToKopecks(`${FIGDASH}19,90`), -1990, 'цифровое тире U+2012 в сумме');
+eq(rublesToKopecks(`${FWMINUS}19,90`), -1990, 'полноширинный минус U+FF0D в сумме');
+eq(
+  rublesToKopecks(`${MINUS}1${NBSP}200,50 ₽`),
+  -120050,
+  'юникод-минус + неразрывный пробел + валюта разом',
+);
+eq(rublesToKopecks(MINUS), 0, 'один юникод-минус — 0, а не NaN');
+
+// Контроль: без нормализации это был бы NaN → 0. Тест выше не холостой.
+eq(Number(`${MINUS}1200`), Number.NaN, 'контроль: Number() юникод-минус не понимает');
+
+// Симметрия количества и денег — ради неё набор символов лежит в ОДНОМ месте.
+for (const sign of [MINUS, NDASH, MDASH, FIGDASH, FWMINUS]) {
+  eq(
+    Math.sign(parseSignedQty(`${sign}1`)),
+    Math.sign(rublesToKopecks(`${sign}1`)),
+    `знак количества и знак суммы совпадают для U+${sign.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+}
+eq(parseQty(`${MINUS}5`), 0, 'юникод-минус в количестве: отрицательное отбрасывается');
 
 // ── 3. Копипаст с валютой ───────────────────────────────────────────────────
 eq(rublesToKopecks(`1${NBSP}234,56 ₽`), 123456, 'хвост «₽» не ломает разбор');

@@ -54,6 +54,9 @@ const TYPE_LABELS: Record<string, string> = {
   'unit.my-store-table': 'Мой магазин',
   'stock.balances': 'Склад · Остатки',
   'stock.docs': 'Склад · Документы',
+  'stock.quick-entry': 'Склад · Быстрый ввод',
+  'stock.expiry': 'Склад · Сроки годности',
+  'stock.gaps': 'Склад · Пробелы',
 };
 
 const DEFAULT_PAGE_KEYS = [

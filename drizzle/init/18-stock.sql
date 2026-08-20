@@ -119,6 +119,7 @@ CREATE TABLE IF NOT EXISTS "stock_doc_lines" (
 	"expires_at" date,
 	"is_estimated" boolean DEFAULT false NOT NULL,
 	"counted_qty" integer,
+	"pair_line_no" integer,
 	"comment" text
 );
 CREATE TABLE IF NOT EXISTS "stock_docs" (
@@ -174,6 +175,7 @@ CREATE TABLE IF NOT EXISTS "stock_moves" (
 	"doc_date" date NOT NULL,
 	"lot_alloc" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"reverses_move_id" uuid,
+	"pair_move_id" uuid,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 CREATE TABLE IF NOT EXISTS "stock_recon" (
@@ -322,6 +324,7 @@ CREATE INDEX IF NOT EXISTS "stock_moves_item_date_idx" ON "stock_moves" USING bt
 CREATE INDEX IF NOT EXISTS "stock_moves_place_idx" ON "stock_moves" USING btree ("tenant_id","place_id");
 CREATE INDEX IF NOT EXISTS "stock_moves_doc_idx" ON "stock_moves" USING btree ("doc_id");
 CREATE INDEX IF NOT EXISTS "stock_moves_kind_date_idx" ON "stock_moves" USING btree ("tenant_id","kind","doc_date");
+CREATE INDEX IF NOT EXISTS "stock_moves_pair_idx" ON "stock_moves" USING btree ("pair_move_id") WHERE "pair_move_id" is not null;
 CREATE UNIQUE INDEX IF NOT EXISTS "stock_recon_uniq_idx" ON "stock_recon" USING btree ("tenant_id","account_id","item_id","place_id","snapshot_at");
 CREATE INDEX IF NOT EXISTS "stock_recon_open_idx" ON "stock_recon" USING btree ("tenant_id","status") WHERE "status" = 'open';
 CREATE UNIQUE INDEX IF NOT EXISTS "stock_settings_tenant_idx" ON "stock_settings" USING btree ("tenant_id");

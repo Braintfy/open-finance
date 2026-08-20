@@ -38,6 +38,9 @@ import { CurrencyRatesBlock } from './catalog/currency-rates';
 import { MarkdownNoteBlock } from './catalog/markdown-note';
 import { StockBalancesBlock } from './catalog/stock-balances';
 import { StockDocsBlock } from './catalog/stock-docs';
+import { StockQuickEntryBlock } from './catalog/stock-quick-entry';
+import { StockExpiryBlock } from './catalog/stock-expiry';
+import { StockGapsBlock } from './catalog/stock-gaps';
 
 /**
  * Метаданные маркетплейса для каждого блока — tags, recommendedFor, iconName
@@ -246,6 +249,24 @@ const BLOCK_META: Record<
     usesPeriod: true,
     skeletonVariant: 'table',
   },
+  'stock.quick-entry': {
+    tags: ['stock', 'warehouse', 'supply', 'input', 'daily'],
+    recommendedFor: ['warehouse'],
+    iconName: 'PackagePlus',
+  },
+  'stock.expiry': {
+    tags: ['stock', 'warehouse', 'expiry', 'batches', 'risk'],
+    recommendedFor: ['warehouse'],
+    iconName: 'CalendarClock',
+    skeletonVariant: 'table',
+  },
+  'stock.gaps': {
+    tags: ['stock', 'warehouse', 'quality', 'cost', 'quarantine'],
+    recommendedFor: ['warehouse'],
+    iconName: 'AlertTriangle',
+    usesPeriod: true,
+    skeletonVariant: 'list',
+  },
 };
 
 // Форма скелетона загрузки по типу блока (см. BlockSkeletonVariant в block-skeleton.tsx).
@@ -274,6 +295,9 @@ const SKELETON_VARIANT_BY_TYPE: Record<string, string> = {
   'unit.my-store-table': 'table',
   'stock.balances': 'table',
   'stock.docs': 'table',
+  'stock.expiry': 'table',
+  'stock.gaps': 'list',
+  'stock.quick-entry': 'generic',
   'cashflow.top-categories': 'list',
   'cashflow.transactions': 'list',
   'inbox.channel-feed': 'list',
@@ -348,6 +372,9 @@ const ALL_BLOCKS: BlockDef[] = [
   CurrencyRatesBlock,
   StockBalancesBlock,
   StockDocsBlock,
+  StockQuickEntryBlock,
+  StockExpiryBlock,
+  StockGapsBlock,
   MarkdownNoteBlock,
 ].map(withMeta);
 

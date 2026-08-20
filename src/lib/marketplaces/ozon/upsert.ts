@@ -2,7 +2,7 @@
 // ozon_orders, ozon_realization, ozon_transactions). Все upsert'ы
 // идемпотентные — по уникальным ключам.
 
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, gte, lt, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { unitProducts } from '@/lib/db/schema/unit-economics';
 import {
@@ -18,10 +18,12 @@ import type {
   ProductInfo,
   FbsPosting,
   FboPosting,
+  RealizationHeader,
   RealizationRow,
   TransactionOperation,
   TurnoverRow,
 } from './types';
+import { MISMATCH_TOLERANCE_RUB, mapRealizationRow } from './realization-map';
 import {
   planUnitProductUpsertFromOzon,
   type CombinedProduct,
@@ -225,43 +227,90 @@ export async function upsertFboPosting(
 // ozon_realization
 // ---------------------------------------------------------------------------
 
+/** Сколько строк отчёта уходит в БД одним INSERT (у строки жирный `raw`). */
+const REALIZATION_INSERT_CHUNK = 500;
+
+/** День в миллисекундах — для запаса при чистке окна периода (см. ниже). */
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+export type RealizationBatchResult = {
+  /** Сколько строк записано. */
+  inserted: number;
+  /**
+   * Сколько строк не сошлось: «итого к начислению + вознаграждение» разошлось
+   * с суммой компонентов выплат больше чем на `MISMATCH_TOLERANCE_RUB`.
+   * Стейдж выносит это в `warnings` — признак, что Ozon снова поменял форму.
+   */
+  mismatched: number;
+};
+
+/**
+ * Записывает месячный отчёт о реализации. Идемпотентно: перед вставкой сносит
+ * ВСЁ окно периода по (tenant, account) — повторный синк того же месяца строки
+ * не задваивает. Тот же приём, что в стейдже аналитики (`analytics-data.ts`),
+ * где DELETE идёт строго по окну дат.
+ *
+ * Окно чистки сдвинуто на сутки назад намеренно: `period_from` — `timestamp`
+ * без таймзоны, и строка, записанная процессом с локальной полуночью МСК, лежит
+ * как `<пред. месяц> 21:00`, а не как `1-е 00:00`. Сравнение на равенство (как
+ * было раньше) такую строку не нашло бы и она бы задвоилась. Сдвиг ровно на
+ * сутки не может зацепить соседний месяц: его строки стоят на своей границе,
+ * а до неё в любом кодировании больше суток.
+ */
 export async function insertRealizationBatch(
   ctx: UpsertContext,
   args: {
     periodFrom: Date;
     periodTo: Date;
     rows: RealizationRow[];
+    /** Шапка документа — кладётся в `raw` каждой строки (контекст для пересчёта). */
+    header?: RealizationHeader | null;
   },
-): Promise<number> {
-  if (args.rows.length === 0) return 0;
-  // Очищаем предыдущие записи периода (по account+period_from+period_to),
-  // потом массово вставляем. Это проще, чем upsert per-row.
+): Promise<RealizationBatchResult> {
   await db
     .delete(ozonRealization)
     .where(
       and(
+        eq(ozonRealization.tenantId, ctx.tenantId),
         eq(ozonRealization.accountId, ctx.accountId),
-        eq(ozonRealization.periodFrom, args.periodFrom),
-        eq(ozonRealization.periodTo, args.periodTo),
+        gte(ozonRealization.periodFrom, new Date(args.periodFrom.getTime() - DAY_MS)),
+        lt(ozonRealization.periodFrom, new Date(args.periodTo.getTime() - DAY_MS)),
       ),
     );
 
-  const inserts: NewOzonRealizationRow[] = args.rows.map((r) => ({
-    tenantId: ctx.tenantId,
-    accountId: ctx.accountId,
-    periodFrom: args.periodFrom,
-    periodTo: args.periodTo,
-    sku: r.sku ? String(r.sku) : null,
-    offerId: r.offer_id ?? null,
-    qty: r.sale?.sale_qty ?? 0,
-    grossKopecks: rublesToKopecks(r.sale?.sale_amount ?? 0),
-    commissionKopecks: rublesToKopecks(r.sale?.sale_commission ?? 0),
-    logisticsKopecks: 0,
-    adsKopecks: 0,
-    raw: r as unknown as Record<string, unknown>,
-  }));
-  await db.insert(ozonRealization).values(inserts);
-  return inserts.length;
+  if (args.rows.length === 0) return { inserted: 0, mismatched: 0 };
+
+  let mismatched = 0;
+  const inserts: NewOzonRealizationRow[] = args.rows.map((r) => {
+    const plan = mapRealizationRow(r);
+    if (plan.residualRub > MISMATCH_TOLERANCE_RUB) mismatched += 1;
+    return {
+      tenantId: ctx.tenantId,
+      accountId: ctx.accountId,
+      periodFrom: args.periodFrom,
+      periodTo: args.periodTo,
+      sku: plan.sku,
+      offerId: plan.offerId,
+      qty: plan.qty,
+      grossKopecks: plan.grossKopecks,
+      commissionKopecks: plan.commissionKopecks,
+      // Логистику и рекламу отчёт о реализации не содержит вовсе: это приложение
+      // к УПД по товарам, а услуги (доставка, обработка, продвижение) приходят
+      // отдельными операциями в `/v3/finance/transaction/list`. Пишем 0, чтобы
+      // не выдумывать числа; источник рекламы — `ozon_perf_*` / `getOzonAdsTotals`.
+      logisticsKopecks: 0,
+      adsKopecks: 0,
+      // Строка целиком + шапка документа: единственный способ пересчитать
+      // выручку/вознаграждение задним числом, если трактовка полей окажется
+      // неверной, — без повторного похода в API (Ozon отдаёт только закрытые месяцы).
+      raw: { ...(r as unknown as Record<string, unknown>), header: args.header ?? null },
+    };
+  });
+
+  for (let i = 0; i < inserts.length; i += REALIZATION_INSERT_CHUNK) {
+    await db.insert(ozonRealization).values(inserts.slice(i, i + REALIZATION_INSERT_CHUNK));
+  }
+  return { inserted: inserts.length, mismatched };
 }
 
 // ---------------------------------------------------------------------------

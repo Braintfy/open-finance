@@ -136,6 +136,9 @@ const TYPE_LABELS: Record<string, { label: string; category: string }> = {
   'currency.rates': { label: 'Курсы валют', category: 'Финансы' },
   'stock.balances': { label: 'Склад · Остатки', category: 'Склад' },
   'stock.docs': { label: 'Склад · Документы', category: 'Склад' },
+  'stock.quick-entry': { label: 'Склад · Быстрый ввод', category: 'Склад' },
+  'stock.expiry': { label: 'Склад · Сроки годности', category: 'Склад' },
+  'stock.gaps': { label: 'Склад · Пробелы', category: 'Склад' },
 };
 
 /**
@@ -1163,6 +1166,111 @@ async function fieldsForBlock(
       { name: 'purchasesKopecks', label: 'Закуплено за период', value: null, format: 'money' },
       { name: 'docsCount', label: 'Приходных документов', value: null, format: 'number' },
       { name: 'rowsCount', label: 'Документов в ленте', value: null, format: 'number' },
+      // mpShortageKopecks ВХОДИТ в lossKopecks (обе ноги — kind='writeoff'):
+      // подписи обязаны это показывать, иначе в KPI их сложат и задвоят
+      // недостачу. Непересекающаяся пара — otherLossKopecks + mpShortageKopecks.
+      {
+        name: 'lossKopecks',
+        label: 'Потери за период (всего)',
+        value: null,
+        format: 'money',
+      },
+      {
+        name: 'mpShortageKopecks',
+        label: 'в том числе съедено маркетплейсом',
+        value: null,
+        format: 'money',
+      },
+      {
+        name: 'otherLossKopecks',
+        label: 'Потери без маркетплейса',
+        value: null,
+        format: 'money',
+      },
+      {
+        name: 'salesCogsKopecks',
+        label: 'Себестоимость проданного (WB/ЯМ)',
+        value: null,
+        format: 'money',
+      },
+    ];
+  }
+  if (block.type === 'stock.quick-entry') {
+    // Синхронизированы с useBlockValuePublisher в catalog/stock-quick-entry.tsx.
+    return [
+      { name: 'value', label: 'Закуплено сегодня', value: null, format: 'money' },
+      { name: 'purchasedTodayKopecks', label: 'Закуплено сегодня', value: null, format: 'money' },
+      { name: 'docsToday', label: 'Документов за сегодня', value: null, format: 'number' },
+      { name: 'draftsCount', label: 'Черновиков', value: null, format: 'number' },
+    ];
+  }
+  if (block.type === 'stock.expiry') {
+    // Синхронизированы с useBlockValuePublisher в catalog/stock-expiry.tsx.
+    return [
+      // «Деньги под риском» ВКЛЮЧАЮТ просрочку — иначе в kpi.grid эти две суммы
+      // складывают и получают двойной счёт просроченного товара.
+      {
+        name: 'value',
+        label: 'Деньги под риском (с просрочкой)',
+        value: null,
+        format: 'money',
+      },
+      {
+        name: 'expiringValueKopecks',
+        label: 'Деньги под риском (с просрочкой)',
+        value: null,
+        format: 'money',
+      },
+      {
+        name: 'expiredValueKopecks',
+        label: 'в том числе в просрочке',
+        value: null,
+        format: 'money',
+      },
+      { name: 'expiredCount', label: 'Просроченных партий', value: null, format: 'number' },
+      { name: 'criticalCount', label: 'Партий горит', value: null, format: 'number' },
+      { name: 'soonCount', label: 'Партий на радаре', value: null, format: 'number' },
+      {
+        name: 'noCostCount',
+        label: 'Партий без себестоимости',
+        value: null,
+        format: 'number',
+      },
+    ];
+  }
+  if (block.type === 'stock.gaps') {
+    // Зависят от периода блока → значения от run-time publisher'а.
+    return [
+      { name: 'value', label: 'Выручка мимо себестоимости', value: null, format: 'money' },
+      {
+        name: 'quarantineRevenueKopecks',
+        label: 'Выручка мимо себестоимости',
+        value: null,
+        format: 'money',
+      },
+      {
+        name: 'unlinkedRevenueKopecks',
+        label: 'Выручка продаж без сшивки',
+        value: null,
+        format: 'money',
+      },
+      {
+        name: 'withoutCostRevenueKopecks',
+        label: 'Выручка продаж без себестоимости',
+        value: null,
+        format: 'money',
+      },
+      { name: 'gapsCount', label: 'Всего пробелов', value: null, format: 'number' },
+      { name: 'unmatchedCount', label: 'Позиций без товара', value: null, format: 'number' },
+      { name: 'noCostItemsCount', label: 'Товаров без себестоимости', value: null, format: 'number' },
+      { name: 'negativeCount', label: 'Отрицательных остатков', value: null, format: 'number' },
+      {
+        name: 'uncoveredCount',
+        label: 'Движений без покрытия',
+        value: null,
+        format: 'number',
+      },
+      { name: 'uncoveredQty', label: 'Штук без покрытия', value: null, format: 'number' },
     ];
   }
   if (block.type === 'cashflow.transactions') {

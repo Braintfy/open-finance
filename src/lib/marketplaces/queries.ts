@@ -2,10 +2,11 @@
 // ozon_sync_jobs. Все запросы фильтруются по tenant_id. Plan-gate
 // canAddAccount() ограничивает добавление >1 магазина на free/trial.
 
-import { and, desc, eq, lt, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, lt, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import {
   marketplaceAccounts,
+  ozonAnalyticsDaily,
   ozonSyncJobs,
   type MarketplaceAccount,
   type NewMarketplaceAccount,
@@ -24,6 +25,10 @@ import {
   decryptSecret,
   maskSecret,
 } from '@/lib/marketplaces/crypto';
+import {
+  planLastSyncUpdate,
+  type LastSyncStatus,
+} from '@/lib/marketplaces/last-sync-plan';
 import {
   DEFAULT_OZON_SYNC_SETTINGS,
   isPremiumPlan,
@@ -267,9 +272,50 @@ export function decryptAccountApiKey(account: MarketplaceAccount): string {
   return decryptSecret(account.apiKeyEnc);
 }
 
-/** Сериализация аккаунта для отдачи на клиент (без расшифровки api_key). */
-export function toPublicAccount(account: MarketplaceAccount): AccountPublic {
+/**
+ * `max(date)` из `ozon_analytics_daily` по каждому аккаунту — фактическое
+ * покрытие данными (в отличие от `last_sync_at`, который говорит лишь о том,
+ * что sync запускался). Один запрос с GROUP BY на все аккаунты (без N+1).
+ * Скоуп по `tenant_id` обязателен — `accountIds` приходят из строк tenant'а,
+ * но фильтр по tenant остаётся вторым замком (docs/TENANT_SCOPING.md).
+ */
+export async function getAnalyticsCoverageByAccount(args: {
+  tenantId: string;
+  accountIds: string[];
+}): Promise<Record<string, string>> {
+  if (args.accountIds.length === 0) return {};
+  const rows = await db
+    .select({
+      accountId: ozonAnalyticsDaily.accountId,
+      coveredThrough: sql<string | null>`max(${ozonAnalyticsDaily.date})::text`,
+    })
+    .from(ozonAnalyticsDaily)
+    .where(
+      and(
+        eq(ozonAnalyticsDaily.tenantId, args.tenantId),
+        inArray(ozonAnalyticsDaily.accountId, args.accountIds),
+      ),
+    )
+    .groupBy(ozonAnalyticsDaily.accountId);
+
+  const out: Record<string, string> = {};
+  for (const row of rows) {
+    if (row.coveredThrough) out[row.accountId] = row.coveredThrough.slice(0, 10);
+  }
+  return out;
+}
+
+/**
+ * Сериализация аккаунта для отдачи на клиент (без расшифровки api_key).
+ * `analyticsCoveredThrough` подставляется вызывающим кодом — обычно через
+ * `toPublicAccountsWithCoverage()`, который берёт его одним агрегатом.
+ */
+export function toPublicAccount(
+  account: MarketplaceAccount,
+  analyticsCoveredThrough: string | null = null,
+): AccountPublic {
   return {
+    analyticsCoveredThrough,
     id: account.id,
     marketplace: account.marketplace,
     name: account.name,
@@ -297,22 +343,45 @@ export function toPublicAccount(account: MarketplaceAccount): AccountPublic {
   };
 }
 
+/**
+ * Сериализация списка аккаунтов + подстановка фактического покрытия
+ * аналитики. Coverage тянем одним GROUP BY-запросом на все ozon-аккаунты.
+ */
+export async function toPublicAccountsWithCoverage(args: {
+  tenantId: string;
+  accounts: MarketplaceAccount[];
+}): Promise<AccountPublic[]> {
+  const ozonIds = args.accounts
+    .filter((a) => a.marketplace === 'ozon')
+    .map((a) => a.id);
+  const coverage = await getAnalyticsCoverageByAccount({
+    tenantId: args.tenantId,
+    accountIds: ozonIds,
+  });
+  return args.accounts.map((a) => toPublicAccount(a, coverage[a.id] ?? null));
+}
+
+/**
+ * ВАЖНО: при `status: 'error'` НЕ двигаем `lastSyncAt` — см. инвариант в
+ * `last-sync-plan.ts`. Упавший sync не должен «отмечать» период как
+ * загруженный, иначе auto-preset схлопывает окно и данные теряются навсегда.
+ */
 export async function updateAccountLastSync(args: {
   tenantId: string;
   id: string;
-  status: 'success' | 'partial' | 'error';
+  status: LastSyncStatus;
   error?: string;
   summary?: SyncSummary;
 }): Promise<void> {
   await db
     .update(marketplaceAccounts)
-    .set({
-      lastSyncAt: new Date(),
-      lastSyncStatus: args.status,
-      lastSyncError: args.error ?? null,
-      lastSyncSummary: args.summary ?? { stages: {} },
-      updatedAt: new Date(),
-    })
+    .set(
+      planLastSyncUpdate({
+        status: args.status,
+        error: args.error,
+        summary: args.summary,
+      }),
+    )
     .where(
       and(
         eq(marketplaceAccounts.tenantId, args.tenantId),

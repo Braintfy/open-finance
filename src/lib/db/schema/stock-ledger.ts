@@ -49,7 +49,14 @@ export type StockDocKind =
   | 'writeoff'
   | 'adjust'
   | 'return_in'
-  | 'regrade';
+  | 'regrade'
+  /**
+   * Продажа вне Ozon (WB / Яндекс.Маркет / сайты) — Релиз 2, импорт файлов (§12.3).
+   * Отдельный вид, а не writeoff: §1.8 запрещает смешивать потери и себестоимость
+   * проданного. Продажи Ozon движений НЕ порождают (§1.2) — их COGS считается
+   * из ozon_realization по costAt().
+   */
+  | 'sale';
 
 export type StockDocStatus = 'draft' | 'posted' | 'void';
 
@@ -223,8 +230,22 @@ export const stockDocLines = pgTable(
     expiresAt: date('expires_at'),
     /** «Цена по памяти» — тянется в партию и подсвечивается во всех отчётах. */
     isEstimated: boolean('is_estimated').notNull().default(false),
-    /** Только для adjust: введённый фактический остаток. */
+    /**
+     * `adjust` — введённый фактический остаток (счёт по факту).
+     * `accept`  — сколько принято складом маркетплейса ФАКТИЧЕСКИ, при qty =
+     *   сколько отгружено. Разница проводится отдельной ногой потерь
+     *   reason='mp_shortage' (§5 «Приёмка Ozon»). NULL = принято всё.
+     */
     countedQty: integer('counted_qty'),
+    /**
+     * ПАРНАЯ СТРОКА документа `regrade` (Релиз 2, §4.5): у приходной строки
+     * указывает line_no расходной, чью стоимость она забирает ЦЕЛИКОМ.
+     * Сопоставление 1:1 — так Σ value_delta по документу == 0 держится
+     * арифметически, без распределения долей и округлений.
+     * У transfer/accept пара неявная (обе ноги делает одна строка), поэтому
+     * там колонка не заполняется.
+     */
+    pairLineNo: integer('pair_line_no'),
     comment: text('comment'),
   },
   (t) => [
@@ -353,6 +374,19 @@ export const stockMoves = pgTable(
       .notNull()
       .default(sql`'[]'::jsonb`),
     reversesMoveId: uuid('reverses_move_id'),
+    /**
+     * ПАРНАЯ НОГА (Релиз 2, §4.5): у ПРИХОДНОГО движения — id расходного, чью
+     * пересчитанную стоимость оно забирает. Ровно так стоимость ПЕРЕНОСИТСЯ
+     * между местами (transfer own → transit) и между позициями (regrade),
+     * а не создаётся заново.
+     *
+     * Почему ссылка, а не сохранённое число: расходная нога переоценивается при
+     * вводе документа задним числом (§4.7). Если бы приходная нога держала
+     * снимок, после пересчёта Σ value_delta документа перестала бы быть нулём —
+     * перемещение молча родило бы или съело прибыль. Тот же приём, что и у
+     * reverses_move_id (см. replay-plan.ts, правила 1 и 4).
+     */
+    pairMoveId: uuid('pair_move_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => [
@@ -360,6 +394,9 @@ export const stockMoves = pgTable(
     index('stock_moves_place_idx').on(t.tenantId, t.placeId),
     index('stock_moves_doc_idx').on(t.docId),
     index('stock_moves_kind_date_idx').on(t.tenantId, t.kind, t.docDate),
+    // Замыкание пересчёта: по этому индексу recalcItemsInTx находит товары,
+    // связанные парными ногами (regrade), и переигрывает их ОДНИМ проходом.
+    index('stock_moves_pair_idx').on(t.pairMoveId).where(sql`"pair_move_id" is not null`),
   ],
 );
 

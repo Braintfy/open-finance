@@ -7,7 +7,11 @@ import { eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { tenants } from '@/lib/db/schema/tenants';
 import { auth } from '@/lib/auth';
-import { listAccounts, toPublicAccount } from '@/lib/marketplaces/queries';
+import {
+  listAccounts,
+  toPublicAccountsWithCoverage,
+} from '@/lib/marketplaces/queries';
+import type { AccountPublic } from '@/lib/marketplaces/types';
 import { IntegrationsClient } from './integrations-client';
 
 export default async function IntegrationsPage() {
@@ -20,12 +24,13 @@ export default async function IntegrationsPage() {
     .where(eq(tenants.id, session.tenantId))
     .limit(1);
 
-  let accountsPublic: Awaited<ReturnType<typeof listAccounts>> extends Array<infer A>
-    ? Array<ReturnType<typeof toPublicAccount>>
-    : never = [];
+  let accountsPublic: AccountPublic[] = [];
   try {
     const rows = await listAccounts({ tenantId: session.tenantId });
-    accountsPublic = rows.map(toPublicAccount);
+    accountsPublic = await toPublicAccountsWithCoverage({
+      tenantId: session.tenantId,
+      accounts: rows,
+    });
   } catch {
     // Таблица marketplace_accounts может ещё не существовать (manual SQL не применили).
     accountsPublic = [];

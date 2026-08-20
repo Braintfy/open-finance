@@ -23,7 +23,8 @@
 // переиграть ленту товара с начала. Поэтому recalcFrom(fromDate) использует
 // дату только для сообщения пользователю, а считает всегда с начала журнала.
 
-import { and, asc, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, asc, eq, inArray, or, sql, type SQL } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import { db } from '@/lib/db/client';
 import { stockItems, stockPlaces } from '@/lib/db/schema/stock';
 import {
@@ -40,84 +41,57 @@ import {
 import {
   allocateLots,
   computeDocTotals,
+  createPool,
+  divRound,
   poolToCache,
   type CostBasis,
   type CostingWarning,
   type DocLineInput,
   type PoolState,
 } from './costing';
-import { replayLedger, type LedgerMoveRow } from './replay-plan';
+import { replayLedgerMulti, type LedgerMoveRow } from './replay-plan';
+import {
+  defaultDirectionFor,
+  planDocLegs,
+  type PlanLine,
+  type PlanPlace,
+  type PlannedLeg,
+} from './doc-plan';
 import { LOSS_PLACE_CODE, OWN_PLACE_CODE } from './places';
 import { getStockSettings, type StockCtx, type StockDb } from './queries';
 import { applyCostWriteback } from './writeback';
+import { StockError } from './errors';
+
+// Ошибка живёт в отдельном errors.ts (её бросают и чистые модули), но исторически
+// импортируется отсюда — ре-экспорт держит старые импорты рабочими.
+export { StockError } from './errors';
+export type { StockErrorCode } from './errors';
 
 // ---------------------------------------------------------------------------
-// Ошибки
-// ---------------------------------------------------------------------------
-
-export type StockErrorCode =
-  | 'not_found'
-  | 'bad_request'
-  | 'period_locked'
-  | 'wrong_status'
-  | 'not_implemented';
-
-/** Доменная ошибка с HTTP-статусом: роуты мапят её без анализа текста. */
-export class StockError extends Error {
-  readonly code: StockErrorCode;
-  readonly status: number;
-
-  constructor(code: StockErrorCode, message: string) {
-    super(message);
-    this.name = 'StockError';
-    this.code = code;
-    this.status =
-      code === 'not_found'
-        ? 404
-        : code === 'period_locked'
-          ? 403
-          : code === 'wrong_status'
-            ? 409
-            : code === 'not_implemented'
-              ? 501
-              : 400;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Что умеет проводить Релиз 1
+// Что умеет проводить движок
 // ---------------------------------------------------------------------------
 
 /**
- * Односторонние документы: все строки двигают ОДИН пул и одно ledger-место.
- * Их себестоимость считается пулом без переноса стоимости между движениями.
+ * Все виды документов проводятся с Релиза 2: односторонние (Релиз 1) и
+ * с ПАРНЫМИ ногами — transfer / accept / regrade, где приходная нога получает
+ * РОВНО ту стоимость, что списана с расходной (§4.5). Раскладку документа на
+ * ноги считает чистый planDocLegs() (doc-plan.ts), перенос стоимости —
+ * правило 4 реплея (replay-plan.ts).
  */
-const R1_KINDS: readonly StockDocKind[] = [
+const POSTABLE_KINDS: readonly StockDocKind[] = [
   'opening',
   'purchase',
   'return_in',
   'writeoff',
   'adjust',
+  'sale',
+  'transfer',
+  'accept',
+  'regrade',
 ];
 
-/**
- * Документы с ПАРНЫМИ ногами (Релиз 2). Приходная нога обязана получить РОВНО
- * ту стоимость, что списана с расходной (§4.5), а это перенос значения между
- * движениями внутри реплея — отдельная механика, которую нельзя «дописать
- * по-быстрому»: ошибка здесь создаёт или съедает прибыль молча.
- */
-const R2_KINDS: readonly StockDocKind[] = ['transfer', 'accept', 'regrade'];
-
 function assertPostableKind(kind: StockDocKind): void {
-  if (R1_KINDS.includes(kind)) return;
-  if (R2_KINDS.includes(kind)) {
-    throw new StockError(
-      'not_implemented',
-      `Документ «${kind}» проводится в Релизе 2: у него парные ноги (стоимость ` +
-        'переносится между движениями), а Релиз 1 умеет только односторонние ' +
-        'документы — поступление, возврат, списание, инвентаризацию.',
-    );
-  }
+  if (POSTABLE_KINDS.includes(kind)) return;
   throw new StockError('bad_request', `Неизвестный тип документа: ${kind}`);
 }
 
@@ -137,8 +111,14 @@ export interface DocLinePayload {
   expiresAt?: string | null;
   /** «Цена по памяти» — тянется в партию и подсвечивается в отчётах (§8 шаг 4). */
   isEstimated?: boolean;
-  /** Только для adjust: фактически пересчитанный остаток. */
+  /**
+   * `adjust` — фактически пересчитанный остаток;
+   * `accept` — сколько маркетплейс принял ФАКТИЧЕСКИ (при qty = сколько
+   * отгружено). Разница уходит отдельной ногой потерь reason='mp_shortage'.
+   */
   countedQty?: number | null;
+  /** `regrade`: номер расходной строки, чью стоимость забирает эта приходная. */
+  pairLineNo?: number | null;
   comment?: string | null;
 }
 
@@ -166,9 +146,13 @@ export interface DocPayload {
   lines: DocLinePayload[];
 }
 
-/** Направление строки по умолчанию для типа документа. */
+/**
+ * Направление строки по умолчанию для типа документа. Расход — у списания,
+ * продажи, перемещения и приёмки: во всех четырёх пользователь вводит «что
+ * ушло», а приходную ногу (если она есть) создаёт сервер.
+ */
 function defaultDirection(kind: StockDocKind): StockLineDirection {
-  return kind === 'writeoff' ? 'out' : 'in';
+  return defaultDirectionFor(kind);
 }
 
 function normalizeLines(
@@ -182,6 +166,7 @@ function normalizeLines(
   expiresAt: string | null;
   isEstimated: boolean;
   countedQty: number | null;
+  pairLineNo: number | null;
   comment: string | null;
 }> {
   if (!Array.isArray(lines) || lines.length === 0) {
@@ -215,6 +200,10 @@ function normalizeLines(
         line.countedQty === null || line.countedQty === undefined
           ? null
           : Math.trunc(Number(line.countedQty)),
+      pairLineNo:
+        line.pairLineNo === null || line.pairLineNo === undefined
+          ? null
+          : Math.trunc(Number(line.pairLineNo)),
       comment: line.comment?.trim() || null,
     };
   });
@@ -224,7 +213,7 @@ async function resolvePlaceIdByCode(
   ctx: StockCtx,
   client: StockDb,
   code: string,
-): Promise<{ id: string; code: string; authority: string }> {
+): Promise<PlanPlace> {
   const [place] = await client
     .select({
       id: stockPlaces.id,
@@ -239,6 +228,30 @@ async function resolvePlaceIdByCode(
       'bad_request',
       `Место «${code}» не найдено. Откройте раздел «Склад» — встроенные места создаются автоматически.`,
     );
+  }
+  return place;
+}
+
+/**
+ * То же по id (шапка документа хранит id, а не код). tenant_id обязателен:
+ * без него чужое место подставилось бы в наш документ по угаданному uuid.
+ */
+async function resolvePlaceById(
+  ctx: StockCtx,
+  client: StockDb,
+  placeId: string,
+): Promise<PlanPlace> {
+  const [place] = await client
+    .select({
+      id: stockPlaces.id,
+      code: stockPlaces.code,
+      authority: stockPlaces.authority,
+    })
+    .from(stockPlaces)
+    .where(and(eq(stockPlaces.tenantId, ctx.tenantId), eq(stockPlaces.id, placeId)))
+    .limit(1);
+  if (!place) {
+    throw new StockError('bad_request', 'Место документа не найдено или удалено');
   }
   return place;
 }
@@ -326,6 +339,7 @@ export async function createDraftDoc(
         expiresAt: l.expiresAt,
         isEstimated: l.isEstimated,
         countedQty: l.countedQty,
+        pairLineNo: l.pairLineNo,
         comment: l.comment,
       })),
     );
@@ -421,6 +435,7 @@ export async function updateDraftDoc(
         expiresAt: l.expiresAt,
         isEstimated: l.isEstimated,
         countedQty: l.countedQty,
+        pairLineNo: l.pairLineNo,
         comment: l.comment,
       })),
     );
@@ -507,13 +522,33 @@ export async function postDoc(
       throw new StockError('bad_request', 'В документе нет строк — проводить нечего');
     }
 
-    // --- места ---
+    // --- места и раскладка документа на ноги (чистый planDocLegs, §3/§4.5) ---
     const ownPlace = await resolvePlaceIdByCode(ctx, tx, OWN_PLACE_CODE);
-    const fromPlaceId = doc.fromPlaceId ?? ownPlace.id;
-    const toPlaceId = doc.toPlaceId ?? ownPlace.id;
-    const lossPlace =
-      doc.kind === 'writeoff' ? await resolvePlaceIdByCode(ctx, tx, LOSS_PLACE_CODE) : null;
-    await assertLedgerPlaces(ctx, tx, [fromPlaceId, toPlaceId]);
+    const lossPlace = await resolvePlaceIdByCode(ctx, tx, LOSS_PLACE_CODE);
+    const fromPlace = doc.fromPlaceId
+      ? await resolvePlaceById(ctx, tx, doc.fromPlaceId)
+      : null;
+    const toPlace = doc.toPlaceId ? await resolvePlaceById(ctx, tx, doc.toPlaceId) : null;
+
+    const legs = planDocLegs(
+      {
+        kind: doc.kind,
+        reason: doc.reason,
+        fromPlace,
+        toPlace,
+        ownPlace,
+        lossPlace,
+      },
+      lines.map<PlanLine>((l) => ({
+        lineNo: l.lineNo,
+        lineId: l.id,
+        itemId: l.itemId,
+        direction: l.direction,
+        qty: l.qty,
+        countedQty: l.countedQty,
+        pairLineNo: l.pairLineNo,
+      })),
+    );
 
     // --- 2. деньги строк ---
     const costed = computeDocTotals(
@@ -585,37 +620,51 @@ export async function postDoc(
     }
 
     // --- 4. движения (стоимость проставит реплей на шаге 7) ---
-    const insertedMoves: Array<{ id: string; lineId: string }> = [];
-    for (const line of lines) {
-      const placeId = line.direction === 'in' ? toPlaceId : fromPlaceId;
-      const counterPlaceId =
-        line.direction === 'in'
-          ? doc.fromPlaceId
-          : (lossPlace?.id ?? doc.toPlaceId ?? null);
+    // Порядок вставки = порядок ног из планировщика, а он гарантирует, что
+    // расходная нога пары идёт РАНЬШЕ приходной. seq (identity) наследует этот
+    // порядок, и реплей находит донора уже посчитанным (правило 4).
+    const movedIds: string[] = [];
+    for (let i = 0; i < legs.length; i += 1) {
+      const leg = legs[i];
+      const pairMoveId =
+        leg.pairLegIndex != null ? (movedIds[leg.pairLegIndex] ?? null) : null;
+      if (leg.pairLegIndex != null && !pairMoveId) {
+        // Планировщик обязан ссылаться только назад; если это не так —
+        // ошибка кода, а не ввода: без пары приходная нога не знает стоимости.
+        throw new StockError(
+          'bad_request',
+          `Строка ${leg.lineNo}: расходная нога пары не найдена — документ не проведён`,
+        );
+      }
       const [move] = await tx
         .insert(stockMoves)
         .values({
           tenantId: ctx.tenantId,
           docId: doc.id,
-          lineId: line.id,
-          itemId: line.itemId,
-          placeId,
-          counterPlaceId: counterPlaceId === placeId ? null : counterPlaceId,
-          qtyDelta: line.direction === 'in' ? line.qty : -line.qty,
+          lineId: leg.lineId ?? null,
+          itemId: leg.itemId,
+          placeId: leg.placeId,
+          counterPlaceId:
+            leg.counterPlaceId === leg.placeId ? null : (leg.counterPlaceId ?? null),
+          qtyDelta: leg.direction === 'in' ? leg.qty : -leg.qty,
           valueDeltaKopecks: 0,
           unitValueKopecks: 0,
-          kind: doc.kind,
-          reason: doc.reason,
+          kind: leg.kind,
+          reason: leg.reason,
           docDate: doc.docDate,
+          pairMoveId,
         })
         .returning({ id: stockMoves.id });
-      insertedMoves.push({ id: move.id, lineId: line.id });
+      movedIds.push(move.id);
     }
 
-    // --- 5. FEFO/FIFO-раскладка расходных строк по партиям ---
-    for (let i = 0; i < lines.length; i += 1) {
-      const line = lines[i];
-      if (line.direction !== 'out') continue;
+    // --- 5. FEFO/FIFO-раскладка расходных ног по партиям ---
+    // Только ноги, реально уменьшающие ПУЛ товара (leg.touchesBatches).
+    // Перемещение между ledger-местами пул не меняет, а партии к месту не
+    // привязаны — тронуть их значило бы сломать «Σ qty_left == qty_pool» (§4.8.4).
+    for (let i = 0; i < legs.length; i += 1) {
+      const leg = legs[i];
+      if (leg.direction !== 'out' || !leg.touchesBatches) continue;
       const open = await tx
         .select({
           id: stockBatches.id,
@@ -627,11 +676,11 @@ export async function postDoc(
         .where(
           and(
             eq(stockBatches.tenantId, ctx.tenantId),
-            eq(stockBatches.itemId, line.itemId),
+            eq(stockBatches.itemId, leg.itemId),
             sql`${stockBatches.qtyLeft} > 0`,
           ),
         );
-      const { alloc } = allocateLots(open, line.qty, settings.lotPolicy);
+      const { alloc } = allocateLots(open, leg.qty, settings.lotPolicy);
       for (const a of alloc) {
         await tx
           .update(stockBatches)
@@ -644,12 +693,11 @@ export async function postDoc(
             and(eq(stockBatches.tenantId, ctx.tenantId), eq(stockBatches.id, a.batchId)),
           );
       }
-      const moveId = insertedMoves.find((m) => m.lineId === line.id)?.id;
-      if (moveId && alloc.length > 0) {
+      if (alloc.length > 0) {
         await tx
           .update(stockMoves)
           .set({ lotAlloc: alloc as StockLotAllocEntry[] })
-          .where(and(eq(stockMoves.tenantId, ctx.tenantId), eq(stockMoves.id, moveId)));
+          .where(and(eq(stockMoves.tenantId, ctx.tenantId), eq(stockMoves.id, movedIds[i])));
       }
     }
 
@@ -668,23 +716,103 @@ export async function postDoc(
       .where(and(eq(stockDocs.tenantId, ctx.tenantId), eq(stockDocs.id, docId)));
 
     // --- 7. реплей затронутых товаров ---
-    const itemIds = Array.from(new Set(lines.map((l) => l.itemId)));
+    const itemIds = Array.from(new Set(legs.map((l) => l.itemId)));
     const replay = await recalcItemsInTx(ctx, tx, itemIds);
 
+    // --- 7b. партии приходной стороны пересортицы ---
+    // Стоимость такой партии известна ТОЛЬКО после реплея (её приносит
+    // расходная нога товара-донора), поэтому шаг 3 завёл её с нулевой суммой.
+    // Без этой правки «история цен» товара B показывала бы 0 ₽ за партию,
+    // хотя в пуле стоимость есть — расхождение витрины и журнала.
+    const transferred = await syncPairedBatchValues(
+      ctx,
+      tx,
+      doc.id,
+      legs,
+      movedIds,
+      new Set(lines.filter((l) => l.direction === 'in').map((l) => l.id)),
+    );
+    if (transferred > 0) {
+      // Σ строк == total документа (§4.8.3) обязана держаться и здесь: у
+      // пересортицы «сумма документа» — это сколько стоимости переехало.
+      await tx
+        .update(stockDocs)
+        .set({ totalKopecks: transferred, updatedAt: new Date() })
+        .where(and(eq(stockDocs.tenantId, ctx.tenantId), eq(stockDocs.id, docId)));
+    }
+
     // --- 8. writeback себестоимости в unit_products ---
+    // Writeback по ЗАМЫКАНИЮ пересчёта, а не по строкам документа: цепочка
+    // пересортиц могла втянуть соседний товар, и его цена в unit_products
+    // осталась бы прежней.
     const writeback = opts.skipWriteback
       ? { updated: 0 }
-      : await applyCostWriteback(ctx, tx, itemIds);
+      : await applyCostWriteback(ctx, tx, replay.itemIds);
 
     return {
       docId,
       number,
-      movesCount: insertedMoves.length,
+      movesCount: movedIds.length,
       itemIds,
       warnings: replay.warnings,
       writebackUpdated: writeback.updated,
     };
   });
+}
+
+/**
+ * Проставляет партиям приходной стороны `regrade` фактически перенесённую
+ * стоимость (после реплея). Партии в режиме avg — носитель штук, срока и
+ * ИСТОРИИ ЦЕН; оценка живёт на пуле, поэтому эта правка ничего не пересчитывает,
+ * а только выравнивает витрину с журналом.
+ */
+async function syncPairedBatchValues(
+  ctx: StockCtx,
+  tx: StockDb,
+  docId: string,
+  legs: readonly PlannedLeg[],
+  moveIds: readonly string[],
+  inLineIds: ReadonlySet<string>,
+): Promise<number> {
+  let transferred = 0;
+  for (let i = 0; i < legs.length; i += 1) {
+    const leg = legs[i];
+    if (leg.direction !== 'in' || leg.pairLegIndex == null || !leg.lineId) continue;
+    // Только приходные СТРОКИ (пересортица). У перемещения/приёмки приходную
+    // ногу порождает расходная строка — её value_kopecks трогать нельзя.
+    if (!inLineIds.has(leg.lineId)) continue;
+    const [move] = await tx
+      .select({ value: stockMoves.valueDeltaKopecks })
+      .from(stockMoves)
+      .where(and(eq(stockMoves.tenantId, ctx.tenantId), eq(stockMoves.id, moveIds[i])))
+      .limit(1);
+    if (!move) continue;
+    const value = Number(move.value);
+    transferred += value;
+    await tx
+      .update(stockBatches)
+      .set({
+        valueInKopecks: value,
+        unitCostKopecks: leg.qty > 0 ? divRound(value, leg.qty) : 0,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(stockBatches.tenantId, ctx.tenantId),
+          eq(stockBatches.docId, docId),
+          eq(stockBatches.lineId, leg.lineId),
+        ),
+      );
+    // Строка документа тоже получает фактическую сумму: в карточке документа
+    // пересортица обязана показывать, СКОЛЬКО денег переехало.
+    await tx
+      .update(stockDocLines)
+      .set({ valueKopecks: value })
+      .where(
+        and(eq(stockDocLines.tenantId, ctx.tenantId), eq(stockDocLines.id, leg.lineId)),
+      );
+  }
+  return transferred;
 }
 
 // ---------------------------------------------------------------------------
@@ -705,7 +833,7 @@ export interface VoidDocResult {
  * создаётся зеркальный документ со сторно-движениями. Инвариант §4.8.8:
  * Σ value_delta оригинала + сторно == 0 — он держится не «по договорённости»,
  * а потому что реплей выводит стоимость сторно-движения из ПЕРЕСЧИТАННОЙ
- * стоимости оригинала (см. replayItemLedger), а не из снимка на диске.
+ * стоимости оригинала (см. replayItemsLedger), а не из снимка на диске.
  *
  * Сторно проводится ТОЙ ЖЕ ДАТОЙ, что оригинал: иначе «Закуплено за март»
  * осталось бы завышенным навсегда. Если период закрыт — 403 с текстом,
@@ -825,14 +953,27 @@ export async function voidDoc(
 
     await tx
       .update(stockDocs)
-      .set({ status: 'void', voidedAt: new Date(), updatedAt: new Date() })
+      .set({
+        status: 'void',
+        voidedAt: new Date(),
+        // Сторно ОСВОБОЖДАЕТ ключ идемпотентности импорта (§4.8.9). Уникальный
+        // индекс stock_docs_source_idx не смотрит на статус, поэтому пока
+        // source_ref висит на сторнированном документе, повторно загрузить
+        // исправленный файл за тот же день физически нельзя — вставка упадёт на
+        // уникальности. Сам ключ при этом не теряется: он уходит в комментарий.
+        sourceRef: null,
+        comment: doc.sourceRef
+          ? `${doc.comment ? `${doc.comment}\n` : ''}Сторнирован; ключ импорта ${doc.sourceRef} освобождён для повторной загрузки`
+          : doc.comment,
+        updatedAt: new Date(),
+      })
       .where(and(eq(stockDocs.tenantId, ctx.tenantId), eq(stockDocs.id, docId)));
 
     const itemIds = Array.from(new Set(moves.map((m) => m.itemId)));
     const replay = await recalcItemsInTx(ctx, tx, itemIds);
     const writeback = opts.skipWriteback
       ? { updated: 0 }
-      : await applyCostWriteback(ctx, tx, itemIds);
+      : await applyCostWriteback(ctx, tx, replay.itemIds);
 
     return {
       docId,
@@ -853,6 +994,13 @@ export interface RecalcResult {
   itemsRecalced: number;
   movesUpdated: number;
   warnings: CostingWarning[];
+  /**
+   * Товары, которые реально были пересчитаны — это ЗАМЫКАНИЕ входного списка по
+   * парным ногам, а не он сам. Writeback обязан идти по нему: цепочка
+   * пересортиц могла втянуть товар, которого в документе не было, и его
+   * себестоимость в unit_products осталась бы старой.
+   */
+  itemIds: string[];
 }
 
 /**
@@ -876,7 +1024,7 @@ export async function recalcFrom(
               .where(eq(stockItems.tenantId, ctx.tenantId))
           ).map((r) => r.id);
     const result = await recalcItemsInTx(ctx, tx, itemIds);
-    await applyCostWriteback(ctx, tx, itemIds);
+    await applyCostWriteback(ctx, tx, result.itemIds);
     return result;
   });
 }
@@ -889,45 +1037,104 @@ export async function recalcItemsInTx(
 ): Promise<RecalcResult> {
   const unique = Array.from(new Set(itemIds)).filter(Boolean);
   if (unique.length === 0) {
-    return { itemsRecalced: 0, movesUpdated: 0, warnings: [] };
+    return { itemsRecalced: 0, movesUpdated: 0, warnings: [], itemIds: [] };
   }
 
-  let movesUpdated = 0;
-  const warnings: CostingWarning[] = [];
-
-  for (const itemId of unique) {
-    const result = await replayItemLedger(ctx, tx, itemId);
-    movesUpdated += result.movesUpdated;
-    warnings.push(...result.warnings);
-  }
-
-  return { itemsRecalced: unique.length, movesUpdated, warnings };
+  // Пересортица связывает ленты РАЗНЫХ товаров: приходная нога товара B берёт
+  // стоимость у расходной ноги товара A. Пересчитать B без A нельзя — донор
+  // окажется вне выборки, реплей возьмёт снимок с диска и Σ по документу
+  // перестанет быть нулём. Поэтому набор расширяется по связям пар до
+  // неподвижной точки, и весь он переигрывается ОДНИМ хронологическим проходом.
+  const closure = await expandPairedItems(ctx, tx, unique);
+  return replayItemsLedger(ctx, tx, closure);
 }
 
 /**
- * Детерминированный реплей ленты ОДНОГО товара по (doc_date, seq).
+ * Замыкание набора товаров по парным ногам (stock_moves.pair_move_id).
+ * Обход в обе стороны: и «кто взял стоимость у моего товара», и «у кого взял
+ * стоимость мой товар». Итераций мало (пересортица связывает две позиции), но
+ * цикл идёт до неподвижной точки — цепочки A→B→C возможны.
+ */
+async function expandPairedItems(
+  ctx: StockCtx,
+  tx: StockDb,
+  itemIds: readonly string[],
+): Promise<string[]> {
+  const known = new Set(itemIds);
+  const partner = alias(stockMoves, 'pair_partner');
+  // Потолок на случай патологических данных: лучше пересчитать неполно и
+  // предупредить, чем крутиться в транзакции бесконечно.
+  for (let round = 0; round < 8; round += 1) {
+    const frontier = Array.from(known);
+    const rows = await tx
+      .selectDistinct({ itemId: partner.itemId })
+      .from(stockMoves)
+      .innerJoin(
+        partner,
+        and(
+          eq(partner.tenantId, stockMoves.tenantId),
+          or(
+            eq(partner.pairMoveId, stockMoves.id),
+            eq(partner.id, stockMoves.pairMoveId),
+          ),
+        ),
+      )
+      .where(
+        and(
+          eq(stockMoves.tenantId, ctx.tenantId),
+          inArray(stockMoves.itemId, frontier),
+        ),
+      );
+    let added = 0;
+    for (const r of rows) {
+      if (r.itemId && !known.has(r.itemId)) {
+        known.add(r.itemId);
+        added += 1;
+      }
+    }
+    if (added === 0) break;
+  }
+  return Array.from(known);
+}
+
+/**
+ * Детерминированный реплей лент НАБОРА товаров по (doc_date, seq) — один
+ * хронологический проход, по пулу на товар.
  *
  * Источник значения для события:
  *   - сторно-движение (reverses_move_id) → стоимость, ОБРАТНАЯ уже
  *     пересчитанному оригиналу (не снимку на диске!). Так Σ == 0 держится
  *     даже после ввода документа задним числом перед оригиналом;
+ *   - ПАРНАЯ НОГА (pair_move_id) → стоимость, равная пересчитанной стоимости
+ *     своей расходной ноги: перемещение и пересортица ПЕРЕНОСЯТ стоимость,
+ *     а не создают её (§4.5);
  *   - приход → landed-сумма СТРОКИ документа (stock_doc_lines.value_kopecks):
  *     она не зависит от пула, поэтому реплей воспроизводим;
  *   - расход → стоимость НЕ задаётся: её считает пул (доля от остаточной
  *     стоимости, §4.2 — единственно верный способ).
  *
+ * Почему набор товаров, а не по одному: приходная нога пересортицы живёт в
+ * ленте ДРУГОГО товара, чем её донор. Общий хронологический проход — то
+ * единственное, что даёт ей увидеть донора уже пересчитанным.
+ *
  * Пишет обратно только costing-поля движения (§2.7): value_delta_kopecks,
  * unit_value_kopecks, uncovered_qty, deficit_settled_kopecks. Количества,
  * места, даты и партии реплей не трогает — это физика, а не оценка.
  */
-async function replayItemLedger(
+async function replayItemsLedger(
   ctx: StockCtx,
   tx: StockDb,
-  itemId: string,
-): Promise<{ pool: PoolState; movesUpdated: number; warnings: CostingWarning[] }> {
+  itemIds: readonly string[],
+): Promise<RecalcResult> {
+  const unique = Array.from(new Set(itemIds)).filter(Boolean);
+  if (unique.length === 0) {
+    return { itemsRecalced: 0, movesUpdated: 0, warnings: [], itemIds: [] };
+  }
+
   const rows = await tx
     .select({
       id: stockMoves.id,
+      itemId: stockMoves.itemId,
       seq: stockMoves.seq,
       docDate: stockMoves.docDate,
       qtyDelta: stockMoves.qtyDelta,
@@ -938,6 +1145,7 @@ async function replayItemLedger(
       kind: stockMoves.kind,
       reason: stockMoves.reason,
       reversesMoveId: stockMoves.reversesMoveId,
+      pairMoveId: stockMoves.pairMoveId,
       lineValueKopecks: stockDocLines.valueKopecks,
       lineIsEstimated: stockDocLines.isEstimated,
       docCostBasis: stockDocs.costBasis,
@@ -945,17 +1153,18 @@ async function replayItemLedger(
     .from(stockMoves)
     .leftJoin(stockDocLines, eq(stockDocLines.id, stockMoves.lineId))
     .leftJoin(stockDocs, eq(stockDocs.id, stockMoves.docId))
-    .where(and(eq(stockMoves.tenantId, ctx.tenantId), eq(stockMoves.itemId, itemId)))
+    .where(and(eq(stockMoves.tenantId, ctx.tenantId), inArray(stockMoves.itemId, unique)))
     // Тот же порядок, что sortEvents() в costing.ts — иначе реплей не
-    // воспроизводим и инвариант §4.8.7 ломается. replayLedger() пересортирует
-    // ещё раз: он обязан быть корректен и на неотсортированном входе.
+    // воспроизводим и инвариант §4.8.7 ломается. replayLedgerMulti()
+    // пересортирует ещё раз: он обязан быть корректен и на неотсортированном входе.
     .orderBy(asc(stockMoves.docDate), asc(stockMoves.seq));
 
   // Само правило «откуда берётся стоимость движения» живёт в чистом
   // replay-plan.ts и покрыто scripts/test-stock-replay.ts.
-  const result = replayLedger(
+  const result = replayLedgerMulti(
     rows.map<LedgerMoveRow>((row) => ({
       id: row.id,
+      itemId: row.itemId,
       seq: Number(row.seq),
       docDate: row.docDate,
       qtyDelta: row.qtyDelta,
@@ -966,11 +1175,11 @@ async function replayItemLedger(
       kind: row.kind,
       reason: row.reason,
       reversesMoveId: row.reversesMoveId,
+      pairMoveId: row.pairMoveId,
       lineValueKopecks: row.lineValueKopecks,
       lineIsEstimated: row.lineIsEstimated,
       docCostBasis: row.docCostBasis,
     })),
-    { itemId },
   );
 
   let movesUpdated = 0;
@@ -988,24 +1197,32 @@ async function replayItemLedger(
     movesUpdated += 1;
   }
 
-  const pool = result.pool;
-  const warnings = result.warnings;
-  const cache = poolToCache(pool);
-  await tx
-    .update(stockItems)
-    .set({
-      qtyPool: cache.qtyPool,
-      valuePoolKopecks: cache.valuePoolKopecks,
-      avgCostKopecks: cache.avgCostKopecks,
-      lastCostKopecks: cache.lastCostKopecks,
-      costBasis: cache.costBasis,
-      costBasisMixed: cache.costBasisMixed,
-      costUpdatedAt: new Date(),
-      updatedAt: new Date(),
-    })
-    .where(and(eq(stockItems.tenantId, ctx.tenantId), eq(stockItems.id, itemId)));
+  // Кэш пишется ВСЕМ товарам набора, включая тех, у кого движений не осталось:
+  // иначе сторнированная в ноль лента оставила бы старые «Деньги в товаре».
+  for (const itemId of unique) {
+    const pool: PoolState = result.pools.get(itemId) ?? createPool();
+    const cache = poolToCache(pool);
+    await tx
+      .update(stockItems)
+      .set({
+        qtyPool: cache.qtyPool,
+        valuePoolKopecks: cache.valuePoolKopecks,
+        avgCostKopecks: cache.avgCostKopecks,
+        lastCostKopecks: cache.lastCostKopecks,
+        costBasis: cache.costBasis,
+        costBasisMixed: cache.costBasisMixed,
+        costUpdatedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(and(eq(stockItems.tenantId, ctx.tenantId), eq(stockItems.id, itemId)));
+  }
 
-  return { pool, movesUpdated, warnings };
+  return {
+    itemsRecalced: unique.length,
+    movesUpdated,
+    warnings: result.warnings,
+    itemIds: unique,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1052,29 +1269,10 @@ async function assertItemsBelongToTenant(
   }
 }
 
-/**
- * §3: stock_moves.place_id ВСЕГДА указывает на место с authority='ledger'.
- * Попытка провести движение по external-месту — баг кода, а не ввод человека.
- */
-async function assertLedgerPlaces(
-  ctx: StockCtx,
-  tx: StockDb,
-  placeIds: string[],
-): Promise<void> {
-  const unique = Array.from(new Set(placeIds));
-  const rows = await tx
-    .select({ code: stockPlaces.code, authority: stockPlaces.authority })
-    .from(stockPlaces)
-    .where(and(eq(stockPlaces.tenantId, ctx.tenantId), inArray(stockPlaces.id, unique)));
-  const external = rows.filter((r) => r.authority !== 'ledger');
-  if (external.length > 0) {
-    throw new StockError(
-      'bad_request',
-      `Место «${external[0].code}» ведёт остаток маркетплейс — журнальных строк по нему не бывает (§3). ` +
-        'Отгрузка на такое место оформляется как расход со своего склада.',
-    );
-  }
-}
+// §3 («place_id всегда ledger») проверяет чистый planDocLegs → assertLedger:
+// он один знает, какие места документ РЕАЛЬНО использует под движения, а какие
+// стоят в шапке справочно (приёмник отгрузки на склад Ozon — external, и это
+// нормально). Отдельной SQL-проверки больше нет, чтобы два условия не разъехались.
 
 const DOC_NUMBER_PREFIX: Record<StockDocKind, string> = {
   opening: 'ОСТ',
@@ -1085,6 +1283,7 @@ const DOC_NUMBER_PREFIX: Record<StockDocKind, string> = {
   adjust: 'ИНВ',
   return_in: 'ВОЗВ',
   regrade: 'ПЕРЕС',
+  sale: 'ПРОД',
 };
 
 /**

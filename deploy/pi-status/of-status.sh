@@ -97,6 +97,12 @@ render() {
   esac
   printf '\n'
   printf '  память      %s / %s МБ    нагрузка %s\n' "$mem_used" "$mem_tot" "$load"
+  # Вентилятор корпуса (Argon ONE V3 по I2C) — состояние пишет служба of-fan
+  if [ -r /run/of-fan.state ]; then
+    printf '  вентилятор  %s%% (авто по температуре)\n' "$(awk '{print $3}' /run/of-fan.state)"
+  elif systemctl is-active --quiet of-fan 2>/dev/null; then
+    printf '  вентилятор  запускается\n'
+  fi
   printf '  аптайм      %s\n' "$(uptime -p 2>/dev/null | sed 's/^up //')"
 
   # диски
@@ -184,6 +190,23 @@ render() {
   errs="$(journalctl -u open-finance --since '24 hours ago' -p err --no-pager 2>/dev/null | grep -c . )"
   printf '  ошибки/сутки '
   if [ "${errs:-0}" -le 1 ] 2>/dev/null; then mark ok "нет"; else mark warn "$errs строк (journalctl -u open-finance -p err)"; fi
+  printf '\n'
+
+  # ── Сторож сети ──────────────────────────────────────────────
+  local wd_state wd_reboots wd_last
+  wd_state="$(systemctl is-active of-net-watchdog 2>/dev/null)"
+  wd_reboots="$(cat /var/lib/of-net-watchdog/reboots 2>/dev/null || echo '?')"
+  wd_last="$(cat /var/lib/of-net-watchdog/last-action 2>/dev/null)"
+  printf '  сторож сети '
+  if [ "$wd_state" = "active" ]; then
+    if [ "${wd_reboots:-0}" = "0" ]; then
+      mark ok "следит, вмешательств не было"
+    else
+      mark warn "перезагрузок: ${wd_reboots}/3${wd_last:+ · последнее: $wd_last}"
+    fi
+  else
+    mark err "не запущен"
+  fi
   printf '\n'
 }
 

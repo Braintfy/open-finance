@@ -36,6 +36,7 @@ const KindSchema = z.enum([
   'adjust',
   'return_in',
   'regrade',
+  'sale',
 ]);
 const StatusSchema = z.enum(['draft', 'posted', 'void']);
 const DateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'ожидается дата YYYY-MM-DD');
@@ -49,7 +50,10 @@ const LineSchema = z.object({
   batchNumber: z.string().max(64).nullable().optional(),
   expiresAt: DateSchema.nullable().optional(),
   isEstimated: z.boolean().optional(),
+  /** adjust — факт пересчёта; accept — сколько принято маркетплейсом. */
   countedQty: z.number().int().nullable().optional(),
+  /** regrade — номер расходной строки, чью стоимость забирает эта приходная. */
+  pairLineNo: z.number().int().min(1).nullable().optional(),
   comment: z.string().nullable().optional(),
 });
 

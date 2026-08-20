@@ -251,34 +251,116 @@ export const FboPostingsResponseSchema = z.object({
 });
 
 // ---- /v2/finance/realization ---------------------------------------------
+//
+// ФОРМА v2 (снята с живого API, июль 2026 — 2854 строки). Раньше здесь лежала
+// схема v1 (`row_number`/`sku`/`sale.sale_qty`), и это был тихий баг: все поля
+// были `.optional()` + `.passthrough()`, поэтому ответ v2 «успешно» парсился
+// в сплошные `undefined`, а маппинг писал нули. Отсюда правило ниже.
+//
+// ПРАВИЛО: денежные поля — БЕЗ `.optional()`. Пусть следующее расхождение
+// формы падает громко (стейдж отдаёт error → виден в UI), чем пишет нули.
+// `.passthrough()` оставлен: Ozon регулярно доносит новые поля выплат
+// (`pick_up_point_coinvestment` появился позже `bank_coinvestment`).
+//
+// Ответ: `{ result: { header: {...}, rows: [...] } }` — header ОБЪЕКТ, не массив.
+
+/** Товар строки отчёта. `sku` — int64, grpc-gateway отдаёт и числом, и строкой. */
+export const RealizationItemSchema = z
+  .object({
+    sku: z.union([z.number(), z.string()]),
+    name: z.string().optional(),
+    offer_id: z.string().optional(),
+    barcode: z.string().optional(),
+  })
+  .passthrough();
+
+/**
+ * Блок начислений строки: `delivery_commission` (реализация) либо
+ * `return_commission` (возвраты, бывает `null`). Структура одинаковая.
+ *
+ * Расшифровка полей (docs.ozon.ru/api/seller → FinanceAPI_FinanceRealizationV2,
+ * сверено с фактическим ответом):
+ *  - `quantity` — количество товара;
+ *  - `price_per_instance` — цена реализации за единицу (та, что заплатил
+ *    покупатель после скидок Ozon);
+ *  - `amount` — сумма реализации (= `price_per_instance` × `quantity`);
+ *  - `bonus` — баллы за скидки (компенсирует Ozon → это выручка продавца);
+ *  - `compensation` — доплата за счёт Ozon;
+ *  - `bank_coinvestment` / `stars` / `pick_up_point_coinvestment` — выплаты по
+ *    механикам партнёрской лояльности (зелёные цены / звёзды / ПВЗ);
+ *  - `standard_fee` — базовое вознаграждение Ozon (фактическое удержание);
+ *  - `commission` — вознаграждение с учётом скидок и наценок (у обычных строк 0);
+ *  - `total` — ИТОГО К НАЧИСЛЕНИЮ продавцу по строке.
+ *
+ * Проверенная на живом ответе арифметика:
+ *   amount + bonus + bank_coinvestment (+ прочие выплаты) − standard_fee = total
+ *   standard_fee / (seller_price_per_instance × quantity) = commission_ratio
+ */
+export const RealizationCommissionSchema = z
+  .object({
+    quantity: z.number(),
+    price_per_instance: z.number(),
+    amount: z.number(),
+    standard_fee: z.number(),
+    commission: z.number(),
+    bonus: z.number(),
+    total: z.number(),
+    // Выплаты по механикам лояльности появились в API позже основного набора,
+    // поэтому допускаем отсутствие (трактуем как 0), но НЕ допускаем для них
+    // строк/null — это уже смена формы.
+    compensation: z.number().optional(),
+    bank_coinvestment: z.number().optional(),
+    stars: z.number().optional(),
+    pick_up_point_coinvestment: z.number().optional(),
+  })
+  .passthrough();
 
 export const RealizationRowSchema = z
   .object({
-    row_number: z.number().optional(),
-    product_id: z.number().optional(),
-    sku: z.number().optional(),
-    name: z.string().optional(),
-    offer_id: z.string().optional(),
-    sale: z
+    rowNumber: z.number().optional(),
+    item: RealizationItemSchema,
+    /** Цена продавца с учётом его скидки (до вычета вознаграждения Ozon). */
+    seller_price_per_instance: z.number(),
+    delivery_commission: RealizationCommissionSchema.nullable().optional(),
+    /** Заполнен только у строк с возвратами, иначе `null`. */
+    return_commission: RealizationCommissionSchema.nullable().optional(),
+    /** Доля вознаграждения Ozon в цене продавца (0.41 = 41%). */
+    commission_ratio: z.number().optional(),
+  })
+  .passthrough();
+
+/** Шапка документа (реквизиты УПД). Кладётся в `ozon_realization.raw`. */
+export const RealizationHeaderSchema = z
+  .object({
+    number: z.string().optional(),
+    doc_date: z.string().optional(),
+    start_date: z.string().optional(),
+    stop_date: z.string().optional(),
+    contract_date: z.string().optional(),
+    contract_number: z.string().optional(),
+    payer_name: z.string().optional(),
+    payer_inn: z.string().optional(),
+    payer_kpp: z.string().optional(),
+    receiver_name: z.string().optional(),
+    receiver_inn: z.string().optional(),
+    receiver_kpp: z.string().optional(),
+    currency_sys_name: z.string().optional(),
+    doc_amount: z.number().optional(),
+    vat_amount: z.number().optional(),
+  })
+  .passthrough();
+
+export const RealizationResponseSchema = z
+  .object({
+    result: z
       .object({
-        sale_qty: z.number().optional(),
-        sale_amount: z.number().optional(),
-        sale_commission: z.number().optional(),
+        header: RealizationHeaderSchema.optional(),
+        rows: z.array(RealizationRowSchema).optional(),
       })
       .passthrough()
       .optional(),
   })
   .passthrough();
-
-export const RealizationResponseSchema = z.object({
-  result: z
-    .object({
-      header: z.array(z.unknown()).optional(),
-      rows: z.array(RealizationRowSchema).optional(),
-    })
-    .passthrough()
-    .optional(),
-});
 
 // ---- /v3/finance/transaction/list -----------------------------------------
 
@@ -479,6 +561,8 @@ export type StocksItem = z.infer<typeof StocksItemSchema>;
 export type FbsPosting = z.infer<typeof FbsPostingSchema>;
 export type FboPosting = z.infer<typeof FboPostingSchema>;
 export type RealizationRow = z.infer<typeof RealizationRowSchema>;
+export type RealizationCommission = z.infer<typeof RealizationCommissionSchema>;
+export type RealizationHeader = z.infer<typeof RealizationHeaderSchema>;
 export type TransactionOperation = z.infer<typeof TransactionOperationSchema>;
 export type TurnoverRow = z.infer<typeof TurnoverRowSchema>;
 export type AnalyticsDataRow = z.infer<typeof AnalyticsDataRowSchema>;

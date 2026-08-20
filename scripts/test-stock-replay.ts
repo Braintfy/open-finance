@@ -3,13 +3,19 @@
 // РЕШЕНИЕ, какое значение подаётся в applyEvent для каждого движения:
 //   1. сторно → обратная ПЕРЕСЧИТАННАЯ стоимость оригинала (а не снимок с диска);
 //   2. приход → landed-сумма строки документа;
-//   3. расход → считает пул.
-// Именно это правило держит §4.8.8 (Σ оригинала + сторно == 0) при вводе
-// документов задним числом — самый дорогой способ ошибиться молча.
+//   3. расход → считает пул;
+//   4. парная нога (pair_move_id) → ровно то, что списала её расходная нога.
+// Именно эти правила держат §4.8.8 (Σ оригинала + сторно == 0) и §4.5
+// (Σ по документу перемещения == 0) при вводе документов задним числом —
+// самый дорогой способ ошибиться молча.
+//
+// Раскладку документа на ноги и сквозные сценарии перемещения/приёмки/
+// пересортицы проверяет соседний scripts/test-stock-doc-plan.ts.
 // Запуск: pnpm tsx scripts/test-stock-replay.ts
 
 import {
   replayLedger,
+  replayLedgerMulti,
   sortLedgerRows,
   type LedgerMoveRow,
 } from '../src/lib/stock/replay-plan';
@@ -46,6 +52,8 @@ function row(patch: Partial<LedgerMoveRow> & { qtyDelta: number }): LedgerMoveRo
     kind: patch.kind ?? (patch.qtyDelta > 0 ? 'purchase' : 'writeoff'),
     reason: patch.reason ?? null,
     reversesMoveId: patch.reversesMoveId ?? null,
+    pairMoveId: patch.pairMoveId ?? null,
+    itemId: patch.itemId ?? null,
     lineValueKopecks: patch.lineValueKopecks ?? null,
     lineIsEstimated: patch.lineIsEstimated ?? null,
     docCostBasis: patch.docCostBasis ?? 'gross',
@@ -281,6 +289,94 @@ console.log('\n=== Мусорный ввод не роняет пересчёт 
   ];
   const res = replayLedger(rows);
   eq('использован снимок оригинала', res.moves[1].valueDeltaKopecks, -15_000);
+}
+
+// ===========================================================================
+console.log('\n=== Правило 4: парная нога забирает РОВНО списанное (§4.5) ===');
+// ===========================================================================
+{
+  // Перемещение внутри одного товара: расход по средней, приход — на ту же
+  // сумму. Пул не должен заметить, что товар сменил место.
+  autoSeq = 0;
+  const rows = [
+    row({ id: 'in1', qtyDelta: 10, lineValueKopecks: 100_000 }),
+    row({ id: 'out1', qtyDelta: -4, kind: 'transfer' }),
+    row({ id: 'in2', qtyDelta: 4, kind: 'transfer', pairMoveId: 'out1' }),
+  ];
+  const res = replayLedger(rows);
+  eq('расходная нога списала 40 000', res.moves[1].valueDeltaKopecks, -40_000);
+  eq('приходная нога взяла ровно её', res.moves[2].valueDeltaKopecks, 40_000);
+  eq('Σ по документу == 0', sumDelta(res.moves.slice(1)), 0);
+  eq('пул по деньгам не изменился', res.pool.valueKopecks, 100_000);
+  eq('пул по штукам не изменился', res.pool.qty, 10);
+}
+
+{
+  // Парная нога НЕ обновляет «цену последней закупки»: перемещение — не закупка.
+  autoSeq = 0;
+  const rows = [
+    row({ id: 'in1', qtyDelta: 10, lineValueKopecks: 100_000, kind: 'purchase' }),
+    row({ id: 'out1', qtyDelta: -10, kind: 'transfer' }),
+    row({ id: 'in2', qtyDelta: 10, kind: 'transfer', pairMoveId: 'out1' }),
+  ];
+  const res = replayLedger(rows);
+  eq('цена последней закупки прежняя', res.pool.lastCostKopecks, 10_000);
+  eq('Σ == 0 при переносе всего пула', sumDelta(res.moves.slice(1)), 0);
+}
+
+{
+  // Парная нога поверх lineValueKopecks: если строка документа что-то несёт,
+  // побеждает ПАРА — иначе стоимость взялась бы из двух источников сразу.
+  autoSeq = 0;
+  const rows = [
+    row({ id: 'in1', qtyDelta: 6, lineValueKopecks: 60_000 }),
+    row({ id: 'out1', qtyDelta: -2, kind: 'regrade' }),
+    row({
+      id: 'in2',
+      qtyDelta: 2,
+      kind: 'regrade',
+      pairMoveId: 'out1',
+      lineValueKopecks: 999_999,
+    }),
+  ];
+  const res = replayLedger(rows);
+  eq('строка документа проигнорирована', res.moves[2].valueDeltaKopecks, 20_000);
+}
+
+{
+  // Мультитоварный проход: пересортица A → B. Донор в ленте ДРУГОГО товара.
+  autoSeq = 0;
+  const rows = [
+    row({ id: 'inA', itemId: 'A', qtyDelta: 10, lineValueKopecks: 100_000, seq: 1 }),
+    row({ id: 'outA', itemId: 'A', qtyDelta: -4, kind: 'regrade', seq: 2 }),
+    row({ id: 'inB', itemId: 'B', qtyDelta: 4, kind: 'regrade', pairMoveId: 'outA', seq: 3 }),
+  ];
+  const res = replayLedgerMulti(rows);
+  eq('A отдал 40 000', res.moves[1].valueDeltaKopecks, -40_000);
+  eq('B получил 40 000', res.moves[2].valueDeltaKopecks, 40_000);
+  eq('пул A', res.pools.get('A')?.valueKopecks, 60_000);
+  eq('пул B', res.pools.get('B')?.valueKopecks, 40_000);
+  eq('Σ по документу == 0', sumDelta(res.moves.slice(1)), 0);
+}
+
+{
+  // Сторно документа с парными ногами: обе ноги гасятся своими сторно,
+  // и общий итог остаётся нулевым (§4.8.8 + §4.5 вместе).
+  autoSeq = 0;
+  const rows = [
+    row({ id: 'in1', qtyDelta: 10, lineValueKopecks: 100_000, seq: 1 }),
+    row({ id: 'out1', qtyDelta: -4, kind: 'transfer', seq: 2 }),
+    row({ id: 'in2', qtyDelta: 4, kind: 'transfer', pairMoveId: 'out1', seq: 3 }),
+    row({ id: 'rev-out', qtyDelta: 4, kind: 'transfer', reversesMoveId: 'out1', seq: 4 }),
+    row({ id: 'rev-in', qtyDelta: -4, kind: 'transfer', reversesMoveId: 'in2', seq: 5 }),
+  ];
+  const res = replayLedger(rows);
+  const byId = new Map(res.moves.map((m) => [m.id, m]));
+  eq('сторно расходной ноги', byId.get('rev-out')?.valueDeltaKopecks, 40_000);
+  eq('сторно приходной ноги', byId.get('rev-in')?.valueDeltaKopecks, -40_000);
+  eq('Σ всех четырёх ног == 0', sumDelta(res.moves.slice(1)), 0);
+  eq('пул вернулся к поставке', res.pool.valueKopecks, 100_000);
+  eq('штуки на месте', res.pool.qty, 10);
 }
 
 // ===========================================================================

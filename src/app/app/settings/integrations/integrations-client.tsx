@@ -29,6 +29,7 @@ import { Card } from '@/components/ui/card';
 import { Switch } from '@/components/ui/switch';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { OzonSyncDialog } from '@/components/marketplaces/ozon-sync-dialog';
+import { describePreset } from '@/components/marketplaces/ozon-sync-presets';
 import {
   Dialog,
   DialogContent,
@@ -73,7 +74,10 @@ type AccountPublic = {
   status: 'active' | 'error' | 'disabled';
   syncSettings: OzonSyncSettings;
   companyInfo: Record<string, unknown>;
+  /** Время последней УСПЕШНОЙ синхронизации (упавшая его не двигает). */
   lastSyncAt: string | null;
+  /** max(date) в ozon_analytics_daily — фактическое покрытие данными. */
+  analyticsCoveredThrough: string | null;
   lastSyncStatus: string | null;
   lastSyncError: string | null;
   lastSyncSummary: Record<string, unknown>;
@@ -471,8 +475,11 @@ function AccountCard({
             <div className="truncate text-[11px] text-muted-foreground">
               Client-Id {account.clientId} ·{' '}
               {account.lastSyncAt
-                ? `Последняя синхронизация ${new Date(account.lastSyncAt).toLocaleString('ru-RU')}`
+                ? `Последняя успешная синхронизация ${new Date(account.lastSyncAt).toLocaleString('ru-RU')}`
                 : 'Ещё не синхронизировано'}
+              {account.analyticsCoveredThrough
+                ? ` · аналитика по ${account.analyticsCoveredThrough}`
+                : ''}
             </div>
           </div>
         </button>
@@ -487,7 +494,9 @@ function AccountCard({
             Тест
           </Button>
           {/* v0.22.2: «Догрузить» — открывает универсальный sync-диалог с
-              auto-preset (диапазон вычисляется из lastSyncAt). По умолчанию
+              auto-preset. Диапазон считается от ФАКТИЧЕСКОГО покрытия данными
+              (analyticsCoveredThrough), а не от таймстампа sync'а — иначе дыра
+              в ozon_analytics_daily не закрывается никогда. По умолчанию
               включены только date-aware стейджи (analyticsData/orders/perf*),
               каталог-стейджи opt-in. Альтернатива «Синхронизировать» (full). */}
           <Button
@@ -496,8 +505,8 @@ function AccountCard({
             onClick={() => setSyncDialogOpen(true)}
             disabled={syncing}
             title={
-              account.lastSyncAt
-                ? `Догрузить данные с ${new Date(account.lastSyncAt).toLocaleDateString('ru-RU')} (дата последнего sync). Откроется диалог с настройками.`
+              account.lastSyncAt || account.analyticsCoveredThrough
+                ? `${describePreset('auto', account.lastSyncAt, undefined, account.analyticsCoveredThrough)}. Откроется диалог с настройками.`
                 : 'Открыть диалог синхронизации с выбором диапазона и стейджей'
             }
           >

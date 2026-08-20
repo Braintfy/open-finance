@@ -323,7 +323,21 @@ export function OzonSyncDialog({
     };
   }, []);
 
-  const resolvedRange = resolvePresetRange(preset, account?.lastSyncAt ?? null);
+  // `analyticsCoveredThrough` = max(date) в ozon_analytics_daily. Без него
+  // `auto` считает окно от таймстампа sync'а и не видит дыр в данных.
+  const coveredThrough = account?.analyticsCoveredThrough ?? null;
+  const autoHint = describePreset(
+    'auto',
+    account?.lastSyncAt ?? null,
+    undefined,
+    coveredThrough,
+  );
+  const resolvedRange = resolvePresetRange(
+    preset,
+    account?.lastSyncAt ?? null,
+    undefined,
+    coveredThrough,
+  );
   const effectiveFrom = preset === 'custom' ? customFrom : (resolvedRange?.from ?? null);
   const effectiveTo = preset === 'custom' ? customTo : (resolvedRange?.to ?? null);
   const sendDateOverride = preset !== 'window';
@@ -472,10 +486,7 @@ export function OzonSyncDialog({
               </div>
               <div className="flex flex-wrap gap-1.5">
                 {(Object.keys(PRESET_LABELS) as DateRangePreset[]).map((p) => {
-                  const tooltipText =
-                    p === 'auto'
-                      ? describePreset('auto', account?.lastSyncAt ?? null)
-                      : PRESET_LABELS[p];
+                  const tooltipText = p === 'auto' ? autoHint : PRESET_LABELS[p];
                   return (
                     <button
                       key={p}
@@ -524,7 +535,7 @@ export function OzonSyncDialog({
                 {preset === 'window'
                   ? 'Используется sliding-window из настроек аккаунта (90 дней для аналитики, 30 для рекламы).'
                   : preset === 'auto'
-                    ? describePreset('auto', account?.lastSyncAt ?? null) +
+                    ? autoHint +
                       (effectiveFrom && effectiveTo
                         ? '. Date-aware стейджи загрузят только это окно.'
                         : '')
@@ -625,7 +636,11 @@ export function OzonSyncDialog({
 
             {/* Status line */}
             <div className="flex items-center justify-between gap-2 border-t border-border/40 pt-2 text-[10px] text-muted-foreground">
-              <span>{lastSync ? `Последний sync: ${lastSync}` : 'Ещё не синхронизировано'}</span>
+              <span>
+                {lastSync
+                  ? `Последний успешный sync: ${lastSync}`
+                  : 'Ещё не синхронизировано'}
+              </span>
               {submitting && progressStage && (
                 <span className="inline-flex items-center gap-1 text-foreground">
                   <Loader2 className="h-3 w-3 animate-spin" />

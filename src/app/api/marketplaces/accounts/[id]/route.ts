@@ -8,7 +8,7 @@ import { requireTenantRoute } from '@/lib/auth/guards';
 import {
   deleteAccount,
   getAccount,
-  toPublicAccount,
+  toPublicAccountsWithCoverage,
   updateAccount,
 } from '@/lib/marketplaces/queries';
 import { UpdateAccountSchema } from '@/lib/marketplaces/types';
@@ -26,7 +26,11 @@ export async function GET(_req: Request, ctx: RouteCtx) {
     if (!account) {
       return NextResponse.json({ ok: false, error: 'Not found' }, { status: 404 });
     }
-    return NextResponse.json({ ok: true, account: toPublicAccount(account) });
+    const [publicAccount] = await toPublicAccountsWithCoverage({
+      tenantId: t.ctx.tenantId,
+      accounts: [account],
+    });
+    return NextResponse.json({ ok: true, account: publicAccount });
   } catch (e) {
     console.error('[marketplaces] GET /accounts/[id] failed:', e);
     return NextResponse.json(
@@ -58,7 +62,11 @@ export async function PATCH(req: Request, ctx: RouteCtx) {
     if (!updated) {
       return NextResponse.json({ ok: false, error: 'Not found' }, { status: 404 });
     }
-    return NextResponse.json({ ok: true, account: toPublicAccount(updated) });
+    const [publicAccount] = await toPublicAccountsWithCoverage({
+      tenantId: t.ctx.tenantId,
+      accounts: [updated],
+    });
+    return NextResponse.json({ ok: true, account: publicAccount });
   } catch (e) {
     console.error('[marketplaces] PATCH /accounts/[id] failed:', e);
     return NextResponse.json(

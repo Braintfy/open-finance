@@ -22,6 +22,11 @@
 //   6. НДС (§12.2): у каждого прихода СВОЙ базис (gross|net). Смешение партий
 //      разных базисов в одном пуле помечается basis='mixed' + warning —
 //      молча суммировать нельзя.
+//   7. ПАРНЫЕ НОГИ (§4.5, Релиз 2): приходная нога перемещения/пересортицы
+//      получает РОВНО ту сумму, что списана с расходной (isPaired). Стоимость
+//      при этом ПЕРЕНОСИТСЯ, а не создаётся: никакого пересмотра базиса,
+//      «цены последней закупки» и закрытия дефицита — иначе Σ value_delta по
+//      документу перестала бы быть нулём и перемещение молча родило бы прибыль.
 
 // ---------------------------------------------------------------------------
 // Типы. Зеркалят строковые юнионы src/lib/db/schema/stock*.ts — специально
@@ -45,7 +50,13 @@ export type CostingDocKind =
   | 'writeoff'
   | 'adjust'
   | 'return_in'
-  | 'regrade';
+  | 'regrade'
+  /**
+   * Продажа вне Ozon (WB / Яндекс.Маркет / сайты), заведённая импортом файла
+   * (§12.3). ОТДЕЛЬНЫЙ вид, а не writeoff: §1.8 запрещает смешивать потери и
+   * себестоимость проданного, а «списание» с точки зрения отчётов — потеря.
+   */
+  | 'sale';
 
 export type CostingReason =
   | 'expired'
@@ -69,7 +80,13 @@ export type CostingWarningCode =
   /** Приход закрыл отрицательный пул: его стоимость — ретро-COGS, не остаток. */
   | 'deficit_settled'
   /** Стоимость оценочная (цена «по памяти»). */
-  | 'estimated_value';
+  | 'estimated_value'
+  /**
+   * Приходная нога не нашла свою расходную (пара вне выборки реплея) —
+   * взят снимок с диска. Σ value_delta документа перемещения может не сойтись
+   * в ноль: это сигнал, что реплей запущен по неполному набору товаров.
+   */
+  | 'pair_unresolved';
 
 export interface CostingWarning {
   code: CostingWarningCode;
@@ -206,6 +223,17 @@ export interface CostingEvent {
    * Нужно, чтобы Σ(оригинал) + Σ(сторно) == 0 сходилась побайтово (§4.8.8).
    */
   isReversal?: boolean;
+  /**
+   * ПАРНАЯ НОГА документа перемещения/приёмки/пересортицы (§4.5). Как и сторно,
+   * применяется ДОСЛОВНО: valueKopecks обязателен и равен сумме, списанной
+   * расходной ногой. Отличие от обычного прихода принципиальное —
+   *   • дефицит НЕ гасится: иначе часть перенесённой стоимости ушла бы в
+   *     ретро-COGS и Σ value_delta документа перестала бы быть нулём;
+   *   • «цена последней закупки» НЕ обновляется: перемещение — не закупка;
+   *   • базис НДС НЕ пересматривается: это тот же товар той же партии, а не
+   *     новое поступление (иначе перемещение помечало бы пул mixed).
+   */
+  isPaired?: boolean;
   /** Необязательная метка товара — для сообщений и группировки. */
   itemId?: string;
 }
@@ -247,6 +275,13 @@ export interface ReplayTotals {
    * ИНВАРИАНТ §1.8: это ОТДЕЛЬНАЯ СТАТЬЯ, в COGS не попадает.
    */
   lossValueKopecks: number;
+  /**
+   * Из outValueKopecks: себестоимость ПРОДАННОГО (kind='sale' — продажи WB/ЯМ
+   * и сайтов, заведённые импортом). Держится отдельно от lossValueKopecks
+   * ровно потому, что §1.8 запрещает их смешивать: списанная просрочка и
+   * проданный товар — разные строки будущего P&L.
+   */
+  cogsValueKopecks: number;
   /** Ретро-COGS по закрытым дефицитам. */
   deficitSettledKopecks: number;
   /** Всего непокрытых штук за реплей. */
@@ -285,6 +320,12 @@ export function applyEvent(pool: PoolState, event: CostingEvent): {
   const warnings: CostingWarning[] = [];
   const next = createPool(pool);
   const qty = event.qty;
+  /**
+   * «Применить дословно»: сторно и парная нога перемещения. Обе несут ГОТОВУЮ
+   * сумму, которая обязана сойтись с другим движением до копейки, поэтому пул
+   * не имеет права их пересматривать (ни дефицитом, ни базисом, ни lastCost).
+   */
+  const verbatim = event.isReversal === true || event.isPaired === true;
 
   let valueDelta = 0;
   let unitValue = 0;
@@ -297,7 +338,7 @@ export function applyEvent(pool: PoolState, event: CostingEvent): {
 
     // 1. Закрытие отрицательного пула: штуки, которыми гасится долг, физически
     //    уже отгружены — их стоимость не остаток, а ретро-COGS.
-    if (!event.isReversal && pool.qty < 0) {
+    if (!verbatim && pool.qty < 0) {
       const deficitQty = Math.min(qty, -pool.qty);
       deficitSettled = mulDivRound(value, deficitQty, qty);
       warnings.push({
@@ -319,7 +360,7 @@ export function applyEvent(pool: PoolState, event: CostingEvent): {
 
     // 2. Базис (§12.2). Пустой пул принимает базис прихода; непустой с другим
     //    базисом становится 'mixed' — молча суммировать нельзя.
-    if (!event.isReversal) {
+    if (!verbatim) {
       const basisIn = event.costBasis ?? pool.lastInBasis;
       next.lastInBasis = basisIn;
       const poolWasEmpty = pool.qty <= 0 && pool.valueKopecks === 0;
@@ -473,6 +514,7 @@ export function replay(
     inValueKopecks: 0,
     outValueKopecks: 0,
     lossValueKopecks: 0,
+    cogsValueKopecks: 0,
     deficitSettledKopecks: 0,
     uncoveredQty: 0,
   };
@@ -489,9 +531,14 @@ export function replay(
     } else {
       totals.outQty += -applied.move.qtyDelta;
       totals.outValueKopecks += -applied.move.valueDeltaKopecks;
-      // §1.8: потери НЕ являются себестоимостью проданного.
+      // §1.8: потери НЕ являются себестоимостью проданного — и наоборот.
+      // Недостача приёмки (reason='mp_shortage') проводится ногой kind='writeoff'
+      // внутри документа приёмки, поэтому попадает сюда же: «сколько товара
+      // съел маркетплейс» видно суммой, отдельной статьёй.
       if (applied.move.kind === 'writeoff') {
         totals.lossValueKopecks += -applied.move.valueDeltaKopecks;
+      } else if (applied.move.kind === 'sale') {
+        totals.cogsValueKopecks += -applied.move.valueDeltaKopecks;
       }
     }
     totals.deficitSettledKopecks += applied.move.deficitSettledKopecks;

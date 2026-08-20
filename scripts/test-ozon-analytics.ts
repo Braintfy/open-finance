@@ -211,50 +211,109 @@ console.log('\n# OzonAnalyticsBlockConfigSchema');
 
 console.log('\n# resolvePeriod');
 
-// 13. preset '7d' даёт 7 дней
+// Конвенция границ (канон — src/lib/marketplaces/ozon/query-period.ts):
+//   • период — ПОЛУОТКРЫТЫЙ интервал [fromDate, toDateExclusive) по календарю
+//     Europe/Moscow; SQL везде `date >= fromDate AND date < toDateExclusive`
+//     (см. unit-ozon-analytics-queries.ts);
+//   • legacy-пара `{ from, to }` — те же границы как UTC-полночь MSC-дат, то
+//     есть `to` ТОЖЕ эксклюзивная (первый день ПОСЛЕ периода);
+//   • пользовательский `customTo` — наоборот ВКЛЮЧИТЕЛЬНЫЙ последний день
+//     (в пикере это `<input type="date">`), резолвер сам делает +1 день.
+// Отсюда правила для тестов ниже:
+//   1. `now` замораживаем — иначе тест мигает на границе суток MSC;
+//   2. сверяем MSC-строки `p.msc.*` и UTC-геттеры, НИКОГДА не локальные
+//      `getDate()`/`new Date(y, m, d)`: они дают верный ответ только на машине
+//      с TZ=UTC (исторически тесты 15 и 18 были написаны так и падали везде,
+//      кроме UTC-бокса).
+const NOW = new Date('2026-05-18T12:00:00Z'); // 15:00 MSC 18 мая 2026
+
+// 13. preset '7d' даёт ровно 7 календарных дней MSC
 {
-  const p = resolvePeriod('7d', null, null);
+  const p = resolvePeriod('7d', null, null, { now: NOW });
   const diffDays = (p.to.getTime() - p.from.getTime()) / (24 * 3600 * 1000);
-  expect(Math.abs(diffDays - 8) < 0.05 || Math.abs(diffDays - 7) < 0.05, `7d gives ~7-8 days (got ${diffDays})`);
+  expect(diffDays === 7, `7d = ровно 7 дней (got ${diffDays})`);
+  expect(
+    p.msc.fromDate === '2026-05-12' && p.msc.toDateExclusive === '2026-05-19',
+    `7d = [2026-05-12, 2026-05-19) — сегодня включён целиком (got ${p.msc.fromDate}..${p.msc.toDateExclusive})`,
+  );
 }
 
 // 14. preset 'today' → 1 день
 {
-  const p = resolvePeriod('today', null, null);
+  const p = resolvePeriod('today', null, null, { now: NOW });
   const diffDays = (p.to.getTime() - p.from.getTime()) / (24 * 3600 * 1000);
-  expect(Math.abs(diffDays - 1) < 0.05, `today gives 1 day (got ${diffDays})`);
+  expect(diffDays === 1, `today gives 1 day (got ${diffDays})`);
+  expect(
+    p.msc.fromDate === '2026-05-18' && p.msc.toDateExclusive === '2026-05-19',
+    'today = [сегодня, завтра) MSC',
+  );
 }
 
-// 15. preset 'mtd' начинается с 1-го числа месяца
+// 15. preset 'mtd' начинается с 1-го числа месяца ПО MSC.
 {
-  const p = resolvePeriod('mtd', null, null);
-  expect(p.from.getDate() === 1, 'mtd starts at day 1');
+  const p = resolvePeriod('mtd', null, null, { now: NOW });
+  expect(p.msc.fromDate === '2026-05-01', `mtd starts at day 1 MSC (got ${p.msc.fromDate})`);
+  // Legacy-граница — UTC-полночь MSC-даты, поэтому геттер обязан быть UTC-ным:
+  // локальный getDate() на машине западнее UTC вернёт 30/31 предыдущего месяца.
+  expect(p.from.getUTCDate() === 1, 'mtd: legacy from — UTC-полночь 1-го числа');
+  // Первые часы месяца по MSC ещё вчерашние по UTC — mtd обязан быть майским.
+  const pRollover = resolvePeriod('mtd', null, null, { now: new Date('2026-04-30T21:30:00Z') });
+  expect(
+    pRollover.msc.fromDate === '2026-05-01',
+    `mtd на 00:30 MSC 1 мая = май, не апрель (got ${pRollover.msc.fromDate})`,
+  );
 }
 
-// 16. preset 'custom' с заданными датами
+// 16. preset 'custom' с заданными датами.
+// `customTo` — ВКЛЮЧИТЕЛЬНЫЙ последний день периода, а возвращается
+// эксклюзивная граница, поэтому `to` = customTo + 1 день. Возврат «как есть»
+// (что ожидал этот тест до перехода на полуоткрытые MSC-интервалы) молча
+// отрезал бы последний день КАЖДОГО произвольного периода — в деньгах это
+// систематически потерянные сутки выручки/расхода.
 {
   const from = new Date('2025-01-15').toISOString();
   const to = new Date('2025-02-05').toISOString();
   const p = resolvePeriod('custom', from, to);
   expect(p.from.toISOString() === from, 'custom from preserved');
-  expect(p.to.toISOString() === to, 'custom to preserved');
+  expect(
+    p.msc.fromDate === '2025-01-15' && p.msc.toDateExclusive === '2025-02-06',
+    `custom → [2025-01-15, 2025-02-06): 5 февраля включено (got ${p.msc.fromDate}..${p.msc.toDateExclusive})`,
+  );
+  expect(
+    p.to.toISOString() === '2025-02-06T00:00:00.000Z',
+    `custom to = customTo + 1 день (эксклюзив), got ${p.to.toISOString()}`,
+  );
 }
 
 // 17. preset 'custom' без дат — фолбэк на 30d
 {
-  const p = resolvePeriod('custom', null, null);
+  const p = resolvePeriod('custom', null, null, { now: NOW });
   const diffDays = (p.to.getTime() - p.from.getTime()) / (24 * 3600 * 1000);
   expect(diffDays >= 30 && diffDays <= 31.5, `custom без дат → ~30d (got ${diffDays})`);
 }
 
-// 18. preset 'yesterday' от вчера до сегодня
+// 18. preset 'yesterday' = [вчера, сегодня): сегодняшняя полночь MSC — это
+// ЭКСКЛЮЗИВНАЯ правая граница, последний включённый день = вчера.
 {
-  const p = resolvePeriod('yesterday', null, null);
-  const today = new Date();
-  const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-  expect(p.to.getTime() === todayMidnight.getTime(), 'yesterday.to = сегодня (миднайт)');
-  const yesterdayMidnight = new Date(todayMidnight.getTime() - 24 * 3600 * 1000);
-  expect(p.from.getTime() === yesterdayMidnight.getTime(), 'yesterday.from = вчера');
+  const p = resolvePeriod('yesterday', null, null, { now: NOW });
+  expect(
+    p.msc.toDateExclusive === '2026-05-18',
+    `yesterday.to = сегодня MSC (эксклюзив, got ${p.msc.toDateExclusive})`,
+  );
+  expect(p.msc.fromDate === '2026-05-17', `yesterday.from = вчера MSC (got ${p.msc.fromDate})`);
+  // Legacy-пара — UTC-полночи тех же MSC-дат (не локальные полуночи!).
+  expect(
+    p.to.toISOString() === '2026-05-18T00:00:00.000Z' &&
+      p.from.toISOString() === '2026-05-17T00:00:00.000Z',
+    'yesterday: legacy границы — UTC-полночь MSC-дат',
+  );
+  // 22:30Z = 01:30 MSC следующего дня: «вчера» обязано ехать по MSC-календарю,
+  // иначе окно отстаёт на сутки каждый вечер после 21:00 UTC.
+  const pLate = resolvePeriod('yesterday', null, null, { now: new Date('2026-05-18T22:30:00Z') });
+  expect(
+    pLate.msc.fromDate === '2026-05-18' && pLate.msc.toDateExclusive === '2026-05-19',
+    `yesterday после MSC-полуночи = [18, 19) (got ${pLate.msc.fromDate}..${pLate.msc.toDateExclusive})`,
+  );
 }
 
 console.log('\n# Ozon Performance CSV parser');

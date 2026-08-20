@@ -6,14 +6,19 @@
 //   - lastSyncAt сегодня   → diff = 0 → только вчера
 //   - lastSyncAt вчера     → diff = 1 → только вчера
 //   - lastSyncAt 7 дней    → от lastSync до вчера
-//   - lastSyncAt >90 дней  → fallback 30 дней (защита от мегаsync'а)
+//   - lastSyncAt >90 дней  → clamp до 90 дней + флаг `clamped`
 //   - lastSyncAt в будущем → from = yesterday (защита от часов клиента)
+//
+// + coverage-aware `auto` (v0.51.1): окно строится от ФАКТИЧЕСКОГО покрытия
+// (`max(date)` в ozon_analytics_daily), а не от таймстампа sync'а. Дыра в
+// данных затягивается следующим sync'ом; без дыры поведение прежнее.
 //
 // Запуск: `pnpm tsx scripts/test-ozon-sync-presets.ts`
 
 import {
   describePreset,
   diffDaysInclusive,
+  MAX_AUTO_WINDOW_DAYS,
   moscowToday,
   resolvePresetRange,
   shiftIsoDate,
@@ -100,9 +105,15 @@ console.log('\n=== auto preset (smart detect) ===');
   ok('auto + 89 дней → от lastSync', r?.from === '2026-02-23' && r?.to === '2026-05-22');
 }
 {
-  // lastSync = 100 дней назад → fallback 30 дней.
+  // lastSync = 100 дней назад → clamp до 90 дней (раньше был молчаливый
+  // fallback на 30 дней — он сам создавал дыру в 70 дней).
   const r = resolvePresetRange('auto', '2026-02-12T10:00:00Z', NOW);
-  ok('auto + 100 дней → fallback 30 дней', r?.from === '2026-04-23' && r?.to === '2026-05-22');
+  ok(
+    'auto + 100 дней → clamp до 90 дней {2026-02-22, 2026-05-22}',
+    r?.from === '2026-02-22' && r?.to === '2026-05-22' && r?.clamped === true,
+    JSON.stringify(r),
+  );
+  ok('clamped окно ровно MAX_AUTO_WINDOW_DAYS', diffDaysInclusive(r!.from, r!.to) === MAX_AUTO_WINDOW_DAYS);
 }
 {
   // lastSync в будущем (часы клиента кривые) → from = yesterday.
@@ -113,6 +124,74 @@ console.log('\n=== auto preset (smart detect) ===');
   // Невалидная дата → fallback 30 дней.
   const r = resolvePresetRange('auto', 'invalid-date', NOW);
   ok('auto + invalid → fallback 30 дней', r?.from === '2026-04-23' && r?.to === '2026-05-22');
+}
+
+console.log('\n=== auto preset + фактическое покрытие данными ===');
+{
+  // Прод-баг 01-18.08.2026: sync упал, lastSyncAt всё равно уехал на «вчера»,
+  // окно схлопнулось в 1 день и дыра не запрашивалась никогда.
+  // Теперь покрытие (max(date) = 2026-05-01) тянет начало окна назад.
+  const r = resolvePresetRange('auto', '2026-05-22T10:00:00Z', NOW, '2026-05-01');
+  ok(
+    'auto + lastSync=вчера, покрытие отстаёт на 21 день → окно от покрытия',
+    r?.from === '2026-05-01' && r?.to === '2026-05-22' && r?.gapDetected === true,
+    JSON.stringify(r),
+  );
+}
+{
+  // Дыр нет: покрытие догоняет «вчера» → прежнее поведение «только вчера».
+  const r = resolvePresetRange('auto', '2026-05-22T10:00:00Z', NOW, '2026-05-22');
+  ok(
+    'auto + покрытие по вчера → только вчера, без gapDetected',
+    r?.from === '2026-05-22' && r?.to === '2026-05-22' && !r?.gapDetected,
+    JSON.stringify(r),
+  );
+}
+{
+  // Покрытие СВЕЖЕЕ окна по lastSyncAt — окно не сужаем (берём более раннюю).
+  const r = resolvePresetRange('auto', '2026-05-18T10:00:00Z', NOW, '2026-05-21');
+  ok(
+    'auto + покрытие свежее lastSync → окно остаётся от lastSync',
+    r?.from === '2026-05-18' && r?.to === '2026-05-22' && !r?.gapDetected,
+    JSON.stringify(r),
+  );
+}
+{
+  // Покрытие «по сегодня» (частичный день) дыры не даёт.
+  const r = resolvePresetRange('auto', '2026-05-22T10:00:00Z', NOW, '2026-05-23');
+  ok('auto + покрытие по сегодня → только вчера', r?.from === '2026-05-22' && !r?.gapDetected);
+}
+{
+  // Мусор в поле покрытия не должен ломать окно.
+  const r = resolvePresetRange('auto', '2026-05-22T10:00:00Z', NOW, 'не-дата');
+  ok('auto + невалидное покрытие → игнорируем', r?.from === '2026-05-22' && !r?.gapDetected);
+}
+{
+  // Покрытие с timestamp-хвостом (на случай если БД вернёт не голый date).
+  const r = resolvePresetRange('auto', '2026-05-22T10:00:00Z', NOW, '2026-05-10T00:00:00.000Z');
+  ok('auto + покрытие с временем → берём YYYY-MM-DD', r?.from === '2026-05-10' && r?.gapDetected === true);
+}
+{
+  // Огромная дыра → clamp до 90 дней + честный флаг.
+  const r = resolvePresetRange('auto', '2026-05-22T10:00:00Z', NOW, '2026-01-01');
+  ok(
+    'auto + дыра >90 дней → clamp {2026-02-22, 2026-05-22} + clamped',
+    r?.from === '2026-02-22' && r?.to === '2026-05-22' && r?.clamped === true,
+    JSON.stringify(r),
+  );
+}
+{
+  // Покрытие есть, lastSyncAt нет → 30-дневный дефолт vs покрытие, берём раннее.
+  const r = resolvePresetRange('auto', null, NOW, '2026-05-10');
+  ok('auto + null lastSync + свежее покрытие → 30 дней', r?.from === '2026-04-23' && !r?.gapDetected);
+}
+{
+  const r = resolvePresetRange('auto', null, NOW, '2026-04-01');
+  ok(
+    'auto + null lastSync + старое покрытие → окно от покрытия',
+    r?.from === '2026-04-01' && r?.gapDetected === true,
+    JSON.stringify(r),
+  );
 }
 
 console.log('\n=== describePreset ===');
@@ -137,6 +216,34 @@ console.log('\n=== describePreset ===');
   ok(
     'describePreset(auto, yesterday) показывает "Догрузим 1 дн."',
     hint.includes('Догрузим 1 дн.'),
+    hint,
+  );
+}
+{
+  // Дыра должна быть видна в hint'е: раньше пользователь читал «Догрузим 1 дн.»
+  // и не догадывался, что 21 день данных отсутствует.
+  const hint = describePreset('auto', '2026-05-22T10:00:00Z', NOW, '2026-05-01');
+  ok(
+    'describePreset(auto, дыра) сообщает про дыру и реальное окно',
+    hint.includes('Догрузим 22 дн.') &&
+      hint.includes('2026-05-01') &&
+      hint.includes('дыра в данных'),
+    hint,
+  );
+}
+{
+  const hint = describePreset('auto', '2026-05-22T10:00:00Z', NOW, '2026-01-01');
+  ok(
+    'describePreset(auto, clamp) честно говорит про урезанное окно',
+    hint.includes('урезано') && hint.includes(String(MAX_AUTO_WINDOW_DAYS)),
+    hint,
+  );
+}
+{
+  const hint = describePreset('auto', '2026-05-22T10:00:00Z', NOW, '2026-05-22');
+  ok(
+    'describePreset(auto, без дыры) не пугает пользователя лишним текстом',
+    hint === 'Догрузим 1 дн.: 2026-05-22 → 2026-05-22',
     hint,
   );
 }

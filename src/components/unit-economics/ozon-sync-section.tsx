@@ -272,7 +272,8 @@ export function OzonSyncSection({
             </Button>
             {account.lastSyncAt && (
               <span className="text-[10px] text-muted-foreground">
-                Последний sync: {new Date(account.lastSyncAt).toLocaleString('ru-RU')}
+                Последний успешный sync:{' '}
+                {new Date(account.lastSyncAt).toLocaleString('ru-RU')}
               </span>
             )}
           </div>

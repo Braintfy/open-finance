@@ -33,12 +33,14 @@ import {
   stockDocLines,
   stockDocs,
   stockMoves,
+  stockRecon,
   stockSettings,
   type StockDoc,
   type StockDocKind,
   type StockDocStatus,
   type StockSettingsRow,
 } from '@/lib/db/schema/stock-ledger';
+import { moscowDateString, shiftIsoDate } from '@/lib/marketplaces/ozon/sync/perf-period';
 import { BUILTIN_STOCK_PLACES } from './places';
 
 /**
@@ -57,6 +59,14 @@ export interface StockCtx {
 /** Окно расчёта скорости продаж для «дней запаса». */
 const VELOCITY_WINDOW_DAYS = 30;
 
+/**
+ * Потолки витрин «Пробелов». Именованные константы, потому что по ним же
+ * считается признак усечения: захардкоженный лимит в SQL и отдельная цифра в
+ * сравнении разъезжаются при первой же правке, и блок начинает врать «всё влезло».
+ */
+const NO_COST_ITEMS_LIMIT = 200;
+const UNMATCHED_OFFERS_LIMIT = 500;
+
 function num(value: unknown): number {
   if (value === null || value === undefined) return 0;
   const n = typeof value === 'number' ? value : Number(value);
@@ -67,12 +77,14 @@ function isoDaysAgo(days: number): string {
   return new Date(Date.now() - days * 24 * 3600 * 1000).toISOString();
 }
 
-/** 'YYYY-MM-DD' сегодняшнего дня в локальной таймзоне сервера. */
+/**
+ * 'YYYY-MM-DD' сегодняшнего дня по календарю МОСКВЫ — той же зоне, в которой
+ * работают фильтры документов и проставляются doc_date из UI (грабля Релиза 1:
+ * локальные геттеры Date дают пользователю западнее UTC документ, не попадающий
+ * в свой же период, а сроку годности — «минус сутки»).
+ */
 export function todayIsoDate(): string {
-  const d = new Date();
-  const m = `${d.getMonth() + 1}`.padStart(2, '0');
-  const day = `${d.getDate()}`.padStart(2, '0');
-  return `${d.getFullYear()}-${m}-${day}`;
+  return moscowDateString(new Date());
 }
 
 // ---------------------------------------------------------------------------
@@ -387,7 +399,7 @@ export async function getUnmatchedOzonOffers(
       )
     GROUP BY ws.account_id, ws.offer_id, ws.sku
     ORDER BY qty DESC
-    LIMIT 500
+    LIMIT ${UNMATCHED_OFFERS_LIMIT}
   `);
   return Array.from(rows).map((r) => ({
     channel: 'ozon' as const,
@@ -698,7 +710,16 @@ export async function listStockDocs(
   ctx: StockCtx,
   filter: DocsFilter = {},
   client: StockDb = db,
-): Promise<{ rows: StockDocListRow[]; totals: { purchasesKopecks: number; docsCount: number } }> {
+): Promise<{
+  rows: StockDocListRow[];
+  totals: {
+    purchasesKopecks: number;
+    docsCount: number;
+    lossKopecks: number;
+    mpShortageKopecks: number;
+    salesCogsKopecks: number;
+  };
+}> {
   const conds: SQL[] = [eq(stockDocs.tenantId, ctx.tenantId)];
   if (filter.kind) conds.push(eq(stockDocs.kind, filter.kind));
   if (filter.status) conds.push(eq(stockDocs.status, filter.status));
@@ -743,10 +764,16 @@ export async function listStockDocs(
   // «Закуплено за период» — только проведённые приходные документы.
   // Сторно (status='void' у оригинала + отдельный сторно-документ) из суммы
   // выпадает автоматически: у сторно-документа total_kopecks отрицательный.
+  //
+  // Возвраты ИМПОРТА продаж (WB/ЯМ) исключены сознательно: их стоимость взята
+  // по текущей средней, ничего при этом не закупалось, и «Закуплено за период»
+  // росло бы на каждый возврат покупателя. Ручной return_in остаётся в сумме —
+  // там речь про реальный приход на склад.
   const purchaseConds: SQL[] = [
     eq(stockDocs.tenantId, ctx.tenantId),
     eq(stockDocs.status, 'posted'),
     inArray(stockDocs.kind, ['purchase', 'opening', 'return_in']),
+    sql`NOT (${stockDocs.kind} = 'return_in' AND ${stockDocs.source} LIKE 'import:%')`,
   ];
   if (filter.from) purchaseConds.push(gte(stockDocs.docDate, filter.from));
   if (filter.to) purchaseConds.push(lte(stockDocs.docDate, filter.to));
@@ -757,6 +784,23 @@ export async function listStockDocs(
     })
     .from(stockDocs)
     .where(and(...purchaseConds));
+
+  // Потери и себестоимость проданного за тот же период — по ЛЕНТЕ, а не по
+  // шапкам: у списания и продажи «сумма документа» нулевая, деньги живут в
+  // движениях. Разделены сознательно (§1.8): просрочка, недостача маркетплейса
+  // и себестоимость проданного — три разные строки будущего P&L, и «сколько
+  // товара съел маркетплейс» обязано быть видно отдельной суммой (§5).
+  const moveConds: SQL[] = [eq(stockMoves.tenantId, ctx.tenantId)];
+  if (filter.from) moveConds.push(gte(stockMoves.docDate, filter.from));
+  if (filter.to) moveConds.push(lte(stockMoves.docDate, filter.to));
+  const [moveAgg] = await client
+    .select({
+      loss: sql<string>`coalesce(-sum(${stockMoves.valueDeltaKopecks}) FILTER (WHERE ${stockMoves.kind} = 'writeoff'), 0)`,
+      shortage: sql<string>`coalesce(-sum(${stockMoves.valueDeltaKopecks}) FILTER (WHERE ${stockMoves.reason} = 'mp_shortage'), 0)`,
+      cogs: sql<string>`coalesce(-sum(${stockMoves.valueDeltaKopecks}) FILTER (WHERE ${stockMoves.kind} = 'sale'), 0)`,
+    })
+    .from(stockMoves)
+    .where(and(...moveConds));
 
   return {
     rows: rows.map((r) => ({
@@ -777,7 +821,16 @@ export async function listStockDocs(
       comment: r.comment,
       postedAt: r.postedAt ? r.postedAt.toISOString() : null,
     })),
-    totals: { purchasesKopecks: num(agg?.total), docsCount: num(agg?.count) },
+    totals: {
+      purchasesKopecks: num(agg?.total),
+      docsCount: num(agg?.count),
+      /** Все потери периода (списания + недостачи маркетплейса), копейки. */
+      lossKopecks: num(moveAgg?.loss),
+      /** Из них — съедено маркетплейсом при приёмке (reason='mp_shortage'). */
+      mpShortageKopecks: num(moveAgg?.shortage),
+      /** Себестоимость проданного по каналам с журналом (WB/ЯМ/сайты). */
+      salesCogsKopecks: num(moveAgg?.cogs),
+    },
   };
 }
 
@@ -797,7 +850,10 @@ export interface StockDocLineView {
   batchNumber: string | null;
   expiresAt: string | null;
   isEstimated: boolean;
+  /** adjust — посчитанный факт; accept — сколько принял маркетплейс. */
   countedQty: number | null;
+  /** regrade — номер расходной строки, чью стоимость забрала эта приходная. */
+  pairLineNo: number | null;
   comment: string | null;
 }
 
@@ -831,6 +887,7 @@ export async function getStockDoc(
       expiresAt: stockDocLines.expiresAt,
       isEstimated: stockDocLines.isEstimated,
       countedQty: stockDocLines.countedQty,
+      pairLineNo: stockDocLines.pairLineNo,
       comment: stockDocLines.comment,
     })
     .from(stockDocLines)
@@ -980,6 +1037,232 @@ export async function getStockItemCard(
 }
 
 // ---------------------------------------------------------------------------
+// Сроки годности (§7 блок 5) — для БАДов самый дешёвый способ окупить модуль
+// ---------------------------------------------------------------------------
+
+/** Светофор партии по остатку срока. */
+export type ExpiryStatus = 'expired' | 'critical' | 'soon' | 'ok';
+
+export interface ExpiringBatchRow {
+  batchId: string;
+  itemId: string;
+  sku: string;
+  name: string;
+  brand: string | null;
+  lotNo: string | null;
+  batchNumber: string | null;
+  supplier: string;
+  receivedAt: string;
+  /** 'YYYY-MM-DD'; строки без срока сюда не попадают. */
+  expiresAt: string;
+  /** Дней до срока по календарю Москвы; отрицательное — уже просрочено. */
+  daysLeft: number;
+  qtyLeft: number;
+  /**
+   * ТЕКУЩАЯ себестоимость единицы товара (override, иначе скользящая средняя
+   * пула) — именно по ней спишется партия, если протухнет (§4.4), и именно ею
+   * оценивает остаток блок «Склад · Остатки».
+   */
+  unitCostKopecks: number;
+  /**
+   * Витринная цена прихода САМОЙ партии — `round(value_in/qty_in)`. Держится
+   * рядом справочно («по какой цене брали»), в оценке НЕ участвует: схема
+   * помечает это поле «для оценки не используется» (§2.6).
+   */
+  batchUnitCostKopecks: number;
+  /** qty_left × текущая себестоимость — сколько денег на кону. */
+  valueKopecks: number;
+  isEstimated: boolean;
+  status: ExpiryStatus;
+}
+
+export interface ExpiryResult {
+  today: string;
+  rows: ExpiringBatchRow[];
+  /** Партий под фильтр ВСЕГО (без limit) — витрина может быть усечена. */
+  totalCount: number;
+  /** rows короче реального списка: цифры в totals всё равно полные. */
+  truncated: boolean;
+  /** Порядок списания штук из партий (§2.8) — от него зависит, что заберёт FEFO. */
+  lotPolicy: StockSettingsRow['lotPolicy'];
+  totals: {
+    /** Деньги в партиях, попавших в горизонт. ВКЛЮЧАЕТ просрочку. */
+    valueKopecks: number;
+    expiredValueKopecks: number;
+    expiredCount: number;
+    criticalCount: number;
+    soonCount: number;
+    qtyLeft: number;
+    /**
+     * Партий, у товара которых себестоимость неизвестна (нет override и
+     * avg = 0). Их вклад в «деньги под риском» — ноль, и это НЕ «бесплатно»
+     * (§1.10): цифру надо показывать рядом с суммой, иначе сумма врёт вниз.
+     */
+    noCostCount: number;
+  };
+}
+
+export interface ExpiryFilter {
+  /** Горизонт в днях (по умолчанию 90). Просроченное показывается всегда. */
+  horizonDays?: number;
+  /** Порог «красной зоны», дней (по умолчанию 14). */
+  criticalDays?: number;
+  limit?: number;
+}
+
+/**
+ * Партии с истекающим сроком (§7 блок 5). Источник — stock_batches: в режиме
+ * avg партия несёт ШТУКИ и СРОК, поэтому «что протухает» видно только по ней,
+ * а не по пулу товара.
+ *
+ * Даты сравниваются по календарю МОСКВЫ (todayIsoDate): срок годности — вопрос
+ * календарного дня, и у пользователя западнее UTC «сегодня» сервера сдвинуло бы
+ * светофор на сутки.
+ *
+ * ДВА ЗАПРОСА, А НЕ ОДИН — ЭТО НЕ ИЗБЫТОЧНОСТЬ (регресс ревью Релиза 2).
+ * Итоги считаются ОТДЕЛЬНЫМ агрегатом по тому же WHERE, БЕЗ limit, а limit
+ * оставлен только витрине. Пока сумма считалась `reduce`'ом по уже усечённому
+ * списку, «Деньги под риском» занижались тем сильнее, чем больше партий, и
+ * молча: в WHERE нет нижней границы по expires_at, поэтому просрочка копится и
+ * при `ORDER BY expires_at ASC` вытесняет всё остальное за лимит. Тот же приём,
+ * что у listStockDocs с потерями и COGS.
+ *
+ * ОЦЕНКА — ПО ТЕКУЩЕЙ СЕБЕСТОИМОСТИ ТОВАРА (override, иначе скользящая
+ * средняя), а не по `stock_batches.unit_cost_kopecks`: то поле схема прямо
+ * помечает «витринное, для оценки не используется» (§2.6), а списание партии
+ * забирает долю ОСТАТОЧНОЙ стоимости пула (§4.4). Побочный эффект правильный:
+ * сумма блока сходится с «Деньги в товаре» в stock.balances, который считает
+ * ровно так же.
+ */
+export async function getExpiringBatches(
+  ctx: StockCtx,
+  filter: ExpiryFilter = {},
+  client: StockDb = db,
+): Promise<ExpiryResult> {
+  const today = todayIsoDate();
+  const horizonDays = Math.min(730, Math.max(1, Math.trunc(filter.horizonDays ?? 90)));
+  const criticalDays = Math.max(0, Math.trunc(filter.criticalDays ?? 14));
+  const horizonDate = shiftIsoDate(today, horizonDays);
+  // Граница красной зоны датой, а не арифметикой дней в SQL: `daysLeft <=
+  // criticalDays` ⟺ `expires_at <= today + criticalDays`, и обе ветки (JS-строки
+  // и SQL-агрегат) обязаны делить светофор ОДИНАКОВО.
+  const criticalDate = shiftIsoDate(today, criticalDays);
+  const limit = Math.min(1000, Math.max(1, filter.limit ?? 300));
+
+  // Один набор условий на витрину и на агрегат: разъехавшийся WHERE — это
+  // «итоги не про то, что показано», и заметить это по цифрам невозможно.
+  const conds = and(
+    eq(stockBatches.tenantId, ctx.tenantId),
+    // tenant_id по обеим таблицам: join сам по себе скоуп не гарантирует.
+    eq(stockItems.tenantId, ctx.tenantId),
+    sql`${stockBatches.qtyLeft} > 0`,
+    sql`${stockBatches.expiresAt} is not null`,
+    lte(stockBatches.expiresAt, horizonDate),
+  );
+
+  /** Текущая себестоимость единицы: override важнее средней (как в balances). */
+  const unitCostSql = sql<string>`coalesce(${stockItems.costOverrideKopecks}, ${stockItems.avgCostKopecks}, 0)`;
+
+  const [rows, aggRows, settings] = await Promise.all([
+    client
+      .select({
+        batchId: stockBatches.id,
+        itemId: stockBatches.itemId,
+        sku: stockItems.sku,
+        name: stockItems.name,
+        brand: stockItems.brand,
+        lotNo: stockBatches.lotNo,
+        batchNumber: stockBatches.batchNumber,
+        supplier: stockBatches.supplier,
+        receivedAt: stockBatches.receivedAt,
+        expiresAt: stockBatches.expiresAt,
+        qtyLeft: stockBatches.qtyLeft,
+        batchUnitCostKopecks: stockBatches.unitCostKopecks,
+        unitCostKopecks: unitCostSql,
+        isEstimated: stockBatches.isEstimated,
+      })
+      .from(stockBatches)
+      .innerJoin(stockItems, eq(stockItems.id, stockBatches.itemId))
+      .where(conds)
+      .orderBy(asc(stockBatches.expiresAt), asc(stockItems.name))
+      .limit(limit),
+    client
+      .select({
+        totalCount: sql<string>`count(*)`,
+        qtyLeft: sql<string>`coalesce(sum(${stockBatches.qtyLeft}), 0)`,
+        value: sql<string>`coalesce(sum(${stockBatches.qtyLeft} * ${unitCostSql}), 0)`,
+        expiredValue: sql<string>`coalesce(sum(${stockBatches.qtyLeft} * ${unitCostSql}) FILTER (WHERE ${stockBatches.expiresAt} < ${today}), 0)`,
+        expiredCount: sql<string>`count(*) FILTER (WHERE ${stockBatches.expiresAt} < ${today})`,
+        criticalCount: sql<string>`count(*) FILTER (WHERE ${stockBatches.expiresAt} >= ${today} AND ${stockBatches.expiresAt} <= ${criticalDate})`,
+        soonCount: sql<string>`count(*) FILTER (WHERE ${stockBatches.expiresAt} > ${criticalDate})`,
+        noCostCount: sql<string>`count(*) FILTER (WHERE ${unitCostSql} <= 0)`,
+      })
+      .from(stockBatches)
+      .innerJoin(stockItems, eq(stockItems.id, stockBatches.itemId))
+      .where(conds),
+    getStockSettings(ctx, client),
+  ]);
+
+  const out: ExpiringBatchRow[] = rows.map((r) => {
+    const expiresAt = r.expiresAt as string;
+    const daysLeft = diffIsoDays(today, expiresAt);
+    const unitCost = num(r.unitCostKopecks);
+    return {
+      batchId: r.batchId,
+      itemId: r.itemId,
+      sku: r.sku,
+      name: r.name,
+      brand: r.brand,
+      lotNo: r.lotNo,
+      batchNumber: r.batchNumber,
+      supplier: r.supplier,
+      receivedAt: r.receivedAt,
+      expiresAt,
+      daysLeft,
+      qtyLeft: r.qtyLeft,
+      unitCostKopecks: unitCost,
+      batchUnitCostKopecks: num(r.batchUnitCostKopecks),
+      valueKopecks: unitCost * r.qtyLeft,
+      isEstimated: r.isEstimated,
+      status:
+        daysLeft < 0
+          ? 'expired'
+          : daysLeft <= criticalDays
+            ? 'critical'
+            : 'soon',
+    };
+  });
+
+  const agg = aggRows[0];
+  const totalCount = num(agg?.totalCount);
+
+  return {
+    today,
+    rows: out,
+    totalCount,
+    truncated: totalCount > out.length,
+    lotPolicy: settings.lotPolicy,
+    totals: {
+      valueKopecks: num(agg?.value),
+      expiredValueKopecks: num(agg?.expiredValue),
+      expiredCount: num(agg?.expiredCount),
+      criticalCount: num(agg?.criticalCount),
+      soonCount: num(agg?.soonCount),
+      qtyLeft: num(agg?.qtyLeft),
+      noCostCount: num(agg?.noCostCount),
+    },
+  };
+}
+
+/** Разница в календарных днях между двумя 'YYYY-MM-DD' (b - a). */
+function diffIsoDays(a: string, b: string): number {
+  const da = Date.parse(`${a}T00:00:00Z`);
+  const dbb = Date.parse(`${b}T00:00:00Z`);
+  if (!Number.isFinite(da) || !Number.isFinite(dbb)) return 0;
+  return Math.round((dbb - da) / 86_400_000);
+}
+
+// ---------------------------------------------------------------------------
 // Карантин (§1.10 «молчаливого нуля не бывает»)
 // ---------------------------------------------------------------------------
 
@@ -996,7 +1279,7 @@ export interface QuarantineSaleRow {
 }
 
 export interface StockQuarantine {
-  /** Продажи по позициям, у которых нет сшивки товар ↔ SKU канала. */
+  /** Продажи по позициям, у которых нет сшивки товар ↔ SKU канала (усечено). */
   unlinkedSales: QuarantineSaleRow[];
   /** Продажи сшитых товаров, у которых себестоимость неизвестна (0 и нет override). */
   salesWithoutCost: QuarantineSaleRow[];
@@ -1011,12 +1294,22 @@ export interface StockQuarantine {
     docDate: string;
     uncoveredQty: number;
   }>;
+  /**
+   * Счётчики и суммы — ПОЛНЫЕ (агрегат по всему набору), даже когда списки выше
+   * усечены лимитом. Раньше они считались `reduce`'ом по усечённым спискам, и
+   * витринная «Выручка мимо себестоимости» занижалась молча.
+   */
   totals: {
     unlinkedRevenueKopecks: number;
     withoutCostRevenueKopecks: number;
+    unlinkedCount: number;
+    withoutCostCount: number;
     negativeCount: number;
+    uncoveredCount: number;
     uncoveredQty: number;
   };
+  /** Какие списки короче реальности — блок обязан это показать человеку. */
+  truncated: { sales: boolean; negative: boolean; uncovered: boolean };
 }
 
 /**
@@ -1032,6 +1325,12 @@ export async function getStockQuarantine(
   const fromIso = `${period.from}T00:00:00.000Z`;
   const toIso = `${period.to}T23:59:59.999Z`;
 
+  // Витрина (LIMIT) и ИТОГИ считаются одним проходом: `grouped` — общий CTE, из
+  // него отдельно берётся топ-500 строк и отдельно агрегат по ВСЕМУ набору,
+  // приклеенный к каждой строке через CROSS JOIN. Так «Выручка мимо
+  // себестоимости» перестала зависеть от лимита витрины (регресс ревью Р2:
+  // сумма считалась reduce'ом по усечённому списку и молча занижалась).
+  // Пустой набор даёт ноль строк — и итоги там честно нулевые.
   const salesRows = await client.execute<{
     offer_id: string | null;
     sku: string | null;
@@ -1041,6 +1340,10 @@ export async function getStockQuarantine(
     item_id: string | null;
     item_name: string | null;
     unit_cost: string | null;
+    unlinked_count: string;
+    unlinked_revenue: string;
+    without_cost_count: string;
+    without_cost_revenue: string;
   }>(sql`
     WITH sold AS (
       SELECT
@@ -1058,36 +1361,52 @@ export async function getStockQuarantine(
         AND o.returned_at IS NULL
         AND lower(o.status) NOT LIKE '%cancel%'
         AND lower(o.status) NOT LIKE '%return%'
+    ),
+    grouped AS (
+      SELECT
+        sold.offer_id,
+        sold.sku,
+        max(sold.name) AS name,
+        SUM(sold.qty) AS qty,
+        ROUND(SUM(sold.qty * sold.price_rub) * 100) AS revenue,
+        max(si.id::text) AS item_id,
+        max(si.name) AS item_name,
+        max(COALESCE(si.cost_override_kopecks, si.avg_cost_kopecks)) AS unit_cost
+      FROM sold
+      LEFT JOIN LATERAL (
+        SELECT sl.item_id
+        FROM stock_item_links sl
+        WHERE sl.tenant_id = ${ctx.tenantId}
+          AND sl.channel = 'ozon'
+          AND (sl.external_id = sold.offer_id OR sl.external_sku = sold.sku)
+        ORDER BY (sl.external_id = sold.offer_id) DESC, sl.id
+        LIMIT 1
+      ) l ON TRUE
+      LEFT JOIN stock_items si
+        ON si.id = l.item_id AND si.tenant_id = ${ctx.tenantId}
+      GROUP BY sold.offer_id, sold.sku
+    ),
+    tot AS (
+      SELECT
+        count(*) FILTER (WHERE item_id IS NULL) AS unlinked_count,
+        COALESCE(sum(revenue) FILTER (WHERE item_id IS NULL), 0) AS unlinked_revenue,
+        count(*) FILTER (WHERE item_id IS NOT NULL AND COALESCE(unit_cost, 0) <= 0)
+          AS without_cost_count,
+        COALESCE(
+          sum(revenue) FILTER (WHERE item_id IS NOT NULL AND COALESCE(unit_cost, 0) <= 0),
+          0
+        ) AS without_cost_revenue
+      FROM grouped
     )
-    SELECT
-      sold.offer_id,
-      sold.sku,
-      max(sold.name) AS name,
-      SUM(sold.qty) AS qty,
-      ROUND(SUM(sold.qty * sold.price_rub) * 100) AS revenue,
-      max(si.id::text) AS item_id,
-      max(si.name) AS item_name,
-      max(COALESCE(si.cost_override_kopecks, si.avg_cost_kopecks)) AS unit_cost
-    FROM sold
-    LEFT JOIN LATERAL (
-      SELECT sl.item_id
-      FROM stock_item_links sl
-      WHERE sl.tenant_id = ${ctx.tenantId}
-        AND sl.channel = 'ozon'
-        AND (sl.external_id = sold.offer_id OR sl.external_sku = sold.sku)
-      ORDER BY (sl.external_id = sold.offer_id) DESC, sl.id
-      LIMIT 1
-    ) l ON TRUE
-    LEFT JOIN stock_items si
-      ON si.id = l.item_id AND si.tenant_id = ${ctx.tenantId}
-    GROUP BY sold.offer_id, sold.sku
-    ORDER BY revenue DESC
-    LIMIT 500
+    SELECT g.*, t.*
+    FROM (SELECT * FROM grouped ORDER BY revenue DESC LIMIT 500) g
+    CROSS JOIN tot t
   `);
 
   const unlinkedSales: QuarantineSaleRow[] = [];
   const salesWithoutCost: QuarantineSaleRow[] = [];
-  for (const r of Array.from(salesRows)) {
+  const salesArray = Array.from(salesRows);
+  for (const r of salesArray) {
     const row: QuarantineSaleRow = {
       externalId: r.offer_id ?? r.sku ?? '',
       externalSku: r.sku,
@@ -1100,40 +1419,69 @@ export async function getStockQuarantine(
     if (!r.item_id) unlinkedSales.push(row);
     else if (num(r.unit_cost) <= 0) salesWithoutCost.push(row);
   }
+  // Итоги приклеены к каждой строке (CROSS JOIN) — берём с первой; пустой
+  // набор строк означает пустой карантин, и нули здесь не «потерянные данные».
+  const salesAgg = salesArray[0];
+  const unlinkedCount = num(salesAgg?.unlinked_count);
+  const withoutCostCount = num(salesAgg?.without_cost_count);
 
-  const negativeRows = await client
-    .select({
-      itemId: stockItems.id,
-      sku: stockItems.sku,
-      name: stockItems.name,
-      qtyPool: stockItems.qtyPool,
-    })
-    .from(stockItems)
-    .where(and(eq(stockItems.tenantId, ctx.tenantId), sql`${stockItems.qtyPool} < 0`))
-    .orderBy(asc(stockItems.qtyPool))
-    .limit(200);
-
-  const uncoveredRows = await client
-    .select({
-      itemId: stockMoves.itemId,
-      sku: stockItems.sku,
-      name: stockItems.name,
-      docId: stockMoves.docId,
-      docDate: stockMoves.docDate,
-      uncoveredQty: stockMoves.uncoveredQty,
-    })
-    .from(stockMoves)
-    .innerJoin(stockItems, eq(stockItems.id, stockMoves.itemId))
-    .where(
-      and(
-        eq(stockMoves.tenantId, ctx.tenantId),
-        sql`${stockMoves.uncoveredQty} > 0`,
-        gte(stockMoves.docDate, period.from),
-        lte(stockMoves.docDate, period.to),
+  // Счётчики отдельным агрегатом по тому же WHERE: length усечённого списка —
+  // это «сколько влезло на витрину», а не «сколько есть».
+  const [negativeRows, negativeAgg, uncoveredRows, uncoveredAgg] = await Promise.all([
+    client
+      .select({
+        itemId: stockItems.id,
+        sku: stockItems.sku,
+        name: stockItems.name,
+        qtyPool: stockItems.qtyPool,
+      })
+      .from(stockItems)
+      .where(and(eq(stockItems.tenantId, ctx.tenantId), sql`${stockItems.qtyPool} < 0`))
+      .orderBy(asc(stockItems.qtyPool))
+      .limit(200),
+    client
+      .select({ count: sql<string>`count(*)` })
+      .from(stockItems)
+      .where(and(eq(stockItems.tenantId, ctx.tenantId), sql`${stockItems.qtyPool} < 0`)),
+    client
+      .select({
+        itemId: stockMoves.itemId,
+        sku: stockItems.sku,
+        name: stockItems.name,
+        docId: stockMoves.docId,
+        docDate: stockMoves.docDate,
+        uncoveredQty: stockMoves.uncoveredQty,
+      })
+      .from(stockMoves)
+      .innerJoin(stockItems, eq(stockItems.id, stockMoves.itemId))
+      .where(
+        and(
+          eq(stockMoves.tenantId, ctx.tenantId),
+          sql`${stockMoves.uncoveredQty} > 0`,
+          gte(stockMoves.docDate, period.from),
+          lte(stockMoves.docDate, period.to),
+        ),
+      )
+      .orderBy(desc(stockMoves.docDate))
+      .limit(200),
+    client
+      .select({
+        count: sql<string>`count(*)`,
+        qty: sql<string>`coalesce(sum(${stockMoves.uncoveredQty}), 0)`,
+      })
+      .from(stockMoves)
+      .where(
+        and(
+          eq(stockMoves.tenantId, ctx.tenantId),
+          sql`${stockMoves.uncoveredQty} > 0`,
+          gte(stockMoves.docDate, period.from),
+          lte(stockMoves.docDate, period.to),
+        ),
       ),
-    )
-    .orderBy(desc(stockMoves.docDate))
-    .limit(200);
+  ]);
+
+  const negativeCount = num(negativeAgg[0]?.count);
+  const uncoveredCount = num(uncoveredAgg[0]?.count);
 
   return {
     unlinkedSales,
@@ -1141,13 +1489,177 @@ export async function getStockQuarantine(
     negativePools: negativeRows,
     uncoveredMoves: uncoveredRows,
     totals: {
-      unlinkedRevenueKopecks: unlinkedSales.reduce((s, r) => s + r.revenueKopecks, 0),
-      withoutCostRevenueKopecks: salesWithoutCost.reduce(
-        (s, r) => s + r.revenueKopecks,
-        0,
-      ),
-      negativeCount: negativeRows.length,
-      uncoveredQty: uncoveredRows.reduce((s, r) => s + r.uncoveredQty, 0),
+      unlinkedRevenueKopecks: num(salesAgg?.unlinked_revenue),
+      withoutCostRevenueKopecks: num(salesAgg?.without_cost_revenue),
+      unlinkedCount,
+      withoutCostCount,
+      negativeCount,
+      uncoveredCount,
+      uncoveredQty: num(uncoveredAgg[0]?.qty),
+    },
+    truncated: {
+      sales:
+        unlinkedSales.length < unlinkedCount ||
+        salesWithoutCost.length < withoutCostCount,
+      negative: negativeRows.length < negativeCount,
+      uncovered: uncoveredRows.length < uncoveredCount,
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Пробелы (§7 блок 6) — единый список того, что молча портит цифры
+// ---------------------------------------------------------------------------
+
+export interface StockGapItemRow {
+  itemId: string;
+  sku: string;
+  name: string;
+  qtyPool: number;
+  totalQty: number;
+}
+
+export interface StockGapsResult {
+  period: { from: string; to: string };
+  /** Продажи по позициям канала без сшивки — с суммой выручки (§1.10). */
+  unlinkedSales: QuarantineSaleRow[];
+  /** Продажи сшитых товаров, у которых себестоимость неизвестна. */
+  salesWithoutCost: QuarantineSaleRow[];
+  /** Позиции Ozon без сшивки (есть остаток, но нет нашего товара). */
+  unmatched: UnmatchedChannelRow[];
+  /** Товары с остатком, но без себестоимости — рабочий to-do список (§8 шаг 4). */
+  itemsWithoutCost: StockGapItemRow[];
+  /** Отрицательные остатки — не ошибка (allow_negative), но требуют внимания. */
+  negativePools: StockQuarantine['negativePools'];
+  /** Движения, которые пул не смог покрыть. */
+  uncoveredMoves: StockQuarantine['uncoveredMoves'];
+  /** Открытые расхождения сверки с маркетплейсом (наполняется отдельным роутом). */
+  reconOpenCount: number;
+  /**
+   * Счётчики и суммы — ПОЛНЫЕ (агрегаты по всему набору), списки выше — усечённые
+   * витрины. Раньше счётчики брались из `.length` усечённых списков и молча
+   * занижали и работу, и её цену.
+   */
+  totals: {
+    /** Выручка, которая сейчас идёт мимо себестоимости, — цена бездействия. */
+    quarantineRevenueKopecks: number;
+    unlinkedRevenueKopecks: number;
+    withoutCostRevenueKopecks: number;
+    unlinkedCount: number;
+    withoutCostCount: number;
+    unmatchedCount: number;
+    noCostItemsCount: number;
+    negativeCount: number;
+    uncoveredCount: number;
+    uncoveredQty: number;
+    /** Сколько всего строк требует действия — бейдж на блоке. */
+    gapsCount: number;
+  };
+  /**
+   * Какие витрины короче реальности. Показывается человеку словами: молчаливое
+   * усечение списка работы — то же «молчаливого нуля не бывает» (§1.10).
+   */
+  truncated: {
+    sales: boolean;
+    unmatched: boolean;
+    noCostItems: boolean;
+    negative: boolean;
+    uncovered: boolean;
+  };
+}
+
+/**
+ * Единый экран «Пробелы» (блок stock.gaps): всё, что сейчас тихо искажает
+ * себестоимость и прибыль. Ни одна из этих строк не является технической
+ * ошибкой — это список работы для человека, и у каждой строки есть цена
+ * (выручка мимо COGS, штуки без покрытия, деньги в непосчитанном остатке).
+ */
+export async function getStockGaps(
+  ctx: StockCtx,
+  period: { from: string; to: string },
+  client: StockDb = db,
+): Promise<StockGapsResult> {
+  // Условие «товар с остатком, но без себестоимости» — ОДНО на витрину и на
+  // счётчик: разъехавшись, они дали бы «в списке 200, в бейдже 173».
+  const noCostConds = and(
+    eq(stockItems.tenantId, ctx.tenantId),
+    eq(stockItems.isActive, true),
+    sql`${stockItems.costOverrideKopecks} is null`,
+    sql`${stockItems.avgCostKopecks} <= 0`,
+    sql`${stockItems.qtyPool} <> 0`,
+  );
+
+  const [quarantine, unmatched, noCostRows, noCostAgg, reconRows] = await Promise.all([
+    getStockQuarantine(ctx, period, client),
+    getUnmatchedOzonOffers(ctx, client),
+    client
+      .select({
+        itemId: stockItems.id,
+        sku: stockItems.sku,
+        name: stockItems.name,
+        qtyPool: stockItems.qtyPool,
+      })
+      .from(stockItems)
+      .where(noCostConds)
+      .orderBy(desc(stockItems.qtyPool))
+      .limit(NO_COST_ITEMS_LIMIT),
+    client.select({ count: sql<string>`count(*)` }).from(stockItems).where(noCostConds),
+    client
+      .select({ count: sql<string>`count(*)` })
+      .from(stockRecon)
+      .where(and(eq(stockRecon.tenantId, ctx.tenantId), eq(stockRecon.status, 'open'))),
+  ]);
+
+  const itemsWithoutCost: StockGapItemRow[] = noCostRows.map((r) => ({
+    itemId: r.itemId,
+    sku: r.sku,
+    name: r.name,
+    qtyPool: r.qtyPool,
+    totalQty: r.qtyPool,
+  }));
+
+  const unlinkedRevenueKopecks = quarantine.totals.unlinkedRevenueKopecks;
+  const withoutCostRevenueKopecks = quarantine.totals.withoutCostRevenueKopecks;
+  const noCostItemsCount = num(noCostAgg[0]?.count);
+  // Позиции канала без сшивки приходят одним списком с жёстким LIMIT внутри
+  // getUnmatchedOzonOffers: отдельного счётчика у него нет, поэтому «упёрлись в
+  // потолок» определяется по длине — честнее, чем молча показать ровный лимит.
+  const unmatchedCount = unmatched.length;
+
+  return {
+    period,
+    unlinkedSales: quarantine.unlinkedSales,
+    salesWithoutCost: quarantine.salesWithoutCost,
+    unmatched,
+    itemsWithoutCost,
+    negativePools: quarantine.negativePools,
+    uncoveredMoves: quarantine.uncoveredMoves,
+    reconOpenCount: num(reconRows[0]?.count),
+    totals: {
+      quarantineRevenueKopecks: unlinkedRevenueKopecks + withoutCostRevenueKopecks,
+      unlinkedRevenueKopecks,
+      withoutCostRevenueKopecks,
+      unlinkedCount: quarantine.totals.unlinkedCount,
+      withoutCostCount: quarantine.totals.withoutCostCount,
+      unmatchedCount,
+      noCostItemsCount,
+      negativeCount: quarantine.totals.negativeCount,
+      uncoveredCount: quarantine.totals.uncoveredCount,
+      uncoveredQty: quarantine.totals.uncoveredQty,
+      gapsCount:
+        quarantine.totals.unlinkedCount +
+        quarantine.totals.withoutCostCount +
+        unmatchedCount +
+        noCostItemsCount +
+        quarantine.totals.negativeCount +
+        quarantine.totals.uncoveredCount,
+    },
+    truncated: {
+      sales: quarantine.truncated.sales,
+      unmatched: unmatched.length >= UNMATCHED_OFFERS_LIMIT,
+      noCostItems: itemsWithoutCost.length < noCostItemsCount,
+      negative: quarantine.truncated.negative,
+      uncovered: quarantine.truncated.uncovered,
     },
   };
 }

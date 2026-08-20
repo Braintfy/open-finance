@@ -238,8 +238,13 @@ export const DEFAULT_LAYOUTS: Record<string, PageLayout> = {
   warehouse: {
     pageKey: 'warehouse',
     blocks: [
-      { id: 'default-stock-balances', type: 'stock.balances', x: 0, y: 0, w: 12, h: 10 },
-      { id: 'default-stock-docs', type: 'stock.docs', x: 0, y: 10, w: 12, h: 8 },
+      // Первый экран — то, что делают каждый день: записать поставку/отгрузку
+      // за полминуты, увидеть, что горит по срокам, и что портит цифры.
+      { id: 'default-stock-quick-entry', type: 'stock.quick-entry', x: 0, y: 0, w: 4, h: 5 },
+      { id: 'default-stock-expiry', type: 'stock.expiry', x: 4, y: 0, w: 4, h: 5 },
+      { id: 'default-stock-gaps', type: 'stock.gaps', x: 8, y: 0, w: 4, h: 5 },
+      { id: 'default-stock-balances', type: 'stock.balances', x: 0, y: 5, w: 12, h: 10 },
+      { id: 'default-stock-docs', type: 'stock.docs', x: 0, y: 15, w: 12, h: 8 },
     ],
     hiddenSections: [],
   },

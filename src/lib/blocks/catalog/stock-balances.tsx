@@ -29,6 +29,10 @@ import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { useReportBlockLoading } from '@/components/blocks/use-block-loading';
 import {
+  emitStockChanged,
+  useStockChangedListener,
+} from '@/lib/blocks/use-stock-changed';
+import {
   KopecksRow,
   SettingsSection,
   SettingsToggleRow,
@@ -158,6 +162,16 @@ function RenderStockBalances({ instance }: BlockRenderProps) {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  // Остатки и «деньги в товаре» меняет ЛЮБОЙ проведённый документ, откуда бы
+  // его ни завели: быстрый ввод, лента, списание просрочки, импорт продаж.
+  useStockChangedListener(fetchData, instance.id);
+
+  /** Свой рефреш + сигнал соседям: сопоставление и себестоимость двигают их цифры. */
+  const onDataChanged = useCallback(() => {
+    fetchData();
+    emitStockChanged(instance.id);
+  }, [fetchData, instance.id]);
 
   // Колонки ledger-мест: только те, где реально что-то лежит (или это свой склад),
   // иначе девять встроенных мест распирают таблицу пустотой.
@@ -436,22 +450,22 @@ function RenderStockBalances({ instance }: BlockRenderProps) {
       <OzonImportDialog
         open={dialog === 'import'}
         onClose={() => setDialog(null)}
-        onDone={fetchData}
+        onDone={onDataChanged}
       />
       <MatchingDialog
         open={dialog === 'match'}
         onClose={() => setDialog(null)}
-        onDone={fetchData}
+        onDone={onDataChanged}
       />
       <OpeningDialog
         open={dialog === 'opening'}
         onClose={() => setDialog(null)}
-        onSaved={fetchData}
+        onSaved={onDataChanged}
       />
       <CostSourceDialog
         open={dialog === 'cost'}
         onClose={() => setDialog(null)}
-        onDone={fetchData}
+        onDone={onDataChanged}
       />
     </Card>
   );

@@ -18,10 +18,26 @@
 const CURRENCY_NOISE = /[₽$€]|руб\.?|р\.|rub/giu;
 
 /**
+ * Знаки «минус», которые приходят из чужих выгрузок вместо ASCII-дефиса:
+ * U+2212 (математический минус — им печатает Excel и кабинет WB), U+2013/U+2014
+ * (тире), U+2012 (цифровое тире), U+FF0D (полноширинный минус).
+ *
+ * Эскейпами, а не литералами: в исходнике все они визуально неотличимы от
+ * дефиса и вырождаются в него при копировании кода — тест «проходил» бы вхолостую.
+ *
+ * ОДИН набор на модуль. Пока его знал только parseSignedQty, строка возврата
+ * разъезжалась внутри себя: количество с таким минусом читалось как -1, а сумма
+ * в соседней колонке молча становилась 0 (Number с юникод-минусом даёт NaN, а
+ * NaN мы гасим нулём). Возврат гасил штуки и НЕ гасил выручку.
+ */
+const MINUS_SIGNS = /[\u2212\u2013\u2014\u2012\uFF0D]/g;
+
+/**
  * Рубли из текстового поля → копейки («1234,56» → 123456).
  *
  * Убирает ЛЮБЫЕ пробелы (`\s` покрывает и обычный, и неразрывный U+00A0 из
- * Intl-форматирования, и узкий U+202F), валютные хвосты и разделитель-запятую.
+ * Intl-форматирования, и узкий U+202F), валютные хвосты и разделитель-запятую,
+ * приводит юникод-минусы к ASCII-дефису.
  * Некорректный ввод — 0, а не NaN: NaN, попавший в сумму документа, приводит к
  * `null` в bigint-колонке и падению проводки.
  */
@@ -29,6 +45,7 @@ export function rublesToKopecks(input: string): number {
   const normalized = String(input ?? '')
     .replace(CURRENCY_NOISE, '')
     .replace(/\s/g, '')
+    .replace(MINUS_SIGNS, '-')
     .replace(',', '.');
   if (normalized === '' || normalized === '-' || normalized === '.') return 0;
   const value = Number(normalized);
@@ -44,8 +61,36 @@ export function kopecksToRublesInput(kopecks: number): string {
 
 /** Количество из инпута: целое, неотрицательное (сервер принимает только int). */
 export function parseQty(input: string): number {
-  const value = Number(String(input ?? '').replace(/\s/g, '').replace(',', '.'));
+  const value = Number(
+    String(input ?? '')
+      .replace(/\s/g, '')
+      // Юникод-минус тем же набором, что и в деньгах: «U+2212 5» обязан отброситься
+      // как отрицательное количество, а не как «мусор» — причина одна и та же.
+      .replace(MINUS_SIGNS, '-')
+      .replace(',', '.'),
+  );
   if (!Number.isFinite(value) || value <= 0) return 0;
+  return Math.trunc(value);
+}
+
+/**
+ * ЗНАКОВОЕ количество из ячейки файла — для импорта продаж WB/ЯМ, где возврат
+ * приходит либо строкой «-1», либо отдельным типом документа. Тем же парсером,
+ * что и деньги, гасятся пробелы (включая неразрывный U+00A0 из Excel),
+ * юникод-минусы (MINUS_SIGNS — ОДИН набор на модуль) и запятая-разделитель.
+ * Мусор → 0, а не NaN: NaN в количестве роняет проводку.
+ */
+export function parseSignedQty(input: string | number): number {
+  if (typeof input === 'number') {
+    return Number.isFinite(input) ? Math.trunc(input) : 0;
+  }
+  const normalized = String(input ?? '')
+    .replace(/\s/g, '')
+    .replace(MINUS_SIGNS, '-')
+    .replace(',', '.');
+  if (normalized === '' || normalized === '-') return 0;
+  const value = Number(normalized);
+  if (!Number.isFinite(value)) return 0;
   return Math.trunc(value);
 }
 

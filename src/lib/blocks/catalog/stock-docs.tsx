@@ -59,6 +59,10 @@ import { resolveOzonPeriod } from '@/lib/blocks/period-resolver';
 import { shiftIsoDate } from '@/lib/marketplaces/ozon/sync/perf-period';
 import { useReportBlockLoading } from '@/components/blocks/use-block-loading';
 import {
+  emitStockChanged,
+  useStockChangedListener,
+} from '@/lib/blocks/use-stock-changed';
+import {
   KopecksRow,
   SettingsSection,
   SettingsToggleRow,
@@ -85,6 +89,7 @@ export const StockDocsConfigSchema = z.object({
       'adjust',
       'return_in',
       'regrade',
+      'sale',
     ])
     .default('all'),
   status: z.enum(['all', 'draft', 'posted', 'void']).default('all'),
@@ -130,7 +135,16 @@ type DocRow = {
 
 type DocsResponse = {
   rows: DocRow[];
-  totals: { purchasesKopecks: number; docsCount: number };
+  totals: {
+    purchasesKopecks: number;
+    docsCount: number;
+    /** Потери периода по ленте движений: списания + недостачи маркетплейса. */
+    lossKopecks: number;
+    /** Из них съедено маркетплейсом при приёмке — отдельная статья (§1.8, §5). */
+    mpShortageKopecks: number;
+    /** Себестоимость проданного по каналам с журналом (WB/ЯМ/сайты). */
+    salesCogsKopecks: number;
+  };
 };
 
 const KIND_LABEL: Record<string, string> = {
@@ -142,6 +156,7 @@ const KIND_LABEL: Record<string, string> = {
   adjust: 'Инвентаризация',
   return_in: 'Возврат',
   regrade: 'Пересорт',
+  sale: 'Продажа канала',
 };
 
 const STATUS_STYLE: Record<string, string> = {
@@ -290,6 +305,10 @@ function RenderStockDocs({ instance, onConfigChange }: BlockRenderProps) {
     fetchData();
   }, [fetchData, periodReady]);
 
+  // Документ мог появиться из соседнего блока (быстрый ввод, импорт продаж,
+  // списание из сроков годности) — лента обязана его показать без F5.
+  useStockChangedListener(fetchData, instance.id);
+
   const runAction = useCallback(
     async (docId: string, action: 'post' | 'void') => {
       setBusyId(docId);
@@ -305,8 +324,11 @@ function RenderStockDocs({ instance, onConfigChange }: BlockRenderProps) {
         return;
       }
       fetchData();
+      // Проводка и сторно меняют остатки и себестоимость — это видят остальные
+      // блоки страницы, а не только лента.
+      emitStockChanged(instance.id);
     },
-    [fetchData],
+    [fetchData, instance.id],
   );
 
   const removeDraft = useCallback(
@@ -330,17 +352,27 @@ function RenderStockDocs({ instance, onConfigChange }: BlockRenderProps) {
     return config.showReversals ? all : all.filter((r) => !r.reversesDocId);
   }, [data, config.showReversals]);
 
+  /**
+   * Потери БЕЗ недостачи маркетплейса. Считается здесь, а не в SQL: недостача
+   * приёмки — это нога kind='writeoff' с reason='mp_shortage', то есть
+   * mpShortageKopecks ЦЕЛИКОМ входит в lossKopecks. Пока обе цифры публиковались
+   * как равноправные, любой KPI-плитке хватало сложить их — и недостача
+   * считалась дважды.
+   */
+  const otherLossKopecks = Math.max(
+    0,
+    (data?.totals.lossKopecks ?? 0) - (data?.totals.mpShortageKopecks ?? 0),
+  );
+
   // Снимок для ИИ: ровно то, что блок реально знает (лента уже загружена).
   // Skill-промпт в prompts/block-skills/stock.ts обещает анализ только по этим
   // полям — обещание без данных превращает ассистента в генератор догадок.
   const aiContext = useMemo(() => {
     const bySupplier = new Map<string, { kopecks: number; docs: number }>();
     let draftsCount = 0;
-    let writeoffKopecks = 0;
     for (const row of rows) {
       if (row.status === 'draft') draftsCount += 1;
       if (row.status !== 'posted') continue;
-      if (row.kind === 'writeoff') writeoffKopecks += Math.abs(row.totalKopecks);
       if (row.kind === 'purchase' || row.kind === 'opening' || row.kind === 'return_in') {
         const key = row.supplier || 'без поставщика';
         const acc = bySupplier.get(key) ?? { kopecks: 0, docs: 0 };
@@ -357,13 +389,25 @@ function RenderStockDocs({ instance, onConfigChange }: BlockRenderProps) {
       purchasesKopecks: data?.totals.purchasesKopecks ?? 0,
       docsCount: data?.totals.docsCount ?? 0,
       draftsCount,
-      writeoffKopecks,
+      // «Сумма списаний» БОЛЬШЕ не берётся из шапок документов: у списания
+      // total_kopecks структурно нулевой (это не платёж, деньги живут в ленте
+      // движений — costing.ts CostedDoc), и в снапшот уходил вечный ноль при
+      // ненулевых потерях. Честные цифры — три ниже, из агрегата по движениям.
+      //
+      // mpShortage — ЧАСТЬ loss (обе ноги проводятся kind='writeoff'), поэтому
+      // рядом лежит и разность: без неё ассистент складывает их в «итого потери»
+      // и задваивает недостачу приёмки.
+      lossKopecks: data?.totals.lossKopecks ?? 0,
+      mpShortageKopecks: data?.totals.mpShortageKopecks ?? 0,
+      mpShortageIsPartOfLoss: true,
+      otherLossKopecks,
+      salesCogsKopecks: data?.totals.salesCogsKopecks ?? 0,
       topSuppliers: Array.from(bySupplier.entries())
         .sort((a, b) => b[1].kopecks - a[1].kopecks)
         .slice(0, 5)
         .map(([supplier, v]) => ({ supplier, kopecks: v.kopecks, docs: v.docs })),
     });
-  }, [rows, data, range.from, range.to]);
+  }, [rows, data, otherLossKopecks, range.from, range.to]);
 
   // Publisher ВЫШЕ early-returns (rules-of-hooks).
   useBlockValuePublisher(instance.id, {
@@ -371,12 +415,29 @@ function RenderStockDocs({ instance, onConfigChange }: BlockRenderProps) {
     purchasesKopecks: data?.totals.purchasesKopecks ?? 0,
     docsCount: data?.totals.docsCount ?? 0,
     rowsCount: rows.length,
+    // Потери держатся ОТДЕЛЬНО от закупки и от себестоимости проданного (§1.8):
+    // «сколько товара съел маркетплейс» — самостоятельная строка отчёта, ради
+    // которой в приёмке вообще вводится «принято фактически» (§5).
+    //
+    // ВНИМАНИЕ на подписи: mpShortageKopecks — ПОДМНОЖЕСТВО lossKopecks (обе
+    // ноги проводятся kind='writeoff'). Складывать их нельзя, поэтому рядом
+    // публикуется непересекающаяся пара «прочие потери» + «съедено
+    // маркетплейсом», а в названиях стоит «в том числе».
+    lossKopecks: data?.totals.lossKopecks ?? 0,
+    mpShortageKopecks: data?.totals.mpShortageKopecks ?? 0,
+    otherLossKopecks,
+    salesCogsKopecks: data?.totals.salesCogsKopecks ?? 0,
     label: instance.appearance?.title ?? 'Склад · Документы',
-    __money: 'value,purchasesKopecks',
+    __money:
+      'value,purchasesKopecks,lossKopecks,mpShortageKopecks,otherLossKopecks,salesCogsKopecks',
     __periodKey: formatPeriodKey(period),
     __labels:
       'value=Закуплено за период,purchasesKopecks=Закуплено за период,' +
-      'docsCount=Приходных документов,rowsCount=Документов в ленте',
+      'docsCount=Приходных документов,rowsCount=Документов в ленте,' +
+      'lossKopecks=Потери за период (всего),' +
+      'mpShortageKopecks=в том числе съедено маркетплейсом,' +
+      'otherLossKopecks=Потери без маркетплейса,' +
+      'salesCogsKopecks=Себестоимость проданного (WB/ЯМ)',
     __aiContext: aiContext,
   });
 

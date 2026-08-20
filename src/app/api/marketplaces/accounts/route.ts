@@ -11,6 +11,7 @@ import {
   createAccount,
   listAccounts,
   toPublicAccount,
+  toPublicAccountsWithCoverage,
 } from '@/lib/marketplaces/queries';
 import { CreateAccountSchema } from '@/lib/marketplaces/types';
 
@@ -35,7 +36,10 @@ export async function GET(req: Request) {
     });
     return NextResponse.json({
       ok: true,
-      accounts: accounts.map(toPublicAccount),
+      accounts: await toPublicAccountsWithCoverage({
+        tenantId: session.tenantId,
+        accounts,
+      }),
     });
   } catch (e) {
     console.error('[marketplaces] GET /accounts failed:', e);

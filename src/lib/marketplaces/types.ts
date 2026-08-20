@@ -178,7 +178,18 @@ export type AccountPublic = {
   status: AccountStatus;
   syncSettings: OzonSyncSettings;
   companyInfo: Record<string, unknown>;
+  /**
+   * Время последней УСПЕШНОЙ (success/partial) синхронизации. Упавший sync
+   * это поле не двигает — см. `src/lib/marketplaces/last-sync-plan.ts`.
+   */
   lastSyncAt: string | null;
+  /**
+   * `max(date)` из `ozon_analytics_daily` (MSC-день, `YYYY-MM-DD`) —
+   * фактическое покрытие данными. Основа самовосстанавливающегося
+   * auto-preset: окно строится от покрытия, а не от таймстампа sync'а.
+   * `null` для не-ozon аккаунтов и когда аналитики ещё нет.
+   */
+  analyticsCoveredThrough: string | null;
   lastSyncStatus: string | null;
   lastSyncError: string | null;
   lastSyncSummary: SyncSummary;

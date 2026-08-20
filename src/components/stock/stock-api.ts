@@ -24,10 +24,15 @@ export async function stockFetch<T>(
   init?: RequestInit,
 ): Promise<ApiResult<T>> {
   try {
+    // FormData обязан идти БЕЗ явного Content-Type: браузер сам ставит
+    // multipart/form-data с boundary, а наш 'application/json' сломал бы разбор
+    // файла на сервере (req.formData() упадёт «Could not parse content»).
+    const isFormData =
+      typeof FormData !== 'undefined' && init?.body instanceof FormData;
     const res = await fetch(url, {
       ...init,
       headers:
-        init?.body != null
+        init?.body != null && !isFormData
           ? { 'Content-Type': 'application/json', ...(init?.headers ?? {}) }
           : init?.headers,
     });

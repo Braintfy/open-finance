@@ -188,7 +188,7 @@ export function OzonImportDialog({
               </div>
             ) : (
               <table className="w-full text-[12px]">
-                <thead className="sticky top-0 z-10 bg-muted/60 text-[10px] uppercase tracking-wider text-muted-foreground">
+                <thead className="sticky top-0 z-10 isolate bg-muted text-[10px] uppercase tracking-wider text-muted-foreground">
                   <tr>
                     <th className="w-8 px-2 py-1.5" />
                     <th className="px-2 py-1.5 text-left font-medium">Товар</th>

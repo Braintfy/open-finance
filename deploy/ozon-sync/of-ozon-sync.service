@@ -1,0 +1,42 @@
+# PURPOSE: Одноразовый прогон ежедневной синхронизации Ozon (headless).
+# Запускается таймером of-ozon-sync.timer, руками — `systemctl start of-ozon-sync`.
+# Установка и разбор полётов — deploy/ozon-sync/README.md
+[Unit]
+Description=Open Finance — ежедневная синхронизация Ozon
+Documentation=file:/home/firay/open-finance/deploy/ozon-sync/README.md
+# Нужны сеть (Ozon API) и Postgres, который живёт в Docker.
+After=network-online.target docker.service open-finance.service
+Wants=network-online.target
+# Без креды-файла запускаться бессмысленно: скрипт всё равно выйдет с кодом 2.
+ConditionPathExists=/home/firay/open-finance/.env.production
+
+[Service]
+Type=oneshot
+User=firay
+Group=firay
+WorkingDirectory=/home/firay/open-finance
+EnvironmentFile=/home/firay/open-finance/.env.production
+# После EnvironmentFile — значит, побеждает это значение. Нужно, чтобы Drizzle
+# не сыпал в журнал полный текст каждого SQL (logger включается в development).
+Environment=NODE_ENV=production
+# --take-over-stale: job'ы pending/running, у которых больше 90 минут не было
+# прогресса, считаются брошенными (процесс-владелец умер при рестарте приложения
+# или был убит по TimeoutStartSec) и закрываются как error. Без этого флага
+# один-единственный подвисший job навсегда заблокировал бы ежедневный запуск —
+# ровно тот сценарий, ради которого таймер и заводится. Убрать флаг, если
+# предпочтительнее ручной разбор каждого такого случая.
+ExecStart=/usr/bin/pnpm tsx scripts/sync-ozon-daily.ts --take-over-stale
+# Полный синк одного магазина — минуты. Час с запасом: если процесс завис на
+# сетевом вызове, systemd его прибьёт, а следующий запуск подберёт брошенный job.
+TimeoutStartSec=3600
+# Фон не должен мешать веб-процессу на той же плате.
+Nice=10
+IOSchedulingClass=idle
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=of-ozon-sync
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+# [Install] намеренно нет: сервис запускается таймером. С WantedBy=multi-user.target
+# он бы отрабатывал ещё и при каждой загрузке платы.

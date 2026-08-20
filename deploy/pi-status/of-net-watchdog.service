@@ -1,0 +1,28 @@
+# PURPOSE: Сторож сети — лечит пропажу связи, в крайнем случае перезагружает плату.
+# Ставится вместе с консолью состояния; установка — deploy/pi-status/README.md
+[Unit]
+Description=Open Finance network watchdog (soft fix -> interface bounce -> reboot)
+After=network-online.target NetworkManager.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/of-net-watchdog.sh
+# Root нужен: перезапуск NetworkManager, nmcli и systemctl reboot
+User=root
+Restart=always
+RestartSec=15
+# Состояние (счётчик перезагрузок) переживает перезагрузку
+StateDirectory=of-net-watchdog
+
+# Настройки — менять здесь, а не в скрипте
+Environment=CHECK_INTERVAL=30
+Environment=FAILS_BEFORE_SOFT=4
+Environment=FAILS_BEFORE_HARD=8
+Environment=FAILS_BEFORE_REBOOT=16
+Environment=MAX_REBOOTS=3
+Environment=STABLE_OK_MIN=10
+Environment=BOOT_GRACE_SEC=180
+
+[Install]
+WantedBy=multi-user.target

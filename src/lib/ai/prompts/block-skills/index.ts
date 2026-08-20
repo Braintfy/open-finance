@@ -86,4 +86,7 @@ export const BLOCK_TYPE_META: Array<{ type: string; displayName: string }> = [
   // Склад · Поставки · Себестоимость
   { type: 'stock.balances',           displayName: 'Склад · Остатки' },
   { type: 'stock.docs',               displayName: 'Склад · Документы' },
+  { type: 'stock.quick-entry',        displayName: 'Склад · Быстрый ввод' },
+  { type: 'stock.expiry',             displayName: 'Склад · Сроки годности' },
+  { type: 'stock.gaps',               displayName: 'Склад · Пробелы' },
 ];

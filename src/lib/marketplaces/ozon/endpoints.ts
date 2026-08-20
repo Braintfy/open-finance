@@ -205,12 +205,31 @@ export async function postingFboList(
   );
 }
 
-export async function financeRealization(client: OzonClient, args: { date: string }) {
-  // date в формате 'YYYY-MM' (Ozon возвращает помесячный отчёт).
+/**
+ * Отчёт о реализации товаров за месяц (приложение к УПД).
+ *
+ * ТЕЛО ЗАПРОСА — `{ year, month }` ЧИСЛАМИ. До v0.51.1 слали `{ date: 'YYYY-MM' }`
+ * (форма v1) и получали 400 «Request validation error: invalid
+ * GetRealizationReportRequestV2.Year: value must be inside range [2000, 9999]»,
+ * а стейдж глотал ошибку — таблица `ozon_realization` месяцами стояла пустой.
+ * Строки (`{ year: '2026' }`) grpc-gateway тоже принимает, но числа — канон доки.
+ *
+ * `{ strict: true }` осознанно: схема ответа держит денежные поля обязательными,
+ * и провал Zod здесь ОБЯЗАН уронить стейдж. Lenient-режим (default) отдал бы raw,
+ * маппинг получил бы `undefined` и записал нули — ровно тот тихий баг, который
+ * и прятал поломку.
+ *
+ * Текущий месяц Ozon не отдаёт — вызывать только для закрытых месяцев.
+ */
+export async function financeRealization(
+  client: OzonClient,
+  args: { year: number; month: number },
+) {
   return client.post(
     OZON_API_VERSION_MAP.financeRealization,
-    { date: args.date },
+    { year: args.year, month: args.month },
     RealizationResponseSchema,
+    { strict: true },
   );
 }
 

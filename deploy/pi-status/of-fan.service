@@ -1,0 +1,28 @@
+# PURPOSE: Управление вентилятором корпуса Argon ONE V3 по температуре процессора.
+# Штатное управление Pi OS этот вентилятор не видит — он на шине I2C корпуса.
+# Установка — deploy/pi-status/README.md
+[Unit]
+Description=Open Finance fan control (Argon ONE V3 via I2C)
+After=multi-user.target
+# Без шины управлять нечем
+ConditionPathExists=/dev/i2c-1
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/of-fan.sh
+User=root
+Restart=always
+RestartSec=10
+
+# Пороги «температура:проценты». Менять здесь, а не в скрипте.
+# Ниже 50°C вентилятор молчит; дальше плавный разгон.
+# КАВЫЧКИ ОБЯЗАТЕЛЬНЫ: systemd делит Environment= по пробелам, и без них
+# до скрипта доедет только первая пара — вентилятор молчал бы при любой температуре.
+Environment="FAN_CURVE=50:0 55:30 62:50 68:70 75:100"
+Environment=INTERVAL=10
+Environment=HYSTERESIS=3
+# Если служба падает — вентилятор остаётся на этих оборотах, а не выключается
+Environment=FAIL_SAFE_PCT=55
+
+[Install]
+WantedBy=multi-user.target
