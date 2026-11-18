@@ -92,7 +92,9 @@ logs/
 .vscode/*
 !.vscode/settings.json.example
 !.vscode/extensions.json
-.cursor/
+.cursor/*
+# Доменные правила — единый источник для всех агентов, ОБЯЗАНЫ быть в git
+!.cursor/rules/
 *.swp
 *.swo
 *~
@@ -177,3 +179,7 @@ venv/
 .ionide/
 .fingerprint/
 .gstack/
+
+# === Архивы бэкапа сервера (внутри секреты) ===
+of-backup-*
+!deploy/backup/of-backup.*

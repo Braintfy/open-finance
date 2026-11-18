@@ -8,9 +8,11 @@
 
 ```
 .claude/
+├── ORCHESTRATION.md         КАНОН ролей моделей: старшие управляют и ревьюят, младшие исполняют агентами
 ├── settings.json            permissions + hooks — АКТИВЕН (активирован пользователем).
 │                            Агент его не правит: изменения предлагать пользователю текстом.
-├── agents/                  сабагенты (роль + «первым шагом прочитай свой .mdc»)
+├── agents/                  сабагенты (роль + «первым шагом прочитай свой .mdc»);
+│                            у `of-*-dev` во frontmatter `model: sonnet`, ревьюеры наследуют модель сессии
 │   ├── of-code-reviewer.md        read-only ревью диффа по инвариантам проекта
 │   ├── of-security-reviewer.md    read-only security-ревью (security.mdc + docs/SECURITY.md)
 │   ├── of-blocks-dev.md           блоки BlockGrid (blocks.mdc)
@@ -45,10 +47,16 @@
 printf '{"session_id":"t1","tool_input":{"file_path":"src/lib/workspaces/scope.ts"}}' | bash scripts/claude-rules-hint.sh
 ```
 
+## Где лежат доменные правила (исправлено 2026-11-17)
+
+`.cursor/rules/*.mdc` до этой даты **не были под git** (`.cursor/` целиком стоял в `.gitignore`), поэтому на любой машине, кроме исходной, вся обвязка ссылалась в пустоту. Теперь `.gitignore` пропускает `.cursor/rules/`. Если каталога в рабочем дереве нет — его надо один раз скопировать с машины, где он есть, и закоммитить; до тех пор агенты работают по фолбэку из `ORCHESTRATION.md` (раздел «Если нет доменного правила»).
+
+Абсолютные пути машины (`/Users/...`, `C:\...`) в обвязке запрещены: команды пишутся относительно корня репозитория, в воркфлоу `ROOT = '.'`.
+
 ## Как добавить
 
 - **Скил:** папка `skills/<имя>/SKILL.md`, frontmatter `name/version/description` (в description — TRIGGER / DO NOT TRIGGER) + `allowed-tools`. Тело — процедура по-русски, правила — ссылками на `.mdc`.
-- **Сабагент:** `agents/<имя>.md`, frontmatter `name/description` (+`tools` для read-only ролей). Первое действие в теле — чтение своего `.mdc`.
+- **Сабагент:** `agents/<имя>.md`, frontmatter `name/description` (+`tools` для read-only ролей, +`model: sonnet` для исполнителей — см. `ORCHESTRATION.md`). Первое действие в теле — чтение своего `.mdc`.
 - **Воркфлоу:** `workflows/<имя>.js` с `export const meta = {...}` (pure literal). Запуск: `Workflow({ name: '<имя>' })`.
 
 ## Анти-дрейф (обязательно)

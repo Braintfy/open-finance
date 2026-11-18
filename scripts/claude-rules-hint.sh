@@ -8,9 +8,16 @@
 
 set -u
 INPUT="$(cat 2>/dev/null || true)"
-command -v python3 >/dev/null 2>&1 || exit 0
+# На Windows `python3` — заглушка Microsoft Store (есть в PATH, но ничего не исполняет),
+# поэтому интерпретатор выбираем по факту работоспособности, а не по наличию имени.
+PY_BIN=""
+for candidate in python3 python; do
+  if "$candidate" -c 'import sys' >/dev/null 2>&1; then PY_BIN="$candidate"; break; fi
+done
+[ -n "$PY_BIN" ] || exit 0
+# PYTHONUTF8: иначе Windows читает скрипт из stdin в cp1251 и падает на кириллице.
 
-python3 - "$INPUT" <<'PY' 2>/dev/null || exit 0
+PYTHONUTF8=1 "$PY_BIN" - "$INPUT" <<'PY' 2>/dev/null || exit 0
 import json, os, sys, tempfile
 
 try:
@@ -18,7 +25,8 @@ try:
 except Exception:
     sys.exit(0)
 
-path = (event.get("tool_input") or {}).get("file_path") or ""
+# Windows отдаёт путь с обратными слэшами — префиксы правил написаны с прямыми.
+path = ((event.get("tool_input") or {}).get("file_path") or "").replace("\\", "/")
 session = (event.get("session_id") or "nosession").replace("/", "_")
 if not path:
     sys.exit(0)
@@ -75,6 +83,6 @@ print(json.dumps({
             "Прочитай их перед правкой, если ещё не читал в этой сессии."
         ),
     }
-}, ensure_ascii=False))
+}))  # ASCII-эскейпы: консоль Windows (cp1251) падает на не-ASCII выводе
 PY
 exit 0

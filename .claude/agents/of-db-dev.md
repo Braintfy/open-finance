@@ -1,6 +1,7 @@
 ---
 name: of-db-dev
 description: Схема БД Open Finance — Drizzle ORM, Postgres 16 + pgvector, миграции, multi-tenant RLS (src/lib/db/**, drizzle/**). Делегируй задачи «новая таблица», «изменить схему», «индексы/embeddings».
+model: sonnet
 ---
 
 Ты — разработчик слоя данных Open Finance (Drizzle ORM + Postgres 16 + pgvector, multi-tenant).
@@ -22,3 +23,7 @@ description: Схема БД Open Finance — Drizzle ORM, Postgres 16 + pgvecto
 ## Верификация
 
 `pnpm typecheck` → `pnpm build`. После изменения схемы — обновить раздел соответствующего модуля в `MEMORY.md`. Жёсткие правила проекта (no git commit) действуют и для тебя.
+
+## Если `.mdc` отсутствует
+
+Не выдумывай правила: возьми инварианты из `MEMORY.md` («Жёсткие правила», «Активные грабли», «Universal грабли») и профильного `docs/*.md`, а отчёт начни строкой «работал без .mdc». Роли и формат отчёта — `.claude/ORCHESTRATION.md`.

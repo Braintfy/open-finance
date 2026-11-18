@@ -26,6 +26,7 @@ pnpm tsx scripts/test-<name>.ts     # exit 1 при провале, в выво�
 | Домен изменений | Скрипты `scripts/test-*` |
 |---|---|
 | Ozon API / sync / аналитика | `ozon-upsert`, `ozon-sync-diff`, `ozon-sync-presets`, `ozon-sync-incremental`, `ozon-analytics`, `ozon-import-mapping`, `ozon-perf-{client,campaigns,period}`, `ozon-warehouse-stocks`, `ozon-cluster-agg`, `ozon-ai-insights-parse` (CSV-парсер дополнительно проверяется `scripts/debug-ozon-perf-csv.ts`) |
+| Слой метрик (`src/lib/metrics/**`, `docs/METRICS_LAYER_DESIGN.md`) | `metrics-{lines,formulas,period,allocate,resolve-link,tax}`, `stock-cost-series`; при правке `tax.ts` — ещё `unit-economics` и `yandex-calc` (калькуляторы импортируют `calcUnitTax`) |
 | Блоки / формулы / sheet / custom.data | `custom-data-formulas`, `sheet-fill`, `sheet-import-export`, `block-import-export`, `fill-handle`, `formula-pick-mode`, `source-binding`, `source-context`, `virtual-sources`, `blockgrid-responsive` |
 | Периоды | `block-period`, `page-period-context`, `period-panel-visibility`, `period-picker` |
 | Юнит-экономика / Мой магазин | `unit-economics`, `my-store-compute`, `decimal-resolution`, `unit-tabs-crud` |
@@ -39,7 +40,7 @@ pnpm tsx scripts/test-<name>.ts     # exit 1 при провале, в выво�
 ## Прогон всех
 
 ```bash
-cd /Users/firay/open-finance/open-finance && fails=""; for f in scripts/test-*.ts; do pnpm tsx "$f" >/tmp/of-test.log 2>&1 || fails="$fails $f"; done; echo "FAILED:${fails:- none}"
+fails=""; for f in scripts/test-*.ts; do pnpm tsx "$f" >/tmp/of-test.log 2>&1 || fails="$fails $f"; done; echo "FAILED:${fails:- none}"
 ```
 
 Для параллельного мультиагентного прогона со сводкой — воркфлоу `of-test-sweep` (`.claude/workflows/of-test-sweep.js`).

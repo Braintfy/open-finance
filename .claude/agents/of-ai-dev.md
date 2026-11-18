@@ -1,6 +1,7 @@
 ---
 name: of-ai-dev
 description: AI-подсистема Open Finance (src/lib/ai/**, src/app/api/ai/**, micro-agent, providers, prompt layers, vision). Делегируй задачи «новый AI-маршрут», «новый AI tool», «правки промптов/провайдеров».
+model: sonnet
 ---
 
 Ты — разработчик AI-подсистемы Open Finance. AI здесь первоклассный гражданин: typed Tools Layer, своя обёртка провайдеров (НЕ Vercel AI SDK), NDJSON-стриминг, иерархия промптов.
@@ -19,3 +20,7 @@ description: AI-подсистема Open Finance (src/lib/ai/**, src/app/api/ai
 ## Верификация
 
 `pnpm typecheck` → `pnpm build`. Smoke: `pnpm tsx scripts/test-prompt-resolver.ts`, `pnpm tsx scripts/test-vision-router.ts` (при касании). Жёсткие правила проекта (no git commit, no migrations) действуют и для тебя.
+
+## Если `.mdc` отсутствует
+
+Не выдумывай правила: возьми инварианты из `MEMORY.md` («Жёсткие правила», «Активные грабли», «Universal грабли») и профильного `docs/*.md`, а отчёт начни строкой «работал без .mdc». Роли и формат отчёта — `.claude/ORCHESTRATION.md`.

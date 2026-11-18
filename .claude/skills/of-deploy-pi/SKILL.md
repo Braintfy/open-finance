@@ -32,7 +32,7 @@ allowed-tools:
 | VPN для AI | Xray VLESS+REALITY на `127.0.0.1:10809`; юниты `of-xray-apply.{path,service}`, spool — см. `deploy/xray/README.md` |
 | Логи деплоя на Pi | `/home/firay/{install,build,start}.log` |
 
-**Код на Pi доставляется `rsync` с Mac, а НЕ `git clone`** — в рабочем дереве регулярно живут ещё не закоммиченные фиксы, и прод исторически опережает `HEAD`. Из этого следует: после успешного деплоя обязательно выдать пользователю команду коммита, иначе история разъедется с продом.
+**Код на Pi доставляется `rsync` с рабочей машины, а НЕ `git clone`** — в рабочем дереве регулярно живут ещё не закоммиченные фиксы, и прод исторически опережает `HEAD`. Из этого следует: после успешного деплоя обязательно выдать пользователю команду коммита, иначе история разъедется с продом.
 
 ## 0. Пред-полётные проверки (на Mac, до единой команды по SSH)
 
@@ -58,8 +58,16 @@ rsync -az --delete \
   --exclude=node_modules --exclude=.next --exclude=.git \
   --exclude='.env*' --exclude='.claude/worktrees' \
   -e "ssh -i ~/.ssh/openfinance_pi" \
-  /Users/firay/open-finance/open-finance/ firay@192.168.31.222:/home/firay/open-finance/
+  ./ firay@192.168.31.222:/home/firay/open-finance/
 ```
+
+**С Windows-ПК `rsync` нет** (в Git Bash он не входит). Варианты: поставить его (`scoop install rsync` / WSL) или доставлять код архивом — `git archive` берёт только закоммиченное, поэтому перед деплоем коммит обязателен:
+
+```bash
+git archive --format=tar HEAD | ssh -i ~/.ssh/openfinance_pi firay@192.168.31.222 'tar -x -C /home/firay/open-finance'
+```
+
+Архив не удаляет на сервере файлы, исчезнувшие из репозитория, — после удалений кода чистить вручную. Паспорт сервера и получение SSH-доступа с новой машины — `docs/SERVER.md`.
 
 - `--exclude='.env*'` **обязателен**: `.env.production` на сервере собран вручную и не должен затираться дев-значениями. `.env.local` на сервере создавать НЕЛЬЗЯ — он молча перебивает `.env.production`.
 - `--exclude=node_modules` / `.next` **обязательны**: бинари с macOS (swc, sharp) на ARM64 не работают.

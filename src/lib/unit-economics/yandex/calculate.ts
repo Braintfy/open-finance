@@ -10,8 +10,9 @@
 //  - Спецтариф ЗАМЕНЯЕТ ставку комиссии; фиксированный тариф (дешёвые
 //    компактные товары) заменяет комиссию + мили + обработку.
 
-import type { TaxMode, YandexInputs, YandexResults } from '../types';
+import type { YandexInputs, YandexResults } from '../types';
 import { clamp, round2, safeNumber } from '../types';
+import { calcUnitTax } from '@/lib/metrics/tax';
 import {
   YANDEX_TARIFF_VERSION,
   calcVolume,
@@ -27,9 +28,6 @@ import {
   RETURN_STORAGE_FREE_DAYS,
   RETURN_STORAGE_PER_DAY_RUB,
 } from './tariffs-2026-07-01';
-
-/** Минимальный налог для УСН «Доходы минус расходы» — 1% от доходов. */
-const USN_MIN_TAX_RATE = 0.01;
 
 export const YANDEX_DEFAULT_INPUTS: YandexInputs = {
   mode: 'fby',
@@ -55,29 +53,6 @@ export const YANDEX_DEFAULT_INPUTS: YandexInputs = {
   salesPerMonth: 0,
   stock: 0,
 };
-
-/**
- * Налог на одну продажу. База — цена покупателя без НДС (`netRevenue`).
- * - usn_income: ставка% от дохода без НДС.
- * - usn_income_minus: ставка% от (доход − расходы), но не меньше 1% от дохода.
- * - osno: ставка% от дохода без НДС (сам НДС — отдельной строкой `vat`).
- * - none: 0.
- */
-function calcTax(
-  netRevenue: number,
-  deductibleExpenses: number,
-  mode: TaxMode,
-  ratePct: number,
-): number {
-  if (mode === 'none') return 0;
-  const rate = clamp(safeNumber(ratePct), 0, 100) / 100;
-  if (mode === 'usn_income_minus') {
-    const taxable = Math.max(0, netRevenue - deductibleExpenses);
-    const minTax = Math.max(0, netRevenue) * USN_MIN_TAX_RATE;
-    return Math.max(taxable * rate, minTax);
-  }
-  return Math.max(0, netRevenue) * rate;
-}
 
 export function calculateYandex(rawInputs: Partial<YandexInputs>): YandexResults {
   const inputs: YandexInputs = { ...YANDEX_DEFAULT_INPUTS, ...rawInputs };
@@ -159,7 +134,7 @@ export function calculateYandex(rawInputs: Partial<YandexInputs>): YandexResults
     cogs +
     overhead;
 
-  const tax = round2(calcTax(netRevenue, expensesBeforeTax, inputs.taxMode, inputs.taxRatePct));
+  const tax = round2(calcUnitTax(netRevenue, expensesBeforeTax, inputs.taxMode, inputs.taxRatePct));
 
   const profitPerUnit = round2(revenue - expensesBeforeTax - vat - tax);
   const marginCustomerPct = customerPrice > 0 ? round2((profitPerUnit / customerPrice) * 100) : 0;

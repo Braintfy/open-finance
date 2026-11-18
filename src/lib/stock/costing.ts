@@ -561,6 +561,13 @@ export function costAtDate(
   const upto = events.filter((e) => e.docDate <= isoDate);
   if (upto.length === 0) return null;
   const { pool } = replay(upto);
+  return poolToCostPoint(pool);
+}
+
+type CostPoint = { avgCostKopecks: number; qty: number; valueKopecks: number; basis: PoolBasis };
+
+/** Общий «снимок» пула для costAtDate и costSeries: пустой нулевой пул = «неизвестно». */
+function poolToCostPoint(pool: PoolState): CostPoint | null {
   if (pool.avgCostKopecks === 0 && pool.valueKopecks === 0 && pool.qty <= 0) return null;
   return {
     avgCostKopecks: pool.avgCostKopecks,
@@ -568,6 +575,34 @@ export function costAtDate(
     valueKopecks: pool.valueKopecks,
     basis: pool.basis,
   };
+}
+
+/**
+ * Себестоимость на ряд дат за один проход. Нужна слою метрик: cogs считается
+ * по каждому дню месяца, а costAtDate в цикле переигрывает ленту заново
+ * (O(E × D)). Здесь лента сортируется один раз, пул идёт вперёд и
+ * «фотографируется» на каждой запрошенной дате: O(E log E + D log D).
+ * Инвариант «результат == costAtDate(events, дата)» закреплён тестом
+ * scripts/test-stock-cost-series.ts (паритет на всех датах и на случайных лентах).
+ */
+export function costSeries(
+  events: readonly CostingEvent[],
+  isoDates: readonly string[],
+): Map<string, ReturnType<typeof costAtDate>> {
+  const result = new Map<string, ReturnType<typeof costAtDate>>();
+  const dates = [...new Set(isoDates)].sort();
+  const sorted = sortEvents(events);
+  let pool = createPool();
+  let i = 0;
+  for (const date of dates) {
+    while (i < sorted.length && sorted[i].docDate <= date) {
+      pool = applyEvent(pool, sorted[i]).pool;
+      i += 1;
+    }
+    // Пока не было ни одного события (i === 0) — «нет данных», как у costAtDate.
+    result.set(date, i === 0 ? null : poolToCostPoint(pool));
+  }
+  return result;
 }
 
 /**

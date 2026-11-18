@@ -12,7 +12,7 @@ export const meta = {
   ],
 }
 
-const ROOT = '/Users/firay/open-finance/open-finance'
+const ROOT = '.' // корень репозитория = cwd сессии (абсолютные пути не хардкодим — проект живёт на разных машинах)
 const filter = typeof args === 'string' && args.trim() ? args.trim() : null
 
 phase('Discover')

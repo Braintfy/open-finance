@@ -10,8 +10,9 @@
 //    делятся на процент выкупа. Исключение — приёмка FBO (на единицу).
 //  - НДС ИЗВЛЕКАЕТСЯ из цены покупателя, а не начисляется сверху.
 
-import type { OzonInputs, OzonResults, TaxMode, OzonFbsClusterShare } from '../types';
+import type { OzonInputs, OzonResults, OzonFbsClusterShare } from '../types';
 import { clamp, round2, safeNumber } from '../types';
+import { calcUnitTax } from '@/lib/metrics/tax';
 import {
   OZON_TARIFF_VERSION,
   autoCommissionPct,
@@ -27,9 +28,6 @@ import {
   RETURN_LOGISTICS_PCT_OF_FORWARD,
   FBS_CLUSTER_BY_KEY,
 } from './tariffs-2026-08-30';
-
-/** Минимальный налог для УСН «Доходы минус расходы» — 1% от доходов. */
-const USN_MIN_TAX_RATE = 0.01;
 
 export const OZON_DEFAULT_INPUTS: OzonInputs = {
   mode: 'fbo',
@@ -71,31 +69,6 @@ export const OZON_DEFAULT_INPUTS: OzonInputs = {
   indirectExpensesMonth: 0,
   supplyLeadWeeks: 4,
 };
-
-/**
- * Налог на одну продажу. База — доход без НДС (`netRevenue`).
- * - usn_income (УСН Доходы): ставка% от дохода без НДС.
- * - usn_income_minus (УСН Д-Р): ставка% от (доход − расходы), но не меньше
- *   минимального налога 1% от дохода.
- * - osno: ставка% от дохода без НДС (упрощение; сам НДС считается отдельно
- *   строкой `vat`). См. отчёт — база налога на прибыль требует уточнения.
- * - none: 0.
- */
-function calcTax(
-  netRevenue: number,
-  deductibleExpenses: number,
-  mode: TaxMode,
-  ratePct: number,
-): number {
-  if (mode === 'none') return 0;
-  const rate = clamp(safeNumber(ratePct), 0, 100) / 100;
-  if (mode === 'usn_income_minus') {
-    const taxable = Math.max(0, netRevenue - deductibleExpenses);
-    const minTax = Math.max(0, netRevenue) * USN_MIN_TAX_RATE;
-    return Math.max(taxable * rate, minTax);
-  }
-  return Math.max(0, netRevenue) * rate;
-}
 
 /**
  * Multi-cluster прямая логистика на ЗАКАЗ: weighted-sum по выбранным кластерам.
@@ -256,7 +229,7 @@ export function calculateOzon(rawInputs: Partial<OzonInputs>): OzonResults {
   const documentedPerUnit =
     sales > 0 ? safeNumber(inputs.documentedExpensesMonth) / sales : 0;
   const tax = round2(
-    calcTax(netRevenue, expensesBeforeTax + documentedPerUnit, inputs.taxMode, inputs.taxRatePct),
+    calcUnitTax(netRevenue, expensesBeforeTax + documentedPerUnit, inputs.taxMode, inputs.taxRatePct),
   );
 
   // НДС — отдельная строка расхода (инвариант проекта), поэтому в прибыль

@@ -19,8 +19,8 @@ allowed-tools:
 ### 1. Определить домен изменений
 
 ```bash
-git -C /Users/firay/open-finance/open-finance status --short
-git -C /Users/firay/open-finance/open-finance diff --stat
+git status --short
+git diff --stat
 ```
 
 ### 2. Typecheck (быстрый сигнал)

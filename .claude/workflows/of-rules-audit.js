@@ -12,7 +12,7 @@ export const meta = {
   ],
 }
 
-const ROOT = '/Users/firay/open-finance/open-finance'
+const ROOT = '.' // корень репозитория = cwd сессии (абсолютные пути не хардкодим — проект живёт на разных машинах)
 
 const AUDIT_SCHEMA = {
   type: 'object',

@@ -14,7 +14,7 @@ export const meta = {
   ],
 }
 
-const ROOT = '/Users/firay/open-finance/open-finance'
+const ROOT = '.' // корень репозитория = cwd сессии (абсолютные пути не хардкодим — проект живёт на разных машинах)
 const base = typeof args === 'string' && args.trim() ? args.trim() : null
 const DIFF_INSTRUCTION = base
   ? `Дифф для ревью: git -C ${ROOT} diff ${base}`

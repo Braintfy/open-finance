@@ -4,7 +4,7 @@ version: 1.0.0
 description: |
   Full checklist for adding a new BlockGrid block type to Open Finance (catalog file → registry → sources API → publisher → settings → AI skill → verify).
   TRIGGER when: user asks for a new block, a new widget/card on a BlockGrid page, or a new feature that should be a block type.
-  DO NOT TRIGGER when: editing an existing block (delegate to of-blocks-dev agent with blocks.mdc), or the feature is genuinely a non-BlockGrid page (rare — confirm first).
+  DO NOT TRIGGER when: editing an existing block (delegate to of-blocks-dev agent with blocks.mdc), or the feature is a new section/page — since 2026-11-18 new sections are plain pages, not blocks (docs/HUB_PLAN.md §4); a new block is only a dashboard tile over the shared metrics layer.
 allowed-tools:
   - Read
   - Edit

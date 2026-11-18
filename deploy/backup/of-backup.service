@@ -1,0 +1,16 @@
+# PURPOSE: Ночной бэкап Open Finance (база + секреты + конфиги, без копии кода).
+# Запускается таймером of-backup.timer, руками — `sudo systemctl start of-backup`.
+# Установка и восстановление — docs/BACKUP_RESTORE.md
+[Unit]
+Description=Open Finance — ночной бэкап
+After=docker.service
+ConditionPathExists=/home/firay/open-finance/.env.production
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/of-backup --no-code
+Nice=10
+IOSchedulingClass=idle
+SyslogIdentifier=of-backup
+
+# [Install] намеренно нет: сервис запускается таймером.

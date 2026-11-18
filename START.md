@@ -7,7 +7,7 @@
 
 1. **`START.md`** (этот файл, ~5K токенов) — карта проекта, правила, маршрутизация.
 2. **`MEMORY.md`** (**~13,8K токенов**, ~370 строк) — текущее состояние, инварианты, активные грабли. Детальные нарративы вынесены в `docs/memory-archive/` — читать только по запросу.
-3. **`git -C /Users/firay/open-finance/open-finance log --oneline -20`** (~0.5K) — последние коммиты.
+3. **`git log --oneline -20`** (~0.5K) — последние коммиты.
 
 После этого можно работать любой сложности. Дальше — **только релевантное конкретной задаче** (см. таблицу маршрутизации).
 
@@ -17,9 +17,11 @@
 
 ## Идентичность
 
+> **Цель пересмотрена 2026-11-17: приватный хаб продавца, а не публичный SaaS.** Канон цели, карты и этапов — **`docs/HUB_PLAN.md`**; роли моделей (старшие управляют, младшие исполняют) — **`.claude/ORCHESTRATION.md`**; сервер — `docs/SERVER.md`. Абзацы ниже описывают, как проект устроен сейчас.
+
 **Open Finance** — AI-первая модульная финансовая платформа для предпринимателей РФ (селлеры OZON/WB/ЯМ, ИП, фрилансеры, малый бизнес). Сейчас — Next.js 15 SaaS. Phase 2 — Tauri 2.0. Phase 3 — React Native + Expo.
 
-Главная идея: **почти каждая страница = настраиваемый BlockGrid**. Новая фича обычно = новый block type в `src/lib/blocks/catalog/`, а не статичная страница.
+**Новые разделы — обычные страницы с вкладками и таблицами (решение владельца 2026-11-18, `docs/HUB_PLAN.md` §4); готового образца в проекте нет — все нынешние страницы, включая склад, собраны на BlockGrid; первой обычной страницей станет «Аналитика». Конструктор BlockGrid остаётся только на сводной и на уже существующих страницах; новые блоки — лишь плитки-витрины поверх общего слоя метрик.**
 
 Источник правды версии: первый заголовок `## [X.Y.Z]` в `CHANGELOG.md` + `git log` (`package.json` 0.5.0 устарел навсегда — версию НЕ хардкодить в доках).
 
@@ -90,7 +92,7 @@ src/
 | **Курсы валют** | `src/lib/currency/{types,queries,sources/cbr}.ts`, `src/lib/blocks/catalog/currency-rates.tsx`, `src/app/api/currency/rates/{route,refresh/route}.ts`, `drizzle/init/06-currency.sql`. |
 | **Ozon Seller API / Performance API** | `src/lib/marketplaces/{types,crypto,queries,use-accounts}.ts`, `src/lib/marketplaces/ozon/{client,endpoints,types,upsert,upsert-plan,sync/*}.ts`, `src/app/api/marketplaces/**`, `src/app/app/settings/integrations/*`, `src/components/marketplaces/*`. Rules: `marketplaces.mdc`. При работе с API смотреть `OZON_API_VERSION_MAP` в `endpoints.ts`. **`OzonClient.post()` lenient** (warning + raw на Zod fail) — `{ strict: true }` для критичных. **Sync upsert идемпотентен через `planUnitProductUpsertFromOzon()`** (pure function, unit-тесты в `scripts/test-ozon-upsert.ts`). |
 | **Ozon Analytics (per-product, KPI, ABC, campaigns)** | Блоки `unit.ozon-*` в `src/lib/blocks/catalog/`, `src/components/unit-economics/ozon-analytics-*`, `src/app/api/marketplaces/ozon/{kpi,timeseries,top-ads,abc,campaigns,search-phrases,cluster-stocks-v2}/route.ts`. Все используют MSC `query-period.ts`. Ads totals — `src/lib/marketplaces/ozon/ads-totals.ts`. Rules: `marketplaces.mdc`. |
-| **Куда движется проект / что делать дальше** | **`docs/ROADMAP_V2.md`** — канон этапов после `LK_V2_PLAN` (корректность расчётов → юнитка → финансовый контур P&L → аналитика → цифровизация бизнеса (сайты+маркетплейсы) → публичный запуск → обвязка). Там же — открытые вопросы к пользователю, без ответов на которые этапы D/F не начинать. |
+| **Куда движется проект / что делать дальше** | **`docs/HUB_PLAN.md`** — канон с 2026-11-17 (приватный хаб: аналитика → WB → Ozon → сайты и остатки). Прежний роадмап — `docs/ROADMAP_V2.md`: этапы после `LK_V2_PLAN` (корректность расчётов → юнитка → финансовый контур P&L → аналитика → цифровизация бизнеса (сайты+маркетплейсы) → публичный запуск → обвязка). Там же — открытые вопросы к пользователю, без ответов на которые этапы D/F не начинать. |
 | **Roadmap marketplace-интеграций** | `docs/MARKETPLACES_FUTURE_PLAN.md`, `docs/OZON_ADS_GAP.md`, `docs/MARKETPLACES_OZON_PERFORMANCE.md`. |
 | **Unit Economics (калькуляторы, multi-table, my store)** | `src/lib/unit-economics/{types,bindings,store-formula,ozon-to-my-store}.ts`, директории `src/lib/unit-economics/{ozon,yandex}/` (calculate, tariffs-*), `src/components/unit-economics/*`, `src/app/api/unit-economics/**`. Rules: `unit-economics.mdc`. |
 | **Sheet / custom.data / excel.cell** | `src/lib/blocks/catalog/{sheet,custom-data,excel-cell}.tsx`, `docs/CUSTOM_DATA_BLOCK.md`. |
@@ -104,6 +106,8 @@ src/
 | **Биллинг (Т-Касса/CloudPayments)** | `src/lib/billing/*`, `docs/BILLING.md`. Rules: `security.mdc`. |
 | **Безопасность / секреты / 152-ФЗ** | `docs/SECURITY.md` (**ОБЯЗАТЕЛЬНО** при работе с секретами/сетью/биллингом), `docs/SECURITY_AUDIT.md` (статусы находок I1-I7), `docs/SMARTCAPTCHA.md`. Rules: `security.mdc` auto-loads на соотв. файлы. |
 | **Tenant-изоляция / cross-tenant ревью** | `docs/TENANT_SCOPING.md` (review-gate `requireTenant()`/`requireTenantRoute()` вместо Postgres RLS), `src/lib/auth/guards.ts`, проверка `pnpm check:tenant-isolation`. |
+| **Аналитика / P&L / любая метрика прибыли** | `docs/METRICS_LAYER_DESIGN.md` — единый слой метрик (журнал проводок → дневные факты → формулы). Новые метрики считать только через него, своих формул в блоках и роутах не заводить. |
+| **Сервер: доступ, бэкап, перенос на NVMe** | `docs/SERVER.md` (паспорт, SSH с новой машины), `docs/BACKUP_RESTORE.md` (бэкап/восстановление/NVMe), секреты — `SERVER.local.md` (вне git). |
 | **Деплой на прод (Raspberry Pi 5)** | **Канон рутины — скил `of-deploy-pi`** (rsync → install → build → бэкап → migrate → restart → health-чек → откат). Справочник по железу, фазам первого деплоя и реестру граблей — `docs/DEPLOY_RPI5.md`. Сопутствующее: `deploy/xray/README.md` (VLESS), `docs/VPN_FOR_AI.md`. |
 | **Готовность к публичному запуску** | Скил `of-launch-check` (технический гейт: tenant-изоляция, статусы `docs/SECURITY_AUDIT.md`, реквизиты в `src/lib/legal.ts`, фичефлаги, бэкапы, one-instance). Продуктовая часть запуска — `docs/ROADMAP_V2.md`. |
 | **Tauri / desktop** | `docs/DESKTOP_STRATEGY.md` (выбор стека), `docs/DESKTOP_PLAN.md` (план работ), `docs/LICENSING.md`. |

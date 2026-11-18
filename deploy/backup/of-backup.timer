@@ -1,0 +1,12 @@
+# PURPOSE: Расписание ночного бэкапа Open Finance — 04:30 МСК, после фиксации
+# суточных данных и до утреннего синка Ozon.
+[Unit]
+Description=Open Finance — расписание ночного бэкапа
+
+[Timer]
+OnCalendar=*-*-* 04:30:00 Europe/Moscow
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

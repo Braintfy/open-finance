@@ -1,2 +1,9 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Скрипты и юниты исполняются на Linux (Raspberry Pi) и в Git Bash — только LF,
+# иначе bash падает на , а хук scripts/claude-rules-hint.sh молча не работает.
+*.sh text eol=lf
+*.service text eol=lf
+*.timer text eol=lf
+*.path text eol=lf
