@@ -1,0 +1,106 @@
+---
+description: AI tools layer, providers, streaming, vision
+globs:
+  - "src/lib/ai/**"
+  - "src/app/api/ai/**"
+  - "src/components/micro-agent/**"
+---
+
+# AI integration rules
+
+## Tools Layer — единственный путь для AI-мутаций
+
+AI **никогда** не пишет SQL/не дёргает Drizzle напрямую. Только через инструменты:
+
+```typescript
+// src/lib/ai/tools/{name}.ts
+import { z } from 'zod';
+import type { Tool } from '@/lib/ai/types';
+
+export const createTransactionTool: Tool = {
+  name: 'create_transaction',
+  description: 'Создать транзакцию',
+  // Сырая Zod-схема, БЕЗ zodToJsonSchema: тип `Tool` объявляет
+  // `parameters: TParams extends z.ZodTypeAny`, конвертацию делает провайдер.
+  // Пакета `zod-to-json-schema` в проекте нет — не добавлять.
+  parameters: z.object({ /* ... */ }),
+  handler: async (args, ctx) => {
+    // ctx содержит tenantId, userId, requestId
+    return await db.insert(transactions).values({ ...args, tenantId: ctx.tenantId });
+  },
+};
+```
+
+Это **канонический** пример tool'а (`CLAUDE.md` и `AGENTS.md` ссылаются сюда). Живой образец — `src/lib/ai/tools/query-inbox-messages.ts`, тип — `src/lib/ai/types.ts`. Регистрировать в `src/lib/ai/tools/index.ts` (сейчас там каркас с 1 зарегистрированным tool — Этап 4 PLAN.md). Документировать в `docs/AI_TOOLS.md`.
+
+Tenant-скоуп внутри `handler` — только `ctx.tenantId` (канон — `security.mdc` + `docs/TENANT_SCOPING.md`). Postgres RLS в проекте нет, «БД сама защитит» — неверно.
+
+## Providers
+
+- `src/lib/ai/providers/ollama.ts` — installed models + `isChatCapableModel()`. Embedding-only модели фильтровать.
+- `src/lib/ai/providers/openai-compat.ts` — SSE → NDJSON для OpenAI-compatible.
+- `src/lib/ai/providers/proxy.ts` — runtime `undici` ProxyAgent.
+- НЕ использовать Vercel AI SDK.
+
+## Prompt Hierarchy
+
+Все AI запросы идут через `resolvePromptStack()` (`src/lib/ai/prompt-resolver.ts`):
+1. `DEFAULT_SYSTEM_PROMPT` (tenant override → `aiSystemPrompt`)
+2. `MICRO_AGENT_SYSTEM` (scope: block/pointwise)
+3. Section group prompt (`SECTION_GROUP_DEFAULTS[group]` или tenant override)
+4. Per-pageKey prompt (override)
+5. Block-type skill (`BLOCK_SKILLS[type]` или tenant override `aiPrompts.blocks[type]`)
+6. User supplement (`BlockInstance.aiPromptSupplement`, max 500 chars) — приоритет над legacy
+7. Legacy `BlockInstance.aiPrompt` (deprecated fallback)
+8. Block capabilities (scope: block)
+9. Data snapshot (blockData + publishedValue)
+
+Полная документация: `docs/AI_PROMPT_LAYERS.md`.
+
+## Streaming `/api/ai/chat`
+
+- NDJSON события: `start`, `token`, `done`, `error`, `aborted`.
+- Route: Ollama vs External. Credentials: `getActiveCredentials()` — user keys > tenant admin keys > Ollama.
+- Local Ollama приоритет model: request → tenant `aiModel` → env `OLLAMA_DEFAULT_MODEL` → первая chat-capable.
+- `parseAction()` понимает fenced/unfenced JSON, `update_block`, `create_block`, `text_only`.
+- **`instance.aiPromptSupplement > instance.aiPrompt (deprecated) > config.blockPrompt (legacy ai.micro-agent)`** — приоритет.
+
+## Section AI (`/api/ai/analyze-section`)
+
+`POST { pageKey, scope: 'all'|'subgraph', userQuery?, blockIds? }` — NDJSON stream.
+Собирает layout блоков, строит контекст, использует `resolvePromptStack({ scope: 'section' })`.
+Кнопка «AI Анализ» (Sparkles) в header каждого раздела (`section-ai-button.tsx`).
+
+## Контракты AI-маршрутов с отчётами (analyze-section / analyze-block / ozon ai-insights)
+
+- **История отчётов — в БД, не в config блока**: таблица `<scope>_ai_reports`, лимит 10 на скоуп; при превышении `POST` отдаёт `409 {needsOverwrite, oldest}` → UI подтверждает перезапись.
+- **Trust boundary кросс-контекста**: контент текущей страницы можно брать из клиентского live-снапшота (`page-snapshot.ts`); контент ДРУГИХ разделов/блоков — клиент шлёт только refs `{pageKey, blockId, mode}`, тело резолвит СЕРВЕР из БД (scoped tenant+user).
+- **Паритет токенов**: единая pure-функция сборки контекста (стиль `assembleSectionContext` в `src/lib/ai/section-insights.ts`) для клиент-счётчика и сервер-промпта; `js-tiktoken` — только lazy client-only import (`js-tiktoken/lite` + ranks динамически).
+- **Server/client разделение**: shared типы и pure-логика — в файле без `'use client'`; типы из route-файлов — только `import type`.
+
+Пошаговая процедура нового AI-маршрута: `.claude/skills/of-new-ai-route/SKILL.md`.
+
+## Vision
+
+- `src/lib/ai/vision/{types,router}.ts` + `providers/{claude,openai,yandex,tesseract,mock}.ts`.
+- `VisionProvider.recognize(input, hint, ctx)` → `ExtractedData {amount (копейки!), date, vendor, ...}`.
+- `parseExtractedJson(raw)` терпим к markdown code-fence.
+- Env: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `YANDEX_FOLDER_ID + (YANDEX_IAM_TOKEN | YANDEX_API_KEY)`.
+- Endpoint: `POST /api/inbox/messages/[id]/recognize` (multipart или attachment URL).
+
+## Tenant settings JSONB
+
+`aiProvider`, `aiModel`, `aiSystemPrompt`, `aiExternal{enabled,provider,baseUrl,apiKey,defaultModel,useProxy}`, `aiProxy{enabled,url,type,username,password}`.
+
+В MVP plain JSONB с masking на клиенте. Prod TODO: AES-256-GCM/Vault.
+
+## RAG / Orchestrator (scaffold, не реализовано)
+
+- Schema `src/lib/db/schema/ai.ts` (`memory_chunks`, `ai_usage`, `ai_audit_log`, `ai_agents`).
+- `src/lib/ai/orchestrator.ts` пока scaffold.
+- `src/lib/ai/memory/search.ts` TODO для hybrid semantic + full-text + RRF.
+- Векторные индексы вручную: `drizzle/init/02-vector-indexes.sql`.
+
+## При работе с библиотеками — Context7
+
+`mcp0_resolve-library-id` → `mcp0_query-docs`. Не более 3 вызовов на задачу.

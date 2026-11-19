@@ -2,7 +2,8 @@
 // Таблицы: marketplace_accounts (подключённые магазины с зашифрованными
 // API-ключами), ozon_sync_jobs (история синхронизаций),
 // ozon_orders / ozon_realization / ozon_transactions (выгруженные данные
-// для аналитики). См. drizzle/init/07-marketplaces.sql.
+// для аналитики). См. drizzle/init/07-marketplaces.sql. Начисления
+// ozon_accruals / ozon_accrual_types — drizzle/init/20-ozon-accruals.sql.
 
 import {
   pgTable,
@@ -36,9 +37,18 @@ export type OzonSyncSettings = {
   /** Окно заказов в днях (7/30/90). По умолчанию 30. */
   ordersWindowDays?: number;
   realization?: boolean;
+  /**
+   * LEGACY: `/v3/finance/transaction/list` отключён Ozon. Стейдж вне набора
+   * по умолчанию (OZON_LEGACY_STAGES) — флаг больше ничего не запускает.
+   */
   transactions?: boolean;
   /** Окно транзакций в днях. По умолчанию 30. */
   transactionsWindowDays?: number;
+  /**
+   * Начисления `/v1/finance/accrual/*` → ozon_accruals + ozon_accrual_types.
+   * Окно по умолчанию — с первого числа позапрошлого месяца по сегодня (МСК).
+   */
+  accruals?: boolean;
   turnover?: boolean;
   /**
    * Включён ли cron-режим (UI выставляет, но воркер ещё не реализован
@@ -165,6 +175,7 @@ export type SyncJobKind =
   | 'orders'
   | 'realization'
   | 'transactions'
+  | 'accruals'
   | 'turnover'
   | 'perfCampaigns'
   | 'perfSkuStats'
@@ -313,6 +324,135 @@ export const ozonTransactions = pgTable(
     index('ozon_transactions_account_idx').on(t.accountId),
     uniqueIndex('ozon_transactions_account_tx_idx').on(t.accountId, t.transactionId),
     index('ozon_transactions_account_date_idx').on(t.accountId, t.operationDate),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// Начисления Ozon (`/v1/finance/accrual/*`) — замена ozon_transactions.
+// ozon_transactions остаётся историей до сентября 2026 (метод отключён).
+// ---------------------------------------------------------------------------
+
+/**
+ * Вид строки начисления. Одно начисление by-day раскладывается на строки:
+ *  - `total` — `total_amount` начисления (ровно одна на начисление; `raw` —
+ *    весь объект начисления). Сумма по `total` = сумма начислений Ozon;
+ *  - `item_fee` — `item_fees.fees[].fees[]`: сбор по товару (sku + type_id);
+ *  - `non_item_fee` — `non_item_fee`: сбор без товара;
+ *  - `delivery_service` / `delivery_total` — `posting.products[].delivery`;
+ *  - `commission_*` — компоненты `posting.products[].commission`.
+ * ВСЁ, КРОМЕ `total`, — разбивка. В `total` входят ТОЛЬКО item_fee,
+ * non_item_fee, commission_sale_amount, commission_commission, delivery_total
+ * (`TOTAL_COMPOSING_KINDS` в ozon/accruals-map.ts; сверено на живом ответе).
+ * delivery_service раскладывает delivery_total, commission_sale_commission
+ * повторяет commission_commission, bonus/coinvestment в итог не входят —
+ * складывать их с составляющими нельзя (sumOzonAccruals бросает исключение).
+ * Любой SUM(amount_kopecks) без фильтра по line_kind задваивает сумму, а без
+ * фильтра по currency смешивает валюты — читать через `sumOzonAccruals`
+ * (ozon/accruals-read.ts), который требует line_kind и берёт только RUB/NULL.
+ */
+export type OzonAccrualLineKind =
+  | 'total'
+  | 'item_fee'
+  | 'non_item_fee'
+  | 'delivery_service'
+  | 'delivery_total'
+  | 'commission_sale_amount'
+  | 'commission_commission'
+  | 'commission_sale_commission'
+  | 'commission_bonus'
+  | 'commission_coinvestment';
+
+/**
+ * Строки начислений Ozon из `/v1/finance/accrual/by-day`. Устойчивый id
+ * начисления — `accrual_id` (число, у каждой строки начисления). Идемпотентность
+ * всё равно заменой окна «аккаунт × день» в одной транзакции и ТОЛЬКО при
+ * полной выборке дня (`replaceAccrualDay` в ozon/upsert.ts). `seq` — позиция
+ * начисления в выдаче дня, отсортированной по accrual_id (стабильна между
+ * синками, пока состав дня не менялся); `line_no` — позиция строки.
+ */
+export const ozonAccruals = pgTable(
+  'ozon_accruals',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    accountId: uuid('account_id')
+      .notNull()
+      .references(() => marketplaceAccounts.id, { onDelete: 'cascade' }),
+    /** День, за который запрошены начисления (`date` запроса by-day), МСК. */
+    accrualDate: date('accrual_date').notNull(),
+    /** Порядковый номер начисления в выдаче дня (0-based, сквозь страницы). */
+    seq: integer('seq').notNull(),
+    /** Номер строки внутри начисления; 0 — строка `total`. */
+    lineNo: integer('line_no').notNull(),
+    lineKind: varchar('line_kind', { length: 32 }).$type<OzonAccrualLineKind>().notNull(),
+    /** = fee_type_id у строк с типом сбора; 0 у total/commission_*, delivery_total (верхнего type_id в живом ответе нет). */
+    accrualTypeId: integer('accrual_type_id').notNull(),
+    /** `type_id` сбора/услуги строки (item_fee, non_item_fee, delivery_service). */
+    feeTypeId: integer('fee_type_id'),
+    accruedCategory: varchar('accrued_category', { length: 64 }),
+    /** Устойчивый id начисления Ozon (`accrual_id`); NULL, если API его не отдал. */
+    accrualId: bigint('accrual_id', { mode: 'number' }),
+    /** `unit_number` из ответа (у POSTING — номер отправления, у ITEM/NON_ITEM иной идентификатор). */
+    unitNumber: varchar('unit_number', { length: 100 }),
+    /** Номер отправления: = unit_number только у accrued_category POSTING, иначе NULL. */
+    postingNumber: varchar('posting_number', { length: 100 }),
+    sku: varchar('sku', { length: 200 }),
+    /** Артикул продавца — резолвится по sku из unit_products при записи. */
+    offerId: varchar('offer_id', { length: 200 }),
+    /** Количество из `quantity` (item_fees.fees[] / posting.products[]); у total и non_item_fee NULL. */
+    qty: integer('qty'),
+    /** Сумма в копейках со знаком, как у Ozon. */
+    amountKopecks: bigint('amount_kopecks', { mode: 'number' }).notNull(),
+    currency: varchar('currency', { length: 8 }),
+    /** `date` начисления как пришёл (строкой: зона не описана справочником). */
+    ozonDate: varchar('ozon_date', { length: 40 }),
+    deliverySchema: varchar('delivery_schema', { length: 32 }),
+    /** Сырой объект начисления — только у строки `total`, у остальных `{}`. */
+    raw: jsonb('raw').$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (t) => [
+    index('ozon_accruals_tenant_idx').on(t.tenantId),
+    uniqueIndex('ozon_accruals_account_day_line_idx').on(
+      t.accountId,
+      t.accrualDate,
+      t.seq,
+      t.lineNo,
+    ),
+    index('ozon_accruals_account_sku_idx').on(t.accountId, t.sku),
+    index('ozon_accruals_account_accrual_idx').on(t.accountId, t.accrualId),
+    // Чтение ВСЕГДА с фильтром line_kind (итог и разбивка лежат в одной
+    // колонке amount_kopecks) — см. ozon/accruals-read.ts.
+    index('ozon_accruals_account_day_kind_idx').on(t.accountId, t.accrualDate, t.lineKind),
+  ],
+);
+
+/**
+ * Справочник типов начислений `/v1/finance/accrual/types` по аккаунту.
+ * Заменит словарь классификации слоя метрик (docs/METRICS_LAYER_DESIGN.md §3).
+ */
+export const ozonAccrualTypes = pgTable(
+  'ozon_accrual_types',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    accountId: uuid('account_id')
+      .notNull()
+      .references(() => marketplaceAccounts.id, { onDelete: 'cascade' }),
+    typeId: integer('type_id').notNull(),
+    name: text('name').notNull(),
+    description: text('description'),
+    raw: jsonb('raw').$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (t) => [
+    index('ozon_accrual_types_tenant_idx').on(t.tenantId),
+    uniqueIndex('ozon_accrual_types_account_type_idx').on(t.accountId, t.typeId),
   ],
 );
 
@@ -682,6 +822,10 @@ export type OzonRealizationRow = typeof ozonRealization.$inferSelect;
 export type NewOzonRealizationRow = typeof ozonRealization.$inferInsert;
 export type OzonTransaction = typeof ozonTransactions.$inferSelect;
 export type NewOzonTransaction = typeof ozonTransactions.$inferInsert;
+export type OzonAccrual = typeof ozonAccruals.$inferSelect;
+export type NewOzonAccrual = typeof ozonAccruals.$inferInsert;
+export type OzonAccrualType = typeof ozonAccrualTypes.$inferSelect;
+export type NewOzonAccrualType = typeof ozonAccrualTypes.$inferInsert;
 export type OzonPerfCampaign = typeof ozonPerfCampaigns.$inferSelect;
 export type NewOzonPerfCampaign = typeof ozonPerfCampaigns.$inferInsert;
 export type OzonPerfSkuStat = typeof ozonPerfSkuStats.$inferSelect;

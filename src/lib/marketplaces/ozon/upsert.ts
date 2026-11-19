@@ -1,6 +1,7 @@
 // PURPOSE: Маппинг Ozon-сущностей в наши БД-таблицы (unit_products,
-// ozon_orders, ozon_realization, ozon_transactions). Все upsert'ы
-// идемпотентные — по уникальным ключам.
+// ozon_orders, ozon_realization, ozon_transactions, ozon_accruals,
+// ozon_accrual_types). Все upsert'ы идемпотентные — по уникальным ключам;
+// начисления — заменой окна «аккаунт × день» (устойчивого id у Ozon нет).
 
 import { and, eq, gte, lt, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
@@ -9,6 +10,9 @@ import {
   ozonOrders,
   ozonRealization,
   ozonTransactions,
+  ozonAccruals,
+  ozonAccrualTypes,
+  type NewOzonAccrualType,
   type NewOzonOrder,
   type NewOzonRealizationRow,
   type NewOzonTransaction,
@@ -24,6 +28,8 @@ import type {
   TurnoverRow,
 } from './types';
 import { MISMATCH_TOLERANCE_RUB, mapRealizationRow } from './realization-map';
+import type { MappedOrder } from './orders-map';
+import type { AccrualInsert, AccrualTypeRow } from './accruals-map';
 import {
   planUnitProductUpsertFromOzon,
   type CombinedProduct,
@@ -132,39 +138,29 @@ export async function upsertUnitProductFromOzon(
 // ozon_orders
 // ---------------------------------------------------------------------------
 
-function pickFbsTimings(p: FbsPosting): {
-  createdAt: Date | null;
-  deliveredAt: Date | null;
-  cancelledAt: Date | null;
-} {
-  const createdAt = p.created_at ? new Date(p.created_at) : p.in_process_at ? new Date(p.in_process_at) : null;
-  const cancelledAt = p.cancellation?.cancelled_at ? new Date(p.cancellation.cancelled_at) : null;
-  return { createdAt, deliveredAt: null, cancelledAt };
-}
-
-export async function upsertFbsPosting(
+/**
+ * Upsert одного отправления (FBS или FBO), уже смаппленного чистой
+ * `mapFbsPosting`/`mapFboPosting` (orders-map.ts). Поведение прежнее:
+ * deliveredAt = «сейчас» при status='delivered' (способ записи времени — отдельная задача).
+ */
+export async function upsertMappedOrder(
   ctx: UpsertContext,
-  p: FbsPosting,
+  order: MappedOrder,
+  raw: FbsPosting | FboPosting,
 ): Promise<void> {
-  const t = pickFbsTimings(p);
+  const delivered = order.status === 'delivered';
   const payload: NewOzonOrder = {
     tenantId: ctx.tenantId,
     accountId: ctx.accountId,
-    postingNumber: p.posting_number,
-    scheme: 'fbs',
-    status: p.status,
-    orderCreatedAt: t.createdAt,
-    deliveredAt: p.status === 'delivered' ? new Date() : null,
-    cancelledAt: t.cancelledAt,
+    postingNumber: order.postingNumber,
+    scheme: order.scheme,
+    status: order.status,
+    orderCreatedAt: order.orderCreatedAt,
+    deliveredAt: delivered ? new Date() : null,
+    cancelledAt: order.cancelledAt,
     returnedAt: null,
-    items: (p.products ?? []).map((it) => ({
-      sku: it.sku,
-      offerId: it.offer_id,
-      name: it.name,
-      quantity: it.quantity,
-      price: it.price,
-    })),
-    raw: p as unknown as Record<string, unknown>,
+    items: order.items as unknown as Array<Record<string, unknown>>,
+    raw: raw as unknown as Record<string, unknown>,
   };
   await db
     .insert(ozonOrders)
@@ -172,51 +168,11 @@ export async function upsertFbsPosting(
     .onConflictDoUpdate({
       target: [ozonOrders.accountId, ozonOrders.postingNumber],
       set: {
-        status: p.status,
-        orderCreatedAt: t.createdAt ?? sql`ozon_orders.order_created_at`,
-        deliveredAt: p.status === 'delivered' ? new Date() : sql`ozon_orders.delivered_at`,
-        cancelledAt: t.cancelledAt ?? sql`ozon_orders.cancelled_at`,
-        items: payload.items as unknown as Array<Record<string, unknown>>,
-        raw: payload.raw,
-        updatedAt: new Date(),
-      },
-    });
-}
-
-export async function upsertFboPosting(
-  ctx: UpsertContext,
-  p: FboPosting,
-): Promise<void> {
-  const createdAt = p.created_at ? new Date(p.created_at) : null;
-  const payload: NewOzonOrder = {
-    tenantId: ctx.tenantId,
-    accountId: ctx.accountId,
-    postingNumber: p.posting_number,
-    scheme: 'fbo',
-    status: p.status,
-    orderCreatedAt: createdAt,
-    deliveredAt: p.status === 'delivered' ? new Date() : null,
-    cancelledAt: null,
-    returnedAt: null,
-    items: (p.products ?? []).map((it) => ({
-      sku: it.sku,
-      offerId: it.offer_id,
-      name: it.name,
-      quantity: it.quantity,
-      price: it.price,
-    })),
-    raw: p as unknown as Record<string, unknown>,
-  };
-  await db
-    .insert(ozonOrders)
-    .values(payload)
-    .onConflictDoUpdate({
-      target: [ozonOrders.accountId, ozonOrders.postingNumber],
-      set: {
-        status: p.status,
-        orderCreatedAt: createdAt ?? sql`ozon_orders.order_created_at`,
-        deliveredAt: p.status === 'delivered' ? new Date() : sql`ozon_orders.delivered_at`,
-        items: payload.items as unknown as Array<Record<string, unknown>>,
+        status: order.status,
+        orderCreatedAt: order.orderCreatedAt ?? sql`ozon_orders.order_created_at`,
+        deliveredAt: delivered ? new Date() : sql`ozon_orders.delivered_at`,
+        cancelledAt: order.cancelledAt ?? sql`ozon_orders.cancelled_at`,
+        items: payload.items,
         raw: payload.raw,
         updatedAt: new Date(),
       },
@@ -346,6 +302,112 @@ export async function upsertTransaction(
         raw: payload.raw,
       },
     });
+}
+
+// ---------------------------------------------------------------------------
+// ozon_accruals / ozon_accrual_types — начисления /v1/finance/accrual/*
+// ---------------------------------------------------------------------------
+
+const ACCRUALS_INSERT_BATCH = 500;
+
+/**
+ * Заменяет окно «аккаунт × день» строками начислений одной транзакцией.
+ * Вызывать ТОЛЬКО после `decideAccrualDayWrite(...).replace === true`:
+ * неполная выборка не должна стирать уже записанный день. Пустой `rows` при
+ * полной выборке — легитимный «день без начислений» (окно очищается).
+ */
+export async function replaceAccrualDay(args: {
+  tenantId: string;
+  accountId: string;
+  day: string;
+  rows: AccrualInsert[];
+}): Promise<{ inserted: number; deleted: number }> {
+  for (const r of args.rows) {
+    if (r.tenantId !== args.tenantId || r.accountId !== args.accountId || r.accrualDate !== args.day) {
+      throw new Error(`replaceAccrualDay: строка вне окна ${args.accountId} × ${args.day}`);
+    }
+  }
+  let deleted = 0;
+  await db.transaction(async (tx) => {
+    const gone = await tx
+      .delete(ozonAccruals)
+      .where(
+        and(
+          eq(ozonAccruals.tenantId, args.tenantId),
+          eq(ozonAccruals.accountId, args.accountId),
+          eq(ozonAccruals.accrualDate, args.day),
+        ),
+      )
+      .returning({ id: ozonAccruals.id });
+    deleted = gone.length;
+    for (let i = 0; i < args.rows.length; i += ACCRUALS_INSERT_BATCH) {
+      await tx.insert(ozonAccruals).values(args.rows.slice(i, i + ACCRUALS_INSERT_BATCH));
+    }
+  });
+  return { inserted: args.rows.length, deleted };
+}
+
+/** Upsert справочника типов начислений аккаунта (ключ account × type_id). */
+export async function upsertAccrualTypes(
+  ctx: UpsertContext,
+  rows: AccrualTypeRow[],
+): Promise<number> {
+  if (rows.length === 0) return 0;
+  const now = new Date();
+  const values: NewOzonAccrualType[] = rows.map((r) => ({
+    tenantId: ctx.tenantId,
+    accountId: ctx.accountId,
+    typeId: r.typeId,
+    name: r.name,
+    description: r.description,
+    raw: r.raw,
+    updatedAt: now,
+  }));
+  await db
+    .insert(ozonAccrualTypes)
+    .values(values)
+    .onConflictDoUpdate({
+      target: [ozonAccrualTypes.accountId, ozonAccrualTypes.typeId],
+      set: {
+        name: sql`excluded.name`,
+        description: sql`excluded.description`,
+        raw: sql`excluded.raw`,
+        updatedAt: sql`excluded.updated_at`,
+      },
+      // Страховка tenant-изоляции: чужую строку с тем же account_id не трогаем.
+      setWhere: eq(ozonAccrualTypes.tenantId, ctx.tenantId),
+    });
+  return values.length;
+}
+
+/**
+ * sku → offer_id (артикул) по каталогу unit_products арендатора. Строки этого
+ * аккаунта приоритетнее строк без аккаунта/чужого аккаунта арендатора.
+ */
+export async function loadOzonOfferIdBySku(ctx: UpsertContext): Promise<Map<string, string>> {
+  const rows = await db
+    .select({
+      sku: unitProducts.sku,
+      article: unitProducts.article,
+      accountId: unitProducts.marketplaceAccountId,
+    })
+    .from(unitProducts)
+    .where(and(eq(unitProducts.tenantId, ctx.tenantId), eq(unitProducts.marketplace, 'ozon')));
+  const out = new Map<string, string>();
+  const fromThisAccount = new Set<string>();
+  for (const r of rows) {
+    const sku = r.sku?.trim();
+    const article = r.article?.trim();
+    if (!sku || !article) continue;
+    const own = r.accountId === ctx.accountId;
+    if (own) {
+      out.set(sku, article);
+      fromThisAccount.add(sku);
+    } else if (!fromThisAccount.has(sku) && !out.has(sku)) {
+      out.set(sku, article);
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------

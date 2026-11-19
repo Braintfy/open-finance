@@ -10,9 +10,10 @@
 
 set -uo pipefail
 
-DEV_TENANT='<dev-tenant-uuid>';  PROD_TENANT='<prod-tenant-uuid>'
-DEV_USER='<dev-user-uuid>';    PROD_USER='<prod-user-uuid>'
-DEV_WS='<dev-ws-uuid>';      PROD_WS='<prod-ws-uuid>'
+# UUID задаются через окружение (реальные значения в репозитории не хранятся).
+DEV_TENANT="${DEV_TENANT:?set DEV_TENANT}";  PROD_TENANT="${PROD_TENANT:?set PROD_TENANT}"
+DEV_USER="${DEV_USER:?set DEV_USER}";        PROD_USER="${PROD_USER:?set PROD_USER}"
+DEV_WS="${DEV_WS:?set DEV_WS}";              PROD_WS="${PROD_WS:?set PROD_WS}"
 
 PI='firay@192.168.31.222'
 KEY="$HOME/.ssh/openfinance_pi"

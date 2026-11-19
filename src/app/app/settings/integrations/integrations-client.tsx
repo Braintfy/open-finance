@@ -126,9 +126,13 @@ const STAGE_LABELS: Record<OzonStageKind, { title: string; hint: string }> = {
     title: 'Реализация',
     hint: 'Помесячный отчёт о реализации (реальные комиссии)',
   },
+  accruals: {
+    title: 'Начисления',
+    hint: 'Финансовые начисления Ozon по дням и товарам (/v1/finance/accrual/*) — с 1-го числа позапрошлого месяца',
+  },
   transactions: {
-    title: 'Транзакции',
-    hint: 'Детальные финансовые операции (для аналитики)',
+    title: 'Транзакции (устарело)',
+    hint: 'Метод /v3/finance/transaction/list отключён Ozon — заменён «Начислениями»',
   },
   perfCampaigns: {
     title: 'Рекламные кампании (Performance API)',
@@ -769,15 +773,6 @@ function AccountCard({
                       <WindowInput
                         value={settings.ordersWindowDays ?? 30}
                         onChange={(v) => setSettings({ ...settings, ordersWindowDays: v })}
-                        disabled={!enabled}
-                      />
-                    )}
-                    {stage === 'transactions' && (
-                      <WindowInput
-                        value={settings.transactionsWindowDays ?? 30}
-                        onChange={(v) =>
-                          setSettings({ ...settings, transactionsWindowDays: v })
-                        }
                         disabled={!enabled}
                       />
                     )}

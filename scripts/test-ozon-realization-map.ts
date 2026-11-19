@@ -29,7 +29,7 @@ function expect(cond: boolean, name: string, hint?: string) {
 const REAL_DELIVERY: RealizationRow = {
   rowNumber: 1,
   item: {
-    name: 'Сезамин (Sesamin) 60 шт от ShopA по 10мг',
+    name: 'Товар A 60 шт по 10мг',
     offer_id: 'rm-sesame-60-10',
     barcode: 'OZN1215255822',
     sku: 1215255823,
@@ -56,7 +56,7 @@ const REAL_DELIVERY: RealizationRow = {
 const REAL_RETURN: RealizationRow = {
   rowNumber: 237,
   item: {
-    name: 'Птеростильбен (Pterostilbene) от ShopA, 60 капсул по 50мг',
+    name: 'Товар B, 60 капсул по 50мг',
     offer_id: 'rm-ptero-60-50',
     barcode: 'OZN1268676875',
     sku: 1268676875,

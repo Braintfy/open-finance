@@ -1,0 +1,126 @@
+---
+description: Unit Economics — Ozon/Yandex calculators, multi-table, store-formula
+globs:
+  - "src/lib/unit-economics/**"
+  - "src/components/unit-economics/**"
+  - "src/app/api/unit-economics/**"
+  - "src/app/app/unit-economics/**"
+  - "src/lib/blocks/catalog/unit-*.tsx"
+---
+
+# Unit Economics rules
+
+## Архитектура
+
+- **Types**: `src/lib/unit-economics/types.ts` — `Marketplace`, `OzonMode`, `YandexMode`, `TaxMode` (4 опции, `'nds'` УДАЛЁН), `OzonInputs/Results`, `YandexInputs/Results`, `UnitCellBinding`.
+- **Tariff packs (актуальные)**: `src/lib/unit-economics/ozon/tariffs-2026-08-30.ts`, `src/lib/unit-economics/yandex/tariffs-2026-07-01.ts`. Апрельские паки (`2026-04-07`/`2026-04-01`) ЗАМОРОЖЕНЫ — не импортировать в новый код.
+- **FBS UI-опции**: `src/lib/unit-economics/ozon/fbs-ui-options.ts` — какая сетка скорости действует для точки сдачи + перенос выбора между сетками; общий для калькулятора и мульти-таблицы, НЕ дублировать.
+- **Calculate**: `src/lib/unit-economics/ozon/calculate.ts`, `yandex/calculate.ts` — pure TS, тесты `scripts/test-unit-economics.ts` (Ozon) и `scripts/test-yandex-calc.ts` (Яндекс), у каждого фикса эталонный кейс + комментарий-регрессия «как считалось раньше».
+- **Migrate**: `src/lib/unit-economics/ozon/migrate.ts` (`migrateOzonRaw()`) — для legacy конфигов.
+- **Bindings**: `src/lib/unit-economics/bindings.ts` (`isBindingActive`, `resolveBindingValue`, `bindingScopedKey`).
+- **Live values**: `src/lib/unit-economics/use-live-block-values.ts` (`useAllBlockValuesFlat`, `useRemoteBlockSources`).
+- **Store formula**: `src/lib/unit-economics/store-formula.ts` (`evalSingleFormula`, `evalRowFormulas`, защита от циклов `'#CYCLE'`).
+- **Ozon → My Store import**: `src/lib/unit-economics/ozon-to-my-store.ts` (`OZON_TO_MY_STORE_COLUMN_MAP`, `extractOzonValue`).
+
+## Инварианты
+
+### Tariff versioning — критично
+- Актуальные константы: `OZON_TARIFF_VERSION = 'ozon_2026_08_30'`, `YANDEX_TARIFF_VERSION = 'yandex_2026_07_01'` (значение вида `<mp>_YYYY_MM_DD` — это НЕ имя файла).
+- **НИКОГДА не редактировать существующий pack inplace.** Добавлять НОВЫЙ ФАЙЛ `tariffs-YYYY-MM-DD.ts` рядом со старым и бампать константу; старый пак замораживается.
+- Сохранённые `unit_calculations.tariff_version` должны точно совпадать с pack constant.
+- **UI обязан импортировать лейблы из ТОГО ЖЕ пака, что и движок.** Отставший импорт уже приводил к прямой лжи на экране («12–24 ч (+2% ком.)» при фактической скидке −2%). После бампа пака — грепом проверить, что импортов старого не осталось, и что подписи показывают ЗНАК эффекта.
+
+### Расчётные инварианты (v0.51.0 — после сверки с эталоном)
+- **Логистика делится на % выкупа** (`forwardPerOrder / buyout`) — её платят и невыкупленные заказы. Обратная: `(fwd × 0.5 + returnProcessing) × (1 − buyout)/buyout`, базой берётся тариф НА ЗАКАЗ, иначе двойное деление.
+- **НДС ИЗВЛЕКАЕТСЯ из цены** (`цена × r/(100+r)`), а не начисляется сверху. База УСН = цена − НДС; для «доходы минус расходы» вычитаются реальные расходы расчёта + минимальный налог 1% от дохода.
+- **Соинвест/СПП не влияет на P&L продавца** — это справочная «цена с СПП» (она же налоговая база); в расходы НЕ входит.
+- **Скорость отгрузки FBS — СКИДКА, а не надбавка** (две сетки: СЦ/курьер и ПВЗ/ППЗ, выбираются по точке сдачи). Приёмка FBS зависит от точки сдачи (0/4.13/10/17/2 ₽) и делится на выкуп; приёмка FBO — `min(5 + max(0, ceil(литраж) − 1), 60)` ₽ разово на единицу, не делится.
+- Локальность — скидка **3 п.п. к КОМИССИИ** (исключения: Москва+МО, СПб+СЗО, Беларусь), а не скидка к логистике. Отсрочка выплат — `floor(дни/14) × 0.45` п.п. к комиссии.
+- Яндекс: выручка = цена ПРОДАВЦА (`revenue`), цена покупателя — только база НДС/УСН; спецтариф ЗАМЕНЯЕТ комиссию; средняя миля прогрессивная по литрам с потолком 5500 ₽; статьи «фулфилмент» в тарифах ЯМ НЕТ (есть «обработка заказа» 25 ₽ на FBS).
+
+### Деньги
+- В БД — копейки (`integer`).
+- В `inputs/results` JSONB — рубли с `money: true` пометкой.
+- UI форматирует через existing helpers (`formatRublesWithSettings` принимает копейки).
+
+### НДС vs Налог
+- `vatPct/vat` — отдельная строка расхода, независима от taxMode.
+- `taxRatePct/tax` — налог на прибыль (УСН/ОСНО). НЕ объединять.
+- TaxMode `'nds'` УДАЛЁН — только `usn_income/usn_income_minus/osno/none`.
+
+### Multi-cluster FBS
+- `OzonInputs.fbsClusters: Array<{key, sharePct}>` — массив, sum должна быть = 100.
+- `calculateOzon` нормализует фактическую сумму.
+- Если массив пуст — fallback к single через `isLocalCluster`.
+- Legacy `fbsWarehouse` оставлено как `@deprecated` для миграции через `migrateOzonRaw()`.
+- 28 кластеров FBS (`FBS_CLUSTERS` с `local: boolean`), 43-уровневый `VOLUME_BRACKETS` LUT, `NON_LOCAL_CLUSTER_MULTIPLIER = 1.25`. Приёмка FBS — НЕ плоская: `FBS_DROPOFF_ACCEPTANCE_RUB` по точке сдачи (старая константа `PAID_ACCEPTANCE_FEE_PER_UNIT_RUB = 10` осталась только в замороженном апрельском паке).
+- **Известное упрощение (долг этапа B):** множитель 1.25 за нелокальность — грубая замена реальной матрице Ozon «43 объёма × 28 кластеров отправления × 31 доставки» и ценовому порогу 300 ₽; см. `docs/ROADMAP_V2.md` → Этап B.
+
+### Tenant isolation
+- Канон — `security.mdc` → «Tenant isolation» + `docs/TENANT_SCOPING.md`: `tenantId` ТОЛЬКО из сессии (`requireTenant()`/`requireTenantRoute()`), Postgres RLS не используется.
+- `unit_products` upsert по `(tenant_id, marketplace, article)`.
+- Вкладки юнит-экономики — ещё и per-workspace (см. «Tabs CRUD» ниже).
+
+## UI инварианты
+
+### Linkable cell layout
+ВСЕГДА `<input>`, в linked — `readOnly + tabIndex=-1 + onClick → picker + cursor-pointer`. Иначе сдвиг между manual и linked.
+
+### Sticky cells (Ozon multi-table)
+**Общие правила sticky-ячеек — канон в `blocks.mdc` → «Sticky cells»** (bg-card без `/95` и `backdrop-blur`, `overflow:hidden isolate`, z-index 45/35/30/36, `boxShadow` на последней sticky-колонке). Здесь только специфика юнит-экономики:
+- Геометрия: `32/110/220`, `HEADER_H=42`, `ROW_H=30`.
+- НЕ возвращать `[&:hover_[data-sticky]]:bg-accent/5` — снова покажет скроллящийся текст.
+
+### Select-ы
+- ВСЕ выпадающие — через `DropdownSelect` (`src/components/unit-economics/dropdown-select.tsx`).
+- НЕ нативные `<select>` (на macOS/iOS пустая метка при заполненном value).
+
+### Bulk fill
+- Ozon multi: `MoreVertical` в `SortableHeaderCell` (только input-колонки).
+- My Store: секция в `ColumnEditDialog` (disabled для type=`formula`).
+- Обработчики **пропускают** строки с активным `bindings[field]`.
+
+### Column DnD
+- Порядок input/result колонок отдельно в `config.global.columnOrder = { inputs: string[]; results: string[] }`.
+- `resolveColumnOrder<T>()` мерджит сохранённый с дефолтом.
+- Sticky `#`/Артикул/Название/Действия не drag'аются.
+- Каждый `DndContext` со стабильным `id` на основе `instance.id`.
+
+### XLSX от Ozon
+- `openpyxl` / SheetJS с `cellStyles: true` падают на битом border-стиле.
+- Использовать SheetJS с `cellStyles: false` + fallback ZIP/XML парсинг.
+- Маппинг колонок по заголовкам, не индексам.
+
+### Aggregate outputs
+- Все unit-блоки публикуют через `useBlockValuePublisher` с `__money` для денежных полей.
+- **`__labels` convention**: `"key=Human Label,..."` для picker привязок.
+- Ozon multi: `rowsCount`, `avgMargin`, `avgRoi`, `totalProfitMonth`, `totalStockValue`, `totalMoneyInGoods`.
+- My Store: `rowsCount`, `totalRevenue`, `totalProfit`, `avgMargin`, `stockTotal`.
+- Calculators: `profitPerUnit`, `profitPerMonth`, `margin`, `roi`.
+
+### My Store column model
+- `{ id, label, type: 'number'|'percent'|'money'|'text'|'formula', unit?, default?, width?, formula?, positive?, hidden? }`.
+- `formula`-колонки read-only, не биндятся.
+- Переменные: id колонок текущей строки + `vatPct`, `taxRatePct`.
+- Защита от циклов → `'#CYCLE'`.
+- Identifier substitution по убыванию длины (`priceRetail` перед `price`). Regex: `(?<![A-Za-z0-9_$])key(?![A-Za-z0-9_$(])`.
+
+### Tabs CRUD
+- Таблица `unit_economics_tabs` — **tenant + workspace scoped**: колонка `workspace_id NOT NULL`, уникальность `unit_economics_tabs_workspace_page_idx (workspace_id, page_key)` (переехало с `(tenant, user, page_key)`; см. `drizzle.mdc` → «Workspace-скоуп»). Поля: `pageKey`, `label`, `icon`, `order`, `kind`.
+- Default seed'ятся автоматически (4 шт.).
+- Custom pageKey = `unit-economics-custom-{nanoid8()}`.
+- Inline rename (double-click), DropdownMenu (Rename/Duplicate/Delete).
+- Block marketplace wildcard `unit-economics-custom-*`.
+
+### Ozon Import → My Store
+- `importSource: {blockId, pageKey, columns, matchBy, mode, syncOnMount, lastImportedAt}`.
+- `OZON_TO_MY_STORE_COLUMN_MAP` (29 колонок) + `extractOzonValue(row, key)`.
+- 3-step wizard `OzonImportFromAnalyticsDialog`.
+- Live-sync `useEffect` с throttle 30s через `lastSyncRef`.
+
+## Что отложили
+
+- Парсер `СЕБЕС озон.xlsx` для seed-колонок My Store.
+- Сохранение `unit_calculations` из блоков (инфра+API готовы).
+- Экспорт CSV/XLSX и share/permalink.
+- Yandex Market XLSX-импорт.

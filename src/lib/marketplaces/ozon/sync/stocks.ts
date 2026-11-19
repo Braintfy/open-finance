@@ -35,11 +35,18 @@ export async function syncStocksStage(ctx: StageContext): Promise<StageResult> {
       for (const item of items) {
         const existingRow = byArticle.get(item.offer_id ?? '');
         if (!existingRow || !item.offer_id) continue;
+        // Живой ответ /v4 (2026-11-19): `sku` лежит в записях `stocks[]`, а не
+        // у товара. Берём верхний `item.sku`, если он есть, иначе первый
+        // ненулевой sku из stocks.
+        const stockSku = (item.stocks ?? [])
+          .map((s) => Number(s.sku))
+          .find((n) => Number.isFinite(n) && n > 0);
+        const primarySku = item.sku ?? stockSku;
         const info: ProductInfo = {
           id: item.product_id ?? Number(existingRow.sku ?? 0),
           name: existingRow.name,
           offer_id: item.offer_id,
-          sources: item.sku ? [{ sku: item.sku, source: 'stocks' }] : undefined,
+          sources: primarySku ? [{ sku: primarySku, source: 'stocks' }] : undefined,
         };
         await upsertUnitProductFromOzon(ctx, { info, stocks: item });
         processed += 1;

@@ -23,7 +23,11 @@ export type {
   SyncSummary,
 };
 
-/** Список всех стейджей в порядке выполнения для полной синхронизации. */
+/**
+ * Стейджи полной синхронизации (запускаются по умолчанию) в порядке
+ * выполнения. `transactions` здесь больше НЕТ: его метод отключён Ozon, и он
+ * делал каждый синк «partial» — см. OZON_LEGACY_STAGES.
+ */
 export const OZON_FULL_STAGES = [
   'products',
   'prices',
@@ -31,7 +35,8 @@ export const OZON_FULL_STAGES = [
   'analyticsData',
   'orders',
   'realization',
-  'transactions',
+  // Начисления /v1/finance/accrual/* — замена `transactions`.
+  'accruals',
   'turnover',
   'clusters',
   'warehouseStocks',
@@ -45,7 +50,20 @@ export const OZON_FULL_STAGES = [
   'perfPhrases',
 ] as const;
 
-export type OzonStageKind = (typeof OZON_FULL_STAGES)[number];
+/**
+ * Устаревшие стейджи: код, тип и таблица сохранены (они есть в журнале старых
+ * job'ов), но в полный синк не входят. Запускаются только явно — `onlyStage`
+ * или `stagesOverride[stage] === true`.
+ *  - `transactions` — `/v3/finance/transaction/list`: 400 obsolete с
+ *    12.09.2026, 404 с 06.10.2026. Таблица ozon_transactions — история.
+ */
+export const OZON_LEGACY_STAGES = ['transactions'] as const;
+
+/** Все известные стейджи (для валидации запросов и подписей в UI). */
+export const OZON_ALL_STAGES = [...OZON_FULL_STAGES, ...OZON_LEGACY_STAGES] as const;
+
+export type OzonStageKind = (typeof OZON_ALL_STAGES)[number];
+export type OzonLegacyStageKind = (typeof OZON_LEGACY_STAGES)[number];
 
 /** Дефолтные настройки тогглов для нового аккаунта. */
 export const DEFAULT_OZON_SYNC_SETTINGS: Required<
@@ -59,6 +77,7 @@ export const DEFAULT_OZON_SYNC_SETTINGS: Required<
     | 'realization'
     | 'transactions'
     | 'transactionsWindowDays'
+    | 'accruals'
     | 'turnover'
     | 'autoSyncEnabled'
     | 'autoSyncCron'
@@ -85,6 +104,7 @@ export const DEFAULT_OZON_SYNC_SETTINGS: Required<
   realization: true,
   transactions: false,
   transactionsWindowDays: 90,
+  accruals: true,
   turnover: true,
   autoSyncEnabled: false,
   autoSyncCron: '0 6 * * *',
@@ -115,6 +135,7 @@ export const OzonSyncSettingsSchema = z
     realization: z.boolean().optional(),
     transactions: z.boolean().optional(),
     transactionsWindowDays: z.number().int().min(1).max(365).optional(),
+    accruals: z.boolean().optional(),
     turnover: z.boolean().optional(),
     autoSyncEnabled: z.boolean().optional(),
     autoSyncCron: z.string().max(64).optional(),

@@ -1,327 +1,200 @@
 # Open Finance
 
-> **Open-source** AI-первая модульная финансовая платформа для предпринимателей. Self-hosted: данные, ключи и AI — у вас.
-> Notion-style блоки + Linear UX + Claude Code минимализм + RAG-память + AI-секретарь.
+Приватный self-hosted хаб продавца на маркетплейсах: Ozon, Wildberries, юнит-экономика, налоги, остатки, продажи с сайтов. Данные, ключи и AI-провайдеры остаются у владельца. Код открыт под лицензией MIT.
 
-[![Status](https://img.shields.io/badge/status-active-blue.svg)]() [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+Текущая версия — первый заголовок `## [X.Y.Z]` в [CHANGELOG.md](CHANGELOG.md). Проект активно меняется и пока ближе к рабочему инструменту одного владельца, чем к готовому продукту «из коробки».
 
-> Текущая версия — первый заголовок `## [X.Y.Z]` в [CHANGELOG.md](CHANGELOG.md) (версия в `package.json` не сопровождается).
+## Цель и статус
 
-## Что это
+С 2026-11-17 канон цели описан в [docs/HUB_PLAN.md](docs/HUB_PLAN.md): один продавец, один сервер в локальной сети (мини-ПК или Mac), вход по паролю, регистрации нет. Раньше проект задумывался как публичный multi-tenant SaaS. От этого остались регистрация, биллинг-заглушка и часть кода, подлежащая удалению (см. HUB_PLAN). Описанное в старых документах про публичный запуск, Tauri и мобильное приложение не реализуется.
 
-**Open Finance** — модульный конструктор финансов с AI-помощником, который работает поверх ВСЕХ ваших данных. Код полностью открыт (MIT): разворачиваете у себя — все функции включены, без тарифов и внешних сервисов (кроме тех, что подключаете сами: Ozon API, AI-провайдеры, SMTP).
+### Что работает сейчас
 
-Для личного использования — см. [`docs/PERSONAL_USE.md`](./docs/PERSONAL_USE.md) (секреты, фича-флаги, что отключить).
+- **Ozon.** Синхронизация товаров, цен, заказов (FBO и FBS), остатков (в том числе FBS по своим складам), отчёта о реализации, начислений (`/v1/finance/accrual`), рекламы (Performance API) и аналитики. Методы сверены с живым API в ноябре 2026. Ежедневный запуск — `scripts/sync-ozon-daily.ts`, его нужно поставить в планировщик (пример systemd-таймера — `deploy/ozon-sync/`).
+- **Аналитика Ozon.** Работает, но расчёты неполные. Прибыль пока считается без части удержаний, а формулы одной метрики местами расходятся. Это известная проблема, она описана в HUB_PLAN (раздел 3).
+- **Калькуляторы юнит-экономики** (Ozon, Яндекс Маркет): комиссии, логистика, налоги, выкуп, актуальные тарифные паки.
+- **Cashflow:** банковские операции и транзакции.
+- **Склад, поставки, себестоимость:** партии, скользящая средняя, проведение и сторно документов, импорт из Ozon, сопоставление SKU. Модуль свежий и пока в стадии каркаса.
+- **AI-помощники:** чат и анализ внутри страниц и блоков. Провайдеры: Ollama, OpenAI-совместимые, YandexGPT, GigaChat, mock. AI необязателен: без него всё остальное работает.
+- **Блочный дашборд** (BlockGrid): конструктор для сводной страницы.
+- **Почта (IMAP) и распознавание чеков:** работает, но заморожено и не развивается.
 
-### Ключевые фичи
+### Что запланировано
 
-- **AI-первая архитектура** — RAG-память (pgvector), типизированные tools, audit log
-- **Модульный конструктор** — собираете дашборд из блоков (виджеты + Excel-like таблицы)
-- **Inbox для AI** — кидаете чеки/договоры/заметки → AI разносит по модулям
-- **AI-секретарь** — подключение к email, Telegram, WhatsApp, VK для контекста
-- **Налоги РФ нативно** — все режимы (УСН/НДС/ПСН/НПД/АУСН/ОСНО)
-- **Дедлайны на любом блоке** — Notion-style, единый календарь
-- **Local-First версия** (Tauri 2.0) — данные на устройстве, offline
-- **Светлая тема по умолчанию** + тёмная опция
+- **Слой метрик:** единый источник расчётов (журнал проводок, дневные факты, сверка с выплатами). В коде уже лежат чистые модули, дизайн в [docs/METRICS_LAYER_DESIGN.md](docs/METRICS_LAYER_DESIGN.md).
+- **Wildberries:** пока отсутствует, кроме значения `wb` в типах.
+- **Налоги:** страницы нет.
+- **Продажи с сайтов:** коннектора нет, на складе заведены только места `site_*`.
+- Переход новых разделов с блоков на обычные страницы, уборка заглушек AI-оркестратора.
 
 ## Стек
 
-Актуальный источник правды — `package.json`; разбивка «есть / shim / план» — [`CLAUDE.md`](./CLAUDE.md#стек).
+Единственный источник правды по зависимостям — `package.json`.
 
-**Сейчас:**
-- **Frontend:** Next.js 15 + TypeScript + Tailwind + shadcn/ui
-- **DB:** PostgreSQL 16 + pgvector + Drizzle ORM
-- **Auth:** свой JWT-cookie (`jose` + `bcryptjs`) — NextAuth не используется
-- **AI:** Ollama / OpenAI-compat (в т.ч. Claude через VPN) / Yandex GPT / GigaChat — своя обёртка, не Vercel AI SDK
-- **Таблицы/файлы:** `fast-formula-parser` + `xlsx`, `@mdxeditor/editor`, Recharts, react-grid-layout
+- Next.js 15 (App Router), TypeScript, Tailwind CSS, shadcn/ui, Recharts
+- PostgreSQL 16 + pgvector, Drizzle ORM
+- Своя аутентификация: JWT в cookie (`jose` + `bcryptjs`); NextAuth не используется
+- Своя обёртка над AI-провайдерами (не Vercel AI SDK)
+- Менеджер пакетов: pnpm, Node.js 20 или новее
 
-**Пока не подключено:** Redis/BullMQ (в `src/lib/redis.ts` in-memory shim — контейнер `redis:7` в compose поднимается «на вырост»), S3-SDK для MinIO, Sentry.
-
-**План:** Tauri 2.0 (Phase 2), React Native + Expo (Phase 3).
+Redis и MinIO поднимаются в Docker Compose «на вырост», но приложение к ним сейчас не обращается: кэш и rate-limit работают в памяти процесса, S3-клиента в зависимостях нет.
 
 ## Быстрый старт
 
-```bash
-# 1. Подготовить env (первый раз)
-cp .env.example .env.local
+Нужны Node.js 20+, pnpm и Docker.
 
-# 2. Установка зависимостей
+```bash
+# 1. Зависимости
 pnpm install
 
-# 3. Запуск БД+кэш+S3 (Postgres с pgvector на 5434, Redis 6380, MinIO 9100, Adminer 8081)
-pnpm docker:up
+# 2. Конфигурация (секреты только здесь, файл вне git)
+cp .env.example .env.local
+# Откройте .env.local и задайте как минимум:
+#   NEXTAUTH_SECRET, INBOX_SECRET_KEY, MARKETPLACE_SECRET_KEY
+# Сгенерировать значение: openssl rand -base64 48
 
-# 4. Применить схему БД
-pnpm db:push
+# 3. База данных (Postgres 16 + pgvector на 127.0.0.1:5434)
+docker compose --env-file .env.local up -d postgres
 
-# 5. Применить init-SQL: индексы и DDL, которые drizzle-kit не умеет.
-#    Автоматом при первом старте контейнера отрабатывает ТОЛЬКО 01-extensions.sql,
-#    остальные (02…17) применяются вручную ВСЕГДА — см. раздел «Применение миграций БД».
+# 4. Схема БД
+pnpm db:migrate
+
+# 5. Дополнительный SQL (индексы и DDL, которые drizzle-kit не умеет).
+#    При первом старте контейнера автоматически применяется только 01-extensions.sql,
+#    остальные файлы применяются вручную, по порядку:
 for f in drizzle/init/*.sql; do
   case "$f" in */01-extensions.sql) continue;; esac
   docker exec -i openfinance-postgres psql -v ON_ERROR_STOP=1 -U openfinance_user -d openfinance_dev < "$f"
 done
 
-# 6. (Опционально) Локальный AI — Ollama. См. docs/LOCAL_AI.md
-brew install ollama && brew services start ollama && ollama pull qwen2.5:7b
+# 6. Администратор (см. ниже)
+pnpm admin:create you@example.com 'надёжный-пароль' --admin
 
-# 7. Dev-сервер (webpack + typedRoutes)
+# 7. Запуск
 pnpm dev
-# или быстрый Turbopack (без typedRoutes):
-pnpm dev:turbo
 ```
 
-Открыть [http://localhost:3000](http://localhost:3000).
-Adminer (web UI для Postgres): [http://localhost:8081](http://localhost:8081) (server: `postgres`, login/db: `openfinance_user` / `openfinance_dev`).
+Откройте http://localhost:3000.
 
-### Порты
+Имя пользователя и базы в шаге 5 соответствуют значениям по умолчанию из `docker-compose.yml`. Если вы меняли `POSTGRES_USER` или `POSTGRES_DB`, подставьте свои.
 
-| Сервис | Порт | Почему не дефолтный |
-|---------|------|-------------------|
-| Postgres | 5434 | чтобы не конфликтовать с другими локальными PG (например `braint` на 5432) |
-| Redis | 6380 | тоже во избежание конфликтов |
-| MinIO API | 9100 | |
-| MinIO Console | 9101 | |
-| Adminer | 8081 | без конфликта с 8080 |
-| Ollama (хост) | 11434 | дефолт |
+Подробности про миграции и починку журнала: скил `of-db-migrate` (`.claude/skills/of-db-migrate/SKILL.md`) и [docs/DEPLOY_RPI5.md](docs/DEPLOY_RPI5.md).
 
-## Применение миграций БД
-
-Drizzle-схема (таблицы) применяется через `pnpm db:push`. SQL-файлы из `drizzle/init/` — индексы и DDL, которые drizzle-kit не умеет.
-
-> **Автоматически выполняется ТОЛЬКО `drizzle/init/01-extensions.sql`** — в `docker-entrypoint-initdb.d` смонтирован ровно один этот файл (см. `docker-compose.yml`; так сделано намеренно, коммит `3f7245e`). **Все остальные `02…17-*.sql` применяются ВРУЧНУЮ, всегда** — и на свежей БД, и на работающей.
+### Администратор
 
 ```bash
-# Локально (Docker) — применить ВСЕ init-файлы кроме 01 (он уже отработал в initdb), по порядку
-for f in drizzle/init/*.sql; do
-  case "$f" in */01-extensions.sql) continue;; esac
-  echo "== $f"
-  docker exec -i openfinance-postgres psql -v ON_ERROR_STOP=1 -U openfinance_user -d openfinance_dev < "$f"
-done
+# создать пользователя (флаг --admin даёт права администратора, --super-admin — суперадмина)
+pnpm admin:create <email> <пароль> [--admin|--super-admin]
 
-# Или поштучно
-docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev < drizzle/init/02-vector-indexes.sql
-
-# Проверить что таблица создалась
-docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev -c '\d ozon_analytics_daily'
-
-# Откатить миграцию (если нужно)
-docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev -c 'DROP TABLE IF EXISTS ozon_analytics_daily;'
+# сбросить пароль существующего
+pnpm admin:reset-password <email>            # сгенерировать и показать новый пароль
+echo -n 'пароль' | pnpm admin:reset-password <email> --stdin   # задать свой
+pnpm admin:reset-password --list             # список пользователей
 ```
 
-Актуальный список файлов — `ls drizzle/init/` (сейчас 17: `01-extensions` … `16-workspaces`, `17-ozon-fbs-stocks`). Числа в README не перечисляем поимённо, чтобы список не протухал.
+Пароль не короче 8 символов. Скрипты читают `DATABASE_URL` из `.env.local`. Пароль аргументом командной строки остаётся в истории оболочки, поэтому для своего пароля используйте `--stdin`. Регистрация через сайт по умолчанию выключена (`FEATURE_OPEN_REGISTRATION`), пользователей создаёт владелец.
 
-## Деплой на Ubuntu-сервер
+### Подключение Ozon
 
-> Production-стек: Ubuntu 22.04+, Docker (Postgres+Redis), Node.js 20+, pnpm, systemd, nginx + certbot. Приложение клонируется в `/var/www/open-finance`, БД и кэш живут в Docker.
+Ключи Ozon (Client-Id и Api-Key, ключ Performance API для рекламы) вводятся в интерфейсе: «Настройки → Интеграции». В базе они хранятся в зашифрованном виде, ключ шифрования берётся из `MARKETPLACE_SECRET_KEY`. Меняйте этот ключ осознанно: он нужен для расшифровки уже сохранённых данных (для перешифровки есть `pnpm admin:reencrypt-secrets`).
 
-### 1. Подготовка сервера (один раз)
+### AI (необязательно)
+
+Локально: Ollama (`OLLAMA_BASE_URL`, модель задаётся в `.env.local`), см. [docs/LOCAL_AI.md](docs/LOCAL_AI.md). Внешние провайдеры: ключи в `.env.local`, при необходимости прокси ([docs/VPN_FOR_AI.md](docs/VPN_FOR_AI.md)). Для проверки интерфейса без ключей есть mock-провайдер (`AI_MOCK_ENABLED`).
+
+### Порты по умолчанию
+
+| Сервис | Порт |
+|---|---|
+| Приложение | 3000 |
+| Postgres | 5434 |
+| Redis | 6380 |
+| MinIO API / консоль | 9100 / 9101 |
+
+Все сервисы Compose слушают только `127.0.0.1`.
+
+## Команды
 
 ```bash
-# Обновление + базовые утилиты
-sudo apt update && sudo apt upgrade -y
-sudo apt install -y curl git nginx ufw certbot python3-certbot-nginx
-
-# Docker + Docker Compose plugin
-curl -fsSL https://get.docker.com | sudo sh
-sudo usermod -aG docker $USER
-newgrp docker
-
-# Node.js 20 + pnpm
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt install -y nodejs
-sudo npm install -g pnpm
-
-# Firewall
-sudo ufw allow OpenSSH && sudo ufw allow 'Nginx Full' && sudo ufw enable
+pnpm dev                 # dev-сервер
+pnpm build               # production-сборка
+pnpm typecheck           # проверка типов
+pnpm lint                # ESLint
+pnpm db:generate         # сгенерировать миграцию из схемы
+pnpm db:migrate          # применить миграции
+pnpm db:studio           # GUI для БД
+pnpm tsx scripts/test-<имя>.ts   # smoke-тест (тест-раннера нет, скрипты самостоятельные)
 ```
 
-### 2. Клонирование и настройка
+Тестов через vitest или jest нет: каждый `scripts/test-*.ts` запускается отдельно и завершается с кодом 1 при падении.
 
-```bash
-sudo mkdir -p /var/www/open-finance && sudo chown $USER:$USER /var/www/open-finance
-git clone https://github.com/<your-org>/open-finance.git /var/www/open-finance
-cd /var/www/open-finance
-
-# Production env (заполнить секретами: DATABASE_URL, REDIS_URL, JWT_SECRET, AI keys, OZON_*, S3, SMTP, APP_URL=https://yourdomain.com)
-cp .env.example .env.production
-nano .env.production
-
-# Зависимости + build
-pnpm install --frozen-lockfile
-pnpm build
-```
-
-### 3. Запуск БД и кэша (Docker)
-
-```bash
-pnpm docker:up                # postgres:5434, redis:6380, minio, adminer
-pnpm db:push                  # таблицы через Drizzle
-
-# SQL-индексы и DDL: initdb выполняет ТОЛЬКО 01-extensions.sql,
-# остальные (02…17 и все новые) — вручную, по порядку
-for f in drizzle/init/*.sql; do
-  case "$f" in */01-extensions.sql) continue;; esac
-  docker exec -i openfinance-postgres psql -v ON_ERROR_STOP=1 -U openfinance_user -d openfinance_dev < "$f"
-done
-```
-
-### 4. systemd-сервис для Next.js
-
-```bash
-sudo tee /etc/systemd/system/open-finance.service > /dev/null <<'EOF'
-[Unit]
-Description=Open Finance (Next.js)
-After=network.target docker.service
-Requires=docker.service
-
-[Service]
-Type=simple
-User=www-data
-WorkingDirectory=/var/www/open-finance
-EnvironmentFile=/var/www/open-finance/.env.production
-ExecStart=/usr/bin/pnpm start
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-sudo chown -R www-data:www-data /var/www/open-finance
-sudo systemctl daemon-reload
-sudo systemctl enable --now open-finance
-sudo systemctl status open-finance
-```
-
-### 5. Nginx + HTTPS
-
-```bash
-sudo tee /etc/nginx/sites-available/open-finance > /dev/null <<'EOF'
-server {
-    server_name yourdomain.com;
-    client_max_body_size 25M;
-
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    listen 80;
-}
-EOF
-
-sudo ln -sf /etc/nginx/sites-available/open-finance /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
-
-# Получить SSL (автоматически перепишет конфиг на 443)
-sudo certbot --nginx -d yourdomain.com --redirect --agree-tos -m you@example.com
-```
-
-### 6. Обновление до новой версии (CI/CD рутина)
-
-```bash
-cd /var/www/open-finance
-git pull origin main
-pnpm install --frozen-lockfile
-pnpm build
-
-# Применить новые SQL-миграции (если в этом релизе появились в drizzle/init/)
-pnpm db:push
-docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev < drizzle/init/<new-file>.sql
-
-sudo systemctl restart open-finance
-sudo systemctl status open-finance --no-pager
-```
-
-### 7. Бэкапы Postgres (cron)
-
-```bash
-sudo mkdir -p /var/backups/open-finance
-sudo tee /etc/cron.daily/open-finance-db-backup > /dev/null <<'EOF'
-#!/bin/bash
-TS=$(date +%Y%m%d-%H%M%S)
-docker exec openfinance-postgres pg_dump -U openfinance_user openfinance_dev \
-  | gzip > /var/backups/open-finance/db-$TS.sql.gz
-find /var/backups/open-finance -name 'db-*.sql.gz' -mtime +14 -delete
-EOF
-sudo chmod +x /etc/cron.daily/open-finance-db-backup
-```
-
-### 8. Логи и диагностика
-
-```bash
-sudo journalctl -u open-finance -f          # логи приложения
-docker logs -f openfinance-postgres         # логи БД
-docker logs -f openfinance-redis            # логи Redis
-docker exec -it openfinance-postgres psql -U openfinance_user -d openfinance_dev   # psql shell
-```
-
-## Структура
+## Структура проекта
 
 ```
-open-finance/
-├── src/
-│   ├── app/                # Next.js App Router (страницы и API)
-│   ├── modules/            # Бизнес-модули (cashflow, taxes, inbox, ...)
-│   ├── components/         # UI компоненты
-│   └── lib/
-│       ├── db/             # Drizzle schemas
-│       ├── ai/             # AI orchestrator + tools + memory (RAG)
-│       └── env.ts          # type-safe env
-├── drizzle/                # Миграции и SQL init
-├── docs/                   # Документация для AI и людей
-└── docker-compose.yml      # Postgres + Redis для разработки
+src/
+  app/            # маршруты Next.js: страницы (app/app/**), API (app/api/**), вход (app/(auth))
+  components/     # UI-компоненты по доменам
+  lib/
+    marketplaces/ # Ozon: клиент, синк, маппинг, upsert
+    unit-economics/ # калькуляторы и тарифы
+    stock/        # склад, поставки, себестоимость
+    cashflow/     # банк и транзакции
+    metrics/      # слой метрик (чистые модули, в разработке)
+    blocks/       # конструктор блоков для сводной
+    ai/           # провайдеры, vision, чат, tools (каркас)
+    auth/         # JWT-сессии, гварды tenant
+    db/           # схема Drizzle
+    inbox/        # почта и распознавание чеков
+drizzle/          # миграции и init-SQL
+scripts/          # CLI: админ, синк, smoke-тесты
+docs/             # документация
+deploy/           # юниты и скрипты сервера: автосинк Ozon, бэкап, VPN для AI (xray), консоль состояния
 ```
+
+Принципы: плоская структура, явные импорты, никакой магии (декораторов, DI). Идентификатор арендатора (`tenant_id`) есть в таблицах и берётся только из сессии, это исторически сложившаяся модель изоляции ([docs/TENANT_SCOPING.md](docs/TENANT_SCOPING.md)).
 
 ## Документация
 
-- [`PLAN.md`](./PLAN.md) — полный план продукта (1300+ строк)
-- [`MEMORY.md`](./MEMORY.md) — компактный контекст для AI-агентов
-- [`CLAUDE.md`](./CLAUDE.md) — правила для Claude Code
-- [`AGENTS.md`](./AGENTS.md) — правила для любого AI-агента
-- [`docs/SECURITY.md`](./docs/SECURITY.md) — безопасность и защита от утечек
-- [`docs/BILLING.md`](./docs/BILLING.md) — реализация биллинга
-- [`docs/LICENSING.md`](./docs/LICENSING.md) — лицензирование Tauri-версии
-- [`docs/MODULES.md`](./docs/MODULES.md) — как добавить модуль
-- [`docs/AI_TOOLS.md`](./docs/AI_TOOLS.md) — реестр AI-инструментов
-- [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — карта архитектуры
-- [`docs/LOCAL_AI.md`](./docs/LOCAL_AI.md) — локальный AI через Ollama в dev
-- [`docs/PERSONAL_USE.md`](./docs/PERSONAL_USE.md) — инструкция для личного self-hosted инстанса
-- [`docs/DEPLOY_RPI5.md`](./docs/DEPLOY_RPI5.md) — деплой на Raspberry Pi 5 (фазы A-H, рутина обновления в §10)
-- [`docs/LK_V2_PLAN.md`](./docs/LK_V2_PLAN.md) — план ЛК v2: воркспейсы, переработка блоков, VLESS-VPN
-- [`docs/TENANT_SCOPING.md`](./docs/TENANT_SCOPING.md) — tenant-гейт `requireTenant()` (вместо Postgres RLS)
-- [`docs/SECURITY_AUDIT.md`](./docs/SECURITY_AUDIT.md) — аудит безопасности, статусы находок I1-I7
-- [`docs/DESKTOP_PLAN.md`](./docs/DESKTOP_PLAN.md) — план local-first десктоп-приложения (оркестрация для AI-агента)
-- [`docs/DESKTOP_STRATEGY.md`](./docs/DESKTOP_STRATEGY.md) — выбор стека десктопа (Tauri vs Electron)
-- [`docs/ONBOARDING.md`](./docs/ONBOARDING.md) — спецификация onboarding-визарда
-- [`FEED.md`](./FEED.md) — заготовки постов для Telegram-канала
-- [`CHANGELOG.md`](./CHANGELOG.md) — история изменений
+| Файл | О чём |
+|---|---|
+| [docs/HUB_PLAN.md](docs/HUB_PLAN.md) | цель, карта проекта, архитектура и этапы (канон) |
+| [docs/METRICS_LAYER_DESIGN.md](docs/METRICS_LAYER_DESIGN.md) | дизайн слоя метрик |
+| [docs/STOCK_MODULE_DESIGN.md](docs/STOCK_MODULE_DESIGN.md) | склад, поставки, себестоимость |
+| [docs/UNIT_ECONOMICS_TABS.md](docs/UNIT_ECONOMICS_TABS.md) | вкладки юнит-экономики |
+| [docs/MARKETPLACES_OZON_PERFORMANCE.md](docs/MARKETPLACES_OZON_PERFORMANCE.md) | Ozon Performance API |
+| [docs/LOCAL_RUN.md](docs/LOCAL_RUN.md) | локальный запуск на ПК |
+| [docs/DEPLOY_RPI5.md](docs/DEPLOY_RPI5.md) | деплой на Raspberry Pi 5 (прежний сервер) |
+| [docs/BACKUP_RESTORE.md](docs/BACKUP_RESTORE.md) | бэкап и восстановление |
+| [docs/SECURITY.md](docs/SECURITY.md) | правила работы с секретами и сетью |
+| [docs/AI_TOOLS.md](docs/AI_TOOLS.md) | реестр AI-инструментов |
+| [docs/PAGE_PERIODS.md](docs/PAGE_PERIODS.md) | система периодов страниц |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | карта архитектуры (часть блоков — план) |
+| [CHANGELOG.md](CHANGELOG.md) | история версий |
 
-## Open Source
+Документы про SaaS-запуск, биллинг и десктоп ([docs/BILLING.md](docs/BILLING.md), [docs/DESKTOP_PLAN.md](docs/DESKTOP_PLAN.md), [docs/ROADMAP_V2.md](docs/ROADMAP_V2.md)) отражают прежний курс и сохранены как история.
 
-Весь код открыт (MIT), все функции доступны без оплаты. Нюансы из SaaS-прошлого проекта:
+В репозитории есть `CLAUDE.md`, `AGENTS.md`, `START.md`, `MEMORY.md` и каталог `.claude/`: это правила и память для AI-агентов, которые ведут разработку. Для запуска проекта они не нужны.
 
-- **Планы/биллинг** — в коде остался plan-гейт (free/trial → 1 магазин маркетплейса) и mock-биллинг. Для self-hosted задайте `FEATURE_DEFAULT_PLAN=pro` — все лимиты сняты, платёжные ключи не нужны (`FEATURE_BILLING_MOCK=true` по умолчанию).
-- **Внешние сервисы опциональны** — SMTP, SmartCaptcha, Sentry, AI-ключи: пусто = выключено/fallback. AI работает локально через Ollama.
-- **Десктоп (local-first)** — план отдельного Tauri-приложения: [`docs/DESKTOP_PLAN.md`](./docs/DESKTOP_PLAN.md).
+## Безопасность
 
-Подробная инструкция для личного инстанса: [`docs/PERSONAL_USE.md`](./docs/PERSONAL_USE.md).
+- Секреты (`.env.local`, ключи API, пароли, токены) хранятся только на вашей машине и никогда не коммитятся. `.env.local` в `.gitignore`.
+- Значения в `.env.example` являются заглушками для локальной разработки. Перед любым развёртыванием вне своей машины замените все пароли и ключи.
+- Не открывайте приложение в интернет без защищённого канала (VPN, обратный прокси с аутентификацией). Модель проекта рассчитана на доступ из закрытой сети.
+- Ключи маркетплейсов и почты шифруются в базе; не теряйте `MARKETPLACE_SECRET_KEY` и `INBOX_SECRET_KEY`.
+- О найденных уязвимостях сообщайте приватно: через GitHub Security Advisories («Report a vulnerability» на вкладке Security репозитория), не публичным issue. Публичное описание уязвимости до исправления просим не размещать.
 
-## Контрибьюшен
+Подробнее: [docs/SECURITY.md](docs/SECURITY.md), [docs/SECURITY_AUDIT.md](docs/SECURITY_AUDIT.md).
 
-Issue и PR приветствуются. Перед PR: `pnpm typecheck && pnpm build`, правила для AI-агентов — в [`AGENTS.md`](./AGENTS.md), безопасность — [`docs/SECURITY.md`](./docs/SECURITY.md) и [`docs/TENANT_SCOPING.md`](./docs/TENANT_SCOPING.md).
+## Участие в разработке
+
+Проект ведётся в первую очередь под нужды одного владельца, но issue и pull request приветствуются.
+
+1. Откройте issue с описанием проблемы или идеи до крупного изменения.
+2. Перед PR прогоните `pnpm typecheck`, `pnpm lint` и релевантные `scripts/test-*.ts`.
+3. Соблюдайте ограничения: Drizzle (не Prisma), pnpm (не npm/yarn), явные импорты, новый файл начинается с комментария `// PURPOSE: ...`, запросы к БД фильтруются по `tenant_id` из сессии.
+4. Миграции БД не применяйте автоматически, опишите их в PR.
+5. Не добавляйте в коммиты секреты и реальные бизнес-данные.
 
 ## Лицензия
 
-[MIT](./LICENSE)
-
----
-
-Made with care for ИП и фрилансеров РФ.
+MIT, см. файл [LICENSE](LICENSE). Автор в файле указан как «Open Finance contributors».

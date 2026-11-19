@@ -1,0 +1,117 @@
+---
+description: Drizzle ORM, schema, migrations, multi-tenant rules
+globs:
+  - "src/lib/db/**"
+  - "drizzle/**"
+  - "src/lib/workspaces/**"
+  - "src/app/api/workspaces/**"
+---
+
+# Drizzle ORM rules
+
+## Multi-tenant — критично
+
+ВСЕ таблицы должны иметь `tenant_id`. ВСЕ запросы фильтруются по нему:
+
+```typescript
+import { pgTable, uuid } from 'drizzle-orm/pg-core';
+import { tenants } from './tenants';
+
+export const myTable = pgTable('my_table', {
+  id: uuid().defaultRandom().primaryKey(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
+  // ...
+});
+```
+
+**Postgres RLS в проекте НЕ используется** (по аудиту I1 выбран review-gate на уровне приложения). Канон tenant-скоупа — `security.mdc` (раздел «Tenant isolation») + **`docs/TENANT_SCOPING.md`**: `tenantId` берётся ТОЛЬКО из сессии через `requireTenant()` / `requireTenantRoute()` (`src/lib/auth/guards.ts`), проверка — `pnpm check:tenant-isolation`. Здесь — только DB-специфика: колонка `tenant_id NOT NULL` + FK на `tenants` в каждой таблице, индексы по `tenant_id`.
+
+### Workspace-скоуп (пользовательские раскладки и вкладки)
+
+Таблицы, которые пользователь видит «внутри кабинета», скоупятся ещё и по воркспейсу — `tenant_id` для них НЕдостаточно:
+
+- `workspace_id uuid NOT NULL` + FK на `workspaces` (`onDelete: 'cascade'`), уникальность по `(workspace_id, page_key)`, а НЕ по `(tenant_id, user_id, page_key)`. Примеры: `src/lib/db/schema/block-layouts.ts`, `src/lib/db/schema/unit-economics-tabs.ts`.
+- Резолв активного кабинета — `src/lib/workspaces/{scope,active,queries}.ts` (кука `of_active_workspace`, `?workspaceId=` в layout-роутах).
+- Инвариант: `nav` и `board-*` всегда живут в default-воркспейсе (`getOrCreateDefaultWorkspace`).
+- Новую таблицу с пользовательскими раскладками/вкладками заводить сразу с `workspace_id`.
+
+## postgres.js gotchas
+
+- **НЕ передавать `Date` через `sql\`${dateObj}\``** — `pgClient.unsafe()` не применяет type-aware serializers → `TypeError`. Решение: `const fromIso = from.toISOString();` и `WHERE col >= ${fromIso}::timestamp` (или `::date`).
+- Затрагивает все routes Ozon-аналитики, currency, custom queries.
+- Drizzle insert/update API (`db.insert().values({col: Date})`) работает корректно.
+
+## Top-level try/catch в route handlers
+
+Без try/catch unhandled exception → Next возвращает HTML-500 → frontend падает `Unexpected end of JSON input`. ВСЕ routes:
+
+```typescript
+export async function GET(req: NextRequest) {
+  try {
+    // ...
+    return NextResponse.json({ ok: true, data });
+  } catch (error) {
+    console.error('[my-route]', error);
+    return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
+  }
+}
+```
+
+На клиенте — паттерн `parseJsonResponse(response)` (терпимый разбор JSON-ответа; пример — локальный helper в `src/lib/blocks/catalog/currency-rates.tsx`, общего модуля пока нет).
+
+## Миграции — НЕ запускать автоматически
+
+Давать пользователю команды:
+```bash
+pnpm db:generate            # сгенерировать из schema
+pnpm db:push                # применить напрямую (dev)
+pnpm db:migrate             # применить миграции (prod-style)
+```
+
+Manual SQL для drizzle/init/*.sql:
+```bash
+docker exec -i openfinance-postgres psql -U openfinance_user -d openfinance_dev < drizzle/init/XX-name.sql
+```
+
+## JSONB merge
+
+- Используем `unit_products.metadata || ${JSON.stringify(meta)}::jsonb`.
+- `JSON.stringify` обязателен (защита от инжектов с одиночными кавычками).
+- НЕ переходить к `string concat`.
+
+## onConflictDoUpdate — conditional updates
+
+Поздние стейджи sync не должны затирать поля от ранних. Использовать `sql\`unit_products.X\`` fallback:
+
+```typescript
+.onConflictDoUpdate({
+  target: [table.tenantId, table.marketplace, table.article],
+  set: {
+    priceKopecks: sql`COALESCE(${value}, unit_products.price_kopecks)`,
+    // ...
+  },
+})
+```
+
+См. `src/lib/marketplaces/ozon/upsert-plan.ts` — pure function для тестируемости.
+
+## pgvector / embeddings
+
+- `drizzle/init/02-vector-indexes.sql` — HNSW индексы для `embedding vector(1536)`.
+- При создании новой `*_embeddings` таблицы — добавить index в этот файл.
+- Hybrid search (semantic + full-text + RRF) — TODO в `src/lib/ai/memory/search.ts`.
+
+## Шифрование секретов в таблицах
+
+Колонки `*_enc` (`inbox_channels.secret_enc`, `marketplace_accounts.api_key_enc`) — AES-256-GCM. **Канон правил — `security.mdc` (раздел «Шифрование секретов»)**, здесь не дублируем: новую секретную колонку заводить только через `src/lib/inbox/crypto.ts`, на клиент отдавать `maskSecret()`.
+
+## Структура schema files
+
+- Один домен — один файл в `src/lib/db/schema/` (актуальный список — `ls src/lib/db/schema/`; ключевые: tenants, users, workspaces, transactions, boards, block-layouts, inbox, unit-economics, unit-economics-tabs, currency, marketplaces, ai, section-ai-reports, block-ai-reports, ozon-ai-insights, user-ai-credentials).
+- `relations()` определять рядом с таблицей.
+
+## После изменений schema
+
+1. `pnpm db:generate` → создаёт `drizzle/XXXX_*.sql`.
+2. Дать пользователю `pnpm db:push` или migration command.
+3. Обновить `MEMORY.md` в разделе соответствующего модуля.

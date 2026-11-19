@@ -179,6 +179,10 @@ export const StocksItemSchema = z
             type: z.string().optional(),
             present: z.number().optional(),
             reserved: z.number().optional(),
+            // Живой ответ (2026-11-19): SKU лежит здесь, у каждой записи остатка,
+            // а `item.sku` верхнего уровня Ozon не присылает. У одного товара
+            // бывает несколько SKU (разные записи fbs с разными sku).
+            sku: z.union([z.number(), z.string()]).optional(),
           })
           .passthrough(),
       )
@@ -192,15 +196,33 @@ export const StocksResponseSchema = z.object({
   cursor: z.string().optional(),
 });
 
-// ---- /v3/posting/fbs/list, /v2/posting/fbo/list --------------------------
+// ---- /v4/posting/fbs/list, /v3/posting/fbo/list --------------------------
+//
+// Оба метода (с 2026-04-30) — cursor-пагинация (`cursor` + `has_next`),
+// массив лежит в корне ответа (`postings`), НЕ в `result` как у v3/v2.
+// `limit` 1..100. Даты — RFC3339 date-time в UTC («2026-05-04T06:44:37Z»).
+// Цена товара: FBS v4 — объект `{ amount: "300", currency: "RUB" }`,
+// FBO v3 — строка «29990.00». Денежные/ключевые поля (posting_number,
+// status, sku, quantity, price) — ОБЯЗАТЕЛЬНЫЕ: отсутствие = смена контракта.
+
+/** Денежное значение: строка-число или `{ amount, currency }`. */
+/** Число и строка допускаются оба (int64/decimal у grpc-gateway бывают строкой);
+ *  строгую проверку значения делает маппер orders-map.ts. */
+export const OzonMoneySchema = z.union([
+  z.string(),
+  z.number(),
+  z
+    .object({ amount: z.union([z.string(), z.number()]), currency: z.string().optional() })
+    .passthrough(),
+]);
 
 export const PostingItemSchema = z
   .object({
-    sku: z.number().optional(),
+    sku: z.union([z.number(), z.string()]),
     name: z.string().optional(),
-    quantity: z.number().optional(),
-    offer_id: z.string().optional(),
-    price: z.string().optional(),
+    quantity: z.union([z.number(), z.string()]),
+    offer_id: z.string(),
+    price: OzonMoneySchema,
   })
   .passthrough();
 
@@ -213,25 +235,26 @@ export const FbsPostingSchema = z
     in_process_at: z.string().optional(),
     created_at: z.string().optional(),
     shipment_date: z.string().optional(),
-    delivering_date: z.string().optional(),
-    products: z.array(PostingItemSchema).optional(),
+    // Приходит null (справочник: "delivering_date": null) — не строка.
+    delivering_date: z.string().nullable().optional(),
+    products: z.array(PostingItemSchema),
     cancellation: z
       .object({
         cancel_reason_id: z.number().optional(),
         cancellation_initiator: z.string().optional(),
         cancellation_type: z.string().optional(),
-        cancelled_at: z.string().optional(),
+        cancelled_at: z.string().nullable().optional(),
       })
       .passthrough()
+      .nullable()
       .optional(),
   })
   .passthrough();
 
 export const FbsPostingsResponseSchema = z.object({
-  result: z.object({
-    postings: z.array(FbsPostingSchema).optional(),
-    has_next: z.boolean().optional(),
-  }),
+  postings: z.array(FbsPostingSchema),
+  has_next: z.boolean(),
+  cursor: z.string().optional(),
 });
 
 export const FboPostingSchema = z
@@ -242,12 +265,14 @@ export const FboPostingSchema = z
     status: z.string(),
     created_at: z.string().optional(),
     in_process_at: z.string().optional(),
-    products: z.array(PostingItemSchema).optional(),
+    products: z.array(PostingItemSchema),
   })
   .passthrough();
 
 export const FboPostingsResponseSchema = z.object({
-  result: z.array(FboPostingSchema).optional(),
+  postings: z.array(FboPostingSchema),
+  has_next: z.boolean(),
+  cursor: z.string().optional(),
 });
 
 // ---- /v2/finance/realization ---------------------------------------------
@@ -363,6 +388,9 @@ export const RealizationResponseSchema = z
   .passthrough();
 
 // ---- /v3/finance/transaction/list -----------------------------------------
+// LEGACY: метод отключён Ozon (400 obsolete с 12.09.2026, 404 с 06.10.2026).
+// Схема оставлена для стейджа `transactions` (вне набора по умолчанию) и
+// истории в ozon_transactions. Замена — /v1/finance/accrual/* ниже.
 
 export const TransactionOperationSchema = z
   .object({
@@ -394,6 +422,215 @@ export const TransactionListResponseSchema = z.object({
     .passthrough()
     .optional(),
 });
+
+// ---- /v1/finance/accrual/{by-day,types,postings} ---------------------------
+// Замена `/v3/finance/transaction/list` (справочник: «Метод устаревает и будет
+// отключён 6 июля 2026 года. Переключитесь на /v1/finance/accrual/postings,
+// /v1/finance/accrual/types, /v1/finance/accrual/by-day»; на проде с 12.09.2026
+// — 400 obsolete, с 06.10.2026 — 404). Методы помечены в справочнике бета.
+//
+// Справочник раскрывает только верхний уровень схем; вложенные объекты взяты
+// из ПРИМЕРОВ ответа (Redoc). Описаний вложенных полей (знак суммы, зона даты,
+// значения enum `accrued_category`, что такое `unit_number`) в справочнике НЕТ —
+// см. шапку accruals-map.ts.
+//
+// ПРАВИЛО (v0.54.0): денежные и ключевые поля — БЕЗ `.optional()`, вызов —
+// `{ strict: true }`. Дрейф формы обязан ронять день, а не писать нули.
+
+/** Деньги Ozon: `{ amount: "string", currency: "string" }`. Число тоже принимаем. */
+export const AccrualMoneySchema = z
+  .object({
+    amount: z.union([z.string(), z.number()]),
+    currency: z.string().nullable().optional(),
+  })
+  .passthrough();
+
+/**
+ * Деньги, где справочник сам показывает `amount: null` (услуги доставки в
+ * примере by-day). null не превращается в 0 — маппинг пропускает строку с
+ * предупреждением.
+ */
+const AccrualMoneyNullableSchema = z
+  .object({
+    amount: z.union([z.string(), z.number()]).nullable(),
+    currency: z.string().nullable().optional(),
+  })
+  .passthrough();
+
+/** int32/int64 у grpc-gateway бывает строкой. */
+const AccrualIntSchema = z.union([z.number(), z.string()]);
+
+/** Сбор по товару: `item_fees.fees[].fees[]`. */
+export const AccrualFeeSchema = z
+  .object({
+    accrued: AccrualMoneySchema,
+    type_id: AccrualIntSchema,
+  })
+  .passthrough();
+
+export const AccrualItemFeesSchema = z
+  .object({
+    fees: z
+      .array(
+        z
+          .object({
+            sku: AccrualIntSchema,
+            quantity: AccrualIntSchema.nullable().optional(),
+            fees: z.array(AccrualFeeSchema),
+          })
+          .passthrough(),
+      )
+      .nullable()
+      .optional(),
+  })
+  .passthrough();
+
+/** Разбивка комиссии по товару отправления (`posting.products[].commission`). */
+export const AccrualProductCommissionSchema = z
+  .object({
+    bonus: AccrualMoneySchema.nullable().optional(),
+    coinvestment: AccrualMoneySchema.nullable().optional(),
+    commission: AccrualMoneySchema.nullable().optional(),
+    commission_ratio: z.union([z.string(), z.number()]).nullable().optional(),
+    sale_amount: AccrualMoneySchema.nullable().optional(),
+    sale_commission: AccrualMoneySchema.nullable().optional(),
+    sale_price: AccrualMoneySchema.nullable().optional(),
+    seller_price: AccrualMoneySchema.nullable().optional(),
+  })
+  .passthrough();
+
+export const AccrualPostingProductSchema = z
+  .object({
+    sku: AccrualIntSchema,
+    quantity: AccrualIntSchema.nullable().optional(),
+    commission: AccrualProductCommissionSchema.nullable().optional(),
+    delivery: z
+      .object({
+        services: z
+          .array(
+            z
+              .object({
+                accrued: AccrualMoneyNullableSchema,
+                type_id: AccrualIntSchema,
+              })
+              .passthrough(),
+          )
+          .nullable()
+          .optional(),
+        total_accrued: AccrualMoneySchema.nullable().optional(),
+      })
+      .passthrough()
+      .nullable()
+      .optional(),
+  })
+  .passthrough();
+
+/** Одно начисление из `/v1/finance/accrual/by-day`. */
+export const AccrualByDaySchema = z
+  .object({
+    /** Итог начисления — ключевое денежное поле, обязательно. */
+    total_amount: AccrualMoneySchema,
+    /**
+     * Устойчивый id начисления (живой ответ 2026-11-19). number; строкой тоже.
+     * Не обязателен: справочник его не описывал.
+     */
+    accrual_id: AccrualIntSchema.nullable().optional(),
+    /**
+     * В ЖИВОМ ответе верхнего `type_id` НЕТ (только в строках: item_fees,
+     * non_item_fee, posting.products[].delivery.services). Поле из справочника
+     * оставлено необязательным на случай, если Ozon его вернёт.
+     */
+    type_id: AccrualIntSchema.nullable().optional(),
+    /** Дата начисления. Формат и зона в справочнике не описаны. */
+    date: z.string(),
+    accrued_category: z.string().nullable().optional(),
+    unit_number: z.string().nullable().optional(),
+    item_fees: AccrualItemFeesSchema.nullable().optional(),
+    non_item_fee: z
+      .object({
+        accrued: AccrualMoneySchema,
+        type_id: AccrualIntSchema,
+      })
+      .passthrough()
+      .nullable()
+      .optional(),
+    posting: z
+      .object({
+        delivery_schema: z.string().nullable().optional(),
+        delivery_speed: z.union([z.number(), z.string()]).nullable().optional(),
+        products: z.array(AccrualPostingProductSchema).nullable().optional(),
+      })
+      .passthrough()
+      .nullable()
+      .optional(),
+  })
+  .passthrough();
+
+/**
+ * Ответ `/v1/finance/accrual/by-day`: `{ accruals: [...], last_id }` — верхний
+ * уровень, без обёртки `result` (пример ответа в справочнике).
+ * `accruals` ОБЯЗАТЕЛЕН: тело без него (`{}`, `{accruals:null}`,
+ * `{result:{...}}`, `{code,message}` с HTTP 200) — дрейф формы, а не «пустой
+ * день». Иначе синк заменил бы уже записанный день пустым набором. Если живой
+ * API опускает пустой массив, день станет красным (видно), а не тихо стёртым.
+ */
+export const AccrualByDayResponseSchema = z
+  .object({
+    accruals: z.array(AccrualByDaySchema),
+    last_id: z.string().nullable().optional(),
+  })
+  .passthrough();
+
+/** Ответ `/v1/finance/accrual/types`: `{ accrual_types: [{ id, name, description }] }`. */
+export const AccrualTypesResponseSchema = z
+  .object({
+    accrual_types: z.array(
+      z
+        .object({
+          id: AccrualIntSchema,
+          name: z.string(),
+          description: z.string().nullable().optional(),
+        })
+        .passthrough(),
+    ),
+  })
+  .passthrough();
+
+/**
+ * Ответ `/v1/finance/accrual/postings` (запрос `posting_numbers` 1..200):
+ * начисления по отправлениям — единственный из трёх методов с КОЛИЧЕСТВОМ.
+ * Стейджем пока не используется (номер отправления by-day отдаёт в
+ * `unit_number` у POSTING, количество — в `quantity`; см. accruals-map.ts).
+ * Клиент заведён для обогащения после проверки живого ответа.
+ */
+export const AccrualPostingsResponseSchema = z
+  .object({
+    posting_accruals: z.array(
+      z
+        .object({
+          posting_number: z.string(),
+          accruals: z.array(
+            z
+              .object({
+                accrual_date: z.string(),
+                accrued: AccrualMoneySchema,
+                quantity: AccrualIntSchema.nullable().optional(),
+                seller_price: AccrualMoneySchema.nullable().optional(),
+                sku: AccrualIntSchema,
+                type_id: AccrualIntSchema,
+              })
+              .passthrough(),
+          ),
+        })
+        .passthrough(),
+    ),
+  })
+  .passthrough();
+
+export type AccrualByDay = z.infer<typeof AccrualByDaySchema>;
+export type AccrualByDayResponse = z.infer<typeof AccrualByDayResponseSchema>;
+export type AccrualTypesResponse = z.infer<typeof AccrualTypesResponseSchema>;
+export type AccrualPostingsResponse = z.infer<typeof AccrualPostingsResponseSchema>;
 
 // ---- /v1/analytics/data --------------------------------------------------
 // Родной аналитический endpoint Ozon (Seller API). Возвращает агрегированные
@@ -476,79 +713,72 @@ export const StockOnWarehousesResponseSchema = z
 
 export type StockOnWarehousesRow = z.infer<typeof StockOnWarehousesRowSchema>;
 
-// ---- /v1/warehouse/list (FBS/rFBS склады продавца) ------------------------
+// ---- /v2/warehouse/list (FBS/rFBS склады продавца) ------------------------
+//
+// Справочник: запрос `{ limit (обяз., <=200), cursor, warehouse_ids }`,
+// ответ `{ cursor, warehouses: [...], has_next }`. `/v1/warehouse/list`
+// отключается 07.04.2026 (замена — v2).
 //
 // Ozon Seller API — grpc-gateway, поэтому int64 в JSON приходит и числом,
 // и строкой: `warehouse_id` всегда через `z.union([string, number])`.
-// Все поля optional + `.passthrough()`: клиент lenient, а форма ответа у
-// Ozon исторически дрейфует (см. `/v1/cluster/list`, где `clusters` на
-// части аккаунтов зовётся `list`).
+// Ключевые поля (`warehouses`, `warehouse_id`, `name`) обязательны: клиент
+// lenient (Zod fail → warn + raw), поэтому дрейф формы ловит чистый модуль
+// `fbs-stocks-map.ts` и выносит его в `StageResult.warnings`.
+// `has_next` в примере справочника — строка "string", в описании boolean:
+// принимаем оба.
 
 export const FbsWarehouseSchema = z
   .object({
-    warehouse_id: z.union([z.string(), z.number()]).optional(),
-    name: z.string().optional(),
+    warehouse_id: z.union([z.string(), z.number()]),
+    name: z.string(),
     /** `true` — rFBS-склад (доставка силами продавца). */
     is_rfbs: z.boolean().optional(),
     /** created / new / disabled / ... — статус склада в кабинете. */
     status: z.string().optional(),
-    /**
-     * Тип первой мили. Ozon отдаёт его двумя формами: строкой
-     * ('DropOff' | 'Pickup') либо объектом `{ first_mile_type: 'DropOff' }`.
-     */
-    first_mile_type: z
-      .union([
-        z.string(),
-        z
-          .object({ first_mile_type: z.string().optional() })
-          .passthrough(),
-      ])
-      .optional(),
+    /** Значения в справочнике не перечислены (в примере "string"). */
+    warehouse_type: z.string().optional(),
     is_kgt: z.boolean().optional(),
-    is_economy: z.boolean().optional(),
   })
   .passthrough();
 
 export const WarehouseListResponseSchema = z
   .object({
-    /** Каноническая форма: `{ result: [ ... ] }`. */
-    result: z
-      .union([
-        z.array(FbsWarehouseSchema),
-        z
-          .object({ warehouses: z.array(FbsWarehouseSchema).optional() })
-          .passthrough(),
-      ])
-      .optional(),
-    /** Встречается и плоский вариант без обёртки `result`. */
-    warehouses: z.array(FbsWarehouseSchema).optional(),
+    warehouses: z.array(FbsWarehouseSchema),
+    cursor: z.string().optional(),
+    has_next: z.union([z.boolean(), z.string()]).optional(),
   })
   .passthrough();
 
 export type FbsWarehouse = z.infer<typeof FbsWarehouseSchema>;
 
-// ---- /v1/product/info/stocks-by-warehouse/fbs -----------------------------
+// ---- /v2/product/info/stocks-by-warehouse/fbs -----------------------------
 //
-// Вход — список SKU (до FBS_STOCKS_SKU_CHUNK за запрос), пагинации нет.
-// Ответ: `{ result: [{ sku, fbs_sku, present, product_id, reserved,
-// warehouse_id, warehouse_name }] }`. `fbs_sku` — legacy-поле до унификации
-// FBO/FBS SKU, у части аккаунтов заполнено только оно.
+// Справочник: запрос `{ sku[] (<=1000), limit (обяз., <=1000), cursor }`,
+// ответ `{ cursor, has_next, products: [{ free_stock, offer_id, present,
+// product_id, reserved, sku, warehouse_id, warehouse_name }] }`.
+// `/v1/product/info/stocks-by-warehouse/fbs` отключается 07.04.2026.
+// Ключевые поля строки (`sku`, `warehouse_id`, `present`, `reserved`)
+// обязательны; `free_stock` — по справочнику есть в примере, описания нет.
 
 export const StocksByWarehouseFbsRowSchema = z
   .object({
-    sku: z.union([z.string(), z.number()]).optional(),
-    fbs_sku: z.union([z.string(), z.number()]).optional(),
+    sku: z.union([z.string(), z.number()]),
+    warehouse_id: z.union([z.string(), z.number()]),
+    // int64 у grpc-gateway может прийти числовой строкой.
+    present: z.union([z.number(), z.string()]),
+    reserved: z.union([z.number(), z.string()]),
+    free_stock: z.union([z.number(), z.string()]).optional(),
     product_id: z.union([z.string(), z.number()]).optional(),
-    present: z.number().optional(),
-    reserved: z.number().optional(),
-    warehouse_id: z.union([z.string(), z.number()]).optional(),
+    offer_id: z.string().optional(),
     warehouse_name: z.string().optional(),
   })
   .passthrough();
 
 export const StocksByWarehouseFbsResponseSchema = z
   .object({
-    result: z.array(StocksByWarehouseFbsRowSchema).optional(),
+    products: z.array(StocksByWarehouseFbsRowSchema),
+    cursor: z.string().optional(),
+    has_next: z.union([z.boolean(), z.string()]).optional(),
   })
   .passthrough();
 

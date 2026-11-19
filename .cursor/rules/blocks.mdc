@@ -1,0 +1,76 @@
+---
+description: BlockGrid и каталог блоков — инварианты, гайдлайны добавления
+globs:
+  - "src/lib/blocks/**"
+  - "src/components/blocks/**"
+  - "src/lib/workspaces/**"
+  - "src/components/workspaces/**"
+---
+
+# Block-Grid invariants
+
+Каждая страница приложения = `<BlockGrid />`. Новая фича = новый block type в `src/lib/blocks/catalog/`, а не отдельная static page.
+
+## Grid
+
+- 12 колонок, `rowHeight=40`, `margin=[10,10]`.
+- `BlockDef` обязан иметь `defaultSize`, `minSize`, `iconName` (string для RSC).
+- Адаптивный render через `useBlockDensity()` (`xs/sm/md/lg`).
+- Publishing значений через `useBlockValuePublisher(instance.id, {value, __money, __labels})`.
+
+## Hooks rules
+
+- **`useBlockValuePublisher` ВЫШЕ early-returns** (rules-of-hooks). При гейтах (`loading`, `error`, `!account`) считать диагностику через `account?.field ?? ''` ДО early returns.
+- **`useMemo`/`useState`/`useEffect` ВЫШЕ density early-returns** в Block-Render компонентах.
+- **`DndContext id={useId()}`** при >1 на странице — иначе hydration mismatch через `aria-describedby`.
+- **Любое UI-состояние блока, которое должно пережить ре-рендер, персистить в `config` через `onConfigChange`** — локальный `useState` сбрасывается на дефолт (грабля `compareMode` в Ozon KPI). Для стабильных row-колбэков в тяжёлых таблицах держать `configRef`/`onConfigChangeRef`, а не класть `config` в deps.
+
+## RSC / Server Component
+
+- **НЕ передавать `BlockDef` через RSC props** — catalog файлы `'use client'` → opaque proxy.
+- Для иконок использовать `b.iconName` (string из `BLOCK_META` в `registry.ts`), НЕ `b.icon.displayName`.
+- `listAllBlocks()` вызывать ВНУТРИ Client Component (как в `MarketplaceClient`).
+- **НЕ использовать `sanitizeBlocks` на сервере** — client-only catalog пуст в server bundle.
+
+## Source binding & cross-page связи
+
+- `KPI`/`chart`/`top-categories`/`kpi.grid` имеют `sourceBinding: 'empty' | 'global' | {block, blockId, pageKey?}`.
+- Дефолт для новых блоков = `empty` (placeholder с CTA).
+- `cashflow.transactions` публикует `__txFilters` через `useBlockValuePublisher`.
+- Cross-page связи: `block.dependencies.sources` + `@`-refs из config (`collectRefsFromConfig` рекурсивно).
+
+## Sticky cells
+
+- Background ВСЕГДА `bg-card` (НЕ `/95`, НЕ `backdrop-blur`).
+- `overflow:hidden isolate` на каждой sticky-ячейке.
+- z-index: header `45`, totals `35`, body `30`, sticky totals `36`.
+- На последней sticky-колонке `boxShadow: '1px 0 0 0 var(--border)'`.
+
+## Money / format
+
+- `__money: 'col1,col2'` обязателен у KPI, публикующих рубли.
+- Money detection в формулах — `moneyRefs[ref] = sourceFieldIsMoney(...)` в config.
+- Курс — НЕ money (90.5 / 100 = 0.91₽). Currency публикует как `format: 'number'`.
+- `minContentSize` блокирует ресайз если блок умеет сам скроллиться.
+
+## Appearance
+
+- Рамка `appearance.borderColor` — через absolute-overlay `<div className="pointer-events-none absolute inset-0 z-20" style={{boxShadow: 'inset 0 0 0 2px {color}'}}>`. НЕ через `boxShadow inset` на wrapper'е.
+- Палитры — `flex flex-wrap gap-1.5 shrink-0`. НЕ `grid-cols-N`.
+- Active-ring — `boxShadow: '0 0 0 Npx hsl(var(--background)), 0 0 0 Mpx {color}'`.
+- **`min-w-0` обязателен** корневым контейнерам шагов/секций внутри `DialogContent`: у него `display:grid`, а у grid-item дефолт `min-width:auto` → `truncate`/`overflow` не сжимаются ниже min-content и длинный неразрывный токен (формула, артикул) распирает модалку. В sticky-ячейках по той же причине — `flex + min-w-0` (НЕ `inline-flex`).
+
+## Добавить новый блок
+
+Каноническая процедура (9 шагов, включая block-skill для ИИ и конвенции publisher'а) — **`.claude/skills/of-new-block/SKILL.md`**. Кратко: catalog-файл → `registry.ts` (`ALL_BLOCKS` + `BLOCK_META`) → `TYPE_LABELS`/`CATEGORY_ORDER` в `src/app/api/blocks/sources/route.ts` → publisher (`fieldsForBlock`) → SettingsForm → block-skill.
+
+Реестр модулей — `src/lib/modules/registry.ts`. (`docs/MODULES.md` — исторический документ: описывает `src/modules/{name}/` + tRPC, которых в проекте нет.)
+
+## Workspace-скоуп раскладок
+
+Раскладки блоков хранятся **per-workspace**: `block_layouts.workspace_id NOT NULL`, uniq `(workspace_id, page_key)` — НЕ `(tenant, user, page_key)`. Активный кабинет резолвится в `src/lib/workspaces/{scope,active}.ts` (кука `of_active_workspace`, `?workspaceId=` в layout-роутах); `nav` и `board-*` всегда живут в default-воркспейсе. Новый код, читающий/пишущий раскладки, обязан проходить через этот резолв, а не только через `tenant_id`. Детали схемы — `drizzle.mdc` → «Workspace-скоуп».
+
+## Перед коммитом
+
+- `pnpm build` (ESLint ловит rules-of-hooks).
+- Обновить `MEMORY.md` если новые инварианты/грабли.

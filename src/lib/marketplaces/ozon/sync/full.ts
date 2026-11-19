@@ -24,6 +24,7 @@ import { syncStocksStage } from './stocks';
 import { syncOrdersStage } from './orders';
 import { syncRealizationStage } from './realization';
 import { syncTransactionsStage } from './transactions';
+import { syncAccrualsStage } from './accruals';
 import { syncTurnoverStage } from './turnover';
 import { syncPerfCampaignsStage } from './perf-campaigns';
 import { syncPerfSkuStatsStage } from './perf-sku-stats';
@@ -37,6 +38,7 @@ import { syncFbsWarehouseStocksStage } from './fbs-warehouse-stocks';
 import type { StageContext, StageResult } from './types';
 import {
   OZON_FULL_STAGES,
+  OZON_LEGACY_STAGES,
   DEFAULT_OZON_SYNC_SETTINGS,
   type OzonStageKind,
 } from '@/lib/marketplaces/types';
@@ -52,6 +54,8 @@ const STAGE_RUNNERS: Record<OzonStageKind, (ctx: StageContext) => Promise<StageR
   analyticsData: syncAnalyticsDataStage,
   orders: syncOrdersStage,
   realization: syncRealizationStage,
+  accruals: syncAccrualsStage,
+  // LEGACY (OZON_LEGACY_STAGES): только явный запуск.
   transactions: syncTransactionsStage,
   turnover: syncTurnoverStage,
   clusters: syncClustersStage,
@@ -99,6 +103,20 @@ export type RunFullSyncArgs = {
   /** v0.22.1: Принудительная перезапись (см. StageContext.force). */
   force?: boolean;
 };
+
+/**
+ * Набор стейджей прогона: `onlyStage` — ровно он; иначе OZON_FULL_STAGES плюс
+ * устаревшие стейджи, которые явно включены в `stagesOverride` (true). Флаг
+ * `settings.transactions` устаревший стейдж НЕ включает: на проде он стоял у
+ * аккаунтов и делал каждый синк «partial» из-за отключённого метода.
+ */
+export function resolveStagesToRun(
+  args: Pick<RunFullSyncArgs, 'onlyStage' | 'stagesOverride'>,
+): OzonStageKind[] {
+  if (args.onlyStage) return [args.onlyStage];
+  const legacy = OZON_LEGACY_STAGES.filter((s) => args.stagesOverride?.[s] === true);
+  return [...OZON_FULL_STAGES, ...legacy];
+}
 
 export async function runFullSync(args: RunFullSyncArgs): Promise<void> {
   try {
@@ -184,9 +202,7 @@ async function runFullSyncInner(args: RunFullSyncArgs): Promise<void> {
     }
   > = {};
 
-  const stagesToRun = args.onlyStage
-    ? ([args.onlyStage] as OzonStageKind[])
-    : ([...OZON_FULL_STAGES] as OzonStageKind[]);
+  const stagesToRun = resolveStagesToRun(args);
 
   for (const stage of stagesToRun) {
     const overrideValue = args.stagesOverride?.[stage];

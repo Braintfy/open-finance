@@ -1,5 +1,6 @@
 // PURPOSE: Sync остатков по СОБСТВЕННЫМ складам продавца (FBS/rFBS) через
-// Seller API `/v1/warehouse/list` + `/v1/product/info/stocks-by-warehouse/fbs`.
+// Seller API `/v2/warehouse/list` + `/v2/product/info/stocks-by-warehouse/fbs`
+// (v1 обоих методов отключаются Ozon 07.04.2026).
 // Пишет в ту же таблицу `ozon_warehouse_stocks`, что и FBO-стейдж, но в своё
 // окно `source='FBS'` (Этап 2b LK_V2_PLAN).
 //
@@ -9,15 +10,17 @@
 // не были видны в системе вообще.
 //
 // Особенности контракта:
-//  - у `/v1/product/info/stocks-by-warehouse/fbs` НЕТ пагинации: «страница» —
-//    это список SKU во входе, поэтому список режется по FBS_STOCKS_SKU_CHUNK;
+//  - у `/v2/product/info/stocks-by-warehouse/fbs` вход — список SKU (<=1000), поэтому
+//    список режется по FBS_STOCKS_SKU_CHUNK, а строки ответа добираются курсором
+//    (`cursor`/`has_next`, внутри endpoints.ts);
 //  - список SKU берём из `/v4/product/info/stocks` (тот же источник, что у
 //    стейджа `stocks`) — стейдж самодостаточен и не зависит от того,
 //    синкался ли каталог в `unit_products`;
 //  - оттуда же берём подсказку «у SKU вообще есть FBS-остаток» и запрашиваем
 //    склады только по таким SKU (иначе на каталоге в 10k SKU это 20 лишних
 //    запросов на каждом синке чисто-FBO аккаунта);
-//  - `promised_amount` у FBS нет — Ozon отдаёт только present/reserved.
+//  - `promised_amount` у FBS нет — Ozon отдаёт present/reserved/free_stock;
+//    «доступно к продаже» = free_stock (fallback — present).
 //
 // Кластеры FBS-складам НЕ проставляются: справочник `/v1/cluster/list` — это
 // география фулфилмента Ozon, склады продавца в него не входят. Блок остатков
@@ -25,20 +28,21 @@
 // «Без кластера» (см. cluster-agg.ts).
 
 import {
-  getFbsWarehouseList,
-  getStocksByWarehouseFbs,
+  getFbsWarehouseListDetailed,
+  getStocksByWarehouseFbsDetailed,
   productInfoStocks,
   FBS_STOCKS_SKU_CHUNK,
-  type FbsWarehouseItem,
 } from '../endpoints';
+import {
+  buildFbsStockInsertRows,
+  type FbsWarehouseItem,
+  type WarehouseStockInsert,
+} from '../fbs-stocks-map';
 import { runStageWithTiming, type StageContext, type StageResult } from './types';
 import { replaceWarehouseStocksWindow } from './warehouse-stocks';
-import type { ozonWarehouseStocks } from '@/lib/db/schema/marketplaces';
 
 const CATALOG_PAGE_LIMIT = 1000;
 const CATALOG_MAX_PAGES = 50; // 50_000 SKU — с запасом
-
-type WarehouseStockInsert = typeof ozonWarehouseStocks.$inferInsert;
 
 type CatalogScan = {
   /** Все SKU каталога (fallback, если Ozon не отдал ни одной FBS-записи). */
@@ -50,6 +54,10 @@ type CatalogScan = {
   /** Встречался ли вообще `type='fbs'` в ответе (иначе контракт «уехал»). */
   sawFbsType: boolean;
   hitPageLimit: boolean;
+  /** Сколько товаров (items) вернул каталог — для проверки «форма не та». */
+  itemsSeen: number;
+  /** Был ли в первой странице ответа ключ `items` вообще. */
+  hadItemsKey: boolean;
 };
 
 /** Собирает SKU каталога через cursor-пагинацию `/v4/product/info/stocks`. */
@@ -58,8 +66,11 @@ async function scanCatalog(ctx: StageContext): Promise<CatalogScan> {
   const fbsSkus: string[] = [];
   const offerBySku = new Map<string, string>();
   const seen = new Set<string>();
+  const fbsSeen = new Set<string>();
   let sawFbsType = false;
   let hitPageLimit = false;
+  let itemsSeen = 0;
+  let hadItemsKey = false;
 
   let cursor = '';
   for (let page = 0; page < CATALOG_MAX_PAGES; page += 1) {
@@ -67,17 +78,31 @@ async function scanCatalog(ctx: StageContext): Promise<CatalogScan> {
       cursor,
       limit: CATALOG_PAGE_LIMIT,
     });
+    if (page === 0) hadItemsKey = Array.isArray(res.items);
     const items = res.items ?? [];
+    itemsSeen += items.length;
     for (const item of items) {
-      const sku = item.sku ? String(item.sku) : '';
-      if (!sku || seen.has(sku)) continue;
-      seen.add(sku);
-      allSkus.push(sku);
-      if (item.offer_id) offerBySku.set(sku, item.offer_id);
-      for (const st of item.stocks ?? []) {
+      // SKU берём из каждой записи `stocks[]` (живой ответ: у товара верхнего
+      // уровня `sku` нет; у одного товара может быть несколько SKU). `item.sku`
+      // остаётся запасным вариантом на случай старой формы ответа.
+      const fallbackSku = item.sku ? String(item.sku) : '';
+      const stocks = item.stocks ?? [];
+      const register = (sku: string) => {
+        if (!sku || seen.has(sku)) return;
+        seen.add(sku);
+        allSkus.push(sku);
+        if (item.offer_id) offerBySku.set(sku, item.offer_id);
+      };
+      register(fallbackSku);
+      for (const st of stocks) {
+        const sku = st.sku !== undefined && st.sku !== null && String(st.sku) !== '' ? String(st.sku) : fallbackSku;
+        register(sku);
         if ((st.type ?? '').toLowerCase() !== 'fbs') continue;
         sawFbsType = true;
-        if ((st.present ?? 0) + (st.reserved ?? 0) > 0) fbsSkus.push(sku);
+        if (sku && (st.present ?? 0) + (st.reserved ?? 0) > 0 && !fbsSeen.has(sku)) {
+          fbsSeen.add(sku);
+          fbsSkus.push(sku);
+        }
       }
     }
     if (!res.cursor || items.length === 0) break;
@@ -85,7 +110,7 @@ async function scanCatalog(ctx: StageContext): Promise<CatalogScan> {
     if (page === CATALOG_MAX_PAGES - 1) hitPageLimit = true;
   }
 
-  return { allSkus, fbsSkus, offerBySku, sawFbsType, hitPageLimit };
+  return { allSkus, fbsSkus, offerBySku, sawFbsType, hitPageLimit, itemsSeen, hadItemsKey };
 }
 
 export async function syncFbsWarehouseStocksStage(
@@ -95,25 +120,36 @@ export async function syncFbsWarehouseStocksStage(
     const warnings: string[] = [];
 
     // 1. Справочник своих складов: имя + тип (FBS/rFBS) + warehouse_id.
+    // Любой сбой (HTTP или дрейф формы) уходит в warnings, а не в console.
     let warehouses: FbsWarehouseItem[] = [];
     let warehouseListOk = true;
     try {
-      warehouses = await getFbsWarehouseList(ctx.client);
+      const wl = await getFbsWarehouseListDetailed(ctx.client);
+      warehouses = wl.items;
+      warehouseListOk = wl.shapeOk && wl.complete;
+      warnings.push(...wl.warnings);
+      if (!wl.shapeOk || !wl.complete) {
+        warnings.push(
+          'Справочник складов (POST /v2/warehouse/list) вернул неожиданную форму ответа или неполный список — ' +
+            'остатки сохранятся с типом FBS по умолчанию, пустой список не считается «складов нет».',
+        );
+      }
     } catch (e) {
       // Не роняем стейдж: имя склада приходит и в самих остатках, справочник
       // нужен лишь для warehouse_type и «красивого» имени.
       warehouseListOk = false;
       warnings.push(
-        `Справочник складов недоступен (POST /v1/warehouse/list): ${
+        `Справочник складов недоступен (POST /v2/warehouse/list): ${
           e instanceof Error ? e.message : String(e)
         }. Остатки сохранятся с типом FBS по умолчанию.`,
       );
     }
     const byWarehouseId = new Map(warehouses.map((w) => [w.warehouseId, w]));
 
-    // Складов нет и справочник ответил успешно → продавец не торгует со своих
-    // складов. Всё равно прогоняем замену окна: у аккаунта мог остаться
-    // снапшот от прежних складов, его надо погасить.
+    // Складов нет и справочник ответил корректно → продавец не торгует со
+    // своих складов. Всё равно прогоняем замену окна: у аккаунта мог остаться
+    // снапшот от прежних складов, его надо погасить. При сбое/дрейфе
+    // справочника (warehouseListOk=false) окно НЕ чистим.
     if (warehouseListOk && warehouses.length === 0) {
       await replaceWarehouseStocksWindow({
         tenantId: ctx.tenantId,
@@ -126,18 +162,32 @@ export async function syncFbsWarehouseStocksStage(
         itemsTotal: 0,
         warnings: [
           ...warnings,
-          'У аккаунта нет собственных складов (POST /v1/warehouse/list вернул пустой список) — FBS-остатков нет.',
+          'У аккаунта нет собственных складов (POST /v2/warehouse/list вернул пустой список) — FBS-остатков нет.',
         ],
       };
     }
 
     // 2. SKU каталога + подсказка «есть ли FBS-остаток».
     const catalog = await scanCatalog(ctx);
+    // Неполный или «не той формы» каталог не должен заменять снапшот: иначе
+    // окно FBS молча очищается (так и было до фикса 2026-11-19, когда SKU
+    // искали не в том поле). Пустое окно допустимо только если каталог
+    // действительно пуст или у всех SKU FBS-остаток 0.
     if (catalog.hitPageLimit) {
-      warnings.push(
-        `Достигнут лимит пагинации каталога: ${CATALOG_MAX_PAGES} страниц × ` +
-          `${CATALOG_PAGE_LIMIT} SKU. Часть SKU не проверена на FBS-остатки — ` +
-          'увеличьте CATALOG_MAX_PAGES в sync/fbs-warehouse-stocks.ts.',
+      throw new Error(
+        `Достигнут лимит пагинации каталога: ${CATALOG_MAX_PAGES} страниц × ${CATALOG_PAGE_LIMIT} SKU — ` +
+          'выборка неполная, снапшот FBS не заменён. Увеличьте CATALOG_MAX_PAGES в sync/fbs-warehouse-stocks.ts.',
+      );
+    }
+    if (!catalog.hadItemsKey) {
+      throw new Error(
+        'POST /v4/product/info/stocks: в ответе нет `items` — форма ответа изменилась, снапшот FBS не заменён.',
+      );
+    }
+    if (catalog.itemsSeen > 0 && catalog.allSkus.length === 0) {
+      throw new Error(
+        `POST /v4/product/info/stocks: ${catalog.itemsSeen} товаров, но ни одного SKU — ` +
+          'поле sku переехало, снапшот FBS не заменён.',
       );
     }
     const targetSkus = catalog.sawFbsType ? catalog.fbsSkus : catalog.allSkus;
@@ -148,40 +198,37 @@ export async function syncFbsWarehouseStocksStage(
       );
     }
 
-    // 3. Остатки по складам: чанки SKU (пагинации у метода нет).
+    // 3. Остатки по складам: чанки SKU, строки ответа — курсором (в endpoints).
     const rows: WarehouseStockInsert[] = [];
     let apiRows = 0;
     for (let i = 0; i < targetSkus.length; i += FBS_STOCKS_SKU_CHUNK) {
       const chunk = targetSkus.slice(i, i + FBS_STOCKS_SKU_CHUNK);
-      const part = await getStocksByWarehouseFbs(ctx.client, { sku: chunk });
-      apiRows += part.length;
-      for (const r of part) {
-        const meta = byWarehouseId.get(r.warehouseId) ?? null;
-        const warehouseName =
-          r.warehouseName || meta?.name || `Склад ${r.warehouseId}`;
-        // int64 → number: id складов Ozon (~1e13) заведомо меньше 2^53,
-        // но перестраховываемся, чтобы не записать искажённое значение.
-        const numericId = Number(r.warehouseId);
-        rows.push({
+      const part = await getStocksByWarehouseFbsDetailed(ctx.client, { sku: chunk });
+      apiRows += part.rows.length;
+      for (const w of part.warnings) if (!warnings.includes(w)) warnings.push(w);
+      if (!part.complete) {
+        // Обрыв пагинации: заменять окно частью строк нельзя — старый снапшот остаётся.
+        throw new Error(
+          'POST /v2/product/info/stocks-by-warehouse/fbs: выборка остатков неполная: ' +
+            part.warnings.join('; '),
+        );
+      }
+      if (!part.shapeOk) {
+        // Не заменяем окно пустым/неполным снапшотом: старые данные остаются.
+        throw new Error(
+          'POST /v2/product/info/stocks-by-warehouse/fbs вернул неожиданную форму ответа (нет products или массовый пропуск строк): ' +
+            part.warnings.join('; '),
+        );
+      }
+      rows.push(
+        ...buildFbsStockInsertRows({
           tenantId: ctx.tenantId,
           accountId: ctx.accountId,
-          sku: r.sku,
-          offerId: catalog.offerBySku.get(r.sku) ?? null,
-          warehouseName,
-          source: 'FBS',
-          warehouseId: Number.isSafeInteger(numericId) ? numericId : null,
-          warehouseType: meta?.warehouseType ?? 'FBS',
-          // Кластеры — только у фулфилмента Ozon (см. шапку файла).
-          clusterId: null,
-          clusterName: null,
-          clusterType: null,
-          freeToSellAmount: r.present,
-          // У FBS нет «ожидается»: Ozon отдаёт только present/reserved.
-          promisedAmount: 0,
-          reservedAmount: r.reserved,
-          raw: r.raw,
-        });
-      }
+          stocks: part.rows,
+          warehousesById: byWarehouseId,
+          offerBySku: catalog.offerBySku,
+        }),
+      );
       ctx.onProgress?.(Math.min(i + chunk.length, targetSkus.length), targetSkus.length);
     }
 

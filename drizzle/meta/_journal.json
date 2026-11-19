@@ -113,6 +113,13 @@
       "when": 1786722786743,
       "tag": "0015_stock_paired_legs",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1795008597709,
+      "tag": "0016_ozon_accruals",
+      "breakpoints": true
     }
   ]
 }

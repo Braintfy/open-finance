@@ -25,11 +25,23 @@ import {
   StockOnWarehousesResponseSchema,
   WarehouseListResponseSchema,
   StocksByWarehouseFbsResponseSchema,
+  AccrualPostingsResponseSchema,
+  type AccrualByDay,
   type AnalyticsDataResponse,
   type StockOnWarehousesRow,
-  type FbsWarehouse,
-  type StocksByWarehouseFbsRow,
 } from './types';
+import {
+  collectCursorPages,
+  parseStocksByWarehouseFbsPage,
+  parseWarehouseListPage,
+  type FbsWarehouseItem,
+  type FbsWarehouseStockRow,
+} from './fbs-stocks-map';
+import {
+  collectLastIdPages,
+  parseAccrualByDayPage,
+  MAX_ACCRUAL_PAGES_PER_DAY,
+} from './accruals-map';
 
 export const OZON_API_VERSION_MAP = {
   sellerInfo: '/v1/seller/info',
@@ -37,20 +49,29 @@ export const OZON_API_VERSION_MAP = {
   productInfoList: '/v3/product/info/list',
   productInfoPrices: '/v5/product/info/prices',
   productInfoStocks: '/v4/product/info/stocks',
-  postingFbsList: '/v3/posting/fbs/list',
-  postingFboList: '/v2/posting/fbo/list',
+  postingFbsList: '/v4/posting/fbs/list',
+  postingFboList: '/v3/posting/fbo/list',
   financeRealization: '/v2/finance/realization',
+  // LEGACY: отключён Ozon (400 obsolete с 12.09.2026, 404 с 06.10.2026).
+  // Замена — financeAccrual* ниже; стейдж `transactions` вне набора по умолчанию.
   financeTransactionList: '/v3/finance/transaction/list',
+  // Начисления (бета в справочнике): по дню, справочник типов, по отправлениям.
+  financeAccrualByDay: '/v1/finance/accrual/by-day',
+  financeAccrualTypes: '/v1/finance/accrual/types',
+  financeAccrualPostings: '/v1/finance/accrual/postings',
   analyticsTurnoverStocks: '/v1/analytics/turnover/stocks',
   // v2 заменяет deprecated `/v1/analytics/stock_on_warehouses` (тот же
   // запрос/ответ, новый путь — см. docs.ozon.ru/api/seller).
+  // Справочник: «В будущем метод будет отключён. Переключитесь на /v1/analytics/stocks».
+  // Формы разные (обязательный skus, кластерные метрики, нет promised_amount и
+  // названия склада; есть warehouse_id/warehouse_ids) — перевод отдельной задачей.
   analyticsStockOnWarehouses: '/v2/analytics/stock_on_warehouses',
   // Этап 2b LK_V2_PLAN: FBS-склады продавца. `stock_on_warehouses` (выше)
   // отдаёт ТОЛЬКО FBO-склады Ozon, поэтому собственные склады продавца
   // (у крупных селлеров их больше, чем FBO) требуют отдельной пары вызовов:
   // список складов + остатки по ним.
-  warehouseList: '/v1/warehouse/list',
-  productStocksByWarehouseFbs: '/v1/product/info/stocks-by-warehouse/fbs',
+  warehouseList: '/v2/warehouse/list',
+  productStocksByWarehouseFbs: '/v2/product/info/stocks-by-warehouse/fbs',
   // Справочник географических кластеров. Раньше пытались бить по
   // Performance API (`/api/client/cluster/list`) — оттуда приходил 404,
   // эндпойнт живёт ТОЛЬКО в Seller API.
@@ -157,27 +178,24 @@ export async function productInfoStocks(
   );
 }
 
+/** Максимум `limit` у /v4/posting/fbs/list и /v3/posting/fbo/list (справочник: [1..100]). */
+export const POSTING_LIST_PAGE_LIMIT = 100;
+
+/** Cursor-пагинация: первая страница — `cursor: ''`, дальше — из ответа. */
 export async function postingFbsList(
   client: OzonClient,
-  args: {
-    since: Date;
-    to: Date;
-    offset?: number;
-    limit?: number;
-    status?: string;
-  },
+  args: { since: Date; to: Date; cursor?: string; limit?: number },
 ) {
   return client.post(
     OZON_API_VERSION_MAP.postingFbsList,
     {
-      dir: 'DESC',
+      sort_dir: 'DESC',
       filter: {
         since: args.since.toISOString(),
         to: args.to.toISOString(),
-        status: args.status ?? '',
       },
-      limit: args.limit ?? 1000,
-      offset: args.offset ?? 0,
+      limit: args.limit ?? POSTING_LIST_PAGE_LIMIT,
+      cursor: args.cursor ?? '',
       with: { analytics_data: true, financial_data: true },
     },
     FbsPostingsResponseSchema,
@@ -186,19 +204,18 @@ export async function postingFbsList(
 
 export async function postingFboList(
   client: OzonClient,
-  args: { since: Date; to: Date; offset?: number; limit?: number },
+  args: { since: Date; to: Date; cursor?: string; limit?: number },
 ) {
   return client.post(
     OZON_API_VERSION_MAP.postingFboList,
     {
-      dir: 'DESC',
+      sort_dir: 'DESC',
       filter: {
         since: args.since.toISOString(),
         to: args.to.toISOString(),
-        status: '',
       },
-      limit: args.limit ?? 1000,
-      offset: args.offset ?? 0,
+      limit: args.limit ?? POSTING_LIST_PAGE_LIMIT,
+      cursor: args.cursor ?? '',
       with: { analytics_data: true, financial_data: true },
     },
     FboPostingsResponseSchema,
@@ -259,6 +276,84 @@ export async function financeTransactionList(
   );
 }
 
+// ---- Начисления /v1/finance/accrual/* --------------------------------------
+
+/**
+ * Одна страница начислений за день — `POST /v1/finance/accrual/by-day`.
+ * Запрос `{ date: 'YYYY-MM-DD', last_id }` (оба required; первая страница —
+ * `last_id: ''`), ответ `{ accruals, last_id }`.
+ *
+ * Схему здесь НЕ передаём: ответ валидирует чистый `parseAccrualByDayPage`
+ * (accruals-map.ts) — расхождение формы попадает в StageResult, а не в
+ * console.warn, и окно дня при этом не заменяется.
+ */
+export async function financeAccrualByDayPage(
+  client: OzonClient,
+  args: { date: string; lastId: string },
+): Promise<unknown> {
+  return client.post<unknown>(OZON_API_VERSION_MAP.financeAccrualByDay, {
+    date: args.date,
+    last_id: args.lastId,
+  });
+}
+
+/**
+ * Все начисления за день: last_id-пагинация до пустой страницы.
+ * `complete=false` — выборка оборвана, окно дня заменять нельзя.
+ */
+export async function getFinanceAccrualsByDay(
+  client: OzonClient,
+  args: { date: string },
+): Promise<{
+  accruals: AccrualByDay[];
+  shapeOk: boolean;
+  complete: boolean;
+  pages: number;
+  warnings: string[];
+}> {
+  const r = await collectLastIdPages<AccrualByDay>({
+    label: `/v1/finance/accrual/by-day ${args.date}`,
+    maxPages: MAX_ACCRUAL_PAGES_PER_DAY,
+    fetchPage: (lastId) => financeAccrualByDayPage(client, { date: args.date, lastId }),
+    parse: parseAccrualByDayPage,
+  });
+  return { accruals: r.items, shapeOk: r.shapeOk, complete: r.complete, pages: r.pages, warnings: r.warnings };
+}
+
+/**
+ * Справочник типов начислений — `POST /v1/finance/accrual/types` (тела
+ * запроса справочник не описывает — шлём `{}`). Валидирует `mapAccrualTypes`.
+ */
+export async function financeAccrualTypes(client: OzonClient): Promise<unknown> {
+  return client.post<unknown>(OZON_API_VERSION_MAP.financeAccrualTypes, {});
+}
+
+/** Максимум номеров в запросе `/v1/finance/accrual/postings` (справочник: [1..200]). */
+export const ACCRUAL_POSTINGS_MAX = 200;
+
+/**
+ * Начисления по отправлениям — `POST /v1/finance/accrual/postings`
+ * (`posting_numbers` 1..200). Единственный из методов с количеством.
+ * Стейджем пока не вызывается (by-day не отдаёт номер отправления); `strict`,
+ * чтобы будущий потребитель не получил нули при дрейфе формы.
+ */
+export async function financeAccrualPostings(
+  client: OzonClient,
+  args: { postingNumbers: string[] },
+) {
+  if (args.postingNumbers.length === 0 || args.postingNumbers.length > ACCRUAL_POSTINGS_MAX) {
+    throw new Error(
+      `/v1/finance/accrual/postings: нужно от 1 до ${ACCRUAL_POSTINGS_MAX} номеров, передано ${args.postingNumbers.length}`,
+    );
+  }
+  return client.post(
+    OZON_API_VERSION_MAP.financeAccrualPostings,
+    { posting_numbers: args.postingNumbers },
+    AccrualPostingsResponseSchema,
+    { strict: true },
+  );
+}
+
 export async function analyticsTurnoverStocks(
   client: OzonClient,
   args: { cursor?: string; limit?: number; sku?: number[] },
@@ -311,126 +406,104 @@ export async function analyticsStockOnWarehouses(
 
 // ---- FBS-склады продавца (Этап 2b) ---------------------------------------
 
-/** Нормализованный элемент справочника FBS/rFBS-складов продавца. */
-export type FbsWarehouseItem = {
-  /** int64 из Ozon, храним строкой (в JSON он приходит и числом, и строкой). */
-  warehouseId: string;
-  name: string;
-  /**
-   * `'rFBS'` если склад помечен `is_rfbs`, иначе `'FBS'`. Пишется в
-   * `ozon_warehouse_stocks.warehouse_type` — по нему в блоке видно, что
-   * склад собственный, а не фулфилмент Ozon.
-   */
-  warehouseType: 'FBS' | 'rFBS';
-  status: string | null;
-};
+export type { FbsWarehouseItem, FbsWarehouseStockRow };
+
+/** Предохранитель от бесконечной курсорной пагинации. */
+const FBS_MAX_PAGES = 100;
+/** `limit` у `/v2/warehouse/list` — максимум 200 (справочник). */
+const WAREHOUSE_LIST_LIMIT = 200;
+/** `limit` у `/v2/product/info/stocks-by-warehouse/fbs` — максимум 1000. */
+const FBS_STOCKS_PAGE_LIMIT = 1000;
 
 /**
  * Список собственных складов продавца (FBS/rFBS) — Seller API
- * `POST /v1/warehouse/list`. Тело запроса пустое.
+ * `POST /v2/warehouse/list` (замена `/v1/warehouse/list`, отключаемого
+ * 07.04.2026). Запрос `{ limit, cursor }`, ответ `{ warehouses, cursor, has_next }`.
  *
- * Ответ у Ozon встречается в трёх формах (все поддержаны схемой):
- * `{result: [...]}`, `{result: {warehouses: [...]}}`, `{warehouses: [...]}`.
- *
- * Клиент намеренно lenient (без `{strict: true}`): схема целиком из
- * `.optional()` + `.passthrough()`, а провал справочника складов не должен
- * ронять весь стейдж — остатки FBS всё равно несут `warehouse_name`.
+ * Клиент lenient (Zod fail → warn + raw), но дрейф формы НЕ глотается:
+ * `warnings` содержит замечания парсера, `shapeOk=false` — признак того, что
+ * пустой список нельзя трактовать как «складов нет».
  */
+export async function getFbsWarehouseListDetailed(
+  client: OzonClient,
+): Promise<{
+  items: FbsWarehouseItem[];
+  shapeOk: boolean;
+  complete: boolean;
+  warnings: string[];
+}> {
+  return collectCursorPages<FbsWarehouseItem>({
+    label: '/v2/warehouse/list',
+    maxPages: FBS_MAX_PAGES,
+    fetchPage: (cursor) =>
+      client.post(
+        OZON_API_VERSION_MAP.warehouseList,
+        cursor ? { limit: WAREHOUSE_LIST_LIMIT, cursor } : { limit: WAREHOUSE_LIST_LIMIT },
+        WarehouseListResponseSchema,
+      ),
+    parse: parseWarehouseListPage,
+  });
+}
+
+/** Совместимая обёртка (диагностический скрипт): только элементы. */
 export async function getFbsWarehouseList(
   client: OzonClient,
 ): Promise<FbsWarehouseItem[]> {
-  const data = (await client.post(
-    OZON_API_VERSION_MAP.warehouseList,
-    {},
-    WarehouseListResponseSchema,
-  )) as
-    | {
-        result?: FbsWarehouse[] | { warehouses?: FbsWarehouse[] };
-        warehouses?: FbsWarehouse[];
-      }
-    | undefined;
-
-  const list: FbsWarehouse[] = Array.isArray(data?.result)
-    ? data.result
-    : (data?.result as { warehouses?: FbsWarehouse[] } | undefined)?.warehouses ??
-      data?.warehouses ??
-      [];
-
-  const out: FbsWarehouseItem[] = [];
-  for (const w of list) {
-    const id = w.warehouse_id !== undefined ? String(w.warehouse_id) : '';
-    if (!id) continue;
-    out.push({
-      warehouseId: id,
-      name: (w.name ?? '').trim() || `Склад ${id}`,
-      warehouseType: w.is_rfbs === true ? 'rFBS' : 'FBS',
-      status: w.status ?? null,
-    });
-  }
-  return out;
+  return (await getFbsWarehouseListDetailed(client)).items;
 }
 
 /**
- * Максимум SKU в одном запросе `/v1/product/info/stocks-by-warehouse/fbs`.
- * Пагинации у метода нет — «страница» задаётся размером списка SKU,
- * поэтому вызывающий код (стейдж) режет свой список на чанки.
+ * Максимум SKU в одном запросе `/v2/product/info/stocks-by-warehouse/fbs`
+ * (справочник: `sku` <= 1000; оставляем 500 с запасом). Строк в ответе может
+ * быть больше (SKU × склады) — они добираются курсором.
  */
 export const FBS_STOCKS_SKU_CHUNK = 500;
 
-/** Остаток одного SKU на одном FBS-складе. */
-export type FbsWarehouseStockRow = {
-  sku: string;
-  productId: string | null;
-  warehouseId: string;
-  warehouseName: string;
-  /** Доступно к продаже. */
-  present: number;
-  reserved: number;
-  raw: Record<string, unknown>;
-};
-
 /**
  * Остатки по собственным складам продавца — Seller API
- * `POST /v1/product/info/stocks-by-warehouse/fbs`.
- *
- * Вход: массив SKU (int64; отправляем строками — grpc-gateway принимает обе
- * формы). Пагинации нет: сколько SKU передали, столько и обработается,
- * поэтому длинные списки режутся по `FBS_STOCKS_SKU_CHUNK`.
- *
- * Ответ: `{ result: [{ sku | fbs_sku, product_id, present, reserved,
- * warehouse_id, warehouse_name }] }`. `fbs_sku` — legacy-идентификатор до
- * унификации FBO/FBS SKU (2022); читаем `sku`, при его отсутствии — `fbs_sku`.
- * SKU без остатков на FBS в ответе просто не появляются.
+ * `POST /v2/product/info/stocks-by-warehouse/fbs` (замена `/v1/...`,
+ * отключаемого 07.04.2026). Запрос `{ sku: string[], limit, cursor }`,
+ * ответ `{ products: [{ sku, offer_id, product_id, present, reserved,
+ * free_stock, warehouse_id, warehouse_name }], cursor, has_next }`.
+ * SKU без остатков на FBS в ответе просто не появляются. Строки без
+ * sku/warehouse_id/present/reserved не пишутся и попадают в `warnings`.
  */
+export async function getStocksByWarehouseFbsDetailed(
+  client: OzonClient,
+  args: { sku: string[] },
+): Promise<{
+  rows: FbsWarehouseStockRow[];
+  shapeOk: boolean;
+  /** false — пагинация оборвана: строки неполные, снапшот заменять нельзя. */
+  complete: boolean;
+  warnings: string[];
+}> {
+  if (args.sku.length === 0) return { rows: [], shapeOk: true, complete: true, warnings: [] };
+  const r = await collectCursorPages<FbsWarehouseStockRow>({
+    label: '/v2/product/info/stocks-by-warehouse/fbs',
+    maxPages: FBS_MAX_PAGES,
+    fetchPage: (cursor) =>
+      client.post(
+        OZON_API_VERSION_MAP.productStocksByWarehouseFbs,
+        cursor
+          ? { sku: args.sku, limit: FBS_STOCKS_PAGE_LIMIT, cursor }
+          : { sku: args.sku, limit: FBS_STOCKS_PAGE_LIMIT },
+        StocksByWarehouseFbsResponseSchema,
+      ),
+    parse: (data) => {
+      const p = parseStocksByWarehouseFbsPage(data);
+      return { ...p, items: p.rows };
+    },
+  });
+  return { rows: r.items, shapeOk: r.shapeOk, complete: r.complete, warnings: r.warnings };
+}
+
+/** Совместимая обёртка (диагностический скрипт): только строки. */
 export async function getStocksByWarehouseFbs(
   client: OzonClient,
   args: { sku: string[] },
 ): Promise<FbsWarehouseStockRow[]> {
-  if (args.sku.length === 0) return [];
-  const data = (await client.post(
-    OZON_API_VERSION_MAP.productStocksByWarehouseFbs,
-    { sku: args.sku },
-    StocksByWarehouseFbsResponseSchema,
-  )) as { result?: StocksByWarehouseFbsRow[] } | undefined;
-
-  const rows = data?.result ?? [];
-  const out: FbsWarehouseStockRow[] = [];
-  for (const r of rows) {
-    const skuRaw = r.sku ?? r.fbs_sku;
-    const sku = skuRaw !== undefined && skuRaw !== null ? String(skuRaw) : '';
-    const warehouseId = r.warehouse_id !== undefined ? String(r.warehouse_id) : '';
-    if (!sku || !warehouseId) continue;
-    out.push({
-      sku,
-      productId: r.product_id !== undefined ? String(r.product_id) : null,
-      warehouseId,
-      warehouseName: (r.warehouse_name ?? '').trim(),
-      present: Number(r.present ?? 0),
-      reserved: Number(r.reserved ?? 0),
-      raw: r as unknown as Record<string, unknown>,
-    });
-  }
-  return out;
+  return (await getStocksByWarehouseFbsDetailed(client, args)).rows;
 }
 
 // ---- /v1/cluster/list (Seller API) ---------------------------------------

@@ -1,7 +1,7 @@
 // PURPOSE: Shared компонент «Синхронизация Ozon» для блоков Аналитика/Динамика/KPI.
 // Выделен из ozon-analytics-settings-form, чтобы не дублировать UI настроек sync
 // между блоками. Содержит:
-//  - чекбоксы стейджей (products/prices/stocks/orders/transactions + Performance API).
+//  - чекбоксы стейджей (products/prices/stocks/orders/accruals + Performance API).
 //  - стейдж `analyticsData` (Seller `/v1/analytics/data` — primary для аналитики).
 //  - кнопку «Запустить синхронизацию» с polling статуса.
 //  - pre-flight check для `analyticsData` (предупреждение если не выгружено).
@@ -29,7 +29,7 @@ export type SyncStageKey =
   | 'prices'
   | 'stocks'
   | 'orders'
-  | 'transactions'
+  | 'accruals'
   | 'analyticsData'
   | 'perfCampaigns'
   | 'perfSkuStats'
@@ -69,9 +69,9 @@ const STAGE_OPTIONS: StageMeta[] = [
     hint: 'История заказов FBO/FBS — для FBO/FBS-разделения и legacy-аналитики.',
   },
   {
-    key: 'transactions',
-    label: 'Транзакции',
-    hint: 'Финансовые операции (выплаты, удержания, реклама-эвристика).',
+    key: 'accruals',
+    label: 'Начисления',
+    hint: 'Финансовые начисления Ozon по дням и товарам (/v1/finance/accrual/*). Заменили отключённые «Транзакции».',
   },
   {
     key: 'analyticsData',
@@ -112,7 +112,7 @@ const DEFAULT_ENABLED_STAGES: Record<SyncStageKey, boolean> = {
   prices: true,
   stocks: true,
   orders: true,
-  transactions: false,
+  accruals: true,
   analyticsData: true,
   perfCampaigns: true,
   perfSkuStats: true,

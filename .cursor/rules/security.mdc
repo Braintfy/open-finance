@@ -1,0 +1,102 @@
+---
+description: Security — secrets, auth, billing, 152-ФЗ. ALWAYS read docs/SECURITY.md
+globs:
+  - "src/lib/inbox/crypto.ts"
+  - "src/lib/marketplaces/crypto.ts"
+  - "src/lib/auth/**"
+  - "src/app/(auth)/**"
+  - "src/middleware.ts"
+  - "src/lib/legal.ts"
+  - "src/lib/ai/vpn/**"
+  - "src/app/api/admin/**"
+  - "src/app/app/admin/**"
+  - "deploy/**"
+  - "src/lib/billing/**"
+  - "src/lib/env.ts"
+  - ".env*"
+  - "src/app/api/auth/**"
+  - "src/app/api/billing/**"
+---
+
+# Security — секреты, аутентификация, биллинг
+
+## ОБЯЗАТЕЛЬНОЕ ЧТЕНИЕ
+
+При работе с любым файлом по этим паттернам — **прочитать `docs/SECURITY.md`** перед любыми правками.
+
+## Жёсткие правила
+
+- **НИКОГДА не коммитить `.env`**, `credentials.json`, secrets, tokens, keys, real personal data.
+- При commit-сообщении со словом «env», «secret», «key», «password», «token» — STOP и спросить.
+- **Pre-commit hook** (`./scripts/install-hooks.sh`) ловит `.env`/`*.pem`/`*.key`/`credentials*`/`secret*` в diff, но **по умолчанию НЕ установлен** — не полагаться на него, проверять `git diff` глазами перед выдачей git-команд.
+- **Логи** не должны содержать api_keys/passwords/sessions. Использовать `maskSecret()` из `src/lib/inbox/crypto.ts`.
+
+## Шифрование секретов
+
+- **AES-256-GCM** через `src/lib/inbox/crypto.ts` (`INBOX_SECRET_KEY` env).
+- Тот же ключ — для `src/lib/marketplaces/crypto.ts` (общий MVP).
+- **Prod TODO**: разделить ключи (`MARKETPLACE_SECRET_KEY`), мигрировать на Vault/KMS.
+- `marketplace_accounts.api_key_enc` хранит зашифрованный api_key. На клиент → только `maskSecret(api_key_enc)`.
+- `inbox_channels.secret_enc` аналогично.
+
+## Auth (свой JWT, NextAuth-совместимый API)
+
+- **NextAuth НЕ установлен.** Реальная имплементация — свой JWT-cookie: `src/lib/auth/{actions,index,password,session}.ts` (`jose` + `bcryptjs`), `authDriver = 'minimal'` в `src/lib/auth/index.ts`. Имена экспортов (`auth`/`signIn`/`signOut`) намеренно совместимы с NextAuth v5 — на случай будущей миграции. Google OAuth нет.
+- `src/middleware.ts` — pass `/login`, `/register`, `/forgot-password`, `/reset-password`, `/api/auth/*`.
+- **`bcryptjs` НЕЛЬЗЯ импортировать в edge/middleware**. Использовать только в Node runtime.
+- **`useSearchParams` в Next 15** требует `<Suspense>` boundary.
+
+## Tenant isolation (multi-tenant)
+
+- **ВСЕ DB-запросы фильтруются по `tenant_id`**. Без исключений.
+- **`tenantId` — ТОЛЬКО из сессии**, через `requireTenant()` / `requireTenantRoute()` (`src/lib/auth/guards.ts`). Никогда из body/query/headers.
+- **Postgres RLS сознательно НЕ используется** (`enableRLS()` в коде отсутствует): по аудиту I1 выбран **review-gate** на уровне приложения. Канонический паттерн, исключения (`// cross-tenant: <причина>`) и чеклист ревью — **`docs/TENANT_SCOPING.md`** (обязательное чтение).
+- Проверка: `pnpm check:tenant-isolation` (smoke `scripts/check-tenant-isolation.ts`).
+- При удалении данных — обязательная проверка `tenant_id`.
+
+## Биллинг
+
+- Сейчас `src/lib/billing/mock.ts` (Т-Касса/CloudPayments — планируются как `src/lib/billing/{tinkoff,cloudpayments}/`); ключи внешних API — только в env.
+- `docs/BILLING.md` — детали реализации.
+- ВСЕ webhooks с верификацией подписи.
+- Idempotency keys для всех transactions.
+- Аудит-лог всех операций.
+
+## 152-ФЗ
+
+- Персональные данные клиентов хранятся в РФ.
+- Согласие на обработку при регистрации.
+- Право на забвение — `DELETE` cascade.
+- Логи доступа к ПДн.
+
+## Env vars
+
+- `src/lib/env.ts` — typed env через `zod`.
+- НЕ хардкодить URLs/keys в коде. Всегда через `env.X`.
+- `.env.example` обновлять при добавлении новых переменных (БЕЗ реальных значений).
+
+## Network / proxy
+
+- VPN/proxy для AI API: `src/lib/ai/providers/proxy.ts` через `undici` ProxyAgent. Vision-провайдеры с `requiresVpn` — через `src/lib/ai/vision/proxy-fetch.ts` (тот же dispatcher).
+- См. `docs/VPN_FOR_AI.md` и `deploy/xray/README.md`.
+
+## VLESS/Xray — граница доверия web→root
+
+- **Web-процесс не имеет sudo/exec.** Он только атомарно пишет spool-конфиг (0600); привилегированную часть делает root-овый systemd path-юнит (`deploy/xray/of-xray-apply.sh`).
+- **Инвариант apply-скрипта:** валидировать и устанавливать ОДНУ неизменяемую копию (`mktemp` вне spool, `trap cleanup`), НИКОГДА не сам spool-файл — приложение может перезаписать его между проверкой и `install` (TOCTOU в обход jq-инвариантов и `xray run -test`). Бэкап предыдущего конфига — рядом с целевым (root-only), не в spool.
+- **jq-инварианты:** top-level ключи ⊆ `{log,inbounds,outbounds,routing}`; `log` ⊆ `{loglevel,access,error}`; `log.access=="none"`; `log.error` пустой или под `/var/log/xray/`; ровно один inbound `http 127.0.0.1:10809`; `api == null`.
+- **Root никогда не пишет через `cat >` в app-writable директорию** — только `mktemp`(O_EXCL)+`chmod`+`mv -f` (иначе подложенный симлинк = произвольная root-запись).
+- **SSRF-гард (`src/lib/ai/vpn/ip-guard.ts`):** проверять встроенный IPv4 в IPv6 в HEX-форме, а не только точечной — `new URL('[::ffff:127.0.0.1]')` нормализует hostname в `::ffff:7f00:1`. Плюс несжатые формы (`0:0:0:0:0:0:0:1`): `isPrivateIp` работает и на сыром выводе DNS-резолвера, где нормализация URL не применяется.
+- **Фетч подписки — fail-closed:** без `undici` (пиннинг резолвленного IP + потоковый лимит) не выполнять ослабленный `fetch`, а бросать ошибку. Ссылка/URL подписки наружу не отдаются НИКОГДА — только `host:port` + `fingerprint8`; в `servers[]` нет uuid/pbk/sid.
+
+## После изменений
+
+- НЕ выполнять `git add/commit/push` — давать команды пользователю.
+- При commit — внимательно проверить `git diff` на секреты.
+- При обнаружении секрета в истории — `git filter-repo` (не amend).
+
+## Аудит pnpm packages
+
+- `pnpm audit --prod` раз в квартал.
+- Next.js CVE check: текущую версию `next` смотреть в `package.json`, держать не ниже последнего security-патча своей мажорной линии.
+- `xlsx`, `nodemailer`, `postcss` — известные advisories (не критичные сейчас).

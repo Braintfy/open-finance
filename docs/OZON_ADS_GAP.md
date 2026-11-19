@@ -81,12 +81,12 @@ Yoolip Analytics (`yoolip.ai/app/analytics`) — внешний сервис, к
 
 | Метрика       | Yoolip       | Open Finance (v0.18.25) | Ozon LK кабинет |
 |---------------|--------------|-------------------------|-----------------|
-| Выручка       | X ₽  | X ₽             | —               |
+| Выручка       | X ₽          | X ₽ (совпадает)         | —               |
 | Заказы (orders) | 3.5K       | 3.5K                    | —               |
-| Расход на рекламу | **A ₽** | **B ₽**       | ~410 000 ₽      |
+| Расход на рекламу | **A** | **B (≈0,906·A)**       | ≈A              |
 | ДРР            | 6.6%         | 6.0%                    | —               |
 
-**Разрыв A−B ₽ (~9.4%) с Yoolip.** Гипотезы:
+**Разрыв A−B (~9.4%) с Yoolip.** Гипотезы:
 
 1. **Yoolip берёт период YYYY-MM-DD inclusive по локалу пользователя**,
    а Open Finance — MSC `[fromDate, toDateExclusive)`. На 30-дневном
@@ -96,7 +96,7 @@ Yoolip Analytics (`yoolip.ai/app/analytics`) — внешний сервис, к
 2. **Yoolip может включать «сегодня»**, тогда как у нас sync —1 day лаг.
    В нашем случае «сегодня» обычно даёт +1–3% к total.
 3. **Per-SKU CPO у Yoolip** — у них есть колонка «Расход» per-product
-   (footer total A' ₽), что близко к общему A ₽. Это означает
+   (footer total ≈A), что близко к общему A. Это означает
    что они **распределяют CPO и SEARCH_PROMO** на SKU (мы тоже это
    делаем для CPO в `adsCpoAllocRub`, но SEARCH_PROMO остаётся в
    expense_daily total без per-SKU breakdown).

@@ -10,7 +10,7 @@
 //   pnpm tsx scripts/test-ozon-warehouse-stocks.ts <accountId> --live
 //     ↑ --live дополнительно дёргает Seller API напрямую:
 //        POST /v1/cluster/list, POST /v2/analytics/stock_on_warehouses и
-//        (Этап 2b) POST /v1/warehouse/list + /v1/product/info/stocks-by-warehouse/fbs,
+//        (Этап 2b) POST /v2/warehouse/list + /v2/product/info/stocks-by-warehouse/fbs,
 //        чтобы воспроизвести 404/empty без полного sync-пайплайна.
 //
 // Скрипт read-only (write в БД не делает).
@@ -236,7 +236,7 @@ async function main() {
         try {
           const own = await getFbsWarehouseList(client);
           console.log(
-            `  POST /v1/warehouse/list:                ✓ складов=${own.length}`,
+            `  POST /v2/warehouse/list:                ✓ складов=${own.length}`,
             own
               .slice(0, 3)
               .map((w) => `${w.warehouseId}:${w.name} (${w.warehouseType})`)
@@ -250,11 +250,11 @@ async function main() {
             .filter(Boolean)
             .slice(0, 50);
           if (skus.length === 0) {
-            console.log('  POST /v1/product/info/stocks-by-warehouse/fbs: пропуск (нет SKU в каталоге)');
+            console.log('  POST /v2/product/info/stocks-by-warehouse/fbs: пропуск (нет SKU в каталоге)');
           } else {
             const fbsStocks = await getStocksByWarehouseFbs(client, { sku: skus });
             console.log(
-              `  POST /v1/product/info/stocks-by-warehouse/fbs: ✓ строк=${fbsStocks.length} (по ${skus.length} SKU)`,
+              `  POST /v2/product/info/stocks-by-warehouse/fbs: ✓ строк=${fbsStocks.length} (по ${skus.length} SKU)`,
               fbsStocks
                 .slice(0, 2)
                 .map((r) => `${r.sku}@${r.warehouseName}=${r.present}`)

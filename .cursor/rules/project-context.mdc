@@ -1,0 +1,41 @@
+---
+description: Open Finance project identity and hard constraints (always loaded)
+alwaysApply: true
+---
+
+# Open Finance — core context
+
+AI-первая модульная финансовая платформа для предпринимателей РФ (селлеры OZON/WB/ЯМ, ИП, фрилансеры). Сейчас Next.js 15 SaaS; Phase 2 — Tauri 2.0; Phase 3 — React Native.
+
+Главная идея: почти каждая страница = настраиваемый **BlockGrid**. Новая фича обычно = новый block type в `src/lib/blocks/catalog/`, не статичная страница.
+
+## Bootstrap новой сессии (триггер «загрузи контекст Open Finance»)
+
+1. `START.md` (~5K токенов) — карта проекта, маршрутизация задач.
+2. `MEMORY.md` (**~13,8K токенов**, ~370 строк) — текущее состояние, активные грабли; нарративы — в `docs/memory-archive/`.
+3. `git log --oneline -20` (~0.5K).
+
+Итого bootstrap ≈ **19K токенов**. Цифры мерить, а не оценивать на глаз (`js-tiktoken`), и обновлять при заметном росте `MEMORY.md`.
+
+## Hard constraints (MUST NOT)
+
+- `pnpm` only — НЕ npm/yarn.
+- Drizzle ORM only — НЕ Prisma.
+- Своя AI-обёртка (`src/lib/ai/providers/`) — НЕ Vercel AI SDK.
+- `tenant_id` в каждой таблице и каждом DB-запросе.
+- AI-мутации только через Tools Layer (`src/lib/ai/tools/`) — НЕ прямой SQL.
+- Git: коммит + пуш делает агент сам в конце каждого этапа (решение владельца 2026-11-19) — после зелёной проверки и просмотра диффа на секреты; `.env*`, `*.local.md`, ключи и пароли не коммитить никогда (репозиторий открытый); без `--force`; сабагенты git не трогают.
+- НЕ запускать миграции автоматически — давать команды.
+- НЕ коммитить `.env`, секреты (см. `docs/SECURITY.md`).
+- Плоская структура — НЕ `src/features/x/y/z/`. Фактически домены живут в `src/lib/<домен>/` + `src/components/<домен>/` + `src/app/api/<домен>/`; `src/modules/` — исторический каркас (только README, кода и импортов нет), реестр модулей — `src/lib/modules/registry.ts`. Новая фича = block type в `src/lib/blocks/catalog/`.
+- Интерактивные CLI-команды запускать неинтерактивно: `-y` / `--yes` / `--force`, где возможно.
+- Удаление данных — ВСЕГДА с подтверждением пользователя; в запросе обязательна проверка `tenant_id`.
+- Явные импорты — НЕ `import * as X`.
+- Только Dialog/AlertDialog — НЕ системные `alert/confirm/prompt`.
+- Новые файлы начинать с `// PURPOSE: ...`.
+
+## Источник правды
+
+Версия — первый заголовок `## [X.Y.Z]` в `CHANGELOG.md` + `git log` (НЕ хардкодить в доках; версия в `package.json` не сопровождается).
+Контекст — `MEMORY.md`. История — `docs/memory-archive/`. Стратегия — `PLAN.md` (через `Read offset+limit`).
+Пошаговые процедуры (новый блок, схема БД, AI-route, верификация, конец сессии) — `.claude/skills/*/SKILL.md` (читаемы как markdown из любого IDE/агента).

@@ -7,9 +7,9 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { auth } from '@/lib/auth';
 import { createSyncJob, getAccount } from '@/lib/marketplaces/queries';
-import { runFullSync } from '@/lib/marketplaces/ozon/sync/full';
+import { resolveStagesToRun, runFullSync } from '@/lib/marketplaces/ozon/sync/full';
 import {
-  OZON_FULL_STAGES,
+  OZON_ALL_STAGES,
   type OzonStageKind,
 } from '@/lib/marketplaces/types';
 import type { SyncStageState } from '@/lib/db/schema/marketplaces';
@@ -23,14 +23,17 @@ const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 const BodySchema = z
   .object({
-    /** Запустить только один стейдж (все остальные — skipped). */
-    stage: z.enum(OZON_FULL_STAGES).optional(),
+    /**
+     * Запустить только один стейдж (все остальные — skipped). Допускаются и
+     * устаревшие (OZON_LEGACY_STAGES) — для ручной диагностики.
+     */
+    stage: z.enum(OZON_ALL_STAGES).optional(),
     /**
      * Полный sync, но только с включёнными стейджами. UI блока аналитики
      * отправляет это, чтобы пользователь мог выбрать набор стейджей.
      * Незаявленные стейджи останутся со значением из account.syncSettings.
      */
-    stages: z.record(z.enum(OZON_FULL_STAGES), z.boolean()).optional(),
+    stages: z.record(z.enum(OZON_ALL_STAGES), z.boolean()).optional(),
     /**
      * v0.22.1: Override sliding-window для date-aware стейджей. Если задано
      * (оба поля) — стейдж analyticsData/orders/transactions/perf-* загружает
@@ -95,9 +98,9 @@ export async function POST(req: Request, ctx: RouteCtx) {
       );
     }
 
-    const initStages = (
-      onlyStage ? [onlyStage] : ([...OZON_FULL_STAGES] as OzonStageKind[])
-    ).reduce<Record<string, SyncStageState>>((acc, s) => {
+    const initStages = resolveStagesToRun({ onlyStage, stagesOverride }).reduce<
+      Record<string, SyncStageState>
+    >((acc, s) => {
       acc[s] = { status: 'pending' };
       return acc;
     }, {});

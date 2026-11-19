@@ -2,10 +2,17 @@
 // Окно настраивается в OzonSyncSettings.ordersWindowDays (default 30).
 
 import { postingFbsList, postingFboList } from '../endpoints';
-import { upsertFbsPosting, upsertFboPosting } from '../upsert';
+import { upsertMappedOrder } from '../upsert';
+import {
+  forEachPostingPage,
+  mapFboPosting,
+  mapFbsPosting,
+  splitDateWindow,
+} from '../orders-map';
 import { runStageWithTiming, type StageContext, type StageResult } from './types';
 
-const PAGE = 1000;
+/** Сколько причин пропуска кладём в warnings (остальные — счётчиком). */
+const MAX_SKIP_WARNINGS = 5;
 
 export async function syncOrdersStage(ctx: StageContext): Promise<StageResult> {
   return runStageWithTiming(async () => {
@@ -24,35 +31,78 @@ export async function syncOrdersStage(ctx: StageContext): Promise<StageResult> {
     }
 
     let processed = 0;
-
-    // FBS
-    let offset = 0;
-    while (true) {
-      const res = await postingFbsList(ctx.client, { since, to, offset, limit: PAGE });
-      const postings = res.result.postings ?? [];
-      for (const p of postings) {
-        await upsertFbsPosting(ctx, p);
-        processed += 1;
+    const warnings: string[] = [];
+    const errors: string[] = [];
+    let skipped = 0;
+    const skip = (scheme: string, postingNumber: string, reason: string) => {
+      skipped += 1;
+      if (warnings.length < MAX_SKIP_WARNINGS) {
+        warnings.push(`${scheme} ${postingNumber} пропущено: ${reason}`);
       }
-      ctx.onProgress?.(processed);
-      if (!res.result.has_next || postings.length === 0) break;
-      offset += PAGE;
+    };
+
+    // Методы принимают период не длиннее года — длинное окно режем на куски.
+    const windows = splitDateWindow(since, to);
+    const label = (w: { since: Date; to: Date }) =>
+      windows.length > 1 ? ` [${w.since.toISOString().slice(0, 10)}..${w.to.toISOString().slice(0, 10)}]` : '';
+
+    // Схемы независимы: падение FBS (напр. смена контракта) не должно
+    // прятать FBO и наоборот; сбой одного куска окна не отменяет остальные —
+    // ошибка уходит в StageResult.error.
+    for (const w of windows) {
+      try {
+        await forEachPostingPage(
+          (cursor) => postingFbsList(ctx.client, { since: w.since, to: w.to, cursor }),
+          async (postings) => {
+            for (const p of postings) {
+              const m = mapFbsPosting(p);
+              if (!m.ok) {
+                skip('fbs', m.postingNumber, m.reason);
+                continue;
+              }
+              await upsertMappedOrder(ctx, m.order, p);
+              processed += 1;
+            }
+            ctx.onProgress?.(processed);
+          },
+        );
+      } catch (e) {
+        errors.push(`FBS${label(w)} ${(e as Error).message}`);
+      }
     }
 
-    // FBO
-    offset = 0;
-    while (true) {
-      const res = await postingFboList(ctx.client, { since, to, offset, limit: PAGE });
-      const postings = res.result ?? [];
-      for (const p of postings) {
-        await upsertFboPosting(ctx, p);
-        processed += 1;
+    for (const w of windows) {
+      try {
+        await forEachPostingPage(
+          (cursor) => postingFboList(ctx.client, { since: w.since, to: w.to, cursor }),
+          async (postings) => {
+            for (const p of postings) {
+              const m = mapFboPosting(p);
+              if (!m.ok) {
+                skip('fbo', m.postingNumber, m.reason);
+                continue;
+              }
+              await upsertMappedOrder(ctx, m.order, p);
+              processed += 1;
+            }
+            ctx.onProgress?.(processed);
+          },
+        );
+      } catch (e) {
+        errors.push(`FBO${label(w)} ${(e as Error).message}`);
       }
-      ctx.onProgress?.(processed);
-      if (postings.length < PAGE) break;
-      offset += PAGE;
     }
 
-    return { itemsProcessed: processed };
+    if (skipped > MAX_SKIP_WARNINGS) {
+      warnings.push(`... и ещё ${skipped - MAX_SKIP_WARNINGS} отправлений пропущено`);
+    }
+    // Любой пропуск или обрыв — не «тихий успех»: ok=false, чтобы синк не рапортовал зелёным.
+    const failed = errors.length > 0 || skipped > 0;
+    return {
+      ok: !failed,
+      itemsProcessed: processed,
+      error: errors.length > 0 ? errors.join('; ') : skipped > 0 ? `пропущено отправлений: ${skipped}` : undefined,
+      warnings: warnings.length > 0 ? warnings : undefined,
+    };
   });
 }

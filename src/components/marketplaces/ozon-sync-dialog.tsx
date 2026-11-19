@@ -52,7 +52,7 @@ type StageKey =
   | 'stocks'
   | 'analyticsData'
   | 'orders'
-  | 'transactions'
+  | 'accruals'
   | 'realization'
   | 'turnover'
   | 'clusters'
@@ -135,10 +135,10 @@ const STAGES_SALES: StageMeta[] = [
     hint: 'История postings — для FBO/FBS-разделения и fallback-аналитики.',
   },
   {
-    key: 'transactions',
-    label: 'Транзакции',
+    key: 'accruals',
+    label: 'Начисления',
     dateAware: true,
-    hint: 'Финансовые операции (выплаты, удержания).',
+    hint: 'Финансовые начисления Ozon по дням и товарам (/v1/finance/accrual/*). Без диапазона — с 1-го числа позапрошлого месяца.',
   },
   {
     key: 'realization',
@@ -193,6 +193,7 @@ const ALL_STAGES = [...STAGES_CATALOG, ...STAGES_SALES, ...STAGES_ADS];
 const DATE_AWARE_DEFAULT: StageKey[] = [
   'analyticsData',
   'orders',
+  'accruals',
   'perfExpenseDaily',
   'perfSkuStats',
   'perfCpoDaily',
@@ -268,7 +269,7 @@ export function OzonSyncDialog({
   // чтобы при открытии сохранённый выбор перекрывал дефолты пресета.
   useEffect(() => {
     if (!open || !account) return;
-    const saved = loadSavedStages(account.id);
+    const saved = loadSavedStages(account.id, preset);
     if (saved) {
       manuallyEditedRef.current = true;
       setEnabled(saved);
@@ -625,8 +626,9 @@ export function OzonSyncDialog({
                       <span className="font-medium">Принудительно перезаписать</span>
                       <span className="block text-[10px] text-muted-foreground">
                         Daily-таблицы (аналитика, perf) и так перезаписываются в окне.
+                        Начисления заменяются по дням только при полной выборке.
                         Флаг — задел под будущую оптимизацию skip-if-already-loaded
-                        для orders/transactions.
+                        для заказов.
                       </span>
                     </span>
                   </label>
@@ -707,15 +709,25 @@ function stagesStorageKey(accountId: string): string {
 }
 
 /** SSR-safe чтение сохранённого выбора стейджей. Валидирует против ALL_STAGES. */
-function loadSavedStages(accountId: string): Record<StageKey, boolean> | null {
+/**
+ * Сохранённый выбор стейджей. Ключи, которых в сохранённом объекте НЕТ (стейдж
+ * появился позже — напр. `accruals`), берутся из дефолта пресета, а не false:
+ * иначе у пользователя со старым выбором новый стейдж молча не запускался бы.
+ * Устаревшие ключи (`transactions`) отбрасываются — их нет в ALL_STAGES.
+ */
+function loadSavedStages(
+  accountId: string,
+  preset: DateRangePreset,
+): Record<StageKey, boolean> | null {
   if (typeof window === 'undefined') return null;
   try {
     const raw = window.localStorage.getItem(stagesStorageKey(accountId));
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     if (!parsed || typeof parsed !== 'object') return null;
+    const defaults = initialStages(preset);
     const out = ALL_STAGES.reduce<Record<StageKey, boolean>>((acc, s) => {
-      acc[s.key] = Boolean(parsed[s.key]);
+      acc[s.key] = s.key in parsed ? Boolean(parsed[s.key]) : defaults[s.key];
       return acc;
     }, {} as Record<StageKey, boolean>);
     return out;

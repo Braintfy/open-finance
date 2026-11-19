@@ -2,7 +2,7 @@
 name: of-end-session
 version: 1.0.0
 description: |
-  Canonical end-of-session ritual for Open Finance: verify → CHANGELOG → MEMORY → LEARNING_LOG → invariant files → agentmemory → git commands for the user. This skill is the single source of truth for the ritual (CLAUDE.md/AGENTS.md/START.md reference it).
+  Canonical end-of-session ritual for Open Finance: verify → CHANGELOG → MEMORY → LEARNING_LOG → invariant files → agentmemory → commit + push by the agent itself. This skill is the single source of truth for the ritual (CLAUDE.md/AGENTS.md/START.md reference it).
   TRIGGER when: user says «заверши сессию», «оформи релиз», «handoff», «обнови память/чейнджлог», or significant work is done and needs documenting.
   DO NOT TRIGGER when: no code/doc changes happened this session, or mid-task.
 allowed-tools:
@@ -53,10 +53,17 @@ allowed-tools:
 
 Если в сессии принято важное архитектурное решение/инвариант — сохранить через MCP `memory_save` (agentmemory, localhost:3111). Это замена устаревшего `./scripts/sync-mempalace.sh` (mempalace deprecated с v0.22.4). Если сервер не отвечает (`curl http://localhost:3111/agentmemory/health`) — пропустить, не чинить в рамках ритуала.
 
-## 6. Git-команды пользователю (САМОМУ НЕ ВЫПОЛНЯТЬ)
+## 6. Коммит + пуш — делает агент сам (решение владельца 2026-11-19)
+
+Репозиторий открытый: каждый коммит — публикация. Порядок:
+
+1. `git status` и `git diff --stat` — посмотреть, что попадёт в коммит.
+2. Добавлять файлы **явным списком путей**, не `git add -A`. Никогда не добавлять `.env*`, `*.local.md`, `.local/`, дампы баз, ключи.
+3. Пройти `git diff --cached` глазами на секреты (пароли, токены, ключи API, Client-Id/ключи маркетплейсов).
+4. Закоммитить и запушить:
 
 ```bash
-git add -A && git commit -m "feat(scope): краткое описание (vX.Y.Z)" && git push origin main
+git commit -m "feat(scope): краткое описание (vX.Y.Z)" && git push origin main
 ```
 
-Тип — `feat`/`fix`/`refactor`/`docs` по содержанию; версия в скобках = новая версия CHANGELOG. Перед выдачей команд — глазами пройти `git diff` на секреты.
+Тип — `feat`/`fix`/`refactor`/`docs` по содержанию; версия в скобках = новая версия CHANGELOG. Без `--force` и переписывания истории. Сабагенты git не трогают — только главная сессия.

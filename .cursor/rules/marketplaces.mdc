@@ -1,0 +1,101 @@
+---
+description: Ozon Seller API + Performance API integration, sync stages
+globs:
+  - "src/lib/marketplaces/**"
+  - "src/app/api/marketplaces/**"
+  - "src/components/unit-economics/ozon-*"
+  - "src/components/marketplaces/**"
+  - "src/app/app/settings/integrations/**"
+  - "src/app/app/marketplaces/**"
+---
+
+# Marketplace integrations — Ozon
+
+## Архитектурный поток
+
+```
+Settings → Integrations → AccountCard
+  → POST /api/marketplaces/accounts/[id]/sync
+    → runFullSync (fire-and-forget Promise.then)
+      → STAGE_RUNNERS[stage] → OzonClient (40 RPS) / OzonPerformanceClient
+        → upsert через planUnitProductUpsertFromOzon (pure function)
+          → ozon_* tables + unit_products
+            → blocks: unit.ozon-analytics, unit-ozon-kpi, etc.
+```
+
+## Ключевые файлы
+
+- `src/lib/db/schema/marketplaces.ts` — `marketplace_accounts` (api_key AES-256-GCM), `ozon_sync_jobs` (per-stage `stages JSONB`), `ozon_orders`, `ozon_realization`, `ozon_transactions`, `ozon_analytics_daily`, `ozon_perf_*`, `ozon_clusters`, `ozon_warehouse_stocks`.
+- `src/lib/marketplaces/ozon/client.ts` — `OzonClient` с per-clientId token-bucket **40 RPS** + exponential backoff на 429/5xx + timeout 30s. **Lenient по умолчанию** (на Zod fail → warn + raw, `{strict:true}` для критичных).
+- `src/lib/marketplaces/ozon/endpoints.ts` — 10+ endpoints + `OZON_API_VERSION_MAP` (единая точка версионирования).
+- `src/lib/marketplaces/ozon/types.ts` — Zod-схемы (`.passthrough()` для необязательных полей).
+- `src/lib/marketplaces/ozon/upsert-plan.ts` — **pure function** план upsert. Unit-тесты в `scripts/test-ozon-upsert.ts`.
+- `src/lib/marketplaces/ozon/sync/*.ts` — отдельный файл на стейдж, контракт `runStage(ctx) → StageResult`.
+- `src/lib/marketplaces/ozon/sync/full.ts` — оркестратор, per-stage прогресс через `jsonb_set`.
+- `src/lib/marketplaces/ozon/query-period.ts` — MSC `fromDate`/`toDateExclusive` (UTC-сдвиги ломали 30d-окна).
+- `src/lib/marketplaces/ozon/ads-totals.ts` — `getOzonAdsTotals()`. Priority: `expense → performance (CPC+CPO) → transactions-heuristic → none`.
+- `src/lib/marketplaces/ozon/performance/{endpoints,on-demand}.ts` — Performance API клиент.
+- `src/components/marketplaces/ozon-sync-dialog.tsx` + `ozon-sync-presets.ts` — универсальный sync dialog с `auto` preset.
+- `src/components/marketplaces/{global-sync-indicator,sync-all-button}.tsx` — global UI.
+
+## Инварианты
+
+- **api_key только в `marketplace_accounts.api_key_enc`** (AES-256-GCM), на клиент → `maskSecret(api_key_enc)` — канон в `security.mdc` → «Шифрование секретов».
+- **`tenant_id` ВЕЗДЕ**: `tenantId` берётся ТОЛЬКО из сессии (`requireTenant()`/`requireTenantRoute()`) → `getAccount({ tenantId, id })`. Канон — `security.mdc` → «Tenant isolation» + `docs/TENANT_SCOPING.md`.
+- **Rate-limit per Client-Id** (не per tenant). При horizontal scale → Redis-token-bucket.
+- **Backoff не ретраит 4xx** (кроме 429). `OzonApiError` с `status >= 400 && status < 500 && status !== 429` пробрасывается сразу.
+- **`runFullSync` — fire-and-forget.** Vercel `maxDuration=300`. Большие магазины → запускать стейджи по одному.
+- **`onConflictDoUpdate.set` conditional** — поздние стейджи (prices/stocks) не должны затирать поля от ранних; паттерн с `COALESCE`/`sql\`unit_products.X\`` — канон в `drizzle.mdc` → «onConflictDoUpdate — conditional updates».
+- **`upsertUnitProductFromOzon` никогда не перезаписывает `costKopecks`** (пользовательский ввод).
+- **`metadata` мерджится через `||` JSONB** (`JSON.stringify` обязателен) — канон в `drizzle.mdc` → «JSONB merge».
+- **`marketplace_account_id` в `unit_products` nullable.** XLSX-импорт NULL; sync проставляет FK. `ON DELETE SET NULL`.
+- **Plan-gate в `canAddAccount`.** Pro+ unlimited, иначе max 1 per marketplace.
+
+## Активные грабли
+
+### Performance API
+- **CSV не начинается с header'а** — первые 2 строки = метадата кампании. `detectHeaderIndex()` ищет первую строку с `CSV_HEADER_SIGNALS` (sku|артикул|дата|...). Метадата пропускается. См. `detectHeaderIndex()` в `src/lib/marketplaces/ozon/performance/endpoints.ts`.
+- **`/expense` возвращает CSV по умолчанию.** Использовать `/expense/json` или CSV-fallback `parseExpenseCsv()`.
+- **`""` для `toDate` бессрочных кампаний** → Postgres `invalid input syntax for type date`. Helper `toDateOrNull` в `sync/date-utils.ts`.
+- **Период по МСК-календарю + max 62 дня.** Helper `buildPerfPeriod` clamp'ит. `buildPerfPeriodFromOverride(from, to)` для incremental sync.
+- **CSV-парсер**: prefix match (`"Расход, ₽, с НДС".startsWith("расход")`); даты `19.05.2026` и `2026-05-19`.
+- **`adv_object_type` для роутинга**: SKU/SEARCH_PROMO → CPC `POST /statistics`; ALL_SKU_PROMO → CPO `GET /all_sku_promo/products/generate`.
+- **`SEARCH_PROMO` убран из CPC pipeline** — он CPO-based, иначе двойной счёт.
+- **`/statistics` принимает campaigns по ОДНОМУ** (несколько → ZIP, мы не парсим).
+
+### Seller API
+- **`price.price` приходит ЧИСЛОМ для части магазинов** — `z.union([z.string(), z.number()])` обязателен. `parseMoneyRu` принимает `unknown`.
+- **`/v1/product/info/stocks-by-warehouse/fbs` БЕЗ пагинации** — «страница» = длина списка `sku` (чанки `FBS_STOCKS_SKU_CHUNK=500`); читать `sku ?? fbs_sku` (legacy), `promised` у FBS не существует. `warehouse_type` вычисляем `is_rfbs ? 'rFBS' : 'FBS'` (`/v1/warehouse/list` отдельного поля типа не имеет).
+- **Снапшот `ozon_warehouse_stocks` чистится по окну `(tenant, account, source)`** — стейджи `warehouseStocks` (FBO) и `fbsWarehouseStocks` не должны стирать чужие строки; замена окна ТОЛЬКО через `replaceWarehouseStocksWindow()` (транзакция DELETE+батч-INSERT по 500, дедуп по `(sku, warehouse_name)` — иначе multi-row `ON CONFLICT` падает «cannot affect row a second time»).
+- **FBS-склады НЕ входят в `/v1/cluster/list`** — в агрегации остатков это псевдо-строка «FBS (свои склады)» (`FBS_ROW_KEY`), НЕ «Без кластера» («Без кластера» = проблема данных).
+- **`primary_image: string | string[]`** — с 2026-05 массив URL. `normalizePrimaryImage()`.
+- **`cluster/list` живёт ТОЛЬКО в Seller API** (`POST /v1/cluster/list`). Performance клиент 404. См. `getClusterListSeller(client)`.
+- **`/v2/analytics/stock_on_warehouses`** (не deprecated v1).
+- **`/v2/finance/realization` НЕ возвращает текущий месяц** — тянем 2 закрытых.
+- **`/v2/finance/realization` принимает `{ year, month }` ЧИСЛАМИ**, не `{ date: 'YYYY-MM' }` (форма v1 → 400 «invalid GetRealizationReportRequestV2.Year»). Форма строки — `item{sku,offer_id}`, `seller_price_per_instance`, `delivery_commission{...}`, `return_commission` (null без возвратов), `commission_ratio`; `header` — ОБЪЕКТ, не массив. Арифметика (проверена на 2861 блоке): `amount + bonus + compensation + bank_coinvestment + stars + pick_up_point_coinvestment − standard_fee = total`, а `standard_fee / (цена продавца × qty) = commission_ratio`. Маппинг — `realization-map.ts` (`gross = total + вознаграждение`, возврат вычитается), тесты — `scripts/test-ozon-realization-map.ts`.
+- **Схема реализации намеренно СТРОГАЯ + `{strict: true}`** — прошлая схема была вся `.optional()`, поэтому ответ v2 «парсился» в `undefined` и писал нули; таблица месяцами стояла пустой при зелёном синке. Денежные поля любых новых Ozon-схем оставлять обязательными.
+- **`ozon_orders.delivered_at` — псевдо-derived** из status. Точное delivery time нужен отдельный `/v3/posting/fbs/get` per posting.
+- **`/v1/analytics/data` rate-limit 1 req/min** + Premium Plus tier. `analyticsDataWithFallback()` graceful degradation.
+- **«Заказы»/выручка НЕ по `status='delivered'`** — иначе на 7d-окнах всё в пути. Учитывать `awaiting_deliver`/`delivering`, отмены по `lower(status) LIKE '%cancel%'`.
+
+### Sync UI
+- **Sync settings в `BlockDef.SettingsForm`** (таб «Параметры»), НЕ toolbar.
+- **`OzonSyncSettingsForm`** pure UI, без Dialog. Используется в SettingsForm И в legacy `OzonSyncSettingsDialog`.
+- **`stockSource`** управляет: `mode-aware` (default), `fbo`, `fbs`, `sum` (legacy). См. `resolveStock()`.
+- **`OzonSyncDialog` smart `auto` preset** — резолвится из `lastSyncAt`. Pure helpers в `ozon-sync-presets.ts`.
+- **Date-override** в `POST /sync`: `{fromDate, toDate, force}`. Date-aware стейджи honor. Catalog/snapshot игнорируют.
+
+### Аналитика (per-product)
+- **5 match-ключей в `agg_ads` JOIN**: `unit_products.sku`, legacy `metadata.productId`, `offer_id`, raw `Артикул`, `metadata->>'ozonSku'`. Lateral aggregate, не прямой OR-JOIN.
+- **FBO/FBS из `ozon_orders.scheme`** — CTE `agg_scheme` всегда над `ozon_orders`. `delivered = sch.delivered_fbo + sch.delivered_fbs`.
+- **CPO распределение per-SKU в Node** (не SQL): `adsCpoAllocRub = cpoTotalRub * (revenue / totalRevenue)`.
+- **«Сегодня» исключается из чарта** (`unit-ozon-chart`) — partial data. Badge «Сегодня скрыт».
+- **`silentFailure` диагностика**: `SyncStageState.warnings?: string[]`. Если `ok=true && itemsTotal>0 && itemsProcessed=0` → красный banner.
+
+## После изменений Ozon API формы
+
+Каноническая процедура «4 файла синхронно + bump `CACHE_VERSION`» — **`.claude/skills/of-ozon-column/SKILL.md`**. Пропуск любого файла = TS error на required field или колонка молча не появляется.
+
+## Подробности по версиям
+
+`docs/memory-archive/v0.17.md`, `docs/memory-archive/v0.18.md`, `docs/MARKETPLACES_OZON_PERFORMANCE.md`, `docs/MARKETPLACES_FUTURE_PLAN.md`, `docs/OZON_ADS_GAP.md`.
